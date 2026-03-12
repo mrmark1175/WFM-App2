@@ -1,6 +1,8 @@
 import { PageLayout } from "../components/PageLayout";
 import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone } from "lucide-react";
 import { Link } from "react-router-dom";
+import logo from "../../assets/logo.png";
+import React from "react";
 
 export function WFM() {
   const wfmModules = [

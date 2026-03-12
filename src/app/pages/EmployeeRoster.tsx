@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react"; // Add useEffect here
 import { Link } from "react-router-dom";
 
 // Define what an Agent looks like based on your pgAdmin data

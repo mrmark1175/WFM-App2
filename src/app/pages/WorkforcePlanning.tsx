@@ -1,3 +1,4 @@
+import React, { useState } from "react";
 import { useState } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { 
@@ -10,8 +11,10 @@ import {
 } from "lucide-react";
 
 export function WorkforcePlanning() {
-  const [selectedYear, setSelectedYear] = useState("Year 1");
-  const [method, setMethod] = useState("Holt-Winters");
+    // Add these two lines if they are missing or inside another function:
+    const [volumes, setVolumes] = useState(Array(12).fill(0));
+    const [selectedYear, setSelectedYear] = useState("Year 1");
+    const [method, setMethod] = useState("Holt-Winters (Triple Exponential Smoothing)");
 
   const months = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", 
@@ -97,18 +100,25 @@ export function WorkforcePlanning() {
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  {months.map(m => (
-                    <td key={m} className="p-0 border-r border-border last:border-0">
-                      <input 
-                        type="number"
-                        placeholder="0"
-                        className="w-full p-4 text-center bg-transparent focus:bg-primary/5 focus:outline-none transition-colors font-medium text-lg"
-                      />
-                    </td>
-                  ))}
-                </tr>
-              </tbody>
+  <tr>
+    {months.map((m, index) => (
+      <td key={m} className="p-0 border-r border-border last:border-0">
+        <input 
+          type="number"
+          value={volumes[index]} // Tells the box which month's number to show
+          onChange={(e) => {
+            // This logic updates the specific month you are typing in
+            const newVol = [...volumes];
+            newVol[index] = parseInt(e.target.value) || 0;
+            setVolumes(newVol);
+          }}
+          placeholder="0"
+          className="w-full p-4 text-center bg-transparent focus:bg-primary/5 focus:outline-none transition-colors font-medium text-lg"
+        />
+      </td>
+    ))}
+  </tr>
+</tbody>
             </table>
           </div>
         </div>

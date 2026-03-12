@@ -1,3 +1,4 @@
+import React from "react";
 import { Link } from "react-router-dom";
 import { User, Users, Settings } from "lucide-react";
 import logo from "../../assets/logo.png";
