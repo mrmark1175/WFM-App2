@@ -1,7 +1,6 @@
 import { PageLayout } from "../components/PageLayout";
 import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone } from "lucide-react";
-// 1. Import Link from react-router
-import { Link } from "react-router-dom";;
+import { Link } from "react-router-dom";
 
 export function WFM() {
   const wfmModules = [
@@ -16,7 +15,6 @@ export function WFM() {
       description: "Manage employee profiles, skills, and availability",
       icon: UserCog,
       stats: "156 Employees",
-      // 2. Add the path specifically for the Roster
       path: "/wfm/roster",
     },
     {
@@ -24,6 +22,7 @@ export function WFM() {
       description: "Forecast staffing needs and optimize resource allocation",
       icon: Users,
       stats: "156 Employees",
+      path: "/wfm/planning", // This matches your route in routes.tsx
     },
     {
       title: "Performance Analytics",
@@ -61,7 +60,6 @@ export function WFM() {
     <PageLayout title="Workforce Management">
       <div className="grid md:grid-cols-3 gap-6">
         {wfmModules.map((module) => {
-          // 3. Define the Card content
           const CardContent = (
             <div className="bg-card border border-border rounded-lg p-6 hover:shadow-lg hover:border-primary/30 transition-all cursor-pointer group h-full">
               <div className="flex items-start justify-between mb-4">
@@ -72,7 +70,7 @@ export function WFM() {
                   {module.stats}
                 </span>
               </div>
-              <h3 className="text-lg mb-2 text-card-foreground group-hover:text-primary transition-colors">
+              <h3 className="text-lg font-semibold mb-2 text-card-foreground group-hover:text-primary transition-colors">
                 {module.title}
               </h3>
               <p className="text-sm text-muted-foreground leading-relaxed">
@@ -81,13 +79,19 @@ export function WFM() {
             </div>
           );
 
-          // 4. If the module has a path, wrap it in a Link. Otherwise, just show the div.
+          // Wrap in Link if path exists, otherwise return the card div
           return module.path ? (
-            <Link key={module.title} to={module.path} className="no-underline">
+            <Link 
+              key={module.title} 
+              to={module.path} 
+              className="block no-underline text-inherit"
+            >
               {CardContent}
             </Link>
           ) : (
-            <div key={module.title}>{CardContent}</div>
+            <div key={module.title}>
+              {CardContent}
+            </div>
           );
         })}
       </div>
