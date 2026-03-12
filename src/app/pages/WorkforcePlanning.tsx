@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import { useState } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { 
   TrendingUp, 
@@ -28,10 +27,49 @@ export function WorkforcePlanning() {
     { id: "linear", name: "Linear Regression" }
   ];
 
+  const totalVolume = volumes.reduce((sum, val) => sum + val, 0);
+  const peakVolume = Math.max(...volumes);
+  
   return (
     <PageLayout title="Workforce Planning">
       <div className="space-y-6">
+      <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="p-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-sm">
+        <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">
+          Annual Forecast Total
+        </p>
+        <div className="flex items-baseline gap-2">
+          <span className="text-3xl font-bold text-primary">
+            {totalVolume.toLocaleString()}
+          </span>
+          <span className="text-sm text-muted-foreground font-medium">units</span>
+        </div>
+      </div>
+
+      <div className="p-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-sm">
+        <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">
+          Average Monthly
+        </p>
+        <div className="flex items-baseline gap-2">
+          <span className="text-3xl font-bold text-slate-700 dark:text-slate-200">
+            {Math.round(totalVolume / 12).toLocaleString()}
+          </span>
+          <span className="text-sm text-muted-foreground font-medium">/ month</span>
+        </div>
         
+      </div>
+      <div className="p-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-sm">
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">
+            Peak Month Volume
+          </p>
+          <div className="flex items-baseline gap-2">
+            <span className="text-3xl font-bold text-orange-600 dark:text-orange-400">
+              {peakVolume.toLocaleString()}
+            </span>
+            <span className="text-sm text-muted-foreground font-medium">units</span>
+          </div>
+        </div>
+    </div>
         {/* Configuration Header */}
         <div className="bg-card border border-border rounded-xl p-6 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-6">
@@ -104,16 +142,22 @@ export function WorkforcePlanning() {
     {months.map((m, index) => (
       <td key={m} className="p-0 border-r border-border last:border-0">
         <input 
-          type="number"
-          value={volumes[index]} // Tells the box which month's number to show
-          onChange={(e) => {
-            // This logic updates the specific month you are typing in
-            const newVol = [...volumes];
-            newVol[index] = parseInt(e.target.value) || 0;
-            setVolumes(newVol);
-          }}
-          placeholder="0"
-          className="w-full p-4 text-center bg-transparent focus:bg-primary/5 focus:outline-none transition-colors font-medium text-lg"
+  type="text"
+  // This line converts the raw number (23230) into a pretty string (23,230)
+  value={volumes[index] === 0 ? "" : volumes[index].toLocaleString()} 
+  onChange={(e) => {
+    // 1. Remove commas so the computer can do math
+    const rawValue = e.target.value.replace(/,/g, "");
+    
+    // 2. Only allow numbers
+    if (/^\d*$/.test(rawValue)) {
+      const newVol = [...volumes];
+      newVol[index] = Number(rawValue);
+      setVolumes(newVol);
+    }
+  }}
+  placeholder="0"
+  className="w-full p-4 text-center bg-transparent focus:bg-primary/5 focus:outline-none transition-colors font-medium text-lg"
         />
       </td>
     ))}
