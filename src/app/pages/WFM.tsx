@@ -1,16 +1,40 @@
 import { PageLayout } from "../components/PageLayout";
 import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone } from "lucide-react";
 import { Link } from "react-router-dom";
-import logo from "../../assets/logo.png";
 import React from "react";
 
 export function WFM() {
   const wfmModules = [
     {
+      title: "Forecasting",
+      description: "Predict workload patterns and staffing requirements",
+      icon: TrendingUp,
+      stats: "Next 30 Days",
+      path: "/wfm/forecasting",
+    },
+    {
+      title: "Workforce Planning",
+      description: "Forecast staffing needs and optimize resource allocation",
+      icon: Users,
+      stats: "156 Employees",
+    },
+    {
       title: "Schedule Management",
       description: "Create, edit, and publish employee schedules",
       icon: Calendar,
       stats: "24 Active Schedules",
+    },
+    {
+      title: "Time & Attendance",
+      description: "Monitor clock-ins, breaks, and time-off requests",
+      icon: Clock,
+      stats: "12 Pending Requests",
+    },
+    {
+      title: "Performance Analytics",
+      description: "Track KPIs, adherence, and productivity metrics",
+      icon: BarChart3,
+      stats: "98% Adherence",
     },
     {
       title: "Employee Roster",
@@ -20,35 +44,10 @@ export function WFM() {
       path: "/wfm/roster",
     },
     {
-      title: "Workforce Planning",
-      description: "Forecast staffing needs and optimize resource allocation",
-      icon: Users,
-      stats: "156 Employees",
-      path: "/wfm/planning", // This matches your route in routes.tsx
-    },
-    {
-      title: "Performance Analytics",
-      description: "Track KPIs, adherence, and productivity metrics",
-      icon: BarChart3,
-      stats: "98% Adherence",
-    },
-    {
-      title: "Time & Attendance",
-      description: "Monitor clock-ins, breaks, and time-off requests",
-      icon: Clock,
-      stats: "12 Pending Requests",
-    },
-    {
       title: "Telephony Integrations",
       description: "Connect and manage telephony systems and call routing",
       icon: Phone,
       stats: "5 Active Systems",
-    },
-    {
-      title: "Forecasting",
-      description: "Predict workload patterns and staffing requirements",
-      icon: TrendingUp,
-      stats: "Next 30 Days",
     },
     {
       title: "Reporting",
@@ -81,11 +80,10 @@ export function WFM() {
             </div>
           );
 
-          // Wrap in Link if path exists, otherwise return the card div
           return module.path ? (
-            <Link 
-              key={module.title} 
-              to={module.path} 
+            <Link
+              key={module.title}
+              to={module.path}
               className="block no-underline text-inherit"
             >
               {CardContent}
