@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { 
   TrendingUp, 
@@ -20,6 +20,27 @@ export function WorkforcePlanning() {
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
   ];
 
+  useEffect(() => {
+    const fetchYearData = async () => {
+      try {
+        const response = await fetch(`http://localhost:5000/api/forecasts/${selectedYear}`);
+        const data = await response.json();
+
+        if (data && data.monthly_volumes) {
+          setVolumes(data.monthly_volumes);
+          setMethod(data.forecast_method);
+        } else {
+          // If no data exists for this specific year, reset to zeros
+          setVolumes(Array(12).fill(0));
+        }
+      } catch (error) {
+        console.error("Error fetching year data:", error);
+        setVolumes(Array(12).fill(0));
+      }
+    };
+
+    fetchYearData();
+  }, [selectedYear]);// The empty array ensures this only runs ONCE per page load
   const forecastingMethods = [
     { id: "holt-winters", name: "Holt-Winters (Triple Exponential Smoothing)" },
     { id: "decomposition", name: "Seasonal Decomposition" },
@@ -29,6 +50,33 @@ export function WorkforcePlanning() {
 
   const totalVolume = volumes.reduce((sum, val) => sum + val, 0);
   const peakVolume = Math.max(...volumes);
+  const handleSaveToDatabase = async () => {
+    const payload = {
+      year_label: selectedYear,
+      forecast_method: method,
+      monthly_volumes: volumes,
+      total_volume: totalVolume,
+      peak_volume: peakVolume
+    };
+  
+    try {
+      // Note: Change 5000 to whatever port your server.cjs uses
+      const response = await fetch('http://localhost:5000/api/forecasts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+  
+      if (response.ok) {
+        alert("✅ Forecast saved to pgAdmin successfully!");
+      } else {
+        alert("❌ Server responded with an error.");
+      }
+    } catch (error) {
+      console.error("Save Error:", error);
+      alert("❌ Could not connect to server. Is server.cjs running?");
+    }
+  };
   
   return (
     <PageLayout title="Workforce Planning">
@@ -114,10 +162,22 @@ export function WorkforcePlanning() {
             </div>
           </div>
 
-          <button className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:opacity-90">
+          {/* Container to keep buttons grouped together */}
+        <div className="flex items-center gap-3">
+          <button className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 shadow-sm transition-opacity hover:opacity-90">
             <LineChart className="size-4" />
             Generate Forecast
           </button>
+
+          <button 
+            onClick={handleSaveToDatabase}
+            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save to DB
+          </button>
+        </div>
+          
         </div>
 
         {/* Volume Input Table */}
