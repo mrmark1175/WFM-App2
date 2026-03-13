@@ -57,7 +57,21 @@ app.get('/api/forecasts/latest', async (req, res) => {
 });
 
 // --- POST ROUTES ---
-
+// Add this route to handle the Sync button request
+app.post('/api/genesys/sync', async (req, res) => {
+  console.log("Sync request received from frontend");
+  try {
+      // This is a placeholder that returns successful dummy data
+      const dummyVolumeData = [100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650];
+      
+      res.json({ 
+          success: true, 
+          data: dummyVolumeData 
+      });
+  } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+  }
+});
 // Save forecast data
 app.post('/api/forecasts', async (req, res) => {
   const { year_label, forecast_method, monthly_volumes, total_volume, peak_volume } = req.body;

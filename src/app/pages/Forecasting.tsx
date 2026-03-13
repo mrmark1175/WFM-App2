@@ -6,11 +6,13 @@ import {
   LineChart, 
   ChevronDown, 
   Settings2,
-  Table as TableIcon
+  Table as TableIcon,
+  Phone,
+  X,
+  AlertTriangle
 } from "lucide-react";
 import {
   ComposedChart,
-  Line,
   Bar,
   Area,
   XAxis,
@@ -23,14 +25,29 @@ import {
 export function Forecasting() {
   const [volumes, setVolumes] = useState(Array(12).fill(0));
   const [selectedYear, setSelectedYear] = useState("Year 1");
+  const [years, setYears] = useState(["Year 1", "Year 2", "Year 3"]);
   const [method, setMethod] = useState("Holt-Winters (Triple Exponential Smoothing)");
   const [forecastResults, setForecastResults] = useState<number[]>(Array(12).fill(0));
   const [alpha, setAlpha] = useState(0.3);
   const [beta, setBeta] = useState(0.1);
   const [gamma, setGamma] = useState(0.2);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const monthsShort = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+
+  const projectionLabel = (() => {
+    const idx = years.indexOf(selectedYear);
+    return `Year ${idx + 2} Projection`;
+  })();
+
+  const showSeasonalWarning =
+    method.includes("Seasonal Decomposition") &&
+    years.indexOf(selectedYear) < 1;
+
+  useEffect(() => {
+    setForecastResults(Array(12).fill(0));
+  }, [selectedYear]);
 
   useEffect(() => {
     const fetchYearData = async () => {
@@ -86,6 +103,41 @@ export function Forecasting() {
     }
   };
 
+  const handleGenesysSync = async () => {
+    setIsSyncing(true);
+    try {
+      const response = await fetch('http://localhost:5000/api/genesys/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queueId: "63baa170-6599-4d6d-855f-8367f3747f52",
+          interval: "2026-01-01T00:00:00/2026-03-13T00:00:00"
+        })
+      });
+      const result = await response.json();
+      if (result.success) {
+        console.log("Genesys Data:", result.data);
+        alert("✅ Successfully pulled volume data from Genesys Cloud!");
+      } else {
+        alert("❌ Genesys Sync Failed: " + result.message);
+      }
+    } catch (error) {
+      console.error("Sync Error:", error);
+      alert("❌ Could not connect to Genesys Pipeline.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleDeleteYear = (yearToDelete: string) => {
+    if (years.length === 1) return;
+    const newYears = years.filter(y => y !== yearToDelete);
+    setYears(newYears);
+    if (selectedYear === yearToDelete) {
+      setSelectedYear(newYears[newYears.length - 1]);
+    }
+  };
+
   const generateHoltWintersForecast = (
     historicalData: number[],
     α: number = alpha,
@@ -118,33 +170,170 @@ export function Forecasting() {
     );
   };
 
+  const generateSeasonalDecompositionForecast = (
+    historicalData: number[]
+  ): number[] => {
+    const m = 12;
+    const n = historicalData.length;
+    if (n < m) return Array(12).fill(0);
+
+    const trend: (number | null)[] = Array(n).fill(null);
+    const half = Math.floor(m / 2);
+    for (let i = half; i < n - half; i++) {
+      const window = historicalData.slice(i - half, i + half + 1);
+      trend[i] = window.reduce((a, b) => a + b, 0) / window.length;
+    }
+
+    const seasonalBuckets: number[][] = Array.from({ length: m }, () => []);
+    for (let i = 0; i < n; i++) {
+      if (trend[i] !== null && (trend[i] as number) !== 0) {
+        seasonalBuckets[i % m].push(historicalData[i] / (trend[i] as number));
+      }
+    }
+
+    const rawIndices = seasonalBuckets.map(bucket =>
+      bucket.length > 0 ? bucket.reduce((a, b) => a + b, 0) / bucket.length : 1
+    );
+    const indicesSum = rawIndices.reduce((a, b) => a + b, 0);
+    const seasonalIndices = rawIndices.map(s => s * (m / indicesSum));
+
+    const deseasonalized = historicalData.map((v, i) =>
+      v / (seasonalIndices[i % m] || 1)
+    );
+
+    const xMean = (n - 1) / 2;
+    const yMean = deseasonalized.reduce((a, b) => a + b, 0) / n;
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) {
+      num += (i - xMean) * (deseasonalized[i] - yMean);
+      den += (i - xMean) ** 2;
+    }
+    const slope = den !== 0 ? num / den : 0;
+    const intercept = yMean - slope * xMean;
+
+    return Array.from({ length: 12 }, (_, i) => {
+      const x = n + i;
+      const trendValue = intercept + slope * x;
+      return Math.round(trendValue * seasonalIndices[i % m]);
+    });
+  };
+
+  // ✅ NEW: ARIMA(1,1,1)(1,1,0)[12] — Seasonal ARIMA implementation
+  // Steps: (1) seasonal + first difference to remove trend & seasonality
+  //        (2) estimate AR(1) and MA(1) coefficients via OLS/moment matching
+  //        (3) forecast iteratively, then invert both differences to recover levels
+  const generateARIMAForecast = (historicalData: number[]): number[] => {
+    const n = historicalData.length;
+    const s = 12; // seasonal period
+
+    if (n < s + 2) return Array(12).fill(0);
+
+    // Step 1: Seasonal difference (removes seasonality): y't = y_t - y_{t-s}
+    const seasonalDiff: number[] = [];
+    for (let i = s; i < n; i++) {
+      seasonalDiff.push(historicalData[i] - historicalData[i - s]);
+    }
+
+    // Step 2: First difference (removes trend): y''_t = y't - y'_{t-1}
+    const doubleDiff: number[] = [];
+    for (let i = 1; i < seasonalDiff.length; i++) {
+      doubleDiff.push(seasonalDiff[i] - seasonalDiff[i - 1]);
+    }
+
+    if (doubleDiff.length < 3) return Array(12).fill(0);
+
+    // Step 3: Estimate AR(1) coefficient via OLS on doubleDiff
+    const ddMean = doubleDiff.reduce((a, b) => a + b, 0) / doubleDiff.length;
+    let covLag = 0, varLag = 0;
+    for (let i = 1; i < doubleDiff.length; i++) {
+      covLag += (doubleDiff[i - 1] - ddMean) * (doubleDiff[i] - ddMean);
+      varLag += (doubleDiff[i - 1] - ddMean) ** 2;
+    }
+    const arCoeff = varLag !== 0 ? Math.max(-0.95, Math.min(0.95, covLag / varLag)) : 0.3;
+
+    // Step 4: Estimate MA(1) coefficient — method of moments via lag-1 autocorrelation
+    const variance = doubleDiff.reduce((s, v) => s + (v - ddMean) ** 2, 0) / doubleDiff.length;
+    const lag1Cov = doubleDiff.slice(1).reduce((s, v, i) => s + (v - ddMean) * (doubleDiff[i] - ddMean), 0) / doubleDiff.length;
+    const rho1 = variance !== 0 ? lag1Cov / variance : 0;
+    // Moment estimate for MA(1): rho1 = -theta/(1+theta^2), solve numerically
+    let maCoeff = 0;
+    if (Math.abs(rho1) < 0.5) {
+      // Approximate solution via quadratic formula
+      const disc = 1 - 4 * rho1 * rho1;
+      maCoeff = disc >= 0 ? (-1 + Math.sqrt(disc)) / (2 * rho1 || 1) : 0;
+      maCoeff = Math.max(-0.95, Math.min(0.95, maCoeff));
+    }
+
+    // Step 5: Forecast 12 steps ahead in the double-differenced space
+    const ddForecast: number[] = [];
+    let prevValue = doubleDiff[doubleDiff.length - 1];
+    let prevError = 0;
+
+    for (let h = 0; h < 12; h++) {
+      const forecast = arCoeff * prevValue + maCoeff * prevError;
+      ddForecast.push(forecast);
+      // For multi-step ahead, errors become 0 beyond h=1
+      prevError = h === 0 ? 0 : 0;
+      prevValue = forecast;
+    }
+
+    // Step 6: Invert first difference — recover seasonalDiff forecasts
+    const sdForecast: number[] = [];
+    let prevSD = seasonalDiff[seasonalDiff.length - 1];
+    for (let h = 0; h < 12; h++) {
+      const val = prevSD + ddForecast[h];
+      sdForecast.push(val);
+      prevSD = val;
+    }
+
+    // Step 7: Invert seasonal difference — recover level forecasts
+    // y_t = y'_t + y_{t-s}  where y_{t-s} comes from historicalData or already-forecast values
+    const extended = [...historicalData];
+    for (let h = 0; h < 12; h++) {
+      const seasonalBase = extended[extended.length - s];
+      const val = Math.round(sdForecast[h] + seasonalBase);
+      extended.push(val);
+    }
+
+    return extended.slice(n);
+  };
+
   const handleGenerate = async () => {
     let dataToBasis: number[] = [];
     try {
-      if (selectedYear === "Year 2") {
-        const res = await fetch('http://localhost:5000/api/forecasts/Year 1');
-        const data = await res.json();
-        dataToBasis = data?.monthly_volumes || [];
-      } else if (selectedYear === "Year 3") {
-        const [res1, res2] = await Promise.all([
-          fetch('http://localhost:5000/api/forecasts/Year 1'),
-          fetch('http://localhost:5000/api/forecasts/Year 2')
-        ]);
-        const d1 = await res1.json();
-        const d2 = await res2.json();
-        dataToBasis = [...(d1?.monthly_volumes || []), ...(d2?.monthly_volumes || [])];
-      } else {
+      const currentYearIndex = years.indexOf(selectedYear);
+
+      if (currentYearIndex === 0) {
         dataToBasis = [...volumes];
+      } else {
+        const fetches = years.slice(0, currentYearIndex + 1).map(y =>
+          fetch(`http://localhost:5000/api/forecasts/${y}`).then(r => r.json())
+        );
+        const results = await Promise.all(fetches);
+        dataToBasis = results.flatMap(d => d?.monthly_volumes || []);
       }
 
       if (!dataToBasis.length || dataToBasis.every(v => v === 0)) {
-        alert(`Please save ${selectedYear === "Year 3" ? "Year 2" : "Year 1"} data before generating this forecast.`);
+        alert(`Please enter and save ${selectedYear} data before generating a forecast.`);
         return;
       }
 
       let result: number[] = [];
       if (method.includes("Holt-Winters")) {
         result = generateHoltWintersForecast(dataToBasis, alpha, beta, gamma);
+      } else if (method.includes("Seasonal Decomposition")) {
+        if (dataToBasis.length < 24) {
+          alert("⚠️ Seasonal Decomposition requires at least 2 full years (24 months) of data.\n\nPlease select Year 2 or higher and ensure all years are saved.");
+          return;
+        }
+        result = generateSeasonalDecompositionForecast(dataToBasis);
+      } else if (method.includes("ARIMA")) {
+        // ✅ NEW: ARIMA guard + route
+        if (dataToBasis.length < 14) {
+          alert("⚠️ ARIMA requires at least 14 months of data to estimate AR and MA coefficients reliably.");
+          return;
+        }
+        result = generateARIMAForecast(dataToBasis);
       } else {
         alert("This method is under development!");
         return;
@@ -217,8 +406,9 @@ export function Forecasting() {
   ];
 
   return (
-    <PageLayout title="Workforce Planning">
+    <PageLayout title="Long Term Forecast">
       <div className="space-y-6">
+
         {/* Summary Cards */}
         <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="p-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-sm">
@@ -247,28 +437,49 @@ export function Forecasting() {
         {/* Configuration Header */}
         <div className="bg-card border border-border rounded-xl p-6 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-6">
+            {/* Year Selector */}
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground uppercase">Planning Horizon</label>
-              <div className="flex gap-2">
-                {["Year 1", "Year 2", "Year 3"].map((y) => (
-                  <button
-                    key={y}
-                    onClick={() => setSelectedYear(y)}
-                    className={`px-3 py-1.5 rounded-md text-sm transition-all ${
-                      selectedYear === y
-                        ? "bg-primary text-primary-foreground font-semibold"
-                        : "bg-accent hover:bg-accent/80 text-accent-foreground"
-                    }`}
-                  >
-                    {y}
-                  </button>
+              <div className="flex gap-2 flex-wrap">
+                {years.map((y) => (
+                  <div key={y} className="relative group flex items-center">
+                    <button
+                      onClick={() => setSelectedYear(y)}
+                      className={`px-3 py-1.5 rounded-md text-sm transition-all ${
+                        selectedYear === y
+                          ? "bg-primary text-primary-foreground font-semibold"
+                          : "bg-accent hover:bg-accent/80 text-accent-foreground"
+                      } ${years.length > 1 && y !== "Year 1" ? "pr-6" : ""}`}
+                    >
+                      {y}
+                    </button>
+                    {y !== "Year 1" && years.length > 1 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteYear(y);
+                        }}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-primary-foreground hover:text-red-300"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    )}
+                  </div>
                 ))}
-                <button className="p-1.5 rounded-md bg-accent text-accent-foreground border border-dashed border-border hover:border-primary">
+                <button
+                  onClick={() => {
+                    const nextYear = `Year ${years.length + 1}`;
+                    setYears([...years, nextYear]);
+                    setSelectedYear(nextYear);
+                  }}
+                  className="p-1.5 rounded-md bg-accent text-accent-foreground border border-dashed border-border hover:border-primary"
+                >
                   <Plus className="size-4" />
                 </button>
               </div>
             </div>
 
+            {/* Method Selector */}
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground uppercase">Forecasting Method</label>
               <div className="relative">
@@ -286,7 +497,16 @@ export function Forecasting() {
             </div>
           </div>
 
+          {/* Action Buttons */}
           <div className="flex items-center gap-3">
+            <button
+              onClick={handleGenesysSync}
+              disabled={isSyncing}
+              className={`bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <Phone className={`size-4 ${isSyncing ? 'animate-pulse' : ''}`} />
+              {isSyncing ? "Syncing..." : "Sync Genesys"}
+            </button>
             <button
               onClick={handleGenerate}
               className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2"
@@ -307,6 +527,20 @@ export function Forecasting() {
             </button>
           </div>
         </div>
+
+        {/* Seasonal Decomposition warning banner */}
+        {showSeasonalWarning && (
+          <div className="flex items-start gap-3 px-5 py-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl shadow-sm">
+            <AlertTriangle className="size-5 text-amber-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Insufficient Data for Seasonal Decomposition</p>
+              <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                This method requires at least <strong>2 full years (24 months)</strong> of saved actuals to compute reliable seasonal indices.
+                Please switch to <strong>Year 2 or higher</strong> and ensure all prior years are saved to the database before generating.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Volume Input Table */}
         <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
@@ -360,7 +594,7 @@ export function Forecasting() {
               </div>
               <div>
                 <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-none">
-                  {selectedYear} Projection
+                  {projectionLabel}
                 </h3>
                 <p className="text-xs text-muted-foreground mt-1">
                   Calculated via {method.split('(')[0]}
@@ -371,12 +605,11 @@ export function Forecasting() {
               <span className="text-[10px] font-black text-primary uppercase tracking-widest">System Generated</span>
             </div>
           </div>
-
-          <div className="grid grid-cols-12 gap-2">
+          <div className="grid grid-cols-12 gap-3">
             {monthsShort.map((month, idx) => (
-              <div key={month} className="flex flex-col items-center p-2 rounded-lg bg-white dark:bg-slate-800 border border-blue-100 dark:border-blue-900 shadow-sm transition-transform hover:scale-105">
-                <span className="text-[9px] font-bold text-slate-400 mb-1">{month}</span>
-                <span className="text-sm font-mono font-bold text-primary">
+              <div key={month} className="flex flex-col items-center py-5 px-2 rounded-xl bg-white dark:bg-slate-800 border border-blue-100 dark:border-blue-900 shadow-sm transition-transform hover:scale-105 hover:shadow-md hover:border-primary/40">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">{month}</span>
+                <span className="text-2xl font-mono font-extrabold text-primary leading-none">
                   {forecastResults[idx]?.toLocaleString() || 0}
                 </span>
               </div>
@@ -386,7 +619,6 @@ export function Forecasting() {
 
         {/* Chart + Model Parameters */}
         <div className="grid md:grid-cols-3 gap-6">
-          {/* Forecast Chart */}
           <div className="md:col-span-2 bg-card border border-border rounded-xl p-6 shadow-sm">
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-2">
@@ -408,7 +640,6 @@ export function Forecasting() {
                 )}
               </div>
             </div>
-
             {!hasActuals && !hasForecast ? (
               <div className="h-[250px] flex flex-col items-center justify-center text-center">
                 <TrendingUp className="size-10 text-muted-foreground/20 mb-3" />
@@ -426,49 +657,15 @@ export function Forecasting() {
                       <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0.0} />
                     </linearGradient>
                   </defs>
-
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-
-                  <XAxis
-                    dataKey="month"
-                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))", fontWeight: 600 }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)}
-                    width={40}
-                  />
+                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))", fontWeight: 600 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)} width={40} />
                   <Tooltip content={<CustomTooltip />} />
-
-                  {/* Actual bars */}
                   {hasActuals && (
-                    <Bar
-                      dataKey="actual"
-                      name="Actual"
-                      fill="hsl(var(--muted-foreground))"
-                      fillOpacity={0.35}
-                      radius={[3, 3, 0, 0]}
-                      maxBarSize={28}
-                    />
+                    <Bar dataKey="actual" name="Actual" fill="hsl(var(--muted-foreground))" fillOpacity={0.35} radius={[3, 3, 0, 0]} maxBarSize={28} />
                   )}
-
-                  {/* Forecast line + area */}
                   {hasForecast && (
-                    <Area
-                      type="monotone"
-                      dataKey="forecast"
-                      name="Forecast"
-                      stroke="hsl(var(--primary))"
-                      strokeWidth={2.5}
-                      fill="url(#forecastFill)"
-                      dot={{ r: 4, fill: "hsl(var(--primary))", strokeWidth: 2, stroke: "white" }}
-                      activeDot={{ r: 6 }}
-                      connectNulls={false}
-                    />
+                    <Area type="monotone" dataKey="forecast" name="Forecast" stroke="hsl(var(--primary))" strokeWidth={2.5} fill="url(#forecastFill)" dot={{ r: 4, fill: "hsl(var(--primary))", strokeWidth: 2, stroke: "white" }} activeDot={{ r: 6 }} connectNulls={false} />
                   )}
                 </ComposedChart>
               </ResponsiveContainer>
@@ -481,7 +678,6 @@ export function Forecasting() {
               <Settings2 className="size-4 text-primary" />
               <h4 className="font-semibold">Model Parameters</h4>
             </div>
-
             <div className="space-y-5">
               {paramConfig.map(({ label, value, setter, desc, color, bg }) => (
                 <div key={label} className="space-y-1.5">
@@ -492,18 +688,13 @@ export function Forecasting() {
                     </span>
                   </div>
                   <input
-                    type="range"
-                    min={0.01}
-                    max={0.99}
-                    step={0.01}
-                    value={value}
+                    type="range" min={0.01} max={0.99} step={0.01} value={value}
                     onChange={(e) => setter(parseFloat(e.target.value))}
                     className="w-full accent-primary cursor-pointer"
                   />
                   <p className="text-[10px] text-muted-foreground italic leading-tight">{desc}</p>
                 </div>
               ))}
-
               <div className="pt-2 border-t border-border">
                 <p className="text-[10px] text-muted-foreground italic">
                   Note: Holt-Winters requires at least 24 months of data for optimal seasonality detection.
@@ -512,6 +703,7 @@ export function Forecasting() {
             </div>
           </div>
         </div>
+
       </div>
     </PageLayout>
   );
