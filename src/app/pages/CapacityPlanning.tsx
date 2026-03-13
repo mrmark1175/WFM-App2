@@ -38,6 +38,7 @@ interface DayResult extends FTEResult {
 interface ForecastRecord {
   year_label: string;
   monthly_volumes: number[];
+  forecast_results: number[];
   forecast_method?: string;
 }
 
@@ -90,7 +91,6 @@ function buildWeeksFromMonthly(monthlyVolumes: number[], startMonday: Date, work
   for (let w = 0; w < 52; w++) {
     const monday = new Date(startMonday);
     monday.setDate(monday.getDate() + w * 7);
-    
     const lastDay = new Date(monday);
     lastDay.setDate(lastDay.getDate() + workDays - 1);
     let weekVol = 0;
@@ -104,7 +104,7 @@ function buildWeeksFromMonthly(monthlyVolumes: number[], startMonday: Date, work
       weekVol += dailyVol;
     }
     weeks.push({
-      week: `Wk ${w + 1}`, // Changed from getISOWeek to a simple 1-52 index
+      week: `Wk ${getISOWeek(monday)}`,
       label: `${fmt(monday)}–${fmt(lastDay)}`,
       baseVol: Math.round(weekVol),
       startDate: monday,
@@ -234,7 +234,10 @@ export function CapacityPlanning() {
   // ── Forecast data ──
   const [availableYears, setAvailableYears] = useState<string[]>([]);
   const [selectedForecastYear, setSelectedForecastYear] = useState<string>("");
-  const [monthlyVolumes, setMonthlyVolumes] = useState<number[]>(Array(12).fill(0));
+  // projectionVolumes holds forecast_results (the projected next-year numbers)
+  const [projectionVolumes, setProjectionVolumes] = useState<number[]>(Array(12).fill(0));
+  // projectionLabel e.g. "Year 2 Projection" when Year 1 is selected
+  const [projectionLabel, setProjectionLabel] = useState<string>("");
   const [forecastMethod, setForecastMethod] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string>("");
@@ -248,11 +251,7 @@ export function CapacityPlanning() {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isLoadingScenario = useRef<boolean>(false);
 
-  const startMonday = useMemo(() => {
-    // Get Jan 1st of the current year
-    const jan1 = new Date(new Date().getFullYear(), 0, 1);
-    return getMondayOf(jan1);
-  }, []);
+  const startMonday = useMemo(() => getMondayOf(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), []);
 
   // ── Reset day percentages evenly when workDays changes ──
   useEffect(() => {
@@ -268,6 +267,13 @@ export function CapacityPlanning() {
       try { return JSON.parse(raw) as number[]; } catch { return Array(12).fill(0); }
     }
     return Array(12).fill(0);
+  };
+
+  // ── Derive "Year X Projection" label from the selected source year ──
+  const getProjectionLabel = (yearLabel: string, allYears: string[]): string => {
+    const idx = allYears.indexOf(yearLabel);
+    if (idx < 0) return `${yearLabel} Projection`;
+    return `Year ${idx + 2} Projection`;
   };
 
   // ── Build current params snapshot for save ──
@@ -335,9 +341,7 @@ export function CapacityPlanning() {
         } else {
           await createNewScenario("Scenario 1", true);
         }
-      } catch {
-        // DB unavailable — work in memory
-      }
+      } catch { /* DB unavailable — work in memory */ }
     };
     fetchScenarios();
   }, []);
@@ -355,17 +359,23 @@ export function CapacityPlanning() {
           const years = data.map(d => d.year_label);
           setAvailableYears(years);
           const latest = data[data.length - 1];
-          setSelectedForecastYear(prev => prev || latest.year_label);
-          setMonthlyVolumes(parseVolumes(latest.monthly_volumes));
+          const firstYear = years[0];
+          setSelectedForecastYear(prev => prev || firstYear);
+          // Use forecast_results (projection), not monthly_volumes (actuals)
+          const proj = parseVolumes(latest.forecast_results);
+          setProjectionVolumes(proj);
+          setProjectionLabel(getProjectionLabel(latest.year_label, years));
           setForecastMethod(latest.forecast_method || "");
         } else {
           throw new Error("No forecast records found");
         }
       } catch {
         setLoadError("No forecast data found. Go to Forecasting and save a forecast first.");
-        setMonthlyVolumes([58000,54000,62000,67000,71000,65000,69000,72000,68000,74000,80000,76000]);
+        // Sample fallback uses made-up projection numbers
+        setProjectionVolumes([61000,57000,65000,70000,74000,68000,72000,75000,71000,77000,83000,79000]);
         setAvailableYears(["Sample"]);
         setSelectedForecastYear(prev => prev || "Sample");
+        setProjectionLabel("Year 2 Projection");
       } finally {
         setIsLoading(false);
       }
@@ -373,28 +383,34 @@ export function CapacityPlanning() {
     fetchYears();
   }, []);
 
-  // ── Fetch monthly volumes when selected year changes ──
+  // ── Fetch forecast_results when selected year changes ──
   useEffect(() => {
     if (!selectedForecastYear || selectedForecastYear === "Sample") return;
-    const fetchVolumes = async () => {
+    const fetchProjection = async () => {
       setIsLoading(true);
       try {
         const res = await fetch(`${API_BASE}/api/forecasts/${encodeURIComponent(selectedForecastYear)}`);
         if (!res.ok) throw new Error(`Server error ${res.status}`);
         const data: ForecastRecord = await res.json();
-        if (data?.monthly_volumes) {
-          setMonthlyVolumes(parseVolumes(data.monthly_volumes));
+        if (data) {
+          // ── KEY CHANGE: use forecast_results, not monthly_volumes ──
+          const proj = parseVolumes(data.forecast_results);
+          setProjectionVolumes(proj);
+          setProjectionLabel(getProjectionLabel(selectedForecastYear, availableYears));
           setForecastMethod(data.forecast_method || "");
           setLoadError("");
+          if (proj.every(v => v === 0)) {
+            setLoadError(`No forecast projection found for ${selectedForecastYear}. Generate & save a forecast in the Forecasting page first.`);
+          }
         }
       } catch {
-        setLoadError(`Failed to load volumes for ${selectedForecastYear}.`);
+        setLoadError(`Failed to load projection for ${selectedForecastYear}.`);
       } finally {
         setIsLoading(false);
       }
     };
-    fetchVolumes();
-  }, [selectedForecastYear]);
+    fetchProjection();
+  }, [selectedForecastYear, availableYears]);
 
   // ── Create new scenario ──
   const createNewScenario = async (name?: string, isFirst = false) => {
@@ -460,8 +476,8 @@ export function CapacityPlanning() {
   };
 
   const weeks = useMemo<WeekData[]>(
-    () => buildWeeksFromMonthly(monthlyVolumes, startMonday, workDays),
-    [monthlyVolumes, startMonday, workDays]
+    () => buildWeeksFromMonthly(projectionVolumes, startMonday, workDays),
+    [projectionVolumes, startMonday, workDays]
   );
 
   const weeklyResults = useMemo<WeekResult[]>(() =>
@@ -485,7 +501,7 @@ export function CapacityPlanning() {
   }, [selWeek, aht, hoursOp, shrinkage, occupancy, targetSL, asa, workDays, dayPcts]);
 
   const maxFTE = Math.max(...weeklyResults.map(w => w.fte), 1);
-  const maxMonthlyVol = Math.max(...monthlyVolumes, 1);
+  const maxProjectionVol = Math.max(...projectionVolumes, 1);
   const activeScenario = scenarios.find(s => s.id === activeScenarioId);
 
   return (
@@ -535,7 +551,7 @@ export function CapacityPlanning() {
           </button>
           <h1 style={{ fontSize: 26, fontWeight: 700, color: "#111827", margin: 0 }}>Capacity Planning</h1>
           <p style={{ margin: "4px 0 0", fontSize: 14, color: "#6b7280" }}>
-            52-week staffing forecast · Erlang C model · Volumes pulled from Long-Term Forecast
+            52-week staffing forecast · Erlang C model · Volumes from forecast projections
           </p>
         </div>
 
@@ -630,7 +646,7 @@ export function CapacityPlanning() {
           {isLoading ? (
             <span style={{ fontSize: 13, color: "#9ca3af" }}>Loading forecasts…</span>
           ) : (
-            <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               {availableYears.map(y => (
                 <button key={y} onClick={() => setSelectedForecastYear(y)}
                   style={{
@@ -640,6 +656,13 @@ export function CapacityPlanning() {
                     color: selectedForecastYear === y ? "#fff" : "#374151",
                   }}>{y}</button>
               ))}
+              {/* Arrow showing which projection is being used */}
+              {projectionLabel && (
+                <span style={{ fontSize: 12, color: "#6b7280", display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ color: "#d1d5db" }}>→</span>
+                  <span style={{ fontWeight: 600, color: "#f97316" }}>{projectionLabel}</span>
+                </span>
+              )}
             </div>
           )}
 
@@ -663,20 +686,20 @@ export function CapacityPlanning() {
           </Link>
         </div>
 
-        {/* ── Monthly volume mini-chart ── */}
+        {/* ── Projection volume mini-chart ── */}
         <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "14px 20px", marginBottom: 20 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", marginBottom: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>
-            Monthly Volume — {selectedForecastYear}
+            {projectionLabel || "Projected Volume"} — from {selectedForecastYear}
           </div>
           <div style={{ display: "flex", gap: 4, alignItems: "flex-end", height: 64 }}>
-            {monthlyVolumes.map((vol, i) => (
+            {projectionVolumes.map((vol, i) => (
               <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
                 <div style={{ fontSize: 9, color: "#9ca3af", fontWeight: 600 }}>
                   {vol >= 1000 ? `${(vol / 1000).toFixed(0)}k` : vol || "—"}
                 </div>
                 <div style={{
                   width: "100%", minHeight: 4,
-                  height: `${Math.max((vol / maxMonthlyVol) * 44, 4)}px`,
+                  height: `${Math.max((vol / maxProjectionVol) * 44, 4)}px`,
                   background: "#fed7aa", borderRadius: "3px 3px 0 0",
                 }} />
                 <div style={{ fontSize: 9, color: "#9ca3af" }}>{MONTHS[i]}</div>
@@ -723,7 +746,7 @@ export function CapacityPlanning() {
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>52-Week FTE Requirement</div>
                   <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }}>
-                    Click a week to drill down · Full-year view · Derived from {selectedForecastYear} monthly volumes
+                    Click a week to drill down · Based on <span style={{ color: "#f97316", fontWeight: 600 }}>{projectionLabel || "forecast projection"}</span>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
