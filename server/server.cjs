@@ -72,6 +72,86 @@ app.get('/api/forecasts/:year', async (req, res) => {
   }
 });
 
+// --- CAPACITY SCENARIOS ROUTES ---
+
+// Fetch all scenarios
+app.get('/api/capacity-scenarios', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM capacity_scenarios ORDER BY created_at ASC'
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Scenarios Fetch Error:", err.message);
+    res.status(500).json({ error: "Failed to fetch scenarios" });
+  }
+});
+
+// Create a new scenario
+app.post('/api/capacity-scenarios', async (req, res) => {
+  const {
+    scenario_name, forecast_year, aht, hours_op, work_days,
+    day_pcts, shrinkage, occupancy, target_sl, asa, selected_week
+  } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO capacity_scenarios
+        (scenario_name, forecast_year, aht, hours_op, work_days, day_pcts, shrinkage, occupancy, target_sl, asa, selected_week)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       RETURNING *`,
+      [
+        scenario_name, forecast_year, aht, hours_op, work_days,
+        JSON.stringify(day_pcts), shrinkage, occupancy, target_sl, asa, selected_week ?? 0
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error("Scenario Create Error:", err.message);
+    res.status(500).json({ error: "Failed to create scenario" });
+  }
+});
+
+// Update an existing scenario (auto-save & manual save both hit this)
+app.put('/api/capacity-scenarios/:id', async (req, res) => {
+  const { id } = req.params;
+  const {
+    scenario_name, forecast_year, aht, hours_op, work_days,
+    day_pcts, shrinkage, occupancy, target_sl, asa, selected_week
+  } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE capacity_scenarios SET
+        scenario_name=$1, forecast_year=$2, aht=$3, hours_op=$4, work_days=$5,
+        day_pcts=$6, shrinkage=$7, occupancy=$8, target_sl=$9, asa=$10,
+        selected_week=$11, updated_at=NOW()
+       WHERE id=$12
+       RETURNING *`,
+      [
+        scenario_name, forecast_year, aht, hours_op, work_days,
+        JSON.stringify(day_pcts), shrinkage, occupancy, target_sl, asa,
+        selected_week ?? 0, id
+      ]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: "Scenario not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Scenario Update Error:", err.message);
+    res.status(500).json({ error: "Failed to update scenario" });
+  }
+});
+
+// Delete a scenario
+app.delete('/api/capacity-scenarios/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query('DELETE FROM capacity_scenarios WHERE id=$1', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Scenario Delete Error:", err.message);
+    res.status(500).json({ error: "Failed to delete scenario" });
+  }
+});
+
 // --- POST ROUTES ---
 
 // Genesys sync placeholder

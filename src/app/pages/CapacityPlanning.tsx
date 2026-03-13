@@ -1,5 +1,5 @@
 import React from "react";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -41,6 +41,23 @@ interface ForecastRecord {
   forecast_method?: string;
 }
 
+interface Scenario {
+  id: number;
+  scenario_name: string;
+  forecast_year: string;
+  aht: number;
+  hours_op: number;
+  work_days: number;
+  day_pcts: number[];
+  shrinkage: number;
+  occupancy: number;
+  target_sl: number;
+  asa: number;
+  selected_week: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const API_BASE = "http://localhost:5000";
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -60,33 +77,33 @@ function fmt(d: Date): string {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
 }
 
-/**
- * Converts 12 monthly volumes into 8 weekly volumes.
- * Uses workDays to determine how many days per week are operational,
- * and proportionally allocates monthly volume across those days.
- */
+function getISOWeek(date: Date): number {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+  const jan4 = new Date(d.getFullYear(), 0, 4);
+  return 1 + Math.round(((d.getTime() - jan4.getTime()) / 86400000 - 3 + ((jan4.getDay() + 6) % 7)) / 7);
+}
+
 function buildWeeksFromMonthly(monthlyVolumes: number[], startMonday: Date, workDays: number): WeekData[] {
   const weeks: WeekData[] = [];
-  for (let w = 0; w < 8; w++) {
+  for (let w = 0; w < 52; w++) {
     const monday = new Date(startMonday);
     monday.setDate(monday.getDate() + w * 7);
     const lastDay = new Date(monday);
     lastDay.setDate(lastDay.getDate() + workDays - 1);
-
     let weekVol = 0;
     for (let d = 0; d < workDays; d++) {
       const day = new Date(monday);
       day.setDate(day.getDate() + d);
       const monthIdx = day.getMonth();
       const daysInMonth = new Date(day.getFullYear(), monthIdx + 1, 0).getDate();
-      // Workdays in this month proportional to user's workDays setting
       const workdaysInMonth = Math.round(daysInMonth * workDays / 7);
       const dailyVol = (monthlyVolumes[monthIdx] || 0) / workdaysInMonth;
       weekVol += dailyVol;
     }
-
     weeks.push({
-      week: `Wk ${w + 1}`,
+      week: `Wk ${getISOWeek(monday)}`,
       label: `${fmt(monday)}–${fmt(lastDay)}`,
       baseVol: Math.round(weekVol),
       startDate: monday,
@@ -121,8 +138,6 @@ function minAgentsForSL(A: number, ahtSec: number, asaSec: number, targetSL: num
 }
 
 function computeFTE({ callVolume, ahtSec, hoursOp, shrinkage, occupancy, targetSL, asaSec }: FTEParams): FTEResult {
-  // hoursOp is now WEEKLY operating hours
-  // arrival rate = weekly calls / total weekly seconds of operation
   const arrivalRate = callVolume / (hoursOp * 3600);
   const A = arrivalRate * ahtSec;
   const rawAgents = minAgentsForSL(A, ahtSec, asaSec, targetSL / 100);
@@ -204,18 +219,18 @@ function SliderInput({ label, value, min, max, step = 1, unit, onChange }: {
 export function CapacityPlanning() {
   const navigate = useNavigate();
 
-  // Planning parameters
+  // ── Planning parameters ──
   const [aht, setAht] = useState<number>(320);
-  const [hoursOp, setHoursOp] = useState<number>(50); // weekly hours (e.g. 10h/day × 5 days)
-  const [workDays, setWorkDays] = useState<number>(5); // working days per week
-  const [dayPcts, setDayPcts] = useState<number[]>([20, 20, 20, 20, 20]); // % of weekly volume per day
+  const [hoursOp, setHoursOp] = useState<number>(50);
+  const [workDays, setWorkDays] = useState<number>(5);
+  const [dayPcts, setDayPcts] = useState<number[]>([20, 20, 20, 20, 20]);
   const [shrinkage, setShrinkage] = useState<number>(30);
   const [occupancy, setOccupancy] = useState<number>(85);
   const [targetSL, setTargetSL] = useState<number>(80);
   const [asa, setAsa] = useState<number>(20);
   const [selectedWeek, setSelectedWeek] = useState<number>(0);
 
-  // Forecast data
+  // ── Forecast data ──
   const [availableYears, setAvailableYears] = useState<string[]>([]);
   const [selectedForecastYear, setSelectedForecastYear] = useState<string>("");
   const [monthlyVolumes, setMonthlyVolumes] = useState<number[]>(Array(12).fill(0));
@@ -223,17 +238,25 @@ export function CapacityPlanning() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string>("");
 
-  // Start from next Monday
+  // ── Scenario state ──
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [activeScenarioId, setActiveScenarioId] = useState<number | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved" | "">("");
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState<string>("");
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isLoadingScenario = useRef<boolean>(false);
+
   const startMonday = useMemo(() => getMondayOf(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), []);
 
   // ── Reset day percentages evenly when workDays changes ──
   useEffect(() => {
+    if (isLoadingScenario.current) return;
     const even = Math.floor(100 / workDays);
     const remainder = 100 - even * workDays;
     setDayPcts(Array.from({ length: workDays }, (_, i) => even + (i === 0 ? remainder : 0)));
   }, [workDays]);
 
-  // ── Parse monthly_volumes whether it's a string or array (pg JSON column) ──
   const parseVolumes = (raw: unknown): number[] => {
     if (Array.isArray(raw)) return raw as number[];
     if (typeof raw === "string") {
@@ -241,6 +264,78 @@ export function CapacityPlanning() {
     }
     return Array(12).fill(0);
   };
+
+  // ── Build current params snapshot for save ──
+  const buildPayload = useCallback((overrideName?: string) => ({
+    scenario_name: overrideName ?? (scenarios.find(s => s.id === activeScenarioId)?.scenario_name ?? "Scenario 1"),
+    forecast_year: selectedForecastYear,
+    aht, hours_op: hoursOp, work_days: workDays,
+    day_pcts: dayPcts, shrinkage, occupancy, target_sl: targetSL,
+    asa, selected_week: selectedWeek,
+  }), [scenarios, activeScenarioId, selectedForecastYear, aht, hoursOp, workDays, dayPcts, shrinkage, occupancy, targetSL, asa, selectedWeek]);
+
+  // ── Save active scenario to DB ──
+  const saveScenario = useCallback(async (id: number | null = activeScenarioId) => {
+    if (!id) return;
+    setSaveStatus("saving");
+    try {
+      await fetch(`${API_BASE}/api/capacity-scenarios/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload()),
+      });
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus(""), 2500);
+    } catch {
+      setSaveStatus("unsaved");
+    }
+  }, [activeScenarioId, buildPayload]);
+
+  // ── Auto-save: debounce 1.5s after any param change ──
+  const triggerAutoSave = useCallback(() => {
+    if (isLoadingScenario.current || !activeScenarioId) return;
+    setSaveStatus("unsaved");
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = setTimeout(() => saveScenario(activeScenarioId), 1500);
+  }, [activeScenarioId, saveScenario]);
+
+  useEffect(() => { triggerAutoSave(); }, [aht, hoursOp, workDays, shrinkage, occupancy, targetSL, asa, selectedWeek, selectedForecastYear, dayPcts]);
+
+  // ── Load a scenario into local state ──
+  const loadScenario = useCallback((s: Scenario) => {
+    isLoadingScenario.current = true;
+    setActiveScenarioId(s.id);
+    setAht(s.aht);
+    setHoursOp(s.hours_op);
+    setWorkDays(s.work_days);
+    setDayPcts(Array.isArray(s.day_pcts) ? s.day_pcts : JSON.parse(s.day_pcts as unknown as string));
+    setShrinkage(s.shrinkage);
+    setOccupancy(s.occupancy);
+    setTargetSL(s.target_sl);
+    setAsa(s.asa);
+    setSelectedWeek(s.selected_week ?? 0);
+    if (s.forecast_year) setSelectedForecastYear(s.forecast_year);
+    setTimeout(() => { isLoadingScenario.current = false; }, 200);
+  }, []);
+
+  // ── Fetch all scenarios on mount ──
+  useEffect(() => {
+    const fetchScenarios = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/capacity-scenarios`);
+        const data: Scenario[] = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          setScenarios(data);
+          loadScenario(data[0]);
+        } else {
+          await createNewScenario("Scenario 1", true);
+        }
+      } catch {
+        // DB unavailable — work in memory
+      }
+    };
+    fetchScenarios();
+  }, []);
 
   // ── Fetch all available forecast years on mount ──
   useEffect(() => {
@@ -254,9 +349,8 @@ export function CapacityPlanning() {
         if (Array.isArray(data) && data.length > 0) {
           const years = data.map(d => d.year_label);
           setAvailableYears(years);
-          // Also load the latest year's volumes immediately from this response
           const latest = data[data.length - 1];
-          setSelectedForecastYear(latest.year_label);
+          setSelectedForecastYear(prev => prev || latest.year_label);
           setMonthlyVolumes(parseVolumes(latest.monthly_volumes));
           setForecastMethod(latest.forecast_method || "");
         } else {
@@ -266,7 +360,7 @@ export function CapacityPlanning() {
         setLoadError("No forecast data found. Go to Forecasting and save a forecast first.");
         setMonthlyVolumes([58000,54000,62000,67000,71000,65000,69000,72000,68000,74000,80000,76000]);
         setAvailableYears(["Sample"]);
-        setSelectedForecastYear("Sample");
+        setSelectedForecastYear(prev => prev || "Sample");
       } finally {
         setIsLoading(false);
       }
@@ -297,7 +391,69 @@ export function CapacityPlanning() {
     fetchVolumes();
   }, [selectedForecastYear]);
 
-  // ── Derive weeks from monthly volumes ──
+  // ── Create new scenario ──
+  const createNewScenario = async (name?: string, isFirst = false) => {
+    const nextNum = scenarios.length + 1;
+    const newName = name ?? `Scenario ${nextNum}`;
+    try {
+      const res = await fetch(`${API_BASE}/api/capacity-scenarios`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenario_name: newName,
+          forecast_year: selectedForecastYear,
+          aht: isFirst ? 320 : aht,
+          hours_op: isFirst ? 50 : hoursOp,
+          work_days: isFirst ? 5 : workDays,
+          day_pcts: isFirst ? [20,20,20,20,20] : dayPcts,
+          shrinkage: isFirst ? 30 : shrinkage,
+          occupancy: isFirst ? 85 : occupancy,
+          target_sl: isFirst ? 80 : targetSL,
+          asa: isFirst ? 20 : asa,
+          selected_week: 0,
+        }),
+      });
+      const created: Scenario = await res.json();
+      setScenarios(prev => [...prev, created]);
+      loadScenario(created);
+    } catch {
+      const fake: Scenario = {
+        id: Date.now(), scenario_name: newName,
+        forecast_year: selectedForecastYear, aht, hours_op: hoursOp,
+        work_days: workDays, day_pcts: dayPcts, shrinkage, occupancy,
+        target_sl: targetSL, asa, selected_week: 0,
+      };
+      setScenarios(prev => [...prev, fake]);
+      setActiveScenarioId(fake.id);
+    }
+  };
+
+  // ── Delete scenario ──
+  const deleteScenario = async (id: number) => {
+    if (scenarios.length <= 1) return;
+    try {
+      await fetch(`${API_BASE}/api/capacity-scenarios/${id}`, { method: "DELETE" });
+    } catch { /* ignore */ }
+    const remaining = scenarios.filter(s => s.id !== id);
+    setScenarios(remaining);
+    if (activeScenarioId === id) loadScenario(remaining[remaining.length - 1]);
+  };
+
+  // ── Rename scenario ──
+  const commitRename = async (id: number) => {
+    const trimmed = renameValue.trim();
+    if (!trimmed) { setRenamingId(null); return; }
+    setScenarios(prev => prev.map(s => s.id === id ? { ...s, scenario_name: trimmed } : s));
+    try {
+      await fetch(`${API_BASE}/api/capacity-scenarios/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload(trimmed)),
+      });
+    } catch { /* ignore */ }
+    setRenamingId(null);
+  };
+
   const weeks = useMemo<WeekData[]>(
     () => buildWeeksFromMonthly(monthlyVolumes, startMonday, workDays),
     [monthlyVolumes, startMonday, workDays]
@@ -311,14 +467,13 @@ export function CapacityPlanning() {
 
   const sel = weeklyResults[selectedWeek];
   const selWeek = weeks[selectedWeek];
-
   const ALL_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   const dailyBreakdown = useMemo<DayResult[]>(() => {
     const activeDays = ALL_DAY_NAMES.slice(0, workDays);
     const totalPct = dayPcts.slice(0, workDays).reduce((a, b) => a + b, 0) || 100;
     return activeDays.map((day, i) => {
-      const pct = (dayPcts[i] ?? 0) / totalPct; // normalise so it always sums to 1
+      const pct = (dayPcts[i] ?? 0) / totalPct;
       const vol = Math.round((selWeek?.baseVol || 0) * pct);
       return { day, vol, ...computeFTE({ callVolume: vol, ahtSec: aht, hoursOp, shrinkage, occupancy, targetSL, asaSec: asa }) };
     });
@@ -326,6 +481,7 @@ export function CapacityPlanning() {
 
   const maxFTE = Math.max(...weeklyResults.map(w => w.fte), 1);
   const maxMonthlyVol = Math.max(...monthlyVolumes, 1);
+  const activeScenario = scenarios.find(s => s.id === activeScenarioId);
 
   return (
     <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
@@ -374,8 +530,92 @@ export function CapacityPlanning() {
           </button>
           <h1 style={{ fontSize: 26, fontWeight: 700, color: "#111827", margin: 0 }}>Capacity Planning</h1>
           <p style={{ margin: "4px 0 0", fontSize: 14, color: "#6b7280" }}>
-            8-week staffing forecast · Erlang C model · Volumes pulled from Long-Term Forecast
+            52-week staffing forecast · Erlang C model · Volumes pulled from Long-Term Forecast
           </p>
+        </div>
+
+        {/* ── Scenario Bar ── */}
+        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "12px 20px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginRight: 4 }}>📋 Scenarios:</span>
+
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1 }}>
+            {scenarios.map(s => (
+              <div key={s.id} style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                {renamingId === s.id ? (
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onBlur={() => commitRename(s.id)}
+                    onKeyDown={e => { if (e.key === "Enter") commitRename(s.id); if (e.key === "Escape") setRenamingId(null); }}
+                    style={{
+                      padding: "4px 10px", borderRadius: 6, fontSize: 13, fontWeight: 600,
+                      border: "2px solid #f97316", outline: "none", width: 130,
+                      background: "#fff7ed", color: "#111827",
+                    }}
+                  />
+                ) : (
+                  <button
+                    onClick={() => loadScenario(s)}
+                    onDoubleClick={() => { setRenamingId(s.id); setRenameValue(s.scenario_name); }}
+                    title="Click to switch · Double-click to rename"
+                    style={{
+                      padding: "4px 12px",
+                      paddingRight: scenarios.length > 1 ? 28 : 12,
+                      borderRadius: 6, fontSize: 13, fontWeight: 600,
+                      cursor: "pointer", border: "none", transition: "all .15s",
+                      background: activeScenarioId === s.id ? "#f97316" : "#f3f4f6",
+                      color: activeScenarioId === s.id ? "#fff" : "#374151",
+                      position: "relative",
+                    }}>
+                    {s.scenario_name}
+                    {scenarios.length > 1 && (
+                      <span
+                        onClick={e => { e.stopPropagation(); deleteScenario(s.id); }}
+                        title="Delete scenario"
+                        style={{
+                          position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)",
+                          fontSize: 10, lineHeight: 1,
+                          color: activeScenarioId === s.id ? "rgba(255,255,255,0.75)" : "#9ca3af",
+                          fontWeight: 700, cursor: "pointer",
+                        }}>✕</span>
+                    )}
+                  </button>
+                )}
+              </div>
+            ))}
+
+            <button
+              onClick={() => createNewScenario()}
+              title="Add new scenario"
+              style={{
+                padding: "4px 12px", borderRadius: 6, fontSize: 13, fontWeight: 700,
+                cursor: "pointer", border: "1px dashed #d1d5db", background: "#fff",
+                color: "#9ca3af", transition: "all .15s",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = "#f97316"; e.currentTarget.style.color = "#f97316"; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = "#d1d5db"; e.currentTarget.style.color = "#9ca3af"; }}>
+              + New
+            </button>
+          </div>
+
+          {/* Save status + manual save */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+            {saveStatus === "saving" && <span style={{ fontSize: 12, color: "#9ca3af" }}>💾 Saving…</span>}
+            {saveStatus === "saved" && <span style={{ fontSize: 12, color: "#16a34a", fontWeight: 600 }}>✓ Saved</span>}
+            {saveStatus === "unsaved" && <span style={{ fontSize: 12, color: "#a16207" }}>● Unsaved changes</span>}
+            <button
+              onClick={() => saveScenario()}
+              style={{
+                padding: "5px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600,
+                cursor: "pointer", border: "1px solid #f97316",
+                background: "#fff7ed", color: "#f97316", transition: "all .15s",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = "#f97316"; e.currentTarget.style.color = "#fff"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "#fff7ed"; e.currentTarget.style.color = "#f97316"; }}>
+              💾 Save Now
+            </button>
+          </div>
         </div>
 
         {/* ── Forecast source bar ── */}
@@ -445,8 +685,11 @@ export function CapacityPlanning() {
           {/* ── LEFT: Parameters ── */}
           <div style={{ width: 280, flexShrink: 0 }}>
             <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "20px 20px 10px" }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", marginBottom: 18, paddingBottom: 10, borderBottom: "1px solid #f3f4f6" }}>
-                ⚙️ Planning Parameters
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", marginBottom: 18, paddingBottom: 10, borderBottom: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>⚙️ Planning Parameters</span>
+                {activeScenario && (
+                  <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 400 }}>{activeScenario.scenario_name}</span>
+                )}
               </div>
               <SliderInput label="AHT (Avg Handle Time)" value={aht} min={60} max={900} step={10} unit="s" onChange={setAht} />
               <SliderInput label="Operating Hours per Week" value={hoursOp} min={10} max={168} step={1} unit="h" onChange={setHoursOp} />
@@ -469,13 +712,13 @@ export function CapacityPlanning() {
           {/* ── RIGHT ── */}
           <div style={{ flex: 1, minWidth: 0 }}>
 
-            {/* 8-week bar chart */}
+            {/* 52-week bar chart */}
             <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "20px 24px", marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>8-Week FTE Requirement</div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>52-Week FTE Requirement</div>
                   <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }}>
-                    Click a week to drill down · Derived from {selectedForecastYear} monthly volumes
+                    Click a week to drill down · Full-year view · Derived from {selectedForecastYear} monthly volumes
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -485,29 +728,35 @@ export function CapacityPlanning() {
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 8, alignItems: "flex-end", height: 140 }}>
-                {weeklyResults.map((w, i) => {
-                  const pct = (w.fte / (maxFTE * 1.2)) * 100;
-                  const isSel = i === selectedWeek;
-                  return (
-                    <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer" }}
-                      onClick={() => setSelectedWeek(i)}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: isSel ? "#f97316" : "#6b7280", marginBottom: 4 }}>
-                        {Math.round(w.fte)}
+              {/* Scrollable bar chart */}
+              <div style={{ overflowX: "auto", paddingBottom: 8 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "flex-end", height: 140, minWidth: 52 * 52 }}>
+                  {weeklyResults.map((w, i) => {
+                    const pct = (w.fte / (maxFTE * 1.2)) * 100;
+                    const isSel = i === selectedWeek;
+                    return (
+                      <div key={i}
+                        style={{ width: 44, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer" }}
+                        onClick={() => setSelectedWeek(i)}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: isSel ? "#f97316" : "#6b7280", marginBottom: 4 }}>
+                          {Math.round(w.fte)}
+                        </div>
+                        <div style={{
+                          width: "100%", height: `${pct}%`, minHeight: 8,
+                          background: isSel ? "#f97316" : "#fed7aa",
+                          borderRadius: "4px 4px 0 0", transition: "all .2s",
+                          border: isSel ? "2px solid #ea580c" : "2px solid transparent",
+                        }} />
+                        <div style={{ marginTop: 6, textAlign: "center" }}>
+                          <div style={{ fontSize: 10, fontWeight: isSel ? 700 : 500, color: isSel ? "#f97316" : "#374151", whiteSpace: "nowrap" }}>
+                            {w.week}
+                          </div>
+                          <div style={{ fontSize: 9, color: "#9ca3af", whiteSpace: "nowrap" }}>{w.label}</div>
+                        </div>
                       </div>
-                      <div style={{
-                        width: "100%", height: `${pct}%`, minHeight: 8,
-                        background: isSel ? "#f97316" : "#fed7aa",
-                        borderRadius: "4px 4px 0 0", transition: "all .2s",
-                        border: isSel ? "2px solid #ea580c" : "2px solid transparent",
-                      }} />
-                      <div style={{ marginTop: 6, textAlign: "center" }}>
-                        <div style={{ fontSize: 11, fontWeight: isSel ? 700 : 500, color: isSel ? "#f97316" : "#374151" }}>{w.week}</div>
-                        <div style={{ fontSize: 10, color: "#9ca3af" }}>{w.label}</div>
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
 
               {sel && (
@@ -534,7 +783,6 @@ export function CapacityPlanning() {
                     </div>
                   </div>
 
-                  {/* Sum indicator */}
                   {(() => {
                     const sum = dayPcts.slice(0, workDays).reduce((a, b) => a + b, 0);
                     const off = Math.abs(sum - 100) > 0.5;
@@ -550,7 +798,6 @@ export function CapacityPlanning() {
                         </span>
                         {off && (
                           <button onClick={() => {
-                            // Auto-normalise to 100
                             const even = Math.floor(100 / workDays);
                             const rem = 100 - even * workDays;
                             setDayPcts(Array.from({ length: workDays }, (_, i) => even + (i === 0 ? rem : 0)));
@@ -565,7 +812,6 @@ export function CapacityPlanning() {
                   })()}
                 </div>
 
-                {/* Visual day % bar */}
                 <div style={{ display: "flex", gap: 3, height: 10, borderRadius: 6, overflow: "hidden", marginBottom: 16, marginTop: 12 }}>
                   {ALL_DAY_NAMES.slice(0, workDays).map((day, i) => {
                     const total = dayPcts.slice(0, workDays).reduce((a, b) => a + b, 0) || 100;
@@ -587,21 +833,14 @@ export function CapacityPlanning() {
                     {dailyBreakdown.map((d, i) => (
                       <tr key={i} style={{ borderBottom: "1px solid #f9fafb" }}>
                         <td style={{ padding: "8px 10px 8px 0", fontWeight: 600, fontSize: 13, color: "#111827" }}>{d.day}</td>
-
-                        {/* Editable % input */}
                         <td style={{ padding: "8px 10px 8px 0" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                             <input
-                              type="number"
-                              min={0} max={100} step={0.1}
+                              type="number" min={0} max={100} step={0.1}
                               value={dayPcts[i] ?? 0}
                               onChange={e => {
                                 const val = Math.max(0, Math.min(100, parseFloat(e.target.value) || 0));
-                                setDayPcts(prev => {
-                                  const next = [...prev];
-                                  next[i] = val;
-                                  return next;
-                                });
+                                setDayPcts(prev => { const next = [...prev]; next[i] = val; return next; });
                               }}
                               style={{
                                 width: 56, padding: "3px 6px", fontSize: 13, fontWeight: 600,
@@ -613,7 +852,6 @@ export function CapacityPlanning() {
                             <span style={{ fontSize: 12, color: "#9ca3af" }}>%</span>
                           </div>
                         </td>
-
                         <td style={{ padding: "8px 10px 8px 0", fontSize: 13, color: "#374151" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <div style={{ height: 6, width: Math.max(Math.round((d.vol / (selWeek.baseVol || 1)) * 60), 4), background: "#fed7aa", borderRadius: 99 }} />
