@@ -25,13 +25,15 @@ import {
 export function Forecasting() {
   const [volumes, setVolumes] = useState(Array(12).fill(0));
   const [selectedYear, setSelectedYear] = useState("Year 1");
-  const [years, setYears] = useState(["Year 1", "Year 2", "Year 3"]);
+  const [years, setYears] = useState<string[]>([]);             // loaded from DB
   const [method, setMethod] = useState("Holt-Winters (Triple Exponential Smoothing)");
   const [forecastResults, setForecastResults] = useState<number[]>(Array(12).fill(0));
   const [alpha, setAlpha] = useState(0.3);
   const [beta, setBeta] = useState(0.1);
   const [gamma, setGamma] = useState(0.2);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const monthsShort = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -45,24 +47,68 @@ export function Forecasting() {
     method.includes("Seasonal Decomposition") &&
     years.indexOf(selectedYear) < 1;
 
+  // ── Load all saved years from DB on mount ──────────────────────────────────
   useEffect(() => {
-    setForecastResults(Array(12).fill(0));
-  }, [selectedYear]);
+    const fetchAllYears = async () => {
+      try {
+        const res = await fetch("http://localhost:5000/api/forecasts");
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          const savedYears = data.map((d: any) => d.year_label);
+          setYears(savedYears);
+          setSelectedYear(savedYears[0]);
+        } else {
+          // No saved years yet — seed with Year 1 as a local-only starting point
+          setYears(["Year 1"]);
+          setSelectedYear("Year 1");
+        }
+      } catch {
+        setYears(["Year 1"]);
+        setSelectedYear("Year 1");
+      }
+    };
+    fetchAllYears();
+  }, []);
 
+  // ── Load this year's data whenever selectedYear changes ───────────────────
   useEffect(() => {
+    if (!selectedYear) return;
     const fetchYearData = async () => {
       try {
         const response = await fetch(`http://localhost:5000/api/forecasts/${selectedYear}`);
         const data = await response.json();
         if (data && data.monthly_volumes) {
-          setVolumes(data.monthly_volumes);
-          setMethod(data.forecast_method);
+          // Parse monthly_volumes (may come as string or array)
+          const vols = Array.isArray(data.monthly_volumes)
+            ? data.monthly_volumes
+            : JSON.parse(data.monthly_volumes);
+          setVolumes(vols);
+          setMethod(data.forecast_method || "Holt-Winters (Triple Exponential Smoothing)");
+
+          // Restore forecast projection
+          const fr = data.forecast_results
+            ? (Array.isArray(data.forecast_results)
+                ? data.forecast_results
+                : JSON.parse(data.forecast_results))
+            : Array(12).fill(0);
+          setForecastResults(fr);
+
+          // Restore model parameters
+          setAlpha(data.alpha  ?? 0.3);
+          setBeta(data.beta    ?? 0.1);
+          setGamma(data.gamma  ?? 0.2);
         } else {
+          // Year exists in list but hasn't been saved to DB yet
           setVolumes(Array(12).fill(0));
+          setForecastResults(Array(12).fill(0));
+          setAlpha(0.3);
+          setBeta(0.1);
+          setGamma(0.2);
         }
       } catch (error) {
         console.error("❌ Error fetching from server:", error);
         setVolumes(Array(12).fill(0));
+        setForecastResults(Array(12).fill(0));
       }
     };
     fetchYearData();
@@ -78,41 +124,51 @@ export function Forecasting() {
   const totalVolume = volumes.reduce((sum, val) => sum + val, 0);
   const peakVolume = Math.max(...volumes);
 
+  // ── Save to DB — now includes forecast_results + model params ─────────────
   const handleSaveToDatabase = async () => {
+    setIsSaving(true);
+    setSaveMsg(null);
     const payload = {
       year_label: selectedYear,
       forecast_method: method,
       monthly_volumes: volumes,
       total_volume: totalVolume,
-      peak_volume: peakVolume
+      peak_volume: peakVolume,
+      forecast_results: forecastResults,
+      alpha,
+      beta,
+      gamma,
     };
     try {
-      const response = await fetch('http://localhost:5000/api/forecasts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+      const response = await fetch("http://localhost:5000/api/forecasts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
       if (response.ok) {
-        alert("✅ Forecast saved to pgAdmin successfully!");
+        setSaveMsg({ ok: true, text: `✓ ${selectedYear} saved successfully` });
       } else {
-        alert("❌ Server responded with an error.");
+        setSaveMsg({ ok: false, text: "❌ Server responded with an error." });
       }
     } catch (error) {
       console.error("Save Error:", error);
-      alert("❌ Could not connect to server. Is server.cjs running?");
+      setSaveMsg({ ok: false, text: "❌ Could not connect to server. Is server.cjs running?" });
+    } finally {
+      setIsSaving(false);
+      setTimeout(() => setSaveMsg(null), 3000);
     }
   };
 
   const handleGenesysSync = async () => {
     setIsSyncing(true);
     try {
-      const response = await fetch('http://localhost:5000/api/genesys/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("http://localhost:5000/api/genesys/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           queueId: "63baa170-6599-4d6d-855f-8367f3747f52",
           interval: "2026-01-01T00:00:00/2026-03-13T00:00:00"
-        })
+        }),
       });
       const result = await response.json();
       if (result.success) {
@@ -129,13 +185,27 @@ export function Forecasting() {
     }
   };
 
-  const handleDeleteYear = (yearToDelete: string) => {
+  // ── Delete year — removes from DB and local state ─────────────────────────
+  const handleDeleteYear = async (yearToDelete: string) => {
     if (years.length === 1) return;
+    // Remove from DB (ignore if it was never saved)
+    try {
+      await fetch(`http://localhost:5000/api/forecasts/${encodeURIComponent(yearToDelete)}`, {
+        method: "DELETE",
+      });
+    } catch { /* ignore network errors */ }
     const newYears = years.filter(y => y !== yearToDelete);
     setYears(newYears);
     if (selectedYear === yearToDelete) {
       setSelectedYear(newYears[newYears.length - 1]);
     }
+  };
+
+  // ── Add year — adds to local list only; persisted when user saves ─────────
+  const handleAddYear = () => {
+    const nextYear = `Year ${years.length + 1}`;
+    setYears(prev => [...prev, nextYear]);
+    setSelectedYear(nextYear);
   };
 
   const generateHoltWintersForecast = (
@@ -218,23 +288,18 @@ export function Forecasting() {
     });
   };
 
-  // ✅ NEW: ARIMA(1,1,1)(1,1,0)[12] — Seasonal ARIMA implementation
-  // Steps: (1) seasonal + first difference to remove trend & seasonality
-  //        (2) estimate AR(1) and MA(1) coefficients via OLS/moment matching
-  //        (3) forecast iteratively, then invert both differences to recover levels
+  // ✅ ARIMA(1,1,1)(1,1,0)[12] — Seasonal ARIMA implementation
   const generateARIMAForecast = (historicalData: number[]): number[] => {
     const n = historicalData.length;
-    const s = 12; // seasonal period
+    const s = 12;
 
     if (n < s + 2) return Array(12).fill(0);
 
-    // Step 1: Seasonal difference (removes seasonality): y't = y_t - y_{t-s}
     const seasonalDiff: number[] = [];
     for (let i = s; i < n; i++) {
       seasonalDiff.push(historicalData[i] - historicalData[i - s]);
     }
 
-    // Step 2: First difference (removes trend): y''_t = y't - y'_{t-1}
     const doubleDiff: number[] = [];
     for (let i = 1; i < seasonalDiff.length; i++) {
       doubleDiff.push(seasonalDiff[i] - seasonalDiff[i - 1]);
@@ -242,7 +307,6 @@ export function Forecasting() {
 
     if (doubleDiff.length < 3) return Array(12).fill(0);
 
-    // Step 3: Estimate AR(1) coefficient via OLS on doubleDiff
     const ddMean = doubleDiff.reduce((a, b) => a + b, 0) / doubleDiff.length;
     let covLag = 0, varLag = 0;
     for (let i = 1; i < doubleDiff.length; i++) {
@@ -251,20 +315,16 @@ export function Forecasting() {
     }
     const arCoeff = varLag !== 0 ? Math.max(-0.95, Math.min(0.95, covLag / varLag)) : 0.3;
 
-    // Step 4: Estimate MA(1) coefficient — method of moments via lag-1 autocorrelation
     const variance = doubleDiff.reduce((s, v) => s + (v - ddMean) ** 2, 0) / doubleDiff.length;
     const lag1Cov = doubleDiff.slice(1).reduce((s, v, i) => s + (v - ddMean) * (doubleDiff[i] - ddMean), 0) / doubleDiff.length;
     const rho1 = variance !== 0 ? lag1Cov / variance : 0;
-    // Moment estimate for MA(1): rho1 = -theta/(1+theta^2), solve numerically
     let maCoeff = 0;
     if (Math.abs(rho1) < 0.5) {
-      // Approximate solution via quadratic formula
       const disc = 1 - 4 * rho1 * rho1;
       maCoeff = disc >= 0 ? (-1 + Math.sqrt(disc)) / (2 * rho1 || 1) : 0;
       maCoeff = Math.max(-0.95, Math.min(0.95, maCoeff));
     }
 
-    // Step 5: Forecast 12 steps ahead in the double-differenced space
     const ddForecast: number[] = [];
     let prevValue = doubleDiff[doubleDiff.length - 1];
     let prevError = 0;
@@ -272,12 +332,10 @@ export function Forecasting() {
     for (let h = 0; h < 12; h++) {
       const forecast = arCoeff * prevValue + maCoeff * prevError;
       ddForecast.push(forecast);
-      // For multi-step ahead, errors become 0 beyond h=1
-      prevError = h === 0 ? 0 : 0;
+      prevError = 0;
       prevValue = forecast;
     }
 
-    // Step 6: Invert first difference — recover seasonalDiff forecasts
     const sdForecast: number[] = [];
     let prevSD = seasonalDiff[seasonalDiff.length - 1];
     for (let h = 0; h < 12; h++) {
@@ -286,8 +344,6 @@ export function Forecasting() {
       prevSD = val;
     }
 
-    // Step 7: Invert seasonal difference — recover level forecasts
-    // y_t = y'_t + y_{t-s}  where y_{t-s} comes from historicalData or already-forecast values
     const extended = [...historicalData];
     for (let h = 0; h < 12; h++) {
       const seasonalBase = extended[extended.length - s];
@@ -310,7 +366,10 @@ export function Forecasting() {
           fetch(`http://localhost:5000/api/forecasts/${y}`).then(r => r.json())
         );
         const results = await Promise.all(fetches);
-        dataToBasis = results.flatMap(d => d?.monthly_volumes || []);
+        dataToBasis = results.flatMap((d: any) => {
+          if (!d?.monthly_volumes) return [];
+          return Array.isArray(d.monthly_volumes) ? d.monthly_volumes : JSON.parse(d.monthly_volumes);
+        });
       }
 
       if (!dataToBasis.length || dataToBasis.every(v => v === 0)) {
@@ -328,7 +387,6 @@ export function Forecasting() {
         }
         result = generateSeasonalDecompositionForecast(dataToBasis);
       } else if (method.includes("ARIMA")) {
-        // ✅ NEW: ARIMA guard + route
         if (dataToBasis.length < 14) {
           alert("⚠️ ARIMA requires at least 14 months of data to estimate AR and MA coefficients reliably.");
           return;
@@ -467,11 +525,7 @@ export function Forecasting() {
                   </div>
                 ))}
                 <button
-                  onClick={() => {
-                    const nextYear = `Year ${years.length + 1}`;
-                    setYears([...years, nextYear]);
-                    setSelectedYear(nextYear);
-                  }}
+                  onClick={handleAddYear}
                   className="p-1.5 rounded-md bg-accent text-accent-foreground border border-dashed border-border hover:border-primary"
                 >
                   <Plus className="size-4" />
@@ -498,13 +552,13 @@ export function Forecasting() {
           </div>
 
           {/* Action Buttons */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <button
               onClick={handleGenesysSync}
               disabled={isSyncing}
-              className={`bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
+              className={`bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm ${isSyncing ? "opacity-50 cursor-not-allowed" : ""}`}
             >
-              <Phone className={`size-4 ${isSyncing ? 'animate-pulse' : ''}`} />
+              <Phone className={`size-4 ${isSyncing ? "animate-pulse" : ""}`} />
               {isSyncing ? "Syncing..." : "Sync Genesys"}
             </button>
             <button
@@ -514,17 +568,25 @@ export function Forecasting() {
               <LineChart className="size-4" />
               Generate Forecast
             </button>
-            <button
-              onClick={handleSaveToDatabase}
-              className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-                <polyline points="17 21 17 13 7 13 7 21"/>
-                <polyline points="7 3 7 8 15 8"/>
-              </svg>
-              Save to DB
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSaveToDatabase}
+                disabled={isSaving}
+                className={`bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm ${isSaving ? "opacity-60 cursor-not-allowed" : ""}`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                  <polyline points="17 21 17 13 7 13 7 21"/>
+                  <polyline points="7 3 7 8 15 8"/>
+                </svg>
+                {isSaving ? "Saving..." : "Save to DB"}
+              </button>
+              {saveMsg && (
+                <span className={`text-xs font-semibold ${saveMsg.ok ? "text-green-600" : "text-red-500"}`}>
+                  {saveMsg.text}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -597,7 +659,7 @@ export function Forecasting() {
                   {projectionLabel}
                 </h3>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Calculated via {method.split('(')[0]}
+                  Calculated via {method.split("(")[0]}
                 </p>
               </div>
             </div>

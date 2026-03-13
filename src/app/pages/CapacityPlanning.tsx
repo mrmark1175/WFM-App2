@@ -90,6 +90,7 @@ function buildWeeksFromMonthly(monthlyVolumes: number[], startMonday: Date, work
   for (let w = 0; w < 52; w++) {
     const monday = new Date(startMonday);
     monday.setDate(monday.getDate() + w * 7);
+    
     const lastDay = new Date(monday);
     lastDay.setDate(lastDay.getDate() + workDays - 1);
     let weekVol = 0;
@@ -103,7 +104,7 @@ function buildWeeksFromMonthly(monthlyVolumes: number[], startMonday: Date, work
       weekVol += dailyVol;
     }
     weeks.push({
-      week: `Wk ${getISOWeek(monday)}`,
+      week: `Wk ${w + 1}`, // Changed from getISOWeek to a simple 1-52 index
       label: `${fmt(monday)}–${fmt(lastDay)}`,
       baseVol: Math.round(weekVol),
       startDate: monday,
@@ -247,7 +248,11 @@ export function CapacityPlanning() {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isLoadingScenario = useRef<boolean>(false);
 
-  const startMonday = useMemo(() => getMondayOf(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), []);
+  const startMonday = useMemo(() => {
+    // Get Jan 1st of the current year
+    const jan1 = new Date(new Date().getFullYear(), 0, 1);
+    return getMondayOf(jan1);
+  }, []);
 
   // ── Reset day percentages evenly when workDays changes ──
   useEffect(() => {

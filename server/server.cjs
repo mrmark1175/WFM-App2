@@ -28,13 +28,14 @@ app.get('/api/agents', async (req, res) => {
   }
 });
 
-// ✅ NEW: Fetch ALL saved forecast years (used by Capacity Planning)
+// Fetch ALL saved forecast years (used by Capacity Planning & Forecasting)
 app.get('/api/forecasts', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT DISTINCT ON (year_label) year_label, forecast_method, monthly_volumes, total_volume, peak_volume, created_at
+      `SELECT year_label, forecast_method, monthly_volumes, forecast_results,
+              alpha, beta, gamma, total_volume, peak_volume, created_at
        FROM forecasts
-       ORDER BY year_label ASC, created_at DESC`
+       ORDER BY year_label ASC`
     );
     res.json(result.rows);
   } catch (err) {
@@ -62,7 +63,7 @@ app.get('/api/forecasts/:year', async (req, res) => {
   const { year } = req.params;
   try {
     const result = await pool.query(
-      'SELECT * FROM forecasts WHERE year_label = $1 ORDER BY created_at DESC LIMIT 1',
+      'SELECT * FROM forecasts WHERE year_label = $1',
       [year]
     );
     res.json(result.rows[0] || null);
@@ -165,19 +166,59 @@ app.post('/api/genesys/sync', async (req, res) => {
   }
 });
 
-// Save forecast data
+// UPSERT forecast data — saves actuals + projection + model params per year
+// Uses ON CONFLICT so saving the same year twice updates instead of duplicating
 app.post('/api/forecasts', async (req, res) => {
-  const { year_label, forecast_method, monthly_volumes, total_volume, peak_volume } = req.body;
+  const {
+    year_label, forecast_method, monthly_volumes,
+    total_volume, peak_volume,
+    forecast_results, alpha, beta, gamma
+  } = req.body;
   try {
     const result = await pool.query(
-      `INSERT INTO forecasts (year_label, forecast_method, monthly_volumes, total_volume, peak_volume) 
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [year_label, forecast_method, JSON.stringify(monthly_volumes), total_volume, peak_volume]
+      `INSERT INTO forecasts
+         (year_label, forecast_method, monthly_volumes, total_volume, peak_volume,
+          forecast_results, alpha, beta, gamma)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (year_label) DO UPDATE SET
+         forecast_method  = EXCLUDED.forecast_method,
+         monthly_volumes  = EXCLUDED.monthly_volumes,
+         total_volume     = EXCLUDED.total_volume,
+         peak_volume      = EXCLUDED.peak_volume,
+         forecast_results = EXCLUDED.forecast_results,
+         alpha            = EXCLUDED.alpha,
+         beta             = EXCLUDED.beta,
+         gamma            = EXCLUDED.gamma,
+         created_at       = NOW()
+       RETURNING *`,
+      [
+        year_label,
+        forecast_method,
+        JSON.stringify(monthly_volumes),
+        total_volume,
+        peak_volume,
+        JSON.stringify(forecast_results || []),
+        alpha  ?? 0.3,
+        beta   ?? 0.1,
+        gamma  ?? 0.2,
+      ]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error("Database Error:", err.message);
     res.status(500).json({ error: "Failed to save forecast to database" });
+  }
+});
+
+// Delete a forecast year from the database
+app.delete('/api/forecasts/:year', async (req, res) => {
+  const { year } = req.params;
+  try {
+    await pool.query('DELETE FROM forecasts WHERE year_label = $1', [year]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete Error:", err.message);
+    res.status(500).json({ error: "Failed to delete forecast year" });
   }
 });
 
