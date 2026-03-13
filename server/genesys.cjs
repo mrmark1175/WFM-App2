@@ -25,3 +25,4 @@ async function syncGenesysData(queueId, interval) {
         console.error('Genesys Sync Error:', err);
     }
 }
+module.exports = { syncGenesysData };

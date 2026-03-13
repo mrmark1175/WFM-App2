@@ -17,6 +17,7 @@ export function WFM() {
       description: "Forecast staffing needs and optimize resource allocation",
       icon: Users,
       stats: "156 Employees",
+      path: "/wfm/capacity", // ✅ added
     },
     {
       title: "Schedule Management",
