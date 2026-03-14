@@ -1,5 +1,5 @@
 import { PageLayout } from "../components/PageLayout";
-import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone, Grid, Monitor, PieChart } from "lucide-react";
+import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone, Grid, Monitor, PieChart, LineChart } from "lucide-react";
 import { Link } from "react-router-dom";
 import React from "react";
 
@@ -57,6 +57,13 @@ export function WFM() {
       icon: Grid,
       stats: "Intraday",
       path: "/wfm/interaction-arrival",
+    },
+    {
+      title: "Arrival Analysis",
+      description: "YoY, monthly, weekly, daily & intraday volume pivot — short & long-term forecasting",
+      icon: LineChart,
+      stats: "Pivot & Export",
+      path: "/wfm/arrival-analysis",
     },
     {
       title: "Employee Roster",
