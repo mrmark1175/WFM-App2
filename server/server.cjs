@@ -28,14 +28,13 @@ app.get('/api/agents', async (req, res) => {
   }
 });
 
-// Fetch ALL saved forecast years (used by Capacity Planning & Forecasting)
+// ✅ NEW: Fetch ALL saved forecast years (used by Capacity Planning)
 app.get('/api/forecasts', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT year_label, forecast_method, monthly_volumes, forecast_results,
-              alpha, beta, gamma, total_volume, peak_volume, created_at
+      `SELECT DISTINCT ON (year_label) year_label, forecast_method, monthly_volumes, total_volume, peak_volume, created_at
        FROM forecasts
-       ORDER BY year_label ASC`
+       ORDER BY year_label ASC, created_at DESC`
     );
     res.json(result.rows);
   } catch (err) {
@@ -56,14 +55,14 @@ app.get('/api/forecasts/latest', async (req, res) => {
     console.error("Fetch Error:", err.message);
     res.status(500).send("Server Error");
   }
-});
+  });
 
 // Fetch forecast for a SPECIFIC year (e.g., /api/forecasts/Year 2)
 app.get('/api/forecasts/:year', async (req, res) => {
   const { year } = req.params;
   try {
     const result = await pool.query(
-      'SELECT * FROM forecasts WHERE year_label = $1',
+      'SELECT * FROM forecasts WHERE year_label = $1 ORDER BY created_at DESC LIMIT 1',
       [year]
     );
     res.json(result.rows[0] || null);
@@ -114,7 +113,7 @@ app.post('/api/capacity-scenarios', async (req, res) => {
 
 // Update an existing scenario (auto-save & manual save both hit this)
 app.put('/api/capacity-scenarios/:id', async (req, res) => {
-  const { id } = req.params;
+      const { id } = req.params;
   const {
     scenario_name, forecast_year, aht, hours_op, work_days,
     day_pcts, shrinkage, occupancy, target_sl, asa, selected_week
@@ -166,42 +165,14 @@ app.post('/api/genesys/sync', async (req, res) => {
   }
 });
 
-// UPSERT forecast data — saves actuals + projection + model params per year
-// Uses ON CONFLICT so saving the same year twice updates instead of duplicating
+// Save forecast data
 app.post('/api/forecasts', async (req, res) => {
-  const {
-    year_label, forecast_method, monthly_volumes,
-    total_volume, peak_volume,
-    forecast_results, alpha, beta, gamma
-  } = req.body;
+  const { year_label, forecast_method, monthly_volumes, total_volume, peak_volume } = req.body;
   try {
     const result = await pool.query(
-      `INSERT INTO forecasts
-         (year_label, forecast_method, monthly_volumes, total_volume, peak_volume,
-          forecast_results, alpha, beta, gamma)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (year_label) DO UPDATE SET
-         forecast_method  = EXCLUDED.forecast_method,
-         monthly_volumes  = EXCLUDED.monthly_volumes,
-         total_volume     = EXCLUDED.total_volume,
-         peak_volume      = EXCLUDED.peak_volume,
-         forecast_results = EXCLUDED.forecast_results,
-         alpha            = EXCLUDED.alpha,
-         beta             = EXCLUDED.beta,
-         gamma            = EXCLUDED.gamma,
-         created_at       = NOW()
-       RETURNING *`,
-      [
-        year_label,
-        forecast_method,
-        JSON.stringify(monthly_volumes),
-        total_volume,
-        peak_volume,
-        JSON.stringify(forecast_results || []),
-        alpha  ?? 0.3,
-        beta   ?? 0.1,
-        gamma  ?? 0.2,
-      ]
+      `INSERT INTO forecasts (year_label, forecast_method, monthly_volumes, total_volume, peak_volume) 
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [year_label, forecast_method, JSON.stringify(monthly_volumes), total_volume, peak_volume]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -209,17 +180,111 @@ app.post('/api/forecasts', async (req, res) => {
     res.status(500).json({ error: "Failed to save forecast to database" });
   }
 });
+// ─── INTERACTION ARRIVAL ROUTES ───────────────────────────────────────────────
+// Add these routes to your server.cjs before the "START SERVER" comment
 
-// Delete a forecast year from the database
-app.delete('/api/forecasts/:year', async (req, res) => {
-  const { year } = req.params;
+// GET  /api/interaction-arrival?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+app.get('/api/interaction-arrival', async (req, res) => {
+  const { startDate, endDate } = req.query;
   try {
-    await pool.query('DELETE FROM forecasts WHERE year_label = $1', [year]);
-    res.json({ success: true });
+    const result = await pool.query(
+      `SELECT interval_date, interval_index, volume, aht
+       FROM interaction_arrival
+       WHERE interval_date BETWEEN $1 AND $2
+       ORDER BY interval_date ASC, interval_index ASC`,
+      [startDate, endDate]
+    );
+    res.json(result.rows);
   } catch (err) {
-    console.error("Delete Error:", err.message);
-    res.status(500).json({ error: "Failed to delete forecast year" });
+    console.error('Interaction Arrival Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch interaction arrival data' });
   }
+});
+
+// POST /api/interaction-arrival  — batch upsert (all 15-min records)
+app.post('/api/interaction-arrival', async (req, res) => {
+  const { records } = req.body;
+  if (!Array.isArray(records) || records.length === 0) {
+    return res.status(400).json({ error: 'records array is required' });
+  }
+  try {
+    // Build a single multi-row upsert for performance
+    const values = records.map((r, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`).join(',');
+    const flat   = records.flatMap(r => [r.interval_date, r.interval_index, r.volume ?? 0, r.aht ?? 0]);
+    await pool.query(
+      `INSERT INTO interaction_arrival (interval_date, interval_index, volume, aht)
+       VALUES ${values}
+       ON CONFLICT (interval_date, interval_index) DO UPDATE SET
+         volume     = EXCLUDED.volume,
+         aht        = EXCLUDED.aht,
+         updated_at = NOW()`,
+      flat
+    );
+    res.json({ success: true, count: records.length });
+  } catch (err) {
+    console.error('Interaction Arrival Save Error:', err.message);
+    res.status(500).json({ error: 'Failed to save interaction arrival data' });
+  }
+});
+
+// POST /api/telephony/pull  — pull intraday data from a telephony system
+app.post('/api/telephony/pull', async (req, res) => {
+  const { system, date, queue } = req.body;
+
+  if (system === 'genesys') {
+    // ── Genesys Cloud ──────────────────────────────────────────────────────────
+    // Replace the block below with your real Genesys API call.
+    // For now it returns realistic-looking sample data for the requested date.
+    console.log(`Genesys pull requested: date=${date} queue=${queue || 'all'}`);
+    const data = Array.from({ length: 96 }, (_, i) => {
+      const hour = Math.floor(i / 4);
+      // Simulate a typical call center bell curve peaking around 10AM and 2PM
+      const baseVol = hour < 7 ? 5
+        : hour < 9  ? 30
+        : hour < 12 ? 80
+        : hour < 13 ? 50
+        : hour < 16 ? 75
+        : hour < 18 ? 40
+        : hour < 20 ? 20
+        : 5;
+      return {
+        interval_index: i,
+        volume: Math.round(baseVol + (Math.random() - 0.5) * 10),
+        aht:    Math.round(240 + (Math.random() - 0.5) * 60),
+      };
+    });
+    return res.json({ success: true, data });
+  }
+
+  if (system === 'avaya') {
+    // ── Avaya ──────────────────────────────────────────────────────────────────
+    // TODO: implement Avaya CMS / Oceana API call
+    return res.json({ success: false, message: 'Avaya integration not yet configured. Add your CMS credentials to server.cjs.' });
+  }
+
+  if (system === 'iex') {
+    // ── NICE IEX ───────────────────────────────────────────────────────────────
+    // TODO: implement IEX TotalView API call
+    return res.json({ success: false, message: 'IEX TotalView integration not yet configured.' });
+  }
+
+  if (system === 'five9') {
+    // TODO: Five9 REST API
+    return res.json({ success: false, message: 'Five9 integration not yet configured.' });
+  }
+
+  if (system === 'nice') {
+    // TODO: NICE CXone API
+    return res.json({ success: false, message: 'NICE CXone integration not yet configured.' });
+  }
+
+  if (system === 'cisco') {
+    // TODO: Cisco UCCE API
+    return res.json({ success: false, message: 'Cisco UCCE integration not yet configured.' });
+  }
+
+  // Custom / unknown
+  return res.json({ success: false, message: `Unknown system "${system}". Contact your admin.` });
 });
 
 // --- START SERVER ---

@@ -609,7 +609,7 @@ export function CapacityPlanning() {
 
         {/* ── Scenario Bar ── */}
         <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "12px 20px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginRight: 4 }}>📋 Scenarios:</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginRight: 4 }}>📋 What if ? Scenario:</span>
 
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1 }}>
             {scenarios.map(s => (
