@@ -3,21 +3,21 @@ import { useNavigate, Link } from "react-router-dom";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface CellData { volume: number; aht: number; }
-type GridData = Record<string, Record<number, CellData>>; // dateStr → slotIndex → data
+type GridData = Record<string, Record<number, CellData>>;
 interface IntervalRow { label: string; indices: number[]; }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const API_BASE   = "http://localhost:5000";
-const SLOT_COUNT = 96; // 15-min slots per day
+const SLOT_COUNT = 96;
 
 const TELEPHONY_SYSTEMS = [
-  { id: "genesys", label: "Genesys Cloud",  icon: "☁️" },
-  { id: "avaya",   label: "Avaya",           icon: "📞" },
-  { id: "iex",     label: "NICE IEX",        icon: "📊" },
-  { id: "five9",   label: "Five9",           icon: "5️⃣" },
-  { id: "nice",    label: "NICE CXone",      icon: "🎯" },
-  { id: "cisco",   label: "Cisco UCCE",      icon: "🔧" },
-  { id: "custom",  label: "Custom API",      icon: "⚙️" },
+  { id: "genesys", label: "Genesys Cloud", icon: "☁️" },
+  { id: "avaya",   label: "Avaya",          icon: "📞" },
+  { id: "iex",     label: "NICE IEX",       icon: "📊" },
+  { id: "five9",   label: "Five9",          icon: "5️⃣" },
+  { id: "nice",    label: "NICE CXone",     icon: "🎯" },
+  { id: "cisco",   label: "Cisco UCCE",     icon: "🔧" },
+  { id: "custom",  label: "Custom API",     icon: "⚙️" },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -39,21 +39,24 @@ function makeIntervals(size: 15 | 30 | 60): IntervalRow[] {
   return rows;
 }
 
-function makeDates(start: string, n: number): string[] {
+// ── CHANGED: now takes start + end instead of start + count ──────────────────
+function makeDateRange(start: string, end: string): string[] {
   const out: string[] = [];
-  const d = new Date(start + "T00:00:00");
-  for (let i = 0; i < n; i++) {
-    const c = new Date(d);
-    c.setDate(c.getDate() + i);
-    out.push(c.toISOString().split("T")[0]);
+  const s = new Date(start + "T00:00:00");
+  const e = new Date(end   + "T00:00:00");
+  if (isNaN(s.getTime()) || isNaN(e.getTime()) || e < s) return [start];
+  const cur = new Date(s);
+  while (cur <= e) {
+    out.push(cur.toISOString().split("T")[0]);
+    cur.setDate(cur.getDate() + 1);
   }
   return out;
 }
 
 function fmtHdr(dateStr: string): { dow: string; mmd: string } {
   const d      = new Date(dateStr + "T00:00:00");
-  const days   = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const days   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   return { dow: days[d.getDay()], mmd: `${months[d.getMonth()]} ${d.getDate()}` };
 }
 
@@ -68,33 +71,35 @@ function isToday(dateStr: string): boolean {
 
 function getCellValue(data: GridData, dateStr: string, indices: number[], tab: "volume" | "aht"): number {
   const d = data[dateStr] || {};
-  if (tab === "volume") {
-    return indices.reduce((s, i) => s + (d[i]?.volume || 0), 0);
-  }
+  if (tab === "volume") return indices.reduce((s, i) => s + (d[i]?.volume || 0), 0);
   const vals = indices.map(i => d[i]?.aht || 0).filter(v => v > 0);
   return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
 }
 
-function todayStr(): string {
-  return new Date().toISOString().split("T")[0];
-}
+function todayStr(): string { return new Date().toISOString().split("T")[0]; }
 
 function lastMonday(): string {
-  const d   = new Date();
-  const day = d.getDay();
+  const d = new Date(); const day = d.getDay();
   d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
   return d.toISOString().split("T")[0];
 }
 
-// ── Main Component ─────────────────────────────────────────────────────────────
+// ── default end = start + 6 days (7-day view) ────────────────────────────────
+function addDays(dateStr: string, n: number): string {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  return d.toISOString().split("T")[0];
+}
+
+// ── Main Component ────────────────────────────────────────────────────────────
 export function InteractionArrival() {
   const navigate = useNavigate();
 
-  // ── Core state ──────────────────────────────────────────────────────────────
+  // ── Core state ───────────────────────────────────────────────────────────────
   const [activeTab,    setActiveTab]    = useState<"volume" | "aht">("volume");
   const [intervalSize, setIntervalSize] = useState<15 | 30 | 60>(15);
-  const [startDate,    setStartDate]    = useState<string>(lastMonday);
-  const [numDays,      setNumDays]      = useState<number>(7);
+  const [startDate,    setStartDate]    = useState<string>(lastMonday());
+  const [endDate,      setEndDate]      = useState<string>(addDays(lastMonday(), 6)); // ← CHANGED
   const [data,         setData]         = useState<GridData>({});
   const [anchorCell,   setAnchorCell]   = useState<{ row: number; col: number } | null>(null);
 
@@ -102,23 +107,34 @@ export function InteractionArrival() {
   const [saveStatus, setSaveStatus] = useState<"" | "saving" | "saved" | "error">("");
   const [isLoading,  setIsLoading]  = useState(false);
 
-  // ── Telephony modal state ────────────────────────────────────────────────────
-  const [showModal,        setShowModal]        = useState(false);
-  const [telephonySystem,  setTelephonySystem]  = useState("genesys");
-  const [pullDate,         setPullDate]         = useState(todayStr);
-  const [pullQueue,        setPullQueue]        = useState("");
-  const [isPulling,        setIsPulling]        = useState(false);
-  const [pullMsg,          setPullMsg]          = useState<{ ok: boolean; text: string } | null>(null);
+  // ── Telephony modal ───────────────────────────────────────────────────────────
+  const [showModal,       setShowModal]       = useState(false);
+  const [telephonySystem, setTelephonySystem] = useState("genesys");
+  const [pullDate,        setPullDate]        = useState(todayStr());
+  const [pullQueue,       setPullQueue]       = useState("");
+  const [isPulling,       setIsPulling]       = useState(false);
+  const [pullMsg,         setPullMsg]         = useState<{ ok: boolean; text: string } | null>(null);
 
   // ── Derived ──────────────────────────────────────────────────────────────────
   const intervals = useMemo(() => makeIntervals(intervalSize), [intervalSize]);
-  const dates     = useMemo(() => makeDates(startDate, numDays), [startDate, numDays]);
+  const dates     = useMemo(() => makeDateRange(startDate, endDate), [startDate, endDate]); // ← CHANGED
 
-  // ── Fetch from DB when date range changes ────────────────────────────────────
+  // ── Keep endDate ≥ startDate when startDate moves forward ────────────────────
+  const handleStartDateChange = (val: string) => {
+    setStartDate(val);
+    if (val > endDate) setEndDate(addDays(val, 6));
+  };
+
+  // ── Keep startDate ≤ endDate when endDate moves back ─────────────────────────
+  const handleEndDateChange = (val: string) => {
+    setEndDate(val);
+    if (val < startDate) setStartDate(val);
+  };
+
+  // ── Fetch from DB ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!dates.length) return;
     setIsLoading(true);
-    const endDate = dates[dates.length - 1];
     fetch(`${API_BASE}/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}`)
       .then(r => r.json())
       .then((records: any[]) => {
@@ -131,18 +147,17 @@ export function InteractionArrival() {
         });
         setData(prev => ({ ...prev, ...newData }));
       })
-      .catch(() => {/* silently use local data */})
+      .catch(() => {})
       .finally(() => setIsLoading(false));
-  }, [startDate, numDays]);
+  }, [startDate, endDate]);
 
-  // ── Paste handler (attached to grid container) ───────────────────────────────
+  // ── Paste ─────────────────────────────────────────────────────────────────────
   const handleGridPaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
     if (!anchorCell) return;
     e.preventDefault();
-    const text    = e.clipboardData.getData("text/plain");
-    const rows    = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter(r => r.trim());
-    const parsed  = rows.map(r => r.split("\t"));
-
+    const text   = e.clipboardData.getData("text/plain");
+    const rows   = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter(r => r.trim());
+    const parsed = rows.map(r => r.split("\t"));
     setData(prev => {
       const next = JSON.parse(JSON.stringify(prev)) as GridData;
       parsed.forEach((rowVals, ri) => {
@@ -165,7 +180,7 @@ export function InteractionArrival() {
     });
   }, [anchorCell, intervals, dates, activeTab]);
 
-  // ── Update a single cell ─────────────────────────────────────────────────────
+  // ── Update single cell ────────────────────────────────────────────────────────
   const updateCell = useCallback((rowIdx: number, colIdx: number, val: number) => {
     const ds          = dates[colIdx];
     const slotIndices = intervals[rowIdx].indices;
@@ -181,25 +196,21 @@ export function InteractionArrival() {
     });
   }, [dates, intervals, activeTab]);
 
-  // ── Keyboard navigation ──────────────────────────────────────────────────────
+  // ── Keyboard nav ─────────────────────────────────────────────────────────────
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, row: number, col: number) => {
     if (e.key === "Enter" || e.key === "ArrowDown") {
       e.preventDefault();
-      const next = document.getElementById(`cell-${Math.min(row + 1, intervals.length - 1)}-${col}`);
-      (next as HTMLInputElement)?.focus();
+      (document.getElementById(`cell-${Math.min(row + 1, intervals.length - 1)}-${col}`) as HTMLInputElement)?.focus();
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      const next = document.getElementById(`cell-${Math.max(row - 1, 0)}-${col}`);
-      (next as HTMLInputElement)?.focus();
-    } else if (e.key === "Tab") {
-      // browser default moves to next input naturally
+      (document.getElementById(`cell-${Math.max(row - 1, 0)}-${col}`) as HTMLInputElement)?.focus();
     } else if (e.key === "Escape") {
       setAnchorCell(null);
       (e.target as HTMLInputElement).blur();
     }
   }, [intervals.length]);
 
-  // ── Save to DB ───────────────────────────────────────────────────────────────
+  // ── Save ─────────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     setSaveStatus("saving");
     const records: any[] = [];
@@ -216,27 +227,23 @@ export function InteractionArrival() {
         body: JSON.stringify({ records }),
       });
       if (res.ok) { setSaveStatus("saved"); setTimeout(() => setSaveStatus(""), 2500); }
-      else          setSaveStatus("error");
+      else setSaveStatus("error");
     } catch { setSaveStatus("error"); }
   };
 
   // ── Telephony pull ────────────────────────────────────────────────────────────
   const handlePull = async () => {
-    setIsPulling(true);
-    setPullMsg(null);
+    setIsPulling(true); setPullMsg(null);
     try {
-      const res = await fetch(`${API_BASE}/api/telephony/pull`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const res    = await fetch(`${API_BASE}/api/telephony/pull`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ system: telephonySystem, date: pullDate, queue: pullQueue }),
       });
       const result = await res.json();
       if (result.success && result.data) {
         setData(prev => {
           const next = { ...prev, [pullDate]: { ...(prev[pullDate] || {}) } };
-          (result.data as any[]).forEach(r => {
-            next[pullDate][r.interval_index] = { volume: r.volume || 0, aht: r.aht || 0 };
-          });
+          (result.data as any[]).forEach(r => { next[pullDate][r.interval_index] = { volume: r.volume || 0, aht: r.aht || 0 }; });
           return next;
         });
         setPullMsg({ ok: true, text: `✓ ${pullDate} pulled successfully` });
@@ -244,13 +251,11 @@ export function InteractionArrival() {
       } else {
         setPullMsg({ ok: false, text: result.message || "Pull failed" });
       }
-    } catch {
-      setPullMsg({ ok: false, text: "Could not connect to server" });
-    }
+    } catch { setPullMsg({ ok: false, text: "Could not connect to server" }); }
     setIsPulling(false);
   };
 
-  // ── Column totals ─────────────────────────────────────────────────────────────
+  // ── Totals ────────────────────────────────────────────────────────────────────
   const colTotals = useMemo(() => dates.map(ds => {
     const cells = Object.values(data[ds] || {});
     const vol   = cells.reduce((s, c) => s + c.volume, 0);
@@ -259,7 +264,6 @@ export function InteractionArrival() {
     return { vol, aht };
   }), [data, dates]);
 
-  // ── Clear a day's data ────────────────────────────────────────────────────────
   const clearDay = (ds: string) => {
     if (!confirm(`Clear all data for ${ds}?`)) return;
     setData(prev => { const n = { ...prev }; delete n[ds]; return n; });
@@ -267,31 +271,22 @@ export function InteractionArrival() {
 
   // ── Styles ────────────────────────────────────────────────────────────────────
   const S = {
-    page:       { fontFamily: "'DM Sans', 'Segoe UI', sans-serif", background: "#f9fafb", minHeight: "100vh" } as React.CSSProperties,
-    header:     { background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between" } as React.CSSProperties,
-    body:       { maxWidth: 1500, margin: "0 auto", padding: "28px 32px" } as React.CSSProperties,
-    card:       { background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12 } as React.CSSProperties,
-    tab: (active: boolean): React.CSSProperties => ({
+    page:   { fontFamily: "'DM Sans', 'Segoe UI', sans-serif", background: "#f9fafb", minHeight: "100vh" } as React.CSSProperties,
+    header: { background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between" } as React.CSSProperties,
+    body:   { maxWidth: 1500, margin: "0 auto", padding: "28px 32px", display: "flex", flexDirection: "column" as const, height: "calc(100vh - 56px)", boxSizing: "border-box" as const },
+    card:   { background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12 } as React.CSSProperties,
+    tab: (a: boolean): React.CSSProperties => ({
       padding: "5px 16px", borderRadius: 6, fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer",
-      background: active ? "#fff" : "transparent",
-      color:      active ? "#111827" : "#6b7280",
-      boxShadow:  active ? "0 1px 3px rgba(0,0,0,.1)" : "none",
+      background: a ? "#fff" : "transparent", color: a ? "#111827" : "#6b7280",
+      boxShadow: a ? "0 1px 3px rgba(0,0,0,.1)" : "none",
     }),
-    intBtn: (active: boolean): React.CSSProperties => ({
+    intBtn: (a: boolean): React.CSSProperties => ({
       padding: "4px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer",
-      background: active ? "#f97316" : "transparent",
-      color:      active ? "#fff"    : "#6b7280",
+      background: a ? "#f97316" : "transparent", color: a ? "#fff" : "#6b7280",
     }),
-    dayBtn: (active: boolean): React.CSSProperties => ({
-      padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer",
-      background: active ? "#111827" : "transparent",
-      color:      active ? "#fff"    : "#6b7280",
-    }),
-    sysBtn: (active: boolean): React.CSSProperties => ({
+    sysBtn: (a: boolean): React.CSSProperties => ({
       padding: "7px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid",
-      borderColor: active ? "#f97316" : "#e5e7eb",
-      background:  active ? "#fff7ed" : "#fff",
-      color:       active ? "#f97316" : "#374151",
+      borderColor: a ? "#f97316" : "#e5e7eb", background: a ? "#fff7ed" : "#fff", color: a ? "#f97316" : "#374151",
     }),
   };
 
@@ -324,12 +319,13 @@ export function InteractionArrival() {
         <button onClick={() => navigate("/")} style={{ fontSize: 13, color: "#6b7280", background: "none", border: "none", cursor: "pointer" }}>🏠 Home</button>
       </div>
 
+      {/* ── Body (flex column, fills remaining viewport height) ── */}
       <div style={S.body}>
 
         {/* ── Page title ── */}
-        <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 16, flexShrink: 0 }}>
           <button onClick={() => navigate("/wfm")}
-            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#6b7280", background: "none", border: "none", cursor: "pointer", padding: "4px 0", marginBottom: 8 }}
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#6b7280", background: "none", border: "none", cursor: "pointer", padding: "4px 0", marginBottom: 6 }}
             onMouseEnter={e => (e.currentTarget.style.color = "#f97316")}
             onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}>
             ← Back to Workforce Management
@@ -341,7 +337,7 @@ export function InteractionArrival() {
         </div>
 
         {/* ── Controls bar ── */}
-        <div style={{ ...S.card, padding: "12px 20px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ ...S.card, padding: "12px 20px", marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", flexShrink: 0 }}>
 
           {/* Tabs */}
           <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
@@ -369,21 +365,27 @@ export function InteractionArrival() {
 
           <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />
 
-          {/* Start date */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>Start:</span>
-            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
-              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }} />
-          </div>
-
-          {/* Num days */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>Days:</span>
-            <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
-              {[7, 14, 21, 30].map(n => (
-                <button key={n} style={S.dayBtn(numDays === n)} onClick={() => setNumDays(n)}>{n}d</button>
-              ))}
-            </div>
+          {/* ── CHANGED: Start + End date pickers ── */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>From:</span>
+            <input
+              type="date"
+              value={startDate}
+              onChange={e => handleStartDateChange(e.target.value)}
+              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 12, color: "#9ca3af" }}>—</span>
+            <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>To:</span>
+            <input
+              type="date"
+              value={endDate}
+              min={startDate}
+              onChange={e => handleEndDateChange(e.target.value)}
+              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500 }}>
+              ({dates.length} day{dates.length !== 1 ? "s" : ""})
+            </span>
           </div>
 
           {/* Right side actions */}
@@ -401,10 +403,8 @@ export function InteractionArrival() {
             {saveStatus === "saved"  && <span style={{ fontSize: 12, color: "#16a34a", fontWeight: 600 }}>✓ Saved</span>}
             {saveStatus === "error"  && <span style={{ fontSize: 12, color: "#dc2626" }}>✕ Error saving</span>}
 
-            <button onClick={handleSave} style={{
-              padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer",
-              border: "1px solid #f97316", background: "#fff7ed", color: "#f97316",
-            }}
+            <button onClick={handleSave}
+              style={{ padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "1px solid #f97316", background: "#fff7ed", color: "#f97316" }}
               onMouseEnter={e => { e.currentTarget.style.background = "#f97316"; e.currentTarget.style.color = "#fff"; }}
               onMouseLeave={e => { e.currentTarget.style.background = "#fff7ed"; e.currentTarget.style.color = "#f97316"; }}>
               💾 Save
@@ -413,23 +413,28 @@ export function InteractionArrival() {
         </div>
 
         {/* ── Paste hint ── */}
-        <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ fontSize: 12, marginBottom: 8, flexShrink: 0 }}>
           {anchorCell ? (
             <span style={{ color: "#f97316", fontWeight: 600, background: "#fff7ed", padding: "3px 10px", borderRadius: 6, border: "1px solid #fed7aa" }}>
               📋 Row {anchorCell.row + 1}, {dates[anchorCell.col]} selected — press Ctrl+V / Cmd+V to paste from Excel
             </span>
           ) : (
             <span style={{ color: "#9ca3af" }}>
-              💡 Click any cell to select, then paste (Ctrl+V) to fill from Excel · Double-click to edit
+              💡 Click any cell to select, then paste (Ctrl+V) to fill from Excel
             </span>
           )}
         </div>
 
-        {/* ── Spreadsheet grid ── */}
-        <div style={{ ...S.card, overflow: "hidden" }}>
+        {/* ── Spreadsheet grid — flex: 1 so it fills all remaining height ── */}
+        <div style={{ ...S.card, flex: 1, overflow: "hidden", minHeight: 0 }}>
           <div
             onPaste={handleGridPaste}
-            style={{ overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 320px)" }}
+            style={{
+              width: "100%",
+              height: "100%",
+              overflowX: "auto",
+              overflowY: "auto",
+            }}
           >
             <table style={{ borderCollapse: "collapse", tableLayout: "fixed", minWidth: "100%" }}>
               <colgroup>
@@ -437,10 +442,9 @@ export function InteractionArrival() {
                 {dates.map(ds => <col key={ds} style={{ width: 96 }} />)}
               </colgroup>
 
-              {/* ── Header row ── */}
+              {/* ── Sticky header ── */}
               <thead>
                 <tr>
-                  {/* Time corner */}
                   <th style={{
                     position: "sticky", left: 0, top: 0, zIndex: 4,
                     background: "#f1f5f9", borderRight: "2px solid #e5e7eb", borderBottom: "2px solid #e5e7eb",
@@ -449,8 +453,6 @@ export function InteractionArrival() {
                   }}>
                     {intervalSize === 15 ? "15 MIN" : intervalSize === 30 ? "30 MIN" : "HOURLY"}
                   </th>
-
-                  {/* Date headers */}
                   {dates.map(ds => {
                     const { dow, mmd } = fmtHdr(ds);
                     const today   = isToday(ds);
@@ -464,12 +466,8 @@ export function InteractionArrival() {
                       }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: today ? "#f97316" : weekend ? "#9ca3af" : "#6b7280" }}>{dow}</div>
                         <div style={{ fontSize: 12, fontWeight: 700, color: today ? "#f97316" : "#111827" }}>{mmd}</div>
-                        <button
-                          onClick={() => clearDay(ds)}
-                          title="Clear this day"
-                          style={{ fontSize: 9, color: "#d1d5db", background: "none", border: "none", cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>
-                          ✕
-                        </button>
+                        <button onClick={() => clearDay(ds)} title="Clear this day"
+                          style={{ fontSize: 9, color: "#d1d5db", background: "none", border: "none", cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>✕</button>
                       </th>
                     );
                   })}
@@ -479,37 +477,31 @@ export function InteractionArrival() {
               {/* ── Data rows ── */}
               <tbody>
                 {intervals.map((interval, rowIdx) => {
-                  // Highlight top-of-hour rows
                   const isHour = interval.indices[0] % 4 === 0;
                   return (
                     <tr key={rowIdx} style={{ background: isHour ? "#fafafa" : "#fff" }}>
-                      {/* Time label */}
                       <td style={{
                         position: "sticky", left: 0, zIndex: 1,
                         background: isHour ? "#f1f5f9" : "#f8fafc",
                         borderRight: "2px solid #e5e7eb",
                         borderBottom: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
-                        padding: "0 10px", fontSize: 11, fontWeight: isHour ? 700 : 400,
-                        color: isHour ? "#374151" : "#9ca3af", whiteSpace: "nowrap", height: 28,
+                        padding: "0 10px", fontSize: 11,
+                        fontWeight: isHour ? 700 : 400,
+                        color: isHour ? "#374151" : "#9ca3af",
+                        whiteSpace: "nowrap", height: 28,
                       }}>
                         {interval.label}
                       </td>
-
-                      {/* Data cells */}
                       {dates.map((ds, colIdx) => {
-                        const val       = getCellValue(data, ds, interval.indices, activeTab);
-                        const isAnchor  = anchorCell?.row === rowIdx && anchorCell?.col === colIdx;
-                        const today     = isToday(ds);
-                        const weekend   = isWeekend(ds);
+                        const val      = getCellValue(data, ds, interval.indices, activeTab);
+                        const isAnchor = anchorCell?.row === rowIdx && anchorCell?.col === colIdx;
+                        const today    = isToday(ds);
+                        const weekend  = isWeekend(ds);
                         return (
                           <td key={ds} style={{
                             padding: 0, height: 28,
                             border: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
-                            background: isAnchor
-                              ? "#fff7ed"
-                              : today   ? "#fffbf5"
-                              : weekend ? "#fafaf9"
-                              : undefined,
+                            background: isAnchor ? "#fff7ed" : today ? "#fffbf5" : weekend ? "#fafaf9" : undefined,
                             outline:       isAnchor ? "2px solid #f97316" : undefined,
                             outlineOffset: isAnchor ? -2 : undefined,
                             position:      "relative",
@@ -520,15 +512,11 @@ export function InteractionArrival() {
                               value={val === 0 ? "" : String(val)}
                               placeholder=""
                               onFocus={() => setAnchorCell({ row: rowIdx, col: colIdx })}
-                              onChange={e => {
-                                const n = parseFloat(e.target.value.replace(/,/g, "")) || 0;
-                                updateCell(rowIdx, colIdx, n);
-                              }}
+                              onChange={e => { const n = parseFloat(e.target.value.replace(/,/g, "")) || 0; updateCell(rowIdx, colIdx, n); }}
                               onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
                               style={{
                                 display: "block", width: "100%", height: "100%",
-                                border: "none", outline: "none",
-                                padding: "0 8px", fontSize: 12,
+                                border: "none", outline: "none", padding: "0 8px", fontSize: 12,
                                 fontWeight: val > 0 ? 600 : 400,
                                 color: val > 0 ? (activeTab === "volume" ? "#111827" : "#6366f1") : "#e5e7eb",
                                 background: "transparent", textAlign: "right",
@@ -543,12 +531,13 @@ export function InteractionArrival() {
                   );
                 })}
 
-                {/* ── Total row ── */}
+                {/* ── Sticky total row ── */}
                 <tr style={{ background: "#f8fafc", borderTop: "2px solid #e5e7eb", position: "sticky", bottom: 0, zIndex: 2 }}>
                   <td style={{
                     position: "sticky", left: 0, zIndex: 3, background: "#f1f5f9",
                     borderRight: "2px solid #e5e7eb", padding: "6px 10px",
-                    fontSize: 10, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: ".04em",
+                    fontSize: 10, fontWeight: 700, color: "#374151",
+                    textTransform: "uppercase", letterSpacing: ".04em",
                   }}>
                     {activeTab === "volume" ? "Daily Total" : "Avg AHT"}
                   </td>
@@ -560,11 +549,7 @@ export function InteractionArrival() {
                         textAlign: "right", fontSize: 12, fontWeight: 700,
                         color: v > 0 ? "#f97316" : "#d1d5db",
                       }}>
-                        {v > 0
-                          ? activeTab === "volume"
-                            ? v.toLocaleString()
-                            : `${v}s`
-                          : "—"}
+                        {v > 0 ? (activeTab === "volume" ? v.toLocaleString() : `${v}s`) : "—"}
                       </td>
                     );
                   })}
@@ -588,11 +573,8 @@ export function InteractionArrival() {
                 style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1 }}>✕</button>
             </div>
 
-            {/* System */}
             <div style={{ marginBottom: 18 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".05em" }}>
-                SYSTEM
-              </label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".05em" }}>SYSTEM</label>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {TELEPHONY_SYSTEMS.map(sys => (
                   <button key={sys.id} onClick={() => setTelephonySystem(sys.id)} style={S.sysBtn(telephonySystem === sys.id)}>
@@ -602,58 +584,46 @@ export function InteractionArrival() {
               </div>
             </div>
 
-            {/* Date */}
             <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".05em" }}>
-                DATE TO PULL
-              </label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".05em" }}>DATE TO PULL</label>
               <input type="date" value={pullDate} onChange={e => setPullDate(e.target.value)}
                 style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box", color: "#111827" }} />
             </div>
 
-            {/* Queue */}
             <div style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".05em" }}>
                 QUEUE / SKILL <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span>
               </label>
-              <input
-                type="text" value={pullQueue} onChange={e => setPullQueue(e.target.value)}
+              <input type="text" value={pullQueue} onChange={e => setPullQueue(e.target.value)}
                 placeholder="e.g. Main Queue, Support Tier 1, All Queues…"
-                style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box", color: "#111827" }}
-              />
+                style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box", color: "#111827" }} />
             </div>
 
-            {/* Non-Genesys warning */}
             {telephonySystem !== "genesys" && (
               <div style={{ background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 14px", marginBottom: 16 }}>
                 <p style={{ fontSize: 12, color: "#92400e", margin: 0 }}>
                   ⚠️ <strong>{TELEPHONY_SYSTEMS.find(s => s.id === telephonySystem)?.label}</strong> is not yet connected.
-                  Add the API credentials to <code>server.cjs</code> using the snippet in <code>server_routes_to_add.cjs</code>.
+                  Add the API credentials to <code>server.cjs</code>.
                 </p>
               </div>
             )}
 
-            {/* Pull result message */}
             {pullMsg && (
               <div style={{
                 padding: "8px 12px", borderRadius: 8, marginBottom: 14,
                 background: pullMsg.ok ? "#f0fdf4" : "#fef2f2",
                 border: `1px solid ${pullMsg.ok ? "#bbf7d0" : "#fecaca"}`,
-                fontSize: 13, fontWeight: 600,
-                color: pullMsg.ok ? "#16a34a" : "#dc2626",
+                fontSize: 13, fontWeight: 600, color: pullMsg.ok ? "#16a34a" : "#dc2626",
               }}>
                 {pullMsg.text}
               </div>
             )}
 
-            {/* Actions */}
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => { setShowModal(false); setPullMsg(null); }} style={{
                 flex: 1, padding: "10px", border: "1px solid #e5e7eb", borderRadius: 8,
                 fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#fff", color: "#374151",
-              }}>
-                Cancel
-              </button>
+              }}>Cancel</button>
               <button onClick={handlePull} disabled={isPulling} style={{
                 flex: 2, padding: "10px", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600,
                 cursor: isPulling ? "not-allowed" : "pointer",
