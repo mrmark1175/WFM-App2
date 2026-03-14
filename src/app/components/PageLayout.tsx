@@ -46,7 +46,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
       </header>
 
       {/* Page Content */}
-      <main className="container mx-auto px-6 py-8">
+      <main className="w-full max-w-[1920px] mx-auto px-8 py-8">
         {/* ── BREADCRUMBS SECTION ── */}
         <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-6">
           <Link to="/" className="hover:text-primary flex items-center gap-1 transition-colors">

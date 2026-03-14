@@ -31,14 +31,22 @@ export function Forecasting() {
   const [alpha, setAlpha] = useState(0.3);
   const [beta, setBeta] = useState(0.1);
   const [gamma, setGamma] = useState(0.2);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [isSyncing,        setIsSyncing]        = useState(false);
+  const [isSyncingArrival, setIsSyncingArrival] = useState(false);
+  const [arrivalSyncMsg,   setArrivalSyncMsg]   = useState<{ ok: boolean; text: string } | null>(null);
+  const [syncProgress,     setSyncProgress]     = useState<number>(0);
+  const [syncStep,         setSyncStep]         = useState<string>("");
+  const [isSaving,  setIsSaving]  = useState(false);
+  const [saveMsg,   setSaveMsg]   = useState<{ ok: boolean; text: string } | null>(null);
 
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const monthsShort = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 
   const projectionLabel = (() => {
+    // If selectedYear is a calendar year ("2024"), show "2025 Projection"
+    const asNum = parseInt(selectedYear, 10);
+    if (!isNaN(asNum) && asNum > 2000) return `${asNum + 1} Projection`;
+    // Legacy "Year N" fallback
     const idx = years.indexOf(selectedYear);
     return `Year ${idx + 2} Projection`;
   })();
@@ -48,17 +56,33 @@ export function Forecasting() {
     years.indexOf(selectedYear) < 1;
 
   // ── Load all saved years from DB on mount ──────────────────────────────────
+  // Priority: saved forecast year_labels first, then detect from arrival data
   useEffect(() => {
     const fetchAllYears = async () => {
       try {
-        const res = await fetch("http://localhost:5000/api/forecasts");
+        // 1. Try saved forecasts first
+        const res  = await fetch("http://localhost:5000/api/forecasts");
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
           const savedYears = data.map((d: any) => d.year_label);
           setYears(savedYears);
           setSelectedYear(savedYears[0]);
+          return;
+        }
+        // 2. No saved forecasts — detect calendar years from arrival data
+        //    without pulling all records
+        const probe = await fetch(
+          "http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31"
+        );
+        const recs: any[] = await probe.json();
+        if (Array.isArray(recs) && recs.length > 0) {
+          const calYears = Array.from(new Set(
+            recs.map(r => new Date((r.interval_date as string).split("T")[0] + "T00:00:00").getFullYear())
+          )).sort() as number[];
+          const labels = calYears.map(String);
+          setYears(labels);
+          setSelectedYear(labels[0]);
         } else {
-          // No saved years yet — seed with Year 1 as a local-only starting point
           setYears(["Year 1"]);
           setSelectedYear("Year 1");
         }
@@ -185,10 +209,130 @@ export function Forecasting() {
     }
   };
 
+  // ── Sync monthly volumes from Arrival Analysis data ───────────────────────
+  // Fetches ONE year at a time (Jan 1 – Dec 31) to avoid payload limits.
+  // selectedYear is either a 4-digit calendar year string ("2024") or
+  // a legacy "Year N" label — both cases are handled.
+  const handleSyncFromArrival = async () => {
+    setIsSyncingArrival(true);
+    setArrivalSyncMsg(null);
+    setSyncProgress(0);
+    setSyncStep("Initializing…");
+    try {
+      // ── Step 1: Resolve which calendar year to fetch (0 → 25%) ───────────
+      setSyncProgress(5);
+      setSyncStep("Resolving calendar year…");
+
+      let calendarYear: number | null = null;
+
+      const asNumber = parseInt(selectedYear, 10);
+      if (!isNaN(asNumber) && asNumber > 2000 && asNumber < 2100) {
+        calendarYear = asNumber;
+        setSyncProgress(25);
+      } else {
+        // Legacy "Year N" — probe one small range to discover available years
+        setSyncStep("Probing available years in arrival data…");
+        const probeRes = await fetch(
+          "http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31"
+        );
+        setSyncProgress(20);
+        const probeRecs: any[] = await probeRes.json();
+        setSyncProgress(25);
+        if (!Array.isArray(probeRecs) || probeRecs.length === 0) {
+          setArrivalSyncMsg({ ok: false, text: "No arrival data found. Load data in Interaction Arrival first." });
+          return;
+        }
+        const calYears = Array.from(new Set(
+          probeRecs.map(r => new Date((r.interval_date as string).split("T")[0] + "T00:00:00").getFullYear())
+        )).sort() as number[];
+        const yearIdx = years.indexOf(selectedYear);
+        calendarYear  = calYears[yearIdx] ?? null;
+      }
+
+      if (!calendarYear) {
+        setArrivalSyncMsg({ ok: false, text: `Could not map "${selectedYear}" to a calendar year in arrival data.` });
+        return;
+      }
+
+      // ── Step 2: Fetch arrival records for the year (25 → 75%) ────────────
+      setSyncProgress(30);
+      setSyncStep(`Fetching ${calendarYear} arrival records from server…`);
+
+      const startDate = `${calendarYear}-01-01`;
+      const endDate   = `${calendarYear}-12-31`;
+
+      // Animate progress while waiting for the network response
+      const progressInterval = setInterval(() => {
+        setSyncProgress(prev => prev < 70 ? prev + 3 : prev);
+      }, 200);
+
+      const res = await fetch(
+        `http://localhost:5000/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}`
+      );
+      clearInterval(progressInterval);
+      setSyncProgress(75);
+
+      const recs: any[] = await res.json();
+
+      if (!Array.isArray(recs) || recs.length === 0) {
+        setArrivalSyncMsg({ ok: false, text: `No arrival data found for ${calendarYear}. Load data in Interaction Arrival first.` });
+        return;
+      }
+
+      // ── Step 3: Aggregate into monthly buckets (75 → 90%) ────────────────
+      setSyncProgress(80);
+      setSyncStep(`Aggregating ${recs.length.toLocaleString()} records into monthly totals…`);
+
+      const monthly = Array(12).fill(0);
+      recs.forEach(r => {
+        const ds = (r.interval_date as string).split("T")[0];
+        const mo = new Date(ds + "T00:00:00").getMonth(); // 0-based
+        monthly[mo] += (r.volume || 0);
+      });
+
+      setSyncProgress(90);
+
+      if (monthly.every(v => v === 0)) {
+        setArrivalSyncMsg({ ok: false, text: `All volumes are zero for ${calendarYear}. Check data in Interaction Arrival.` });
+        return;
+      }
+
+      // ── Step 4: Apply to state (90 → 100%) ───────────────────────────────
+      setSyncStep("Populating Monthly Actual Volume table…");
+      setSyncProgress(95);
+
+      setVolumes(monthly);
+
+      // If tabs are still "Year N", rename this tab to the actual year
+      if (isNaN(parseInt(selectedYear, 10))) {
+        const newYears = years.map(y => y === selectedYear ? String(calendarYear) : y);
+        setYears(newYears);
+        setSelectedYear(String(calendarYear));
+      }
+
+      setSyncProgress(100);
+      setSyncStep("Done!");
+
+      const total = monthly.reduce((a, b) => a + b, 0);
+      setArrivalSyncMsg({ ok: true, text: `✓ Synced ${calendarYear} — ${total.toLocaleString()} interactions across 12 months` });
+      setTimeout(() => {
+        setArrivalSyncMsg(null);
+        setSyncProgress(0);
+        setSyncStep("");
+      }, 5000);
+    } catch (err) {
+      console.error("Arrival sync error:", err);
+      setArrivalSyncMsg({ ok: false, text: "❌ Could not connect to server." });
+      setSyncProgress(0);
+      setSyncStep("");
+    } finally {
+      setIsSyncingArrival(false);
+    }
+  };
+
   // ── Delete year — removes from DB and local state ─────────────────────────
   const handleDeleteYear = async (yearToDelete: string) => {
-    if (years.length === 1) return;
-    // Remove from DB (ignore if it was never saved)
+    if (years.length === 1) return; // always keep at least one tab
     try {
       await fetch(`http://localhost:5000/api/forecasts/${encodeURIComponent(yearToDelete)}`, {
         method: "DELETE",
@@ -201,9 +345,14 @@ export function Forecasting() {
     }
   };
 
-  // ── Add year — adds to local list only; persisted when user saves ─────────
+  // ── Add year — uses next calendar year if tabs are already calendar years ──
   const handleAddYear = () => {
-    const nextYear = `Year ${years.length + 1}`;
+    // If existing tabs are calendar years (e.g. "2023", "2024"), continue the sequence
+    const lastYear = years[years.length - 1];
+    const lastNum  = parseInt(lastYear, 10);
+    const nextYear = !isNaN(lastNum) && lastNum > 2000
+      ? String(lastNum + 1)
+      : `Year ${years.length + 1}`;
     setYears(prev => [...prev, nextYear]);
     setSelectedYear(nextYear);
   };
@@ -499,7 +648,7 @@ export function Forecasting() {
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground uppercase">Planning Horizon</label>
               <div className="flex gap-2 flex-wrap">
-                {years.map((y) => (
+                {years.map((y, yi) => (
                   <div key={y} className="relative group flex items-center">
                     <button
                       onClick={() => setSelectedYear(y)}
@@ -511,7 +660,7 @@ export function Forecasting() {
                     >
                       {y}
                     </button>
-                    {y !== "Year 1" && years.length > 1 && (
+                    {years.length > 1 && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -531,6 +680,10 @@ export function Forecasting() {
                   <Plus className="size-4" />
                 </button>
               </div>
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Year 1 = earliest · Year 2 = next · etc. — maps to calendar years in Arrival data.
+                Click <strong>Sync Arrival Data</strong> to auto-fill.
+              </p>
             </div>
 
             {/* Method Selector */}
@@ -553,6 +706,43 @@ export function Forecasting() {
 
           {/* Action Buttons */}
           <div className="flex items-center gap-3 flex-wrap">
+
+            {/* ── Sync from Arrival Analysis ── */}
+            <div className="flex flex-col gap-1.5 min-w-[220px]">
+              <button
+                onClick={handleSyncFromArrival}
+                disabled={isSyncingArrival}
+                title="Pull monthly totals from Interaction Arrival data for this planning year"
+                className={`bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm ${isSyncingArrival ? "opacity-80 cursor-not-allowed" : ""}`}
+              >
+                <TrendingUp className={`size-4 ${isSyncingArrival ? "animate-pulse" : ""}`} />
+                {isSyncingArrival ? "Syncing…" : "Sync Arrival Data"}
+              </button>
+
+              {/* Progress bar — visible only while syncing or just finished */}
+              {(isSyncingArrival || syncProgress > 0) && !arrivalSyncMsg && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-muted-foreground truncate max-w-[180px]">{syncStep}</span>
+                    <span className="text-[10px] font-bold text-orange-600 tabular-nums ml-1">{syncProgress}%</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-orange-100 dark:bg-orange-900/30 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-orange-500 rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${syncProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Success / error message after sync completes */}
+              {arrivalSyncMsg && (
+                <span className={`text-xs font-semibold ${arrivalSyncMsg.ok ? "text-green-600" : "text-red-500"}`}>
+                  {arrivalSyncMsg.text}
+                </span>
+              )}
+            </div>
+
             <button
               onClick={handleGenesysSync}
               disabled={isSyncing}
