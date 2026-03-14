@@ -4,7 +4,8 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors()); 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const pool = new Pool({
   user: 'postgres',
@@ -202,18 +203,39 @@ app.post('/api/interaction-arrival', async (req, res) => {
   const { records } = req.body;
   if (!Array.isArray(records) || records.length === 0)
     return res.status(400).json({ error: 'records array is required' });
+
+  const BATCH_SIZE = 500;
+  const client = await pool.connect();
+
   try {
-    const values = records.map((r, i) => `($${i*4+1},$${i*4+2},$${i*4+3},$${i*4+4})`).join(',');
-    const flat = records.flatMap(r => [r.interval_date, r.interval_index, r.volume ?? 0, r.aht ?? 0]);
-    await pool.query(
-      `INSERT INTO interaction_arrival (interval_date, interval_index, volume, aht) VALUES ${values}
-       ON CONFLICT (interval_date, interval_index) DO UPDATE SET
-         volume=EXCLUDED.volume, aht=EXCLUDED.aht, updated_at=NOW()`, flat
-    );
+    await client.query('BEGIN');
+
+    for (let i = 0; i < records.length; i += BATCH_SIZE) {
+      const batch = records.slice(i, i + BATCH_SIZE);
+      const values = batch.map((_, j) =>
+        `($${j*4+1},$${j*4+2},$${j*4+3},$${j*4+4})`
+      ).join(',');
+      const flat = batch.flatMap(r => [
+        r.interval_date, r.interval_index, r.volume ?? 0, r.aht ?? 0
+      ]);
+
+      await client.query(
+        `INSERT INTO interaction_arrival (interval_date, interval_index, volume, aht)
+         VALUES ${values}
+         ON CONFLICT (interval_date, interval_index) DO UPDATE SET
+           volume=EXCLUDED.volume, aht=EXCLUDED.aht, updated_at=NOW()`,
+        flat
+      );
+    }
+
+    await client.query('COMMIT');
     res.json({ success: true, count: records.length });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Interaction Arrival Save Error:', err.message);
     res.status(500).json({ error: 'Failed to save interaction arrival data' });
+  } finally {
+    client.release();
   }
 });
 

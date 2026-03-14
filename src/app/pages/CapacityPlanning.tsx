@@ -174,7 +174,7 @@ function Badge({ value, target, unit = "" }: { value: number; target: number; un
   return (
     <span
       style={{
-        fontSize: 18,      // ← increase this
+        fontSize: 15,      // ← increase this
         fontWeight: 700,
         padding: "6px 12px",
         borderRadius: 999,

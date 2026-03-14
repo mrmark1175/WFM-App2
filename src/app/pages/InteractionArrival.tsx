@@ -9,6 +9,11 @@ interface IntervalRow { label: string; indices: number[]; }
 // ── Constants ─────────────────────────────────────────────────────────────────
 const API_BASE   = "http://localhost:5000";
 const SLOT_COUNT = 96;
+const ROW_H      = 28;   // px — must match the cell height in styles
+const COL_W      = 96;   // px — must match the col width in colgroup
+const LABEL_W    = 88;   // px — sticky time label column
+const HDR_H      = 48;   // px — sticky header row height (approx)
+const OVERSCAN   = 4;    // extra rows/cols rendered outside viewport
 
 const TELEPHONY_SYSTEMS = [
   { id: "genesys", label: "Genesys Cloud", icon: "☁️" },
@@ -39,7 +44,6 @@ function makeIntervals(size: 15 | 30 | 60): IntervalRow[] {
   return rows;
 }
 
-// ── CHANGED: now takes start + end instead of start + count ──────────────────
 function makeDateRange(start: string, end: string): string[] {
   const out: string[] = [];
   const s = new Date(start + "T00:00:00");
@@ -84,12 +88,54 @@ function lastMonday(): string {
   return d.toISOString().split("T")[0];
 }
 
-// ── default end = start + 6 days (7-day view) ────────────────────────────────
 function addDays(dateStr: string, n: number): string {
   const d = new Date(dateStr + "T00:00:00");
   d.setDate(d.getDate() + n);
   return d.toISOString().split("T")[0];
 }
+
+// ── Memoized Cell ─────────────────────────────────────────────────────────────
+interface CellProps {
+  rowIdx: number; colIdx: number; val: number;
+  isAnchor: boolean; isHour: boolean; today: boolean; weekend: boolean;
+  activeTab: "volume" | "aht";
+  onFocus: (row: number, col: number) => void;
+  onChange: (row: number, col: number, val: number) => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>, row: number, col: number) => void;
+}
+const GridCell = React.memo(({ rowIdx, colIdx, val, isAnchor, isHour, today, weekend, activeTab, onFocus, onChange, onKeyDown }: CellProps) => (
+  <td style={{
+    padding: 0, height: ROW_H,
+    border: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
+    background: isAnchor ? "#fff7ed" : today ? "#fffbf5" : weekend ? "#fafaf9" : undefined,
+    outline:       isAnchor ? "2px solid #f97316" : undefined,
+    outlineOffset: isAnchor ? -2 : undefined,
+    position: "relative",
+  }}>
+    <input
+      id={`cell-${rowIdx}-${colIdx}`}
+      type="text"
+      value={val === 0 ? "" : String(val)}
+      placeholder=""
+      onFocus={() => onFocus(rowIdx, colIdx)}
+      onChange={e => { const n = parseFloat(e.target.value.replace(/,/g, "")) || 0; onChange(rowIdx, colIdx, n); }}
+      onKeyDown={e => onKeyDown(e, rowIdx, colIdx)}
+      style={{
+        display: "block", width: "100%", height: "100%",
+        border: "none", outline: "none", padding: "0 8px", fontSize: 12,
+        fontWeight: val > 0 ? 600 : 400,
+        color: val > 0 ? (activeTab === "volume" ? "#111827" : "#6366f1") : "#e5e7eb",
+        background: "transparent", textAlign: "right",
+        cursor: "cell", boxSizing: "border-box",
+        fontVariantNumeric: "tabular-nums",
+      }}
+    />
+  </td>
+), (prev, next) =>
+  prev.val       === next.val       &&
+  prev.isAnchor  === next.isAnchor  &&
+  prev.activeTab === next.activeTab
+);
 
 // ── Main Component ────────────────────────────────────────────────────────────
 export function InteractionArrival() {
@@ -99,7 +145,7 @@ export function InteractionArrival() {
   const [activeTab,    setActiveTab]    = useState<"volume" | "aht">("volume");
   const [intervalSize, setIntervalSize] = useState<15 | 30 | 60>(15);
   const [startDate,    setStartDate]    = useState<string>(lastMonday());
-  const [endDate,      setEndDate]      = useState<string>(addDays(lastMonday(), 6)); // ← CHANGED
+  const [endDate,      setEndDate]      = useState<string>(addDays(lastMonday(), 6));
   const [data,         setData]         = useState<GridData>({});
   const [anchorCell,   setAnchorCell]   = useState<{ row: number; col: number } | null>(null);
 
@@ -115,40 +161,84 @@ export function InteractionArrival() {
   const [isPulling,       setIsPulling]       = useState(false);
   const [pullMsg,         setPullMsg]         = useState<{ ok: boolean; text: string } | null>(null);
 
+  // ── Virtual scroll state ──────────────────────────────────────────────────────
+  const scrollRef  = useRef<HTMLDivElement>(null);
+  const [scrollTop,  setScrollTop]  = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [vpHeight,   setVpHeight]   = useState(600);
+  const [vpWidth,    setVpWidth]    = useState(1200);
+
   // ── Derived ──────────────────────────────────────────────────────────────────
   const intervals = useMemo(() => makeIntervals(intervalSize), [intervalSize]);
-  const dates     = useMemo(() => makeDateRange(startDate, endDate), [startDate, endDate]); // ← CHANGED
+  const dates     = useMemo(() => makeDateRange(startDate, endDate), [startDate, endDate]);
 
-  // ── Keep endDate ≥ startDate when startDate moves forward ────────────────────
+  // ── Virtual row window ────────────────────────────────────────────────────────
+  const visRowStart = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+  const visRowEnd   = Math.min(intervals.length - 1, Math.ceil((scrollTop + vpHeight) / ROW_H) + OVERSCAN);
+
+  // ── Virtual col window ────────────────────────────────────────────────────────
+  const visColStart = Math.max(0, Math.floor(scrollLeft / COL_W) - OVERSCAN);
+  const visColEnd   = Math.min(dates.length - 1, Math.ceil((scrollLeft + vpWidth - LABEL_W) / COL_W) + OVERSCAN);
+
+  // ── Total dimensions for spacer rows/cols ─────────────────────────────────────
+  const totalRowH = intervals.length * ROW_H;
+  const totalColW = dates.length * COL_W;
+
+  // ── Measure viewport on mount and resize ─────────────────────────────────────
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setVpHeight(el.clientHeight);
+      setVpWidth(el.clientWidth);
+    });
+    ro.observe(el);
+    setVpHeight(el.clientHeight);
+    setVpWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Scroll handler ────────────────────────────────────────────────────────────
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setScrollTop(el.scrollTop);
+    setScrollLeft(el.scrollLeft);
+  }, []);
+
+  // ── Keep endDate ≥ startDate ──────────────────────────────────────────────────
   const handleStartDateChange = (val: string) => {
     setStartDate(val);
     if (val > endDate) setEndDate(addDays(val, 6));
   };
-
-  // ── Keep startDate ≤ endDate when endDate moves back ─────────────────────────
   const handleEndDateChange = (val: string) => {
     setEndDate(val);
     if (val < startDate) setStartDate(val);
   };
 
-  // ── Fetch from DB ─────────────────────────────────────────────────────────────
+  // ── Debounced fetch — waits 400ms after user stops changing dates ─────────────
+  const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!dates.length) return;
-    setIsLoading(true);
-    fetch(`${API_BASE}/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}`)
-      .then(r => r.json())
-      .then((records: any[]) => {
-        if (!Array.isArray(records)) return;
-        const newData: GridData = {};
-        records.forEach(r => {
-          const ds = (r.interval_date as string).split("T")[0];
-          if (!newData[ds]) newData[ds] = {};
-          newData[ds][r.interval_index] = { volume: r.volume || 0, aht: r.aht || 0 };
-        });
-        setData(prev => ({ ...prev, ...newData }));
-      })
-      .catch(() => {})
-      .finally(() => setIsLoading(false));
+    if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current);
+    fetchDebounceRef.current = setTimeout(() => {
+      setIsLoading(true);
+      fetch(`${API_BASE}/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}`)
+        .then(r => r.json())
+        .then((records: any[]) => {
+          if (!Array.isArray(records)) return;
+          const newData: GridData = {};
+          records.forEach(r => {
+            const ds = (r.interval_date as string).split("T")[0];
+            if (!newData[ds]) newData[ds] = {};
+            newData[ds][r.interval_index] = { volume: r.volume || 0, aht: r.aht || 0 };
+          });
+          setData(prev => ({ ...prev, ...newData }));
+        })
+        .catch(() => {})
+        .finally(() => setIsLoading(false));
+    }, 400);
+    return () => { if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current); };
   }, [startDate, endDate]);
 
   // ── Paste ─────────────────────────────────────────────────────────────────────
@@ -196,6 +286,10 @@ export function InteractionArrival() {
     });
   }, [dates, intervals, activeTab]);
 
+  // ── Stable callbacks for GridCell ─────────────────────────────────────────────
+  const handleCellFocus  = useCallback((row: number, col: number) => setAnchorCell({ row, col }), []);
+  const handleCellChange = useCallback((row: number, col: number, val: number) => updateCell(row, col, val), [updateCell]);
+
   // ── Keyboard nav ─────────────────────────────────────────────────────────────
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, row: number, col: number) => {
     if (e.key === "Enter" || e.key === "ArrowDown") {
@@ -210,7 +304,7 @@ export function InteractionArrival() {
     }
   }, [intervals.length]);
 
-  // ── Save ─────────────────────────────────────────────────────────────────────
+  // ── Save (chunked) ────────────────────────────────────────────────────────────
   const handleSave = async () => {
     setSaveStatus("saving");
     const records: any[] = [];
@@ -221,13 +315,18 @@ export function InteractionArrival() {
     );
     if (!records.length) { setSaveStatus("saved"); setTimeout(() => setSaveStatus(""), 2000); return; }
     try {
-      const res = await fetch(`${API_BASE}/api/interaction-arrival`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ records }),
-      });
-      if (res.ok) { setSaveStatus("saved"); setTimeout(() => setSaveStatus(""), 2500); }
-      else setSaveStatus("error");
+      const CHUNK_SIZE = 2000;
+      for (let i = 0; i < records.length; i += CHUNK_SIZE) {
+        const chunk = records.slice(i, i + CHUNK_SIZE);
+        const res = await fetch(`${API_BASE}/api/interaction-arrival`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ records: chunk }),
+        });
+        if (!res.ok) { setSaveStatus("error"); return; }
+      }
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus(""), 2500);
     } catch { setSaveStatus("error"); }
   };
 
@@ -290,6 +389,10 @@ export function InteractionArrival() {
     }),
   };
 
+  // ── Visible slices ────────────────────────────────────────────────────────────
+  const visibleIntervals = intervals.slice(visRowStart, visRowEnd + 1);
+  const visibleDates     = dates.slice(visColStart, visColEnd + 1);
+
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={S.page}>
@@ -319,7 +422,7 @@ export function InteractionArrival() {
         <button onClick={() => navigate("/")} style={{ fontSize: 13, color: "#6b7280", background: "none", border: "none", cursor: "pointer" }}>🏠 Home</button>
       </div>
 
-      {/* ── Body (flex column, fills remaining viewport height) ── */}
+      {/* ── Body ── */}
       <div style={S.body}>
 
         {/* ── Page title ── */}
@@ -339,19 +442,13 @@ export function InteractionArrival() {
         {/* ── Controls bar ── */}
         <div style={{ ...S.card, padding: "12px 20px", marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", flexShrink: 0 }}>
 
-          {/* Tabs */}
           <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
-            <button style={S.tab(activeTab === "volume")} onClick={() => setActiveTab("volume")}>
-              📞 Interaction Volume
-            </button>
-            <button style={S.tab(activeTab === "aht")} onClick={() => setActiveTab("aht")}>
-              ⏱ AHT
-            </button>
+            <button style={S.tab(activeTab === "volume")} onClick={() => setActiveTab("volume")}>📞 Interaction Volume</button>
+            <button style={S.tab(activeTab === "aht")}    onClick={() => setActiveTab("aht")}>⏱ AHT</button>
           </div>
 
           <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />
 
-          {/* Interval */}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>Interval:</span>
             <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
@@ -365,44 +462,28 @@ export function InteractionArrival() {
 
           <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />
 
-          {/* ── CHANGED: Start + End date pickers ── */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>From:</span>
-            <input
-              type="date"
-              value={startDate}
-              onChange={e => handleStartDateChange(e.target.value)}
-              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }}
-            />
+            <input type="date" value={startDate} onChange={e => handleStartDateChange(e.target.value)}
+              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }} />
             <span style={{ fontSize: 12, color: "#9ca3af" }}>—</span>
             <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>To:</span>
-            <input
-              type="date"
-              value={endDate}
-              min={startDate}
-              onChange={e => handleEndDateChange(e.target.value)}
-              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }}
-            />
+            <input type="date" value={endDate} min={startDate} onChange={e => handleEndDateChange(e.target.value)}
+              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }} />
             <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500 }}>
               ({dates.length} day{dates.length !== 1 ? "s" : ""})
             </span>
           </div>
 
-          {/* Right side actions */}
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
             {isLoading && <span style={{ fontSize: 12, color: "#9ca3af" }}>Loading…</span>}
-
             <button onClick={() => setShowModal(true)} style={{
               padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer",
               border: "1px solid #6366f1", background: "#eef2ff", color: "#6366f1",
-            }}>
-              📡 Pull from Telephony
-            </button>
-
+            }}>📡 Pull from Telephony</button>
             {saveStatus === "saving" && <span style={{ fontSize: 12, color: "#9ca3af" }}>💾 Saving…</span>}
             {saveStatus === "saved"  && <span style={{ fontSize: 12, color: "#16a34a", fontWeight: 600 }}>✓ Saved</span>}
             {saveStatus === "error"  && <span style={{ fontSize: 12, color: "#dc2626" }}>✕ Error saving</span>}
-
             <button onClick={handleSave}
               style={{ padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "1px solid #f97316", background: "#fff7ed", color: "#f97316" }}
               onMouseEnter={e => { e.currentTarget.style.background = "#f97316"; e.currentTarget.style.color = "#fff"; }}
@@ -419,143 +500,157 @@ export function InteractionArrival() {
               📋 Row {anchorCell.row + 1}, {dates[anchorCell.col]} selected — press Ctrl+V / Cmd+V to paste from Excel
             </span>
           ) : (
-            <span style={{ color: "#9ca3af" }}>
-              💡 Click any cell to select, then paste (Ctrl+V) to fill from Excel
-            </span>
+            <span style={{ color: "#9ca3af" }}>💡 Click any cell to select, then paste (Ctrl+V) to fill from Excel</span>
           )}
         </div>
 
-        {/* ── Spreadsheet grid — flex: 1 so it fills all remaining height ── */}
+        {/* ── Virtualized grid ── */}
         <div style={{ ...S.card, flex: 1, overflow: "hidden", minHeight: 0 }}>
           <div
+            ref={scrollRef}
+            onScroll={handleScroll}
             onPaste={handleGridPaste}
-            style={{
-              width: "100%",
-              height: "100%",
-              overflowX: "auto",
-              overflowY: "auto",
-            }}
+            style={{ width: "100%", height: "100%", overflow: "auto" }}
           >
-            <table style={{ borderCollapse: "collapse", tableLayout: "fixed", minWidth: "100%" }}>
-              <colgroup>
-                <col style={{ width: 88 }} />
-                {dates.map(ds => <col key={ds} style={{ width: 96 }} />)}
-              </colgroup>
+            {/* Total size container — gives scrollbars the correct range */}
+            <div style={{ position: "relative", width: LABEL_W + totalColW, height: HDR_H + totalRowH + ROW_H }}>
 
-              {/* ── Sticky header ── */}
-              <thead>
-                <tr>
-                  <th style={{
-                    position: "sticky", left: 0, top: 0, zIndex: 4,
-                    background: "#f1f5f9", borderRight: "2px solid #e5e7eb", borderBottom: "2px solid #e5e7eb",
-                    padding: "8px 10px", fontSize: 10, fontWeight: 700, color: "#6b7280",
-                    textTransform: "uppercase", letterSpacing: ".06em", textAlign: "left",
-                  }}>
-                    {intervalSize === 15 ? "15 MIN" : intervalSize === 30 ? "30 MIN" : "HOURLY"}
-                  </th>
-                  {dates.map(ds => {
-                    const { dow, mmd } = fmtHdr(ds);
-                    const today   = isToday(ds);
-                    const weekend = isWeekend(ds);
-                    return (
-                      <th key={ds} style={{
-                        position: "sticky", top: 0, zIndex: 3,
-                        background: today ? "#fff7ed" : weekend ? "#fafaf9" : "#f8fafc",
-                        border: "1px solid #e5e7eb", borderBottom: "2px solid #e5e7eb",
-                        padding: "4px 4px 2px", textAlign: "center",
-                      }}>
-                        <div style={{ fontSize: 10, fontWeight: 700, color: today ? "#f97316" : weekend ? "#9ca3af" : "#6b7280" }}>{dow}</div>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: today ? "#f97316" : "#111827" }}>{mmd}</div>
-                        <button onClick={() => clearDay(ds)} title="Clear this day"
-                          style={{ fontSize: 9, color: "#d1d5db", background: "none", border: "none", cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>✕</button>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
+              {/* ── Sticky header row ── */}
+              <div style={{
+                position: "sticky", top: 0, left: 0, zIndex: 4,
+                display: "flex", width: LABEL_W + totalColW,
+                background: "#f8fafc", borderBottom: "2px solid #e5e7eb",
+              }}>
+                {/* Corner cell */}
+                <div style={{
+                  position: "sticky", left: 0, zIndex: 5, flexShrink: 0,
+                  width: LABEL_W, minWidth: LABEL_W,
+                  background: "#f1f5f9", borderRight: "2px solid #e5e7eb",
+                  padding: "8px 10px", fontSize: 10, fontWeight: 700, color: "#6b7280",
+                  textTransform: "uppercase", letterSpacing: ".06em",
+                  display: "flex", alignItems: "center",
+                }}>
+                  {intervalSize === 15 ? "15 MIN" : intervalSize === 30 ? "30 MIN" : "HOURLY"}
+                </div>
+                {/* Left spacer for hidden cols */}
+                {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
+                {/* Visible date headers */}
+                {visibleDates.map((ds) => {
+                  const { dow, mmd } = fmtHdr(ds);
+                  const today   = isToday(ds);
+                  const weekend = isWeekend(ds);
+                  return (
+                    <div key={ds} style={{
+                      width: COL_W, minWidth: COL_W, flexShrink: 0,
+                      background: today ? "#fff7ed" : weekend ? "#fafaf9" : "#f8fafc",
+                      border: "1px solid #e5e7eb", borderBottom: "none",
+                      padding: "4px 4px 2px", textAlign: "center",
+                    }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: today ? "#f97316" : weekend ? "#9ca3af" : "#6b7280" }}>{dow}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: today ? "#f97316" : "#111827" }}>{mmd}</div>
+                      <button onClick={() => clearDay(ds)} title="Clear this day"
+                        style={{ fontSize: 9, color: "#d1d5db", background: "none", border: "none", cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>✕</button>
+                    </div>
+                  );
+                })}
+                {/* Right spacer */}
+                {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
+              </div>
 
-              {/* ── Data rows ── */}
-              <tbody>
-                {intervals.map((interval, rowIdx) => {
+              {/* ── Visible rows — absolutely positioned at correct vertical offset ── */}
+              <div style={{ position: "absolute", top: HDR_H + visRowStart * ROW_H, left: 0, width: LABEL_W + totalColW }}>
+                {visibleIntervals.map((interval, vi) => {
+                  const rowIdx = visRowStart + vi;
                   const isHour = interval.indices[0] % 4 === 0;
                   return (
-                    <tr key={rowIdx} style={{ background: isHour ? "#fafafa" : "#fff" }}>
-                      <td style={{
-                        position: "sticky", left: 0, zIndex: 1,
+                    <div key={rowIdx} style={{ display: "flex", height: ROW_H, background: isHour ? "#fafafa" : "#fff" }}>
+                      {/* Sticky time label */}
+                      <div style={{
+                        position: "sticky", left: 0, zIndex: 1, flexShrink: 0,
+                        width: LABEL_W, minWidth: LABEL_W,
                         background: isHour ? "#f1f5f9" : "#f8fafc",
                         borderRight: "2px solid #e5e7eb",
                         borderBottom: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
                         padding: "0 10px", fontSize: 11,
                         fontWeight: isHour ? 700 : 400,
                         color: isHour ? "#374151" : "#9ca3af",
-                        whiteSpace: "nowrap", height: 28,
+                        whiteSpace: "nowrap",
+                        display: "flex", alignItems: "center",
                       }}>
                         {interval.label}
-                      </td>
-                      {dates.map((ds, colIdx) => {
-                        const val      = getCellValue(data, ds, interval.indices, activeTab);
-                        const isAnchor = anchorCell?.row === rowIdx && anchorCell?.col === colIdx;
-                        const today    = isToday(ds);
-                        const weekend  = isWeekend(ds);
-                        return (
-                          <td key={ds} style={{
-                            padding: 0, height: 28,
-                            border: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
-                            background: isAnchor ? "#fff7ed" : today ? "#fffbf5" : weekend ? "#fafaf9" : undefined,
-                            outline:       isAnchor ? "2px solid #f97316" : undefined,
-                            outlineOffset: isAnchor ? -2 : undefined,
-                            position:      "relative",
-                          }}>
-                            <input
-                              id={`cell-${rowIdx}-${colIdx}`}
-                              type="text"
-                              value={val === 0 ? "" : String(val)}
-                              placeholder=""
-                              onFocus={() => setAnchorCell({ row: rowIdx, col: colIdx })}
-                              onChange={e => { const n = parseFloat(e.target.value.replace(/,/g, "")) || 0; updateCell(rowIdx, colIdx, n); }}
-                              onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                              style={{
-                                display: "block", width: "100%", height: "100%",
-                                border: "none", outline: "none", padding: "0 8px", fontSize: 12,
-                                fontWeight: val > 0 ? 600 : 400,
-                                color: val > 0 ? (activeTab === "volume" ? "#111827" : "#6366f1") : "#e5e7eb",
-                                background: "transparent", textAlign: "right",
-                                cursor: "cell", boxSizing: "border-box",
-                                fontVariantNumeric: "tabular-nums",
-                              }}
-                            />
-                          </td>
-                        );
-                      })}
-                    </tr>
+                      </div>
+                      {/* Left col spacer */}
+                      {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
+                      {/* Visible cells */}
+                      <table style={{ borderCollapse: "collapse", tableLayout: "fixed", flexShrink: 0 }}>
+                        <colgroup>{visibleDates.map((_, i) => <col key={i} style={{ width: COL_W }} />)}</colgroup>
+                        <tbody>
+                          <tr>
+                            {visibleDates.map((ds, ci) => {
+                              const colIdx  = visColStart + ci;
+                              const val     = getCellValue(data, ds, interval.indices, activeTab);
+                              const today   = isToday(ds);
+                              const weekend = isWeekend(ds);
+                              return (
+                                <GridCell
+                                  key={ds}
+                                  rowIdx={rowIdx} colIdx={colIdx}
+                                  val={val}
+                                  isAnchor={anchorCell?.row === rowIdx && anchorCell?.col === colIdx}
+                                  isHour={isHour} today={today} weekend={weekend}
+                                  activeTab={activeTab}
+                                  onFocus={handleCellFocus}
+                                  onChange={handleCellChange}
+                                  onKeyDown={handleKeyDown}
+                                />
+                              );
+                            })}
+                          </tr>
+                        </tbody>
+                      </table>
+                      {/* Right col spacer */}
+                      {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
+                    </div>
                   );
                 })}
+              </div>
 
-                {/* ── Sticky total row ── */}
-                <tr style={{ background: "#f8fafc", borderTop: "2px solid #e5e7eb", position: "sticky", bottom: 0, zIndex: 2 }}>
-                  <td style={{
-                    position: "sticky", left: 0, zIndex: 3, background: "#f1f5f9",
-                    borderRight: "2px solid #e5e7eb", padding: "6px 10px",
-                    fontSize: 10, fontWeight: 700, color: "#374151",
-                    textTransform: "uppercase", letterSpacing: ".04em",
-                  }}>
-                    {activeTab === "volume" ? "Daily Total" : "Avg AHT"}
-                  </td>
-                  {dates.map((ds, i) => {
-                    const v = activeTab === "volume" ? colTotals[i].vol : colTotals[i].aht;
-                    return (
-                      <td key={ds} style={{
-                        border: "1px solid #e5e7eb", padding: "6px 8px",
-                        textAlign: "right", fontSize: 12, fontWeight: 700,
-                        color: v > 0 ? "#f97316" : "#d1d5db",
-                      }}>
-                        {v > 0 ? (activeTab === "volume" ? v.toLocaleString() : `${v}s`) : "—"}
-                      </td>
-                    );
-                  })}
-                </tr>
-              </tbody>
-            </table>
+              {/* ── Sticky totals row ── */}
+              <div style={{
+                position: "sticky", bottom: 0, left: 0, zIndex: 4,
+                display: "flex", width: LABEL_W + totalColW,
+                background: "#f8fafc", borderTop: "2px solid #e5e7eb",
+              }}>
+                <div style={{
+                  position: "sticky", left: 0, zIndex: 5, flexShrink: 0,
+                  width: LABEL_W, minWidth: LABEL_W,
+                  background: "#f1f5f9", borderRight: "2px solid #e5e7eb",
+                  padding: "6px 10px", fontSize: 10, fontWeight: 700, color: "#374151",
+                  textTransform: "uppercase", letterSpacing: ".04em",
+                  display: "flex", alignItems: "center",
+                }}>
+                  {activeTab === "volume" ? "Daily Total" : "Avg AHT"}
+                </div>
+                {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
+                {visibleDates.map((ds, i) => {
+                  const colIdx = visColStart + i;
+                  const v = activeTab === "volume" ? colTotals[colIdx]?.vol : colTotals[colIdx]?.aht;
+                  return (
+                    <div key={ds} style={{
+                      width: COL_W, minWidth: COL_W, flexShrink: 0,
+                      border: "1px solid #e5e7eb", padding: "6px 8px",
+                      textAlign: "right", fontSize: 12, fontWeight: 700,
+                      color: v > 0 ? "#f97316" : "#d1d5db",
+                      display: "flex", alignItems: "center", justifyContent: "flex-end",
+                    }}>
+                      {v > 0 ? (activeTab === "volume" ? v.toLocaleString() : `${v}s`) : "—"}
+                    </div>
+                  );
+                })}
+                {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
+              </div>
+
+            </div>
           </div>
         </div>
       </div>
