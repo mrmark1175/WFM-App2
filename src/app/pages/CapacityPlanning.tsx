@@ -170,7 +170,23 @@ function Sparkline({ values, color = "#f97316" }: { values: number[]; color?: st
 
 function Badge({ value, target, unit = "" }: { value: number; target: number; unit?: string }) {
   const ok = value >= target;
-  return <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 99, background: ok ? "#dcfce7" : "#fef9c3", color: ok ? "#16a34a" : "#a16207" }}>{value}{unit}</span>;
+
+  return (
+    <span
+      style={{
+        fontSize: 18,      // ← increase this
+        fontWeight: 700,
+        padding: "6px 12px",
+        borderRadius: 999,
+        background: ok ? "#dcfce7" : "#fef9c3",
+        color: ok ? "#16a34a" : "#a16207",
+        display: "inline-block"
+      }}
+    >
+      {value}
+      {unit}
+    </span>
+  );
 }
 
 function GapBadge({ gap }: { gap: number }) {
