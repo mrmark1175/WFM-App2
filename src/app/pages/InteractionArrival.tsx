@@ -9,11 +9,14 @@ interface IntervalRow { label: string; indices: number[]; }
 // ── Constants ─────────────────────────────────────────────────────────────────
 const API_BASE   = "http://localhost:5000";
 const SLOT_COUNT = 96;
-const ROW_H      = 28;   // px — must match the cell height in styles
-const COL_W      = 96;   // px — must match the col width in colgroup
-const LABEL_W    = 88;   // px — sticky time label column
-const HDR_H      = 48;   // px — sticky header row height (approx)
-const OVERSCAN   = 4;    // extra rows/cols rendered outside viewport
+const ROW_H      = 28;
+const COL_W      = 96;
+const LABEL_W    = 88;
+const HDR_H      = 48;
+const OVERSCAN   = 4;
+
+const DOW_LABELS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const DOW_FULL   = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
 const TELEPHONY_SYSTEMS = [
   { id: "genesys", label: "Genesys Cloud", icon: "☁️" },
@@ -38,9 +41,8 @@ function fmtSlot(slotIdx: number): string {
 function makeIntervals(size: 15 | 30 | 60): IntervalRow[] {
   const step = size / 15;
   const rows: IntervalRow[] = [];
-  for (let i = 0; i < SLOT_COUNT; i += step) {
+  for (let i = 0; i < SLOT_COUNT; i += step)
     rows.push({ label: fmtSlot(i), indices: Array.from({ length: step }, (_, j) => i + j) });
-  }
   return rows;
 }
 
@@ -50,18 +52,14 @@ function makeDateRange(start: string, end: string): string[] {
   const e = new Date(end   + "T00:00:00");
   if (isNaN(s.getTime()) || isNaN(e.getTime()) || e < s) return [start];
   const cur = new Date(s);
-  while (cur <= e) {
-    out.push(cur.toISOString().split("T")[0]);
-    cur.setDate(cur.getDate() + 1);
-  }
+  while (cur <= e) { out.push(cur.toISOString().split("T")[0]); cur.setDate(cur.getDate() + 1); }
   return out;
 }
 
 function fmtHdr(dateStr: string): { dow: string; mmd: string } {
-  const d      = new Date(dateStr + "T00:00:00");
-  const days   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const d = new Date(dateStr + "T00:00:00");
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return { dow: days[d.getDay()], mmd: `${months[d.getMonth()]} ${d.getDate()}` };
+  return { dow: DOW_LABELS[d.getDay()], mmd: `${months[d.getMonth()]} ${d.getDate()}` };
 }
 
 function isWeekend(dateStr: string): boolean {
@@ -94,6 +92,16 @@ function addDays(dateStr: string, n: number): string {
   return d.toISOString().split("T")[0];
 }
 
+// heat-map colour: white → orange
+function pctColor(pct: number, max: number): string {
+  if (max === 0 || pct === 0) return "transparent";
+  const t = Math.min(pct / max, 1);
+  const r = Math.round(255);
+  const g = Math.round(255 - t * (255 - 115));
+  const b = Math.round(255 - t * 255);
+  return `rgba(${r},${g},${b},${0.18 + t * 0.55})`;
+}
+
 // ── Memoized Cell ─────────────────────────────────────────────────────────────
 interface CellProps {
   rowIdx: number; colIdx: number; val: number;
@@ -108,7 +116,7 @@ const GridCell = React.memo(({ rowIdx, colIdx, val, isAnchor, isHour, today, wee
     padding: 0, height: ROW_H,
     border: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
     background: isAnchor ? "#fff7ed" : today ? "#fffbf5" : weekend ? "#fafaf9" : undefined,
-    outline:       isAnchor ? "2px solid #f97316" : undefined,
+    outline: isAnchor ? "2px solid #f97316" : undefined,
     outlineOffset: isAnchor ? -2 : undefined,
     position: "relative",
   }}>
@@ -126,34 +134,336 @@ const GridCell = React.memo(({ rowIdx, colIdx, val, isAnchor, isHour, today, wee
         fontWeight: val > 0 ? 600 : 400,
         color: val > 0 ? (activeTab === "volume" ? "#111827" : "#6366f1") : "#e5e7eb",
         background: "transparent", textAlign: "right",
-        cursor: "cell", boxSizing: "border-box",
-        fontVariantNumeric: "tabular-nums",
+        cursor: "cell", boxSizing: "border-box", fontVariantNumeric: "tabular-nums",
       }}
     />
   </td>
 ), (prev, next) =>
-  prev.val       === next.val       &&
-  prev.isAnchor  === next.isAnchor  &&
-  prev.activeTab === next.activeTab
+  prev.val === next.val && prev.isAnchor === next.isAnchor && prev.activeTab === next.activeTab
 );
+
+// ── Distribution Tab ──────────────────────────────────────────────────────────
+// Computes: for each (year, dow, intervalIdx) → avg % of that slot vs day total
+// Rows = 96 intervals, Cols = 7 days × N years
+interface DistProps { data: GridData; intervalSize: 15 | 30 | 60; }
+
+function DistributionTab({ data, intervalSize }: DistProps) {
+  const intervals = useMemo(() => makeIntervals(intervalSize), [intervalSize]);
+
+  // ── Which years are present in data ──────────────────────────────────────────
+  const years = useMemo(() => {
+    const ys = new Set<number>();
+    Object.keys(data).forEach(ds => ys.add(new Date(ds + "T00:00:00").getFullYear()));
+    return Array.from(ys).sort();
+  }, [data]);
+
+  // ── Selected DoW filter (0=all, 1=Mon…7=Sun mapped to JS 1,2,3,4,5,6,0) ────
+  const [selDow, setSelDow] = useState<number | null>(null); // null = show all
+
+  // ── Build profile: profile[year][dow][intervalIdx] = avg % ───────────────────
+  // For each date in data: compute daily total → each slot pct → accumulate by (year,dow,slot)
+  const profile = useMemo(() => {
+    // profile[year][dow 0-6][slotIdx 0-95] = { sum, count }
+    const acc: Record<number, Record<number, Record<number, { sum: number; count: number }>>> = {};
+
+    Object.entries(data).forEach(([ds, slots]) => {
+      const d   = new Date(ds + "T00:00:00");
+      const yr  = d.getFullYear();
+      const dow = d.getDay(); // 0=Sun…6=Sat
+
+      // day total volume
+      const dayTotal = Object.values(slots).reduce((s, c) => s + (c.volume || 0), 0);
+      if (dayTotal === 0) return;
+
+      if (!acc[yr]) acc[yr] = {};
+      if (!acc[yr][dow]) acc[yr][dow] = {};
+
+      // accumulate each slot's % contribution to that day
+      for (let si = 0; si < SLOT_COUNT; si++) {
+        const vol = slots[si]?.volume || 0;
+        const pct = (vol / dayTotal) * 100;
+        if (!acc[yr][dow][si]) acc[yr][dow][si] = { sum: 0, count: 0 };
+        acc[yr][dow][si].sum   += pct;
+        acc[yr][dow][si].count += 1;
+      }
+    });
+
+    // Convert to averages
+    const result: Record<number, Record<number, Record<number, number>>> = {};
+    Object.entries(acc).forEach(([yr, dows]) => {
+      result[Number(yr)] = {};
+      Object.entries(dows).forEach(([dow, slots]) => {
+        result[Number(yr)][Number(dow)] = {};
+        Object.entries(slots).forEach(([si, { sum, count }]) => {
+          result[Number(yr)][Number(dow)][Number(si)] = count > 0 ? sum / count : 0;
+        });
+      });
+    });
+    return result;
+  }, [data]);
+
+  // ── Max pct across all cells for heatmap scaling ──────────────────────────────
+  const maxPct = useMemo(() => {
+    let m = 0;
+    Object.values(profile).forEach(dows =>
+      Object.values(dows).forEach(slots =>
+        Object.values(slots).forEach(v => { if (v > m) m = v; })
+      )
+    );
+    return m;
+  }, [profile]);
+
+  // ── Days to show (filtered by selDow) ────────────────────────────────────────
+  // JS: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat — show Mon-Sun order
+  const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0]; // Mon first
+  const visibleDows = selDow !== null ? [selDow] : DOW_ORDER;
+
+  // ── Column headers: one group per year, one col per DoW ──────────────────────
+  // total cols = years.length × visibleDows.length
+  const DIST_COL_W = 72;
+  const DIST_LABEL_W = 88;
+
+  // ── Scroll for dist table ────────────────────────────────────────────────────
+  const distScrollRef = useRef<HTMLDivElement>(null);
+  const [distScrollTop, setDistScrollTop]   = useState(0);
+  const [distVpHeight,  setDistVpHeight]    = useState(500);
+  const visDistRowStart = Math.max(0, Math.floor(distScrollTop / ROW_H) - OVERSCAN);
+  const visDistRowEnd   = Math.min(intervals.length - 1, Math.ceil((distScrollTop + distVpHeight) / ROW_H) + OVERSCAN);
+
+  useEffect(() => {
+    const el = distScrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setDistVpHeight(el.clientHeight));
+    ro.observe(el);
+    setDistVpHeight(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  const totalDistRowH = intervals.length * ROW_H;
+  const totalDistColW = years.length * visibleDows.length * DIST_COL_W;
+
+  if (years.length === 0) return (
+    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#9ca3af", fontSize: 14 }}>
+      No data loaded yet — set a date range and the distribution will appear here.
+    </div>
+  );
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, gap: 10 }}>
+
+      {/* ── Info bar + DoW filter ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "#6b7280" }}>
+          Each cell = avg % of that interval's volume vs its day total · grouped by day-of-week · per year
+        </span>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}>
+          <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>Filter DoW:</span>
+          <button
+            onClick={() => setSelDow(null)}
+            style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 600, border: "1px solid", cursor: "pointer",
+              borderColor: selDow === null ? "#f97316" : "#e5e7eb",
+              background: selDow === null ? "#fff7ed" : "#fff",
+              color: selDow === null ? "#f97316" : "#6b7280" }}>
+            All
+          </button>
+          {DOW_ORDER.map(d => (
+            <button key={d} onClick={() => setSelDow(selDow === d ? null : d)}
+              style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 600, border: "1px solid", cursor: "pointer",
+                borderColor: selDow === d ? "#f97316" : "#e5e7eb",
+                background: selDow === d ? "#fff7ed" : "#fff",
+                color: selDow === d ? "#f97316" : "#6b7280" }}>
+              {DOW_LABELS[d]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Distribution table ── */}
+      <div style={{ flex: 1, border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden", minHeight: 0, background: "#fff" }}>
+        <div
+          ref={distScrollRef}
+          onScroll={() => { const el = distScrollRef.current; if (el) setDistScrollTop(el.scrollTop); }}
+          style={{ width: "100%", height: "100%", overflow: "auto" }}
+        >
+          <div style={{ position: "relative", width: DIST_LABEL_W + totalDistColW, height: HDR_H + 24 + totalDistRowH + ROW_H }}>
+
+            {/* ── Double sticky header: year row + DoW row ── */}
+            <div style={{ position: "sticky", top: 0, left: 0, zIndex: 6, background: "#f8fafc", borderBottom: "2px solid #e5e7eb" }}>
+
+              {/* Year group row */}
+              <div style={{ display: "flex" }}>
+                <div style={{
+                  position: "sticky", left: 0, zIndex: 7, flexShrink: 0,
+                  width: DIST_LABEL_W, minWidth: DIST_LABEL_W,
+                  background: "#f1f5f9", borderRight: "2px solid #e5e7eb",
+                  padding: "4px 10px", fontSize: 10, fontWeight: 700, color: "#6b7280",
+                  textTransform: "uppercase", letterSpacing: ".06em",
+                  display: "flex", alignItems: "center",
+                }}>
+                  {intervalSize === 15 ? "15 MIN" : intervalSize === 30 ? "30 MIN" : "HOURLY"}
+                </div>
+                {years.map(yr => (
+                  <div key={yr} style={{
+                    width: visibleDows.length * DIST_COL_W, flexShrink: 0,
+                    background: "#f8fafc", borderLeft: "2px solid #e5e7eb",
+                    padding: "4px 8px", fontSize: 12, fontWeight: 700, color: "#111827",
+                    textAlign: "center", borderBottom: "1px solid #e5e7eb",
+                  }}>
+                    {yr}
+                  </div>
+                ))}
+              </div>
+
+              {/* DoW sub-header row */}
+              <div style={{ display: "flex" }}>
+                <div style={{
+                  position: "sticky", left: 0, zIndex: 7, flexShrink: 0,
+                  width: DIST_LABEL_W, minWidth: DIST_LABEL_W,
+                  background: "#f1f5f9", borderRight: "2px solid #e5e7eb",
+                  padding: "3px 10px", fontSize: 9, fontWeight: 700, color: "#9ca3af",
+                  textTransform: "uppercase", display: "flex", alignItems: "center",
+                }}>
+                  % of Day
+                </div>
+                {years.map(yr =>
+                  visibleDows.map(dow => (
+                    <div key={`${yr}-${dow}`} style={{
+                      width: DIST_COL_W, minWidth: DIST_COL_W, flexShrink: 0,
+                      borderLeft: dow === visibleDows[0] ? "2px solid #e5e7eb" : "1px solid #f3f4f6",
+                      padding: "3px 4px", fontSize: 10, fontWeight: 700,
+                      color: dow === 0 || dow === 6 ? "#9ca3af" : "#374151",
+                      textAlign: "center", background: dow === 0 || dow === 6 ? "#fafaf9" : "#f8fafc",
+                    }}>
+                      {DOW_FULL[dow].slice(0, 3)}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* ── Visible interval rows ── */}
+            <div style={{ position: "absolute", top: HDR_H + 24 + visDistRowStart * ROW_H, left: 0, width: DIST_LABEL_W + totalDistColW }}>
+              {intervals.slice(visDistRowStart, visDistRowEnd + 1).map((interval, vi) => {
+                const rowIdx = visDistRowStart + vi;
+                const isHour = interval.indices[0] % 4 === 0;
+                return (
+                  <div key={rowIdx} style={{ display: "flex", height: ROW_H, background: isHour ? "#fafafa" : "#fff" }}>
+                    {/* Time label */}
+                    <div style={{
+                      position: "sticky", left: 0, zIndex: 1, flexShrink: 0,
+                      width: DIST_LABEL_W, minWidth: DIST_LABEL_W,
+                      background: isHour ? "#f1f5f9" : "#f8fafc",
+                      borderRight: "2px solid #e5e7eb",
+                      borderBottom: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
+                      padding: "0 10px", fontSize: 11,
+                      fontWeight: isHour ? 700 : 400,
+                      color: isHour ? "#374151" : "#9ca3af",
+                      whiteSpace: "nowrap", display: "flex", alignItems: "center",
+                    }}>
+                      {interval.label}
+                    </div>
+
+                    {/* Data cells */}
+                    {years.map(yr =>
+                      visibleDows.map(dow => {
+                        // average the pct across all slots in this interval row
+                        const pcts = interval.indices.map(si => profile[yr]?.[dow]?.[si] ?? 0);
+                        const pct  = pcts.reduce((a, b) => a + b, 0); // sum (not avg) so 96 rows sum to ~100%
+                        const isFirst = dow === visibleDows[0];
+                        const isWknd  = dow === 0 || dow === 6;
+                        return (
+                          <div key={`${yr}-${dow}`} style={{
+                            width: DIST_COL_W, minWidth: DIST_COL_W, flexShrink: 0,
+                            borderLeft: isFirst ? "2px solid #e5e7eb" : "1px solid #f3f4f6",
+                            borderBottom: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
+                            background: pct > 0 ? pctColor(pct, maxPct) : (isWknd ? "#fafaf9" : undefined),
+                            display: "flex", alignItems: "center", justifyContent: "flex-end",
+                            padding: "0 7px", fontSize: 11,
+                            fontWeight: pct > 0 ? 600 : 400,
+                            color: pct > 0 ? "#111827" : "#d1d5db",
+                            fontVariantNumeric: "tabular-nums",
+                          }}>
+                            {pct > 0 ? `${pct.toFixed(2)}%` : "—"}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ── Sticky totals row (should sum to ~100% per DoW per year) ── */}
+            <div style={{
+              position: "sticky", bottom: 0, left: 0, zIndex: 4,
+              display: "flex", width: DIST_LABEL_W + totalDistColW,
+              background: "#f8fafc", borderTop: "2px solid #e5e7eb",
+            }}>
+              <div style={{
+                position: "sticky", left: 0, zIndex: 5, flexShrink: 0,
+                width: DIST_LABEL_W, minWidth: DIST_LABEL_W,
+                background: "#f1f5f9", borderRight: "2px solid #e5e7eb",
+                padding: "6px 10px", fontSize: 10, fontWeight: 700, color: "#374151",
+                textTransform: "uppercase", letterSpacing: ".04em",
+                display: "flex", alignItems: "center",
+              }}>
+                Total
+              </div>
+              {years.map(yr =>
+                visibleDows.map(dow => {
+                  const total = intervals.reduce((sum, interval) => {
+                    const pcts = interval.indices.map(si => profile[yr]?.[dow]?.[si] ?? 0);
+                    return sum + pcts.reduce((a, b) => a + b, 0);
+                  }, 0);
+                  const isFirst = dow === visibleDows[0];
+                  return (
+                    <div key={`${yr}-${dow}`} style={{
+                      width: DIST_COL_W, minWidth: DIST_COL_W, flexShrink: 0,
+                      borderLeft: isFirst ? "2px solid #e5e7eb" : "1px solid #f3f4f6",
+                      padding: "6px 7px", textAlign: "right", fontSize: 11, fontWeight: 700,
+                      color: total > 0 ? "#f97316" : "#d1d5db",
+                    }}>
+                      {total > 0 ? `${total.toFixed(1)}%` : "—"}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      {/* ── Legend ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, fontSize: 11, color: "#9ca3af" }}>
+        <span>Heat map intensity:</span>
+        {[0.1, 0.3, 0.6, 1.0].map(t => (
+          <div key={t} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+            <div style={{ width: 16, height: 16, borderRadius: 3, background: pctColor(t * maxPct, maxPct), border: "1px solid #e5e7eb" }} />
+            <span>{(t * maxPct).toFixed(2)}%</span>
+          </div>
+        ))}
+        <span style={{ marginLeft: 8 }}>· Totals should sum to ~100% per column (minor rounding variance)</span>
+      </div>
+    </div>
+  );
+}
 
 // ── Main Component ────────────────────────────────────────────────────────────
 export function InteractionArrival() {
   const navigate = useNavigate();
 
   // ── Core state ───────────────────────────────────────────────────────────────
-  const [activeTab,    setActiveTab]    = useState<"volume" | "aht">("volume");
+  const [activeTab,    setActiveTab]    = useState<"volume" | "aht" | "distribution">("volume");
   const [intervalSize, setIntervalSize] = useState<15 | 30 | 60>(15);
   const [startDate,    setStartDate]    = useState<string>(lastMonday());
   const [endDate,      setEndDate]      = useState<string>(addDays(lastMonday(), 6));
   const [data,         setData]         = useState<GridData>({});
   const [anchorCell,   setAnchorCell]   = useState<{ row: number; col: number } | null>(null);
 
-  // ── Status ───────────────────────────────────────────────────────────────────
   const [saveStatus, setSaveStatus] = useState<"" | "saving" | "saved" | "error">("");
   const [isLoading,  setIsLoading]  = useState(false);
 
-  // ── Telephony modal ───────────────────────────────────────────────────────────
   const [showModal,       setShowModal]       = useState(false);
   const [telephonySystem, setTelephonySystem] = useState("genesys");
   const [pullDate,        setPullDate]        = useState(todayStr());
@@ -161,62 +471,40 @@ export function InteractionArrival() {
   const [isPulling,       setIsPulling]       = useState(false);
   const [pullMsg,         setPullMsg]         = useState<{ ok: boolean; text: string } | null>(null);
 
-  // ── Virtual scroll state ──────────────────────────────────────────────────────
   const scrollRef  = useRef<HTMLDivElement>(null);
   const [scrollTop,  setScrollTop]  = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [vpHeight,   setVpHeight]   = useState(600);
   const [vpWidth,    setVpWidth]    = useState(1200);
 
-  // ── Derived ──────────────────────────────────────────────────────────────────
   const intervals = useMemo(() => makeIntervals(intervalSize), [intervalSize]);
   const dates     = useMemo(() => makeDateRange(startDate, endDate), [startDate, endDate]);
 
-  // ── Virtual row window ────────────────────────────────────────────────────────
   const visRowStart = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const visRowEnd   = Math.min(intervals.length - 1, Math.ceil((scrollTop + vpHeight) / ROW_H) + OVERSCAN);
-
-  // ── Virtual col window ────────────────────────────────────────────────────────
   const visColStart = Math.max(0, Math.floor(scrollLeft / COL_W) - OVERSCAN);
   const visColEnd   = Math.min(dates.length - 1, Math.ceil((scrollLeft + vpWidth - LABEL_W) / COL_W) + OVERSCAN);
+  const totalRowH   = intervals.length * ROW_H;
+  const totalColW   = dates.length * COL_W;
 
-  // ── Total dimensions for spacer rows/cols ─────────────────────────────────────
-  const totalRowH = intervals.length * ROW_H;
-  const totalColW = dates.length * COL_W;
-
-  // ── Measure viewport on mount and resize ─────────────────────────────────────
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
-      setVpHeight(el.clientHeight);
-      setVpWidth(el.clientWidth);
-    });
+    const ro = new ResizeObserver(() => { setVpHeight(el.clientHeight); setVpWidth(el.clientWidth); });
     ro.observe(el);
-    setVpHeight(el.clientHeight);
-    setVpWidth(el.clientWidth);
+    setVpHeight(el.clientHeight); setVpWidth(el.clientWidth);
     return () => ro.disconnect();
   }, []);
 
-  // ── Scroll handler ────────────────────────────────────────────────────────────
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    setScrollTop(el.scrollTop);
-    setScrollLeft(el.scrollLeft);
+    setScrollTop(el.scrollTop); setScrollLeft(el.scrollLeft);
   }, []);
 
-  // ── Keep endDate ≥ startDate ──────────────────────────────────────────────────
-  const handleStartDateChange = (val: string) => {
-    setStartDate(val);
-    if (val > endDate) setEndDate(addDays(val, 6));
-  };
-  const handleEndDateChange = (val: string) => {
-    setEndDate(val);
-    if (val < startDate) setStartDate(val);
-  };
+  const handleStartDateChange = (val: string) => { setStartDate(val); if (val > endDate) setEndDate(addDays(val, 6)); };
+  const handleEndDateChange   = (val: string) => { setEndDate(val);   if (val < startDate) setStartDate(val); };
 
-  // ── Debounced fetch — waits 400ms after user stops changing dates ─────────────
   const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!dates.length) return;
@@ -241,7 +529,6 @@ export function InteractionArrival() {
     return () => { if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current); };
   }, [startDate, endDate]);
 
-  // ── Paste ─────────────────────────────────────────────────────────────────────
   const handleGridPaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
     if (!anchorCell) return;
     e.preventDefault();
@@ -270,27 +557,23 @@ export function InteractionArrival() {
     });
   }, [anchorCell, intervals, dates, activeTab]);
 
-  // ── Update single cell ────────────────────────────────────────────────────────
   const updateCell = useCallback((rowIdx: number, colIdx: number, val: number) => {
-    const ds          = dates[colIdx];
-    const slotIndices = intervals[rowIdx].indices;
+    const ds = dates[colIdx]; const slotIndices = intervals[rowIdx].indices;
     setData(prev => {
       const next = { ...prev, [ds]: { ...(prev[ds] || {}) } };
       slotIndices.forEach(idx => {
         next[ds][idx] = {
           volume: activeTab === "volume" ? Math.round(val / slotIndices.length) : (next[ds][idx]?.volume || 0),
-          aht:    activeTab === "aht"    ? val                                  : (next[ds][idx]?.aht    || 0),
+          aht:    activeTab === "aht"    ? val : (next[ds][idx]?.aht || 0),
         };
       });
       return next;
     });
   }, [dates, intervals, activeTab]);
 
-  // ── Stable callbacks for GridCell ─────────────────────────────────────────────
   const handleCellFocus  = useCallback((row: number, col: number) => setAnchorCell({ row, col }), []);
   const handleCellChange = useCallback((row: number, col: number, val: number) => updateCell(row, col, val), [updateCell]);
 
-  // ── Keyboard nav ─────────────────────────────────────────────────────────────
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, row: number, col: number) => {
     if (e.key === "Enter" || e.key === "ArrowDown") {
       e.preventDefault();
@@ -298,13 +581,9 @@ export function InteractionArrival() {
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       (document.getElementById(`cell-${Math.max(row - 1, 0)}-${col}`) as HTMLInputElement)?.focus();
-    } else if (e.key === "Escape") {
-      setAnchorCell(null);
-      (e.target as HTMLInputElement).blur();
-    }
+    } else if (e.key === "Escape") { setAnchorCell(null); (e.target as HTMLInputElement).blur(); }
   }, [intervals.length]);
 
-  // ── Save (chunked) ────────────────────────────────────────────────────────────
   const handleSave = async () => {
     setSaveStatus("saving");
     const records: any[] = [];
@@ -319,22 +598,19 @@ export function InteractionArrival() {
       for (let i = 0; i < records.length; i += CHUNK_SIZE) {
         const chunk = records.slice(i, i + CHUNK_SIZE);
         const res = await fetch(`${API_BASE}/api/interaction-arrival`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+          method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ records: chunk }),
         });
         if (!res.ok) { setSaveStatus("error"); return; }
       }
-      setSaveStatus("saved");
-      setTimeout(() => setSaveStatus(""), 2500);
+      setSaveStatus("saved"); setTimeout(() => setSaveStatus(""), 2500);
     } catch { setSaveStatus("error"); }
   };
 
-  // ── Telephony pull ────────────────────────────────────────────────────────────
   const handlePull = async () => {
     setIsPulling(true); setPullMsg(null);
     try {
-      const res    = await fetch(`${API_BASE}/api/telephony/pull`, {
+      const res = await fetch(`${API_BASE}/api/telephony/pull`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ system: telephonySystem, date: pullDate, queue: pullQueue }),
       });
@@ -347,14 +623,11 @@ export function InteractionArrival() {
         });
         setPullMsg({ ok: true, text: `✓ ${pullDate} pulled successfully` });
         setTimeout(() => { setShowModal(false); setPullMsg(null); }, 1500);
-      } else {
-        setPullMsg({ ok: false, text: result.message || "Pull failed" });
-      }
+      } else { setPullMsg({ ok: false, text: result.message || "Pull failed" }); }
     } catch { setPullMsg({ ok: false, text: "Could not connect to server" }); }
     setIsPulling(false);
   };
 
-  // ── Totals ────────────────────────────────────────────────────────────────────
   const colTotals = useMemo(() => dates.map(ds => {
     const cells = Object.values(data[ds] || {});
     const vol   = cells.reduce((s, c) => s + c.volume, 0);
@@ -368,7 +641,6 @@ export function InteractionArrival() {
     setData(prev => { const n = { ...prev }; delete n[ds]; return n; });
   };
 
-  // ── Styles ────────────────────────────────────────────────────────────────────
   const S = {
     page:   { fontFamily: "'DM Sans', 'Segoe UI', sans-serif", background: "#f9fafb", minHeight: "100vh" } as React.CSSProperties,
     header: { background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between" } as React.CSSProperties,
@@ -389,11 +661,11 @@ export function InteractionArrival() {
     }),
   };
 
-  // ── Visible slices ────────────────────────────────────────────────────────────
   const visibleIntervals = intervals.slice(visRowStart, visRowEnd + 1);
   const visibleDates     = dates.slice(visColStart, visColEnd + 1);
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  const isGridTab = activeTab === "volume" || activeTab === "aht";
+
   return (
     <div style={S.page}>
 
@@ -422,7 +694,6 @@ export function InteractionArrival() {
         <button onClick={() => navigate("/")} style={{ fontSize: 13, color: "#6b7280", background: "none", border: "none", cursor: "pointer" }}>🏠 Home</button>
       </div>
 
-      {/* ── Body ── */}
       <div style={S.body}>
 
         {/* ── Page title ── */}
@@ -442,13 +713,16 @@ export function InteractionArrival() {
         {/* ── Controls bar ── */}
         <div style={{ ...S.card, padding: "12px 20px", marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", flexShrink: 0 }}>
 
+          {/* ── Tabs: Volume / AHT / Distribution ── */}
           <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
-            <button style={S.tab(activeTab === "volume")} onClick={() => setActiveTab("volume")}>📞 Interaction Volume</button>
-            <button style={S.tab(activeTab === "aht")}    onClick={() => setActiveTab("aht")}>⏱ AHT</button>
+            <button style={S.tab(activeTab === "volume")}       onClick={() => setActiveTab("volume")}>📞 Interaction Volume</button>
+            <button style={S.tab(activeTab === "aht")}          onClick={() => setActiveTab("aht")}>⏱ AHT</button>
+            <button style={S.tab(activeTab === "distribution")} onClick={() => setActiveTab("distribution")}>📊 Distribution</button>
           </div>
 
           <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />
 
+          {/* Interval — shown for all tabs */}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>Interval:</span>
             <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
@@ -462,6 +736,7 @@ export function InteractionArrival() {
 
           <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />
 
+          {/* Date range */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>From:</span>
             <input type="date" value={startDate} onChange={e => handleStartDateChange(e.target.value)}
@@ -477,197 +752,137 @@ export function InteractionArrival() {
 
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
             {isLoading && <span style={{ fontSize: 12, color: "#9ca3af" }}>Loading…</span>}
-            <button onClick={() => setShowModal(true)} style={{
-              padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer",
-              border: "1px solid #6366f1", background: "#eef2ff", color: "#6366f1",
-            }}>📡 Pull from Telephony</button>
-            {saveStatus === "saving" && <span style={{ fontSize: 12, color: "#9ca3af" }}>💾 Saving…</span>}
-            {saveStatus === "saved"  && <span style={{ fontSize: 12, color: "#16a34a", fontWeight: 600 }}>✓ Saved</span>}
-            {saveStatus === "error"  && <span style={{ fontSize: 12, color: "#dc2626" }}>✕ Error saving</span>}
-            <button onClick={handleSave}
-              style={{ padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "1px solid #f97316", background: "#fff7ed", color: "#f97316" }}
-              onMouseEnter={e => { e.currentTarget.style.background = "#f97316"; e.currentTarget.style.color = "#fff"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "#fff7ed"; e.currentTarget.style.color = "#f97316"; }}>
-              💾 Save
-            </button>
+            {isGridTab && (
+              <>
+                <button onClick={() => setShowModal(true)} style={{
+                  padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  border: "1px solid #6366f1", background: "#eef2ff", color: "#6366f1",
+                }}>📡 Pull from Telephony</button>
+                {saveStatus === "saving" && <span style={{ fontSize: 12, color: "#9ca3af" }}>💾 Saving…</span>}
+                {saveStatus === "saved"  && <span style={{ fontSize: 12, color: "#16a34a", fontWeight: 600 }}>✓ Saved</span>}
+                {saveStatus === "error"  && <span style={{ fontSize: 12, color: "#dc2626" }}>✕ Error saving</span>}
+                <button onClick={handleSave}
+                  style={{ padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "1px solid #f97316", background: "#fff7ed", color: "#f97316" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "#f97316"; e.currentTarget.style.color = "#fff"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "#fff7ed"; e.currentTarget.style.color = "#f97316"; }}>
+                  💾 Save
+                </button>
+              </>
+            )}
           </div>
         </div>
 
-        {/* ── Paste hint ── */}
-        <div style={{ fontSize: 12, marginBottom: 8, flexShrink: 0 }}>
-          {anchorCell ? (
-            <span style={{ color: "#f97316", fontWeight: 600, background: "#fff7ed", padding: "3px 10px", borderRadius: 6, border: "1px solid #fed7aa" }}>
-              📋 Row {anchorCell.row + 1}, {dates[anchorCell.col]} selected — press Ctrl+V / Cmd+V to paste from Excel
-            </span>
-          ) : (
-            <span style={{ color: "#9ca3af" }}>💡 Click any cell to select, then paste (Ctrl+V) to fill from Excel</span>
-          )}
-        </div>
+        {/* ── Distribution tab content ── */}
+        {activeTab === "distribution" && (
+          <DistributionTab data={data} intervalSize={intervalSize} />
+        )}
 
-        {/* ── Virtualized grid ── */}
-        <div style={{ ...S.card, flex: 1, overflow: "hidden", minHeight: 0 }}>
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            onPaste={handleGridPaste}
-            style={{ width: "100%", height: "100%", overflow: "auto" }}
-          >
-            {/* Total size container — gives scrollbars the correct range */}
-            <div style={{ position: "relative", width: LABEL_W + totalColW, height: HDR_H + totalRowH + ROW_H }}>
-
-              {/* ── Sticky header row ── */}
-              <div style={{
-                position: "sticky", top: 0, left: 0, zIndex: 4,
-                display: "flex", width: LABEL_W + totalColW,
-                background: "#f8fafc", borderBottom: "2px solid #e5e7eb",
-              }}>
-                {/* Corner cell */}
-                <div style={{
-                  position: "sticky", left: 0, zIndex: 5, flexShrink: 0,
-                  width: LABEL_W, minWidth: LABEL_W,
-                  background: "#f1f5f9", borderRight: "2px solid #e5e7eb",
-                  padding: "8px 10px", fontSize: 10, fontWeight: 700, color: "#6b7280",
-                  textTransform: "uppercase", letterSpacing: ".06em",
-                  display: "flex", alignItems: "center",
-                }}>
-                  {intervalSize === 15 ? "15 MIN" : intervalSize === 30 ? "30 MIN" : "HOURLY"}
-                </div>
-                {/* Left spacer for hidden cols */}
-                {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
-                {/* Visible date headers */}
-                {visibleDates.map((ds) => {
-                  const { dow, mmd } = fmtHdr(ds);
-                  const today   = isToday(ds);
-                  const weekend = isWeekend(ds);
-                  return (
-                    <div key={ds} style={{
-                      width: COL_W, minWidth: COL_W, flexShrink: 0,
-                      background: today ? "#fff7ed" : weekend ? "#fafaf9" : "#f8fafc",
-                      border: "1px solid #e5e7eb", borderBottom: "none",
-                      padding: "4px 4px 2px", textAlign: "center",
-                    }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: today ? "#f97316" : weekend ? "#9ca3af" : "#6b7280" }}>{dow}</div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: today ? "#f97316" : "#111827" }}>{mmd}</div>
-                      <button onClick={() => clearDay(ds)} title="Clear this day"
-                        style={{ fontSize: 9, color: "#d1d5db", background: "none", border: "none", cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>✕</button>
-                    </div>
-                  );
-                })}
-                {/* Right spacer */}
-                {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
-              </div>
-
-              {/* ── Visible rows — absolutely positioned at correct vertical offset ── */}
-              <div style={{ position: "absolute", top: HDR_H + visRowStart * ROW_H, left: 0, width: LABEL_W + totalColW }}>
-                {visibleIntervals.map((interval, vi) => {
-                  const rowIdx = visRowStart + vi;
-                  const isHour = interval.indices[0] % 4 === 0;
-                  return (
-                    <div key={rowIdx} style={{ display: "flex", height: ROW_H, background: isHour ? "#fafafa" : "#fff" }}>
-                      {/* Sticky time label */}
-                      <div style={{
-                        position: "sticky", left: 0, zIndex: 1, flexShrink: 0,
-                        width: LABEL_W, minWidth: LABEL_W,
-                        background: isHour ? "#f1f5f9" : "#f8fafc",
-                        borderRight: "2px solid #e5e7eb",
-                        borderBottom: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`,
-                        padding: "0 10px", fontSize: 11,
-                        fontWeight: isHour ? 700 : 400,
-                        color: isHour ? "#374151" : "#9ca3af",
-                        whiteSpace: "nowrap",
-                        display: "flex", alignItems: "center",
-                      }}>
-                        {interval.label}
-                      </div>
-                      {/* Left col spacer */}
-                      {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
-                      {/* Visible cells */}
-                      <table style={{ borderCollapse: "collapse", tableLayout: "fixed", flexShrink: 0 }}>
-                        <colgroup>{visibleDates.map((_, i) => <col key={i} style={{ width: COL_W }} />)}</colgroup>
-                        <tbody>
-                          <tr>
-                            {visibleDates.map((ds, ci) => {
-                              const colIdx  = visColStart + ci;
-                              const val     = getCellValue(data, ds, interval.indices, activeTab);
-                              const today   = isToday(ds);
-                              const weekend = isWeekend(ds);
-                              return (
-                                <GridCell
-                                  key={ds}
-                                  rowIdx={rowIdx} colIdx={colIdx}
-                                  val={val}
-                                  isAnchor={anchorCell?.row === rowIdx && anchorCell?.col === colIdx}
-                                  isHour={isHour} today={today} weekend={weekend}
-                                  activeTab={activeTab}
-                                  onFocus={handleCellFocus}
-                                  onChange={handleCellChange}
-                                  onKeyDown={handleKeyDown}
-                                />
-                              );
-                            })}
-                          </tr>
-                        </tbody>
-                      </table>
-                      {/* Right col spacer */}
-                      {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* ── Sticky totals row ── */}
-              <div style={{
-                position: "sticky", bottom: 0, left: 0, zIndex: 4,
-                display: "flex", width: LABEL_W + totalColW,
-                background: "#f8fafc", borderTop: "2px solid #e5e7eb",
-              }}>
-                <div style={{
-                  position: "sticky", left: 0, zIndex: 5, flexShrink: 0,
-                  width: LABEL_W, minWidth: LABEL_W,
-                  background: "#f1f5f9", borderRight: "2px solid #e5e7eb",
-                  padding: "6px 10px", fontSize: 10, fontWeight: 700, color: "#374151",
-                  textTransform: "uppercase", letterSpacing: ".04em",
-                  display: "flex", alignItems: "center",
-                }}>
-                  {activeTab === "volume" ? "Daily Total" : "Avg AHT"}
-                </div>
-                {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
-                {visibleDates.map((ds, i) => {
-                  const colIdx = visColStart + i;
-                  const v = activeTab === "volume" ? colTotals[colIdx]?.vol : colTotals[colIdx]?.aht;
-                  return (
-                    <div key={ds} style={{
-                      width: COL_W, minWidth: COL_W, flexShrink: 0,
-                      border: "1px solid #e5e7eb", padding: "6px 8px",
-                      textAlign: "right", fontSize: 12, fontWeight: 700,
-                      color: v > 0 ? "#f97316" : "#d1d5db",
-                      display: "flex", alignItems: "center", justifyContent: "flex-end",
-                    }}>
-                      {v > 0 ? (activeTab === "volume" ? v.toLocaleString() : `${v}s`) : "—"}
-                    </div>
-                  );
-                })}
-                {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
-              </div>
-
+        {/* ── Grid tabs content ── */}
+        {isGridTab && (
+          <>
+            {/* Paste hint */}
+            <div style={{ fontSize: 12, marginBottom: 8, flexShrink: 0 }}>
+              {anchorCell ? (
+                <span style={{ color: "#f97316", fontWeight: 600, background: "#fff7ed", padding: "3px 10px", borderRadius: 6, border: "1px solid #fed7aa" }}>
+                  📋 Row {anchorCell.row + 1}, {dates[anchorCell.col]} selected — press Ctrl+V / Cmd+V to paste from Excel
+                </span>
+              ) : (
+                <span style={{ color: "#9ca3af" }}>💡 Click any cell to select, then paste (Ctrl+V) to fill from Excel</span>
+              )}
             </div>
-          </div>
-        </div>
+
+            {/* Virtualized grid */}
+            <div style={{ ...S.card, flex: 1, overflow: "hidden", minHeight: 0 }}>
+              <div ref={scrollRef} onScroll={handleScroll} onPaste={handleGridPaste}
+                style={{ width: "100%", height: "100%", overflow: "auto" }}>
+                <div style={{ position: "relative", width: LABEL_W + totalColW, height: HDR_H + totalRowH + ROW_H }}>
+
+                  {/* Sticky header */}
+                  <div style={{ position: "sticky", top: 0, left: 0, zIndex: 4, display: "flex", width: LABEL_W + totalColW, background: "#f8fafc", borderBottom: "2px solid #e5e7eb" }}>
+                    <div style={{ position: "sticky", left: 0, zIndex: 5, flexShrink: 0, width: LABEL_W, minWidth: LABEL_W, background: "#f1f5f9", borderRight: "2px solid #e5e7eb", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: ".06em", display: "flex", alignItems: "center" }}>
+                      {intervalSize === 15 ? "15 MIN" : intervalSize === 30 ? "30 MIN" : "HOURLY"}
+                    </div>
+                    {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
+                    {visibleDates.map(ds => {
+                      const { dow, mmd } = fmtHdr(ds);
+                      const today = isToday(ds); const weekend = isWeekend(ds);
+                      return (
+                        <div key={ds} style={{ width: COL_W, minWidth: COL_W, flexShrink: 0, background: today ? "#fff7ed" : weekend ? "#fafaf9" : "#f8fafc", border: "1px solid #e5e7eb", borderBottom: "none", padding: "4px 4px 2px", textAlign: "center" }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: today ? "#f97316" : weekend ? "#9ca3af" : "#6b7280" }}>{dow}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: today ? "#f97316" : "#111827" }}>{mmd}</div>
+                          <button onClick={() => clearDay(ds)} title="Clear this day" style={{ fontSize: 9, color: "#d1d5db", background: "none", border: "none", cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>✕</button>
+                        </div>
+                      );
+                    })}
+                    {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
+                  </div>
+
+                  {/* Visible rows */}
+                  <div style={{ position: "absolute", top: HDR_H + visRowStart * ROW_H, left: 0, width: LABEL_W + totalColW }}>
+                    {visibleIntervals.map((interval, vi) => {
+                      const rowIdx = visRowStart + vi; const isHour = interval.indices[0] % 4 === 0;
+                      return (
+                        <div key={rowIdx} style={{ display: "flex", height: ROW_H, background: isHour ? "#fafafa" : "#fff" }}>
+                          <div style={{ position: "sticky", left: 0, zIndex: 1, flexShrink: 0, width: LABEL_W, minWidth: LABEL_W, background: isHour ? "#f1f5f9" : "#f8fafc", borderRight: "2px solid #e5e7eb", borderBottom: `1px solid ${isHour ? "#e5e7eb" : "#f3f4f6"}`, padding: "0 10px", fontSize: 11, fontWeight: isHour ? 700 : 400, color: isHour ? "#374151" : "#9ca3af", whiteSpace: "nowrap", display: "flex", alignItems: "center" }}>
+                            {interval.label}
+                          </div>
+                          {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
+                          <table style={{ borderCollapse: "collapse", tableLayout: "fixed", flexShrink: 0 }}>
+                            <colgroup>{visibleDates.map((_, i) => <col key={i} style={{ width: COL_W }} />)}</colgroup>
+                            <tbody><tr>
+                              {visibleDates.map((ds, ci) => {
+                                const colIdx = visColStart + ci;
+                                const val = getCellValue(data, ds, interval.indices, activeTab as "volume" | "aht");
+                                return (
+                                  <GridCell key={ds} rowIdx={rowIdx} colIdx={colIdx} val={val}
+                                    isAnchor={anchorCell?.row === rowIdx && anchorCell?.col === colIdx}
+                                    isHour={isHour} today={isToday(ds)} weekend={isWeekend(ds)}
+                                    activeTab={activeTab as "volume" | "aht"}
+                                    onFocus={handleCellFocus} onChange={handleCellChange} onKeyDown={handleKeyDown} />
+                                );
+                              })}
+                            </tr></tbody>
+                          </table>
+                          {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Sticky totals */}
+                  <div style={{ position: "sticky", bottom: 0, left: 0, zIndex: 4, display: "flex", width: LABEL_W + totalColW, background: "#f8fafc", borderTop: "2px solid #e5e7eb" }}>
+                    <div style={{ position: "sticky", left: 0, zIndex: 5, flexShrink: 0, width: LABEL_W, minWidth: LABEL_W, background: "#f1f5f9", borderRight: "2px solid #e5e7eb", padding: "6px 10px", fontSize: 10, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: ".04em", display: "flex", alignItems: "center" }}>
+                      {activeTab === "volume" ? "Daily Total" : "Avg AHT"}
+                    </div>
+                    {visColStart > 0 && <div style={{ width: visColStart * COL_W, flexShrink: 0 }} />}
+                    {visibleDates.map((ds, i) => {
+                      const colIdx = visColStart + i;
+                      const v = activeTab === "volume" ? colTotals[colIdx]?.vol : colTotals[colIdx]?.aht;
+                      return (
+                        <div key={ds} style={{ width: COL_W, minWidth: COL_W, flexShrink: 0, border: "1px solid #e5e7eb", padding: "6px 8px", textAlign: "right", fontSize: 12, fontWeight: 700, color: v > 0 ? "#f97316" : "#d1d5db", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
+                          {v > 0 ? (activeTab === "volume" ? v.toLocaleString() : `${v}s`) : "—"}
+                        </div>
+                      );
+                    })}
+                    {visColEnd < dates.length - 1 && <div style={{ width: (dates.length - 1 - visColEnd) * COL_W, flexShrink: 0 }} />}
+                  </div>
+
+                </div>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Telephony Modal ── */}
       {showModal && (
-        <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={e => { if (e.target === e.currentTarget) { setShowModal(false); setPullMsg(null); } }}
-        >
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) { setShowModal(false); setPullMsg(null); } }}>
           <div style={{ background: "#fff", borderRadius: 16, padding: 28, width: 480, maxWidth: "92vw", boxShadow: "0 24px 64px rgba(0,0,0,.22)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 22 }}>
               <h2 style={{ fontSize: 17, fontWeight: 700, color: "#111827", margin: 0 }}>📡 Pull from Telephony</h2>
-              <button onClick={() => { setShowModal(false); setPullMsg(null); }}
-                style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1 }}>✕</button>
+              <button onClick={() => { setShowModal(false); setPullMsg(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 20, lineHeight: 1 }}>✕</button>
             </div>
-
             <div style={{ marginBottom: 18 }}>
               <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".05em" }}>SYSTEM</label>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -678,13 +893,11 @@ export function InteractionArrival() {
                 ))}
               </div>
             </div>
-
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".05em" }}>DATE TO PULL</label>
               <input type="date" value={pullDate} onChange={e => setPullDate(e.target.value)}
                 style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box", color: "#111827" }} />
             </div>
-
             <div style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".05em" }}>
                 QUEUE / SKILL <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span>
@@ -693,7 +906,6 @@ export function InteractionArrival() {
                 placeholder="e.g. Main Queue, Support Tier 1, All Queues…"
                 style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box", color: "#111827" }} />
             </div>
-
             {telephonySystem !== "genesys" && (
               <div style={{ background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 14px", marginBottom: 16 }}>
                 <p style={{ fontSize: 12, color: "#92400e", margin: 0 }}>
@@ -702,28 +914,14 @@ export function InteractionArrival() {
                 </p>
               </div>
             )}
-
             {pullMsg && (
-              <div style={{
-                padding: "8px 12px", borderRadius: 8, marginBottom: 14,
-                background: pullMsg.ok ? "#f0fdf4" : "#fef2f2",
-                border: `1px solid ${pullMsg.ok ? "#bbf7d0" : "#fecaca"}`,
-                fontSize: 13, fontWeight: 600, color: pullMsg.ok ? "#16a34a" : "#dc2626",
-              }}>
+              <div style={{ padding: "8px 12px", borderRadius: 8, marginBottom: 14, background: pullMsg.ok ? "#f0fdf4" : "#fef2f2", border: `1px solid ${pullMsg.ok ? "#bbf7d0" : "#fecaca"}`, fontSize: 13, fontWeight: 600, color: pullMsg.ok ? "#16a34a" : "#dc2626" }}>
                 {pullMsg.text}
               </div>
             )}
-
             <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => { setShowModal(false); setPullMsg(null); }} style={{
-                flex: 1, padding: "10px", border: "1px solid #e5e7eb", borderRadius: 8,
-                fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#fff", color: "#374151",
-              }}>Cancel</button>
-              <button onClick={handlePull} disabled={isPulling} style={{
-                flex: 2, padding: "10px", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600,
-                cursor: isPulling ? "not-allowed" : "pointer",
-                background: "#f97316", color: "#fff", opacity: isPulling ? 0.7 : 1,
-              }}>
+              <button onClick={() => { setShowModal(false); setPullMsg(null); }} style={{ flex: 1, padding: "10px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#fff", color: "#374151" }}>Cancel</button>
+              <button onClick={handlePull} disabled={isPulling} style={{ flex: 2, padding: "10px", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: isPulling ? "not-allowed" : "pointer", background: "#f97316", color: "#fff", opacity: isPulling ? 0.7 : 1 }}>
                 {isPulling ? "Pulling…" : "Pull Data"}
               </button>
             </div>
