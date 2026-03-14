@@ -199,15 +199,67 @@ function MetricCard({ label, value, sub, accent }: {
 function SliderInput({ label, value, min, max, step = 1, unit, onChange }: {
   label: string; value: number; min: number; max: number; step?: number; unit: string; onChange: (v: number) => void;
 }) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(String(value));
+
+  const commit = () => {
+    const parsed = parseFloat(draft);
+    if (!isNaN(parsed)) {
+      onChange(Math.min(max, Math.max(min, parsed)));
+    } else {
+      setDraft(String(value)); // revert if invalid
+    }
+    setEditing(false);
+  };
+
+  // Keep draft in sync when value changes externally (e.g. scenario load)
+  React.useEffect(() => {
+    if (!editing) setDraft(String(value));
+  }, [value, editing]);
+
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         <span style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{label}</span>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#f97316" }}>{value}{unit}</span>
+
+        {editing ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <input
+              autoFocus
+              type="number"
+              min={min} max={max} step={step}
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onBlur={commit}
+              onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setDraft(String(value)); setEditing(false); } }}
+              style={{
+                width: 62, padding: "2px 6px", fontSize: 13, fontWeight: 700,
+                color: "#f97316", background: "#fff7ed",
+                border: "1px solid #f97316", borderRadius: 6,
+                textAlign: "center", outline: "none",
+              }}
+            />
+            <span style={{ fontSize: 12, color: "#f97316", fontWeight: 600 }}>{unit}</span>
+          </div>
+        ) : (
+          <span
+            onClick={() => { setDraft(String(value)); setEditing(true); }}
+            title="Click to type a value"
+            style={{
+              fontSize: 13, fontWeight: 700, color: "#f97316",
+              background: "#fff7ed", border: "1px solid #fed7aa",
+              padding: "2px 8px", borderRadius: 6, cursor: "text",
+              userSelect: "none", minWidth: 44, textAlign: "center",
+            }}>
+            {value}{unit}
+          </span>
+        )}
       </div>
+
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(+e.target.value)}
         style={{ width: "100%", accentColor: "#f97316", height: 4, cursor: "pointer" }} />
+
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
         <span style={{ fontSize: 10, color: "#9ca3af" }}>{min}{unit}</span>
         <span style={{ fontSize: 10, color: "#9ca3af" }}>{max}{unit}</span>
@@ -496,7 +548,7 @@ export function CapacityPlanning() {
     return activeDays.map((day, i) => {
       const pct = (dayPcts[i] ?? 0) / totalPct;
       const vol = Math.round((selWeek?.baseVol || 0) * pct);
-      return { day, vol, ...computeFTE({ callVolume: vol, ahtSec: aht, hoursOp, shrinkage, occupancy, targetSL, asaSec: asa }) };
+      return { day, vol, ...computeFTE({ callVolume: vol, ahtSec: aht, hoursOp: hoursOp / workDays, shrinkage, occupancy, targetSL, asaSec: asa }) };
     });
   }, [selWeek, aht, hoursOp, shrinkage, occupancy, targetSL, asa, workDays, dayPcts]);
 
