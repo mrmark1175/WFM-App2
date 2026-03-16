@@ -99,6 +99,38 @@ export function Forecasting() {
     fetchAllYears();
   }, []);
 
+  // ── Helper: Fetch and aggregate Arrival Data ──────────────────────────────
+  const fetchArrivalRollup = async (calendarYear: number): Promise<number[] | null> => {
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/interaction-arrival?startDate=${calendarYear}-01-01&endDate=${calendarYear}-12-31`
+      );
+      const recs: any[] = await res.json();
+      if (!Array.isArray(recs) || recs.length === 0) return null;
+
+      const monthly = Array(12).fill(0);
+      const monthsFound = new Set<number>();
+
+      recs.forEach(r => {
+        const ds = (r.interval_date as string).split("T")[0];
+        const mo = new Date(ds + "T00:00:00").getMonth();
+        monthly[mo] += (r.volume || 0);
+        if ((r.volume || 0) > 0) monthsFound.add(mo);
+      });
+
+      // "Completeness" check: records must exist across all 12 months
+      if (monthsFound.size < 12) {
+        console.log(`[Sync] ${calendarYear} data incomplete: only ${monthsFound.size}/12 months have volume.`);
+        return null;
+      }
+
+      return monthly;
+    } catch (err) {
+      console.error("Rollup fetch error:", err);
+      return null;
+    }
+  };
+
   // ── Load this year's data whenever selectedYear changes ───────────────────
   useEffect(() => {
     if (!selectedYear) return;
@@ -106,29 +138,33 @@ export function Forecasting() {
       try {
         const response = await fetch(`http://localhost:5000/api/forecasts/${selectedYear}`);
         const data = await response.json();
+        
         if (data && data.monthly_volumes) {
-          // Parse monthly_volumes (may come as string or array)
-          const vols = Array.isArray(data.monthly_volumes)
-            ? data.monthly_volumes
-            : JSON.parse(data.monthly_volumes);
+          // 1. Data exists in Forecasts DB — Load it
+          const vols = Array.isArray(data.monthly_volumes) ? data.monthly_volumes : JSON.parse(data.monthly_volumes);
           setVolumes(vols);
           setMethod(data.forecast_method || "Holt-Winters (Triple Exponential Smoothing)");
-
-          // Restore forecast projection
-          const fr = data.forecast_results
-            ? (Array.isArray(data.forecast_results)
-                ? data.forecast_results
-                : JSON.parse(data.forecast_results))
-            : Array(12).fill(0);
+          const fr = data.forecast_results ? (Array.isArray(data.forecast_results) ? data.forecast_results : JSON.parse(data.forecast_results)) : Array(12).fill(0);
           setForecastResults(fr);
-
-          // Restore model parameters
-          setAlpha(data.alpha  ?? 0.3);
-          setBeta(data.beta    ?? 0.1);
-          setGamma(data.gamma  ?? 0.2);
+          setAlpha(data.alpha ?? 0.3);
+          setBeta(data.beta ?? 0.1);
+          setGamma(data.gamma ?? 0.2);
         } else {
-          // Year exists in list but hasn't been saved to DB yet
-          setVolumes(Array(12).fill(0));
+          // 2. Not in Forecasts DB — Auto-check Arrival Data Baseline
+          const calYear = parseInt(selectedYear, 10);
+          if (!isNaN(calYear) && calYear > 2000) {
+            const rollup = await fetchArrivalRollup(calYear);
+            if (rollup) {
+              setVolumes(rollup);
+              setArrivalSyncMsg({ ok: true, text: `✓ Auto-synced ${calYear} actuals from Arrival Data` });
+              setTimeout(() => setArrivalSyncMsg(null), 3000);
+            } else {
+              setVolumes(Array(12).fill(0));
+            }
+          } else {
+            setVolumes(Array(12).fill(0));
+          }
+          
           setForecastResults(Array(12).fill(0));
           setAlpha(0.3);
           setBeta(0.1);
@@ -225,114 +261,44 @@ export function Forecasting() {
     setIsSyncingArrival(true);
     setArrivalSyncMsg(null);
     setSyncProgress(0);
-    setSyncStep("Initializing…");
+    setSyncStep("Resolving calendar year…");
     try {
-      // ── Step 1: Resolve which calendar year to fetch (0 → 25%) ───────────
-      setSyncProgress(5);
-      setSyncStep("Resolving calendar year…");
-
       let calendarYear: number | null = null;
-
       const asNumber = parseInt(selectedYear, 10);
       if (!isNaN(asNumber) && asNumber > 2000 && asNumber < 2100) {
         calendarYear = asNumber;
-        setSyncProgress(25);
       } else {
-        // Legacy "Year N" — probe one small range to discover available years
-        setSyncStep("Probing available years in arrival data…");
-        const probeRes = await fetch(
-          "http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31"
-        );
-        setSyncProgress(20);
+        setSyncStep("Probing arrival database…");
+        const probeRes = await fetch("http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31");
         const probeRecs: any[] = await probeRes.json();
-        setSyncProgress(25);
-        if (!Array.isArray(probeRecs) || probeRecs.length === 0) {
-          setArrivalSyncMsg({ ok: false, text: "No arrival data found. Load data in Interaction Arrival first." });
-          return;
+        if (Array.isArray(probeRecs) && probeRecs.length > 0) {
+          const calYears = Array.from(new Set(probeRecs.map(r => new Date((r.interval_date as string).split("T")[0] + "T00:00:00").getFullYear()))).sort() as number[];
+          calendarYear = calYears[years.indexOf(selectedYear)] ?? null;
         }
-        const calYears = Array.from(new Set(
-          probeRecs.map(r => new Date((r.interval_date as string).split("T")[0] + "T00:00:00").getFullYear())
-        )).sort() as number[];
-        const yearIdx = years.indexOf(selectedYear);
-        calendarYear  = calYears[yearIdx] ?? null;
       }
 
       if (!calendarYear) {
-        setArrivalSyncMsg({ ok: false, text: `Could not map "${selectedYear}" to a calendar year in arrival data.` });
+        setArrivalSyncMsg({ ok: false, text: "Could not map to a calendar year in arrival data." });
         return;
       }
 
-      // ── Step 2: Fetch arrival records for the year (25 → 75%) ────────────
-      setSyncProgress(30);
-      setSyncStep(`Fetching ${calendarYear} arrival records from server…`);
-
-      const startDate = `${calendarYear}-01-01`;
-      const endDate   = `${calendarYear}-12-31`;
-
-      // Animate progress while waiting for the network response
-      const progressInterval = setInterval(() => {
-        setSyncProgress(prev => prev < 70 ? prev + 3 : prev);
-      }, 200);
-
-      const res = await fetch(
-        `http://localhost:5000/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}`
-      );
-      clearInterval(progressInterval);
-      setSyncProgress(75);
-
-      const recs: any[] = await res.json();
-
-      if (!Array.isArray(recs) || recs.length === 0) {
-        setArrivalSyncMsg({ ok: false, text: `No arrival data found for ${calendarYear}. Load data in Interaction Arrival first.` });
-        return;
-      }
-
-      // ── Step 3: Aggregate into monthly buckets (75 → 90%) ────────────────
-      setSyncProgress(80);
-      setSyncStep(`Aggregating ${recs.length.toLocaleString()} records into monthly totals…`);
-
-      const monthly = Array(12).fill(0);
-      recs.forEach(r => {
-        const ds = (r.interval_date as string).split("T")[0];
-        const mo = new Date(ds + "T00:00:00").getMonth(); // 0-based
-        monthly[mo] += (r.volume || 0);
-      });
-
+      setSyncProgress(40);
+      setSyncStep(`Fetching & aggregating ${calendarYear} records…`);
+      
+      const rollup = await fetchArrivalRollup(calendarYear);
       setSyncProgress(90);
 
-      if (monthly.every(v => v === 0)) {
-        setArrivalSyncMsg({ ok: false, text: `All volumes are zero for ${calendarYear}. Check data in Interaction Arrival.` });
-        return;
+      if (rollup) {
+        setVolumes(rollup);
+        setSyncProgress(100);
+        setArrivalSyncMsg({ ok: true, text: `✓ Synced ${calendarYear} — Monthly totals updated` });
+      } else {
+        setArrivalSyncMsg({ ok: false, text: `⚠️ ${calendarYear} data is incomplete (requires all 12 months).` });
       }
 
-      // ── Step 4: Apply to state (90 → 100%) ───────────────────────────────
-      setSyncStep("Populating Monthly Actual Volume table…");
-      setSyncProgress(95);
-
-      setVolumes(monthly);
-
-      // If tabs are still "Year N", rename this tab to the actual year
-      if (isNaN(parseInt(selectedYear, 10))) {
-        const newYears = years.map(y => y === selectedYear ? String(calendarYear) : y);
-        setYears(newYears);
-        setSelectedYear(String(calendarYear));
-      }
-
-      setSyncProgress(100);
-      setSyncStep("Done!");
-
-      const total = monthly.reduce((a, b) => a + b, 0);
-      setArrivalSyncMsg({ ok: true, text: `✓ Synced ${calendarYear} — ${total.toLocaleString()} interactions across 12 months` });
-      setTimeout(() => {
-        setArrivalSyncMsg(null);
-        setSyncProgress(0);
-        setSyncStep("");
-      }, 5000);
+      setTimeout(() => { setArrivalSyncMsg(null); setSyncProgress(0); setSyncStep(""); }, 5000);
     } catch (err) {
-      console.error("Arrival sync error:", err);
-      setArrivalSyncMsg({ ok: false, text: "❌ Could not connect to server." });
-      setSyncProgress(0);
-      setSyncStep("");
+      setArrivalSyncMsg({ ok: false, text: "❌ Connection error." });
     } finally {
       setIsSyncingArrival(false);
     }
