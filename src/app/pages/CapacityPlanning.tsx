@@ -137,11 +137,13 @@ function computeActualFTEByWeek(
 
 // ── Erlang C ──────────────────────────────────────────────────────────────────
 function erlangC(A: number, N: number): number {
-  if (N <= A) return 1;
+  const nInt = Math.floor(N);
+  if (nInt <= A) return 1;
   let sumFact = 1, term = 1;
-  for (let i = 1; i < N; i++) { term *= A / i; sumFact += term; }
-  const lastTerm = term * A / N;
-  return Math.min(1, Math.max(0, lastTerm / (sumFact + lastTerm * N / (N - A))));
+  for (let i = 1; i < nInt; i++) { term *= A / i; sumFact += term; }
+  const lastTerm = term * A / nInt;
+  const X = lastTerm * nInt / (nInt - A);
+  return Math.min(1, Math.max(0, X / (sumFact + X)));
 }
 function computeServiceLevel(A: number, N: number, ahtSec: number, asaSec: number): number {
   if (N <= A) return 0;
@@ -920,10 +922,10 @@ export function CapacityPlanning() {
                     />
                   )}
 
-                  <MetricCard label="SL (Required)" value={<Badge value={sel.achievedSL} target={targetSL} unit="%" />} sub={`Target: ${targetSL}%`} />
+                  <MetricCard label="SL from Required" value={<Badge value={sel.achievedSL} target={targetSL} unit="%" />} sub={`Target: ${targetSL}%`} />
                   
                   {hasWorkforceData && selActualFTE > 0 && (
-                    <MetricCard label="SL (Actual)" value={<Badge value={+selActualSL.toFixed(1)} target={targetSL} unit="%" />} sub={`Based on ${Math.round(selActualFTE)} FTE`} />
+                    <MetricCard label="SL from Actual FTE" value={<Badge value={+selActualSL.toFixed(1)} target={targetSL} unit="%" />} sub={`Based on ${Math.round(selActualFTE)} FTE`} />
                   )}
 
                   <MetricCard label="Occupancy" value={<Badge value={sel.actualOcc} target={75} unit="%" />} sub={`Max: ${occupancy}%`} />
