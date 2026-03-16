@@ -198,12 +198,24 @@ function GapBadge({ gap }: { gap: number }) {
   );
 }
 
-function MetricCard({ label, value, sub, accent }: { label: string; value: React.ReactNode; sub?: string; accent?: string }) {
+function MetricCard({ label, value, sub, accent, borderColor }: { label: string; value: React.ReactNode; sub?: string; accent?: string; borderColor?: string }) {
   return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, padding: "14px 18px", minWidth: 130 }}>
-      <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500, marginBottom: 4, textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: accent || "#111827" }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{sub}</div>}
+    <div style={{
+      background: "#fff",
+      border: `1px solid ${borderColor || "#e5e7eb"}`,
+      borderRadius: 12,
+      padding: "16px",
+      width: 154,
+      height: 120,
+      display: "flex",
+      flexDirection: "column",
+      justifyContent: "space-between",
+      boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.05)",
+      transition: "all 0.2s"
+    }}>
+      <div style={{ fontSize: 10, color: "#6b7280", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", lineHeight: 1.2 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color: accent || "#111827", display: "flex", alignItems: "center" }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500, lineHeight: 1.2 }}>{sub}</div>}
     </div>
   );
 }
@@ -506,6 +518,15 @@ export function CapacityPlanning() {
       return { day, vol, ...computeFTE({ callVolume: vol, ahtSec: aht, hoursOp: hoursOp / workDays, shrinkage, occupancy, targetSL, asaSec: asa }) };
     });
   }, [selWeek, aht, hoursOp, shrinkage, occupancy, targetSL, asa, workDays, dayPcts]);
+
+  const selActualSL = useMemo(() => {
+    if (!sel || !selActualFTE || selActualFTE <= 0) return 0;
+    // Raw agents = actual FTE * (1 - shrinkage%)
+    const rawAgents = selActualFTE * (1 - shrinkage / 100);
+    const A = sel.erlangs;
+    if (rawAgents <= A) return 0;
+    return computeServiceLevel(A, rawAgents, aht, asa) * 100;
+  }, [sel, selActualFTE, shrinkage, aht, asa]);
 
   const maxFTE = Math.max(...weeklyResults.map(w => w.fte), hasWorkforceData ? Math.max(...actualFTEByWeek) : 0, 1);
   const maxProjectionVol = Math.max(...projectionVolumes, 1);
@@ -881,20 +902,30 @@ export function CapacityPlanning() {
 
               {/* Metric cards */}
               {sel && (
-                <div style={{ display: "flex", gap: 10, marginTop: 20, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 12, marginTop: 20, flexWrap: "wrap" }}>
                   <MetricCard label="Total Volume" value={selWeek?.baseVol.toLocaleString() ?? "—"} sub={`${sel.erlangs} Erlangs`} />
                   <MetricCard label="Required FTE" value={sel.fte} sub={`${sel.rawAgents} base agents`} accent="#f97316" />
+                  
                   {hasWorkforceData && selActualFTE > 0 && (
                     <MetricCard label="Actual FTE" value={Math.round(selActualFTE)} sub={`After attrition & classes`} accent="#3b82f6" />
                   )}
+
                   {hasWorkforceData && selGap !== null && (
-                    <div style={{ background: "#fff", border: `1px solid ${selGap >= 0 ? "#bbf7d0" : "#fecaca"}`, borderRadius: 10, padding: "14px 18px", minWidth: 130 }}>
-                      <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500, marginBottom: 4, textTransform: "uppercase", letterSpacing: ".05em" }}>Gap</div>
-                      <div style={{ fontSize: 22, fontWeight: 700, color: selGap >= 0 ? "#16a34a" : "#dc2626" }}>{selGap >= 0 ? "+" : ""}{Math.round(selGap)}</div>
-                      <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{selGap >= 0 ? "Surplus headcount" : "Headcount deficit"}</div>
-                    </div>
+                    <MetricCard 
+                      label="Headcount Gap" 
+                      value={`${selGap >= 0 ? "+" : ""}${Math.round(selGap)}`} 
+                      sub={selGap >= 0 ? "Surplus headcount" : "Headcount deficit"} 
+                      accent={selGap >= 0 ? "#16a34a" : "#dc2626"}
+                      borderColor={selGap >= 0 ? "#bbf7d0" : "#fecaca"}
+                    />
                   )}
-                  <MetricCard label="Achieved SL" value={<Badge value={sel.achievedSL} target={targetSL} unit="%" />} sub={`Target: ${targetSL}%`} />
+
+                  <MetricCard label="SL (Required)" value={<Badge value={sel.achievedSL} target={targetSL} unit="%" />} sub={`Target: ${targetSL}%`} />
+                  
+                  {hasWorkforceData && selActualFTE > 0 && (
+                    <MetricCard label="SL (Actual)" value={<Badge value={+selActualSL.toFixed(1)} target={targetSL} unit="%" />} sub={`Based on ${Math.round(selActualFTE)} FTE`} />
+                  )}
+
                   <MetricCard label="Occupancy" value={<Badge value={sel.actualOcc} target={75} unit="%" />} sub={`Max: ${occupancy}%`} />
                   <MetricCard label="Shrinkage" value={`${shrinkage}%`} sub={`+${(sel.rawAgents * shrinkage / (100 - shrinkage)).toFixed(0)} buffer`} />
                 </div>
