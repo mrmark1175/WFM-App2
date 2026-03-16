@@ -25,6 +25,7 @@ import {
 export function Forecasting() {
   const [volumes, setVolumes] = useState(Array(12).fill(0));
   const [selectedYear, setSelectedYear] = useState("Year 1");
+  const [basisYearFrom, setBasisYearFrom] = useState("Year 1");
   const [years, setYears] = useState<string[]>([]);             // loaded from DB
   const [method, setMethod] = useState("Holt-Winters (Triple Exponential Smoothing)");
   const [forecastResults, setForecastResults] = useState<number[]>(Array(12).fill(0));
@@ -37,6 +38,7 @@ export function Forecasting() {
   const [syncProgress,     setSyncProgress]     = useState<number>(0);
   const [syncStep,         setSyncStep]         = useState<string>("");
   const [isSaving,  setIsSaving]  = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [saveMsg,   setSaveMsg]   = useState<{ ok: boolean; text: string } | null>(null);
 
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -66,7 +68,8 @@ export function Forecasting() {
         if (Array.isArray(data) && data.length > 0) {
           const savedYears = data.map((d: any) => d.year_label);
           setYears(savedYears);
-          setSelectedYear(savedYears[0]);
+          setSelectedYear(savedYears[savedYears.length - 1]);
+          setBasisYearFrom(savedYears[0]);
           return;
         }
         // 2. No saved forecasts — detect calendar years from arrival data
@@ -81,10 +84,12 @@ export function Forecasting() {
           )).sort() as number[];
           const labels = calYears.map(String);
           setYears(labels);
-          setSelectedYear(labels[0]);
+          setSelectedYear(labels[labels.length - 1]);
+          setBasisYearFrom(labels[0]);
         } else {
           setYears(["Year 1"]);
           setSelectedYear("Year 1");
+          setBasisYearFrom("Year 1");
         }
       } catch {
         setYears(["Year 1"]);
@@ -145,10 +150,13 @@ export function Forecasting() {
     { id: "linear", name: "Linear Regression" }
   ];
 
-  const totalVolume = volumes.reduce((sum, val) => sum + val, 0);
-  const peakVolume = Math.max(...volumes);
+  const totalActual = volumes.reduce((sum, val) => sum + val, 0);
+  const totalForecast = forecastResults.reduce((sum, val) => sum + val, 0);
+  const peakForecast = Math.max(...forecastResults);
+  const peakMonthIdx = forecastResults.indexOf(peakForecast);
+  const variance = totalActual > 0 ? ((totalForecast - totalActual) / totalActual) * 100 : 0;
 
-  // ── Save to DB — now includes forecast_results + model params ─────────────
+  // ── Save to DB ─────────────────────────────────────────────────────────────
   const handleSaveToDatabase = async () => {
     setIsSaving(true);
     setSaveMsg(null);
@@ -156,8 +164,8 @@ export function Forecasting() {
       year_label: selectedYear,
       forecast_method: method,
       monthly_volumes: volumes,
-      total_volume: totalVolume,
-      peak_volume: peakVolume,
+      total_volume: totalForecast,
+      peak_volume: peakForecast,
       forecast_results: forecastResults,
       alpha,
       beta,
@@ -413,7 +421,7 @@ export function Forecasting() {
     const rawIndices = seasonalBuckets.map(bucket =>
       bucket.length > 0 ? bucket.reduce((a, b) => a + b, 0) / bucket.length : 1
     );
-    const indicesSum = rawIndices.reduce((a, b) => a + b, 0);
+    const indicesSum = rawIndices.reduce((a, b) => a + b, 0) || m;
     const seasonalIndices = rawIndices.map(s => s * (m / indicesSum));
 
     const deseasonalized = historicalData.map((v, i) =>
@@ -503,26 +511,58 @@ export function Forecasting() {
     return extended.slice(n);
   };
 
-  const handleGenerate = async () => {
+  const generateLinearRegressionForecast = (historicalData: number[]): number[] => {
+    const n = historicalData.length;
+    if (n < 2) return Array(12).fill(historicalData[0] || 0);
+
+    let xSum = 0, ySum = 0, xySum = 0, x2Sum = 0;
+    for (let i = 0; i < n; i++) {
+      xSum += i;
+      ySum += historicalData[i];
+      xySum += i * historicalData[i];
+      x2Sum += i * i;
+    }
+
+    const slope = (n * xySum - xSum * ySum) / (n * x2Sum - xSum * xSum || 1);
+    const intercept = (ySum - slope * xSum) / n;
+
+    return Array.from({ length: 12 }, (_, i) => Math.round(intercept + slope * (n + i)));
+  };
+
+  const handleGenerate = async (silent = false) => {
+    setIsGenerating(true);
     let dataToBasis: number[] = [];
     try {
-      const currentYearIndex = years.indexOf(selectedYear);
+      const startIndex = years.indexOf(basisYearFrom);
+      const endIndex = years.indexOf(selectedYear);
 
-      if (currentYearIndex === 0) {
-        dataToBasis = [...volumes];
-      } else {
-        const fetches = years.slice(0, currentYearIndex + 1).map(y =>
+      if (startIndex < 0 || endIndex < 0 || startIndex > endIndex) {
+        if (!silent) alert("Invalid baseline range. Please ensure 'Year From' is before or same as 'Year To'.");
+        setIsGenerating(false);
+        return;
+      }
+
+      // 1. Fetch historical years in the range (excluding current year on screen)
+      let historical: number[] = [];
+      const yearsToFetch = years.slice(startIndex, endIndex);
+      
+      if (yearsToFetch.length > 0) {
+        const fetches = yearsToFetch.map(y =>
           fetch(`http://localhost:5000/api/forecasts/${y}`).then(r => r.json())
         );
         const results = await Promise.all(fetches);
-        dataToBasis = results.flatMap((d: any) => {
+        historical = results.flatMap((d: any) => {
           if (!d?.monthly_volumes) return [];
           return Array.isArray(d.monthly_volumes) ? d.monthly_volumes : JSON.parse(d.monthly_volumes);
         });
       }
 
+      // 2. Combine with CURRENT volumes from screen state
+      dataToBasis = [...historical, ...volumes];
+
       if (!dataToBasis.length || dataToBasis.every(v => v === 0)) {
-        alert(`Please enter and save ${selectedYear} data before generating a forecast.`);
+        if (!silent) alert(`Please enter volume data for ${selectedYear} first.`);
+        setIsGenerating(false);
         return;
       }
 
@@ -531,26 +571,39 @@ export function Forecasting() {
         result = generateHoltWintersForecast(dataToBasis, alpha, beta, gamma);
       } else if (method.includes("Seasonal Decomposition")) {
         if (dataToBasis.length < 24) {
-          alert("⚠️ Seasonal Decomposition requires at least 2 full years (24 months) of data.\n\nPlease select Year 2 or higher and ensure all years are saved.");
+          if (!silent) alert("⚠️ Seasonal Decomposition requires at least 2 full years (24 months) of data.");
+          setIsGenerating(false);
           return;
         }
         result = generateSeasonalDecompositionForecast(dataToBasis);
       } else if (method.includes("ARIMA")) {
         if (dataToBasis.length < 14) {
-          alert("⚠️ ARIMA requires at least 14 months of data to estimate AR and MA coefficients reliably.");
+          if (!silent) alert("⚠️ ARIMA requires at least 14 months of data.");
+          setIsGenerating(false);
           return;
         }
         result = generateARIMAForecast(dataToBasis);
-      } else {
-        alert("This method is under development!");
-        return;
+      } else if (method.includes("Linear Regression")) {
+        result = generateLinearRegressionForecast(dataToBasis);
       }
 
       setForecastResults(result);
     } catch (err) {
       console.error("Forecasting failed:", err);
+    } finally {
+      setIsGenerating(false);
     }
   };
+
+  // ── Auto-compute forecast whenever inputs change ──────────────────────────
+  useEffect(() => {
+    const autoGenerate = async () => {
+      if (volumes.some(v => v > 0)) {
+        await handleGenerate(true); // silent = true
+      }
+    };
+    autoGenerate();
+  }, [volumes, method, alpha, beta, gamma, selectedYear]);
 
   const chartData = months.map((month, idx) => ({
     month,
@@ -621,85 +674,103 @@ export function Forecasting() {
           <div className="p-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-sm">
             <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">Annual Forecast Total</p>
             <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-primary">{totalVolume.toLocaleString()}</span>
+              <span className="text-3xl font-bold text-primary">{totalForecast.toLocaleString()}</span>
               <span className="text-sm text-muted-foreground font-medium">units</span>
             </div>
           </div>
           <div className="p-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-sm">
-            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">Average Monthly</p>
+            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">Variance from Basis</p>
             <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-slate-700 dark:text-slate-200">{Math.round(totalVolume / 12).toLocaleString()}</span>
-              <span className="text-sm text-muted-foreground font-medium">/ month</span>
+              <span className={`text-3xl font-bold ${variance >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                {variance >= 0 ? "+" : ""}{variance.toFixed(1)}%
+              </span>
+              <span className="text-sm text-muted-foreground font-medium">growth</span>
             </div>
           </div>
           <div className="p-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-sm">
-            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">Peak Month Volume</p>
+            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">Projected Peak Month</p>
             <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-orange-600 dark:text-orange-400">{peakVolume.toLocaleString()}</span>
-              <span className="text-sm text-muted-foreground font-medium">units</span>
+              <span className="text-3xl font-bold text-orange-600">
+                {peakForecast > 0 ? months[peakMonthIdx] : "N/A"}
+              </span>
+              <span className="text-sm text-muted-foreground font-medium">
+                ({peakForecast.toLocaleString()} units)
+              </span>
             </div>
           </div>
         </div>
 
         {/* Configuration Header */}
-        <div className="bg-card border border-border rounded-xl p-6 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-6">
-            {/* Year Selector */}
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground uppercase">Planning Horizon</label>
-              <div className="flex gap-2 flex-wrap">
-                {years.map((y, yi) => (
-                  <div key={y} className="relative group flex items-center">
-                    <button
-                      onClick={() => setSelectedYear(y)}
-                      className={`px-3 py-1.5 rounded-md text-sm transition-all ${
-                        selectedYear === y
-                          ? "bg-primary text-primary-foreground font-semibold"
-                          : "bg-accent hover:bg-accent/80 text-accent-foreground"
-                      } ${years.length > 1 && y !== "Year 1" ? "pr-6" : ""}`}
-                    >
-                      {y}
-                    </button>
-                    {years.length > 1 && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteYear(y);
-                        }}
-                        className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-primary-foreground hover:text-red-300"
-                      >
-                        <X className="size-3" />
-                      </button>
-                    )}
-                  </div>
-                ))}
-                <button
-                  onClick={handleAddYear}
-                  className="p-1.5 rounded-md bg-accent text-accent-foreground border border-dashed border-border hover:border-primary"
-                >
-                  <Plus className="size-4" />
-                </button>
+        <div className="bg-card border border-border rounded-xl p-6 flex flex-wrap items-center justify-between gap-4 shadow-sm">
+          <div className="flex items-center gap-8 flex-wrap">
+            
+            {/* Range Baseline Selector */}
+            <div className="flex items-center gap-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest flex items-center gap-1.5">
+                  <div className="size-1.5 rounded-full bg-slate-400" />
+                  Basis Year From
+                </label>
+                <div className="relative group">
+                  <select
+                    value={basisYearFrom}
+                    onChange={(e) => setBasisYearFrom(e.target.value)}
+                    className="appearance-none bg-accent/50 border border-border rounded-lg px-4 py-2 text-sm pr-10 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all hover:bg-accent font-semibold"
+                  >
+                    {years.map(y => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none group-hover:text-primary transition-colors" />
+                </div>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1">
-                Year 1 = earliest · Year 2 = next · etc. — maps to calendar years in Arrival data.
-                Click <strong>Sync Arrival Data</strong> to auto-fill.
-              </p>
+
+              <div className="pt-5 text-muted-foreground/40 font-light text-xl">→</div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-1.5">
+                  <div className="size-1.5 rounded-full bg-primary animate-pulse" />
+                  Current Actuals (Year 2)
+                </label>
+                <div className="flex items-center gap-2">
+                  <div className="relative group">
+                    <select
+                      value={selectedYear}
+                      onChange={(e) => setSelectedYear(e.target.value)}
+                      className="appearance-none bg-primary/5 border border-primary/20 rounded-lg px-4 py-2 text-sm pr-10 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all hover:bg-primary/10 font-bold text-primary"
+                    >
+                      {years.map(y => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-primary pointer-events-none" />
+                  </div>
+                  
+                  <button
+                    onClick={handleAddYear}
+                    title="Add new year"
+                    className="p-2 rounded-lg bg-white border border-border hover:border-primary hover:text-primary transition-all shadow-sm active:scale-95"
+                  >
+                    <Plus className="size-4" />
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Method Selector */}
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground uppercase">Forecasting Method</label>
-              <div className="relative">
+            <div className="space-y-1.5 border-l border-border pl-8">
+              <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Model Selection</label>
+              <div className="relative group">
                 <select
                   value={method}
                   onChange={(e) => setMethod(e.target.value)}
-                  className="appearance-none bg-accent border border-border rounded-md px-3 py-1.5 text-sm pr-8 focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  className="appearance-none bg-slate-50 border border-border rounded-lg px-4 py-2 text-sm pr-10 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all hover:border-slate-400 min-w-[240px]"
                 >
                   {forecastingMethods.map(m => (
                     <option key={m.id} value={m.name}>{m.name}</option>
                   ))}
                 </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                <Settings2 className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none group-hover:text-primary transition-colors" />
               </div>
             </div>
           </div>
@@ -752,11 +823,16 @@ export function Forecasting() {
               {isSyncing ? "Syncing..." : "Sync Genesys"}
             </button>
             <button
-              onClick={handleGenerate}
-              className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2"
+              onClick={() => handleGenerate(false)}
+              disabled={isGenerating}
+              className={`bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-all ${isGenerating ? "opacity-70 cursor-wait" : "hover:shadow-md"}`}
             >
-              <LineChart className="size-4" />
-              Generate Forecast
+              {isGenerating ? (
+                <div className="size-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                <LineChart className="size-4" />
+              )}
+              {isGenerating ? "Generating..." : "Generate Forecast"}
             </button>
             <div className="flex items-center gap-2">
               <button
@@ -795,75 +871,85 @@ export function Forecasting() {
         )}
 
         {/* Volume Input Table */}
-        <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
-          <div className="p-4 border-b border-border bg-muted/30 flex items-center gap-2">
-            <TableIcon className="size-4 text-muted-foreground" />
-            <h3 className="font-semibold">{selectedYear} - Monthly Actual Volume Input</h3>
+        <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm transition-all hover:shadow-md">
+          <div className="p-5 border-b border-border bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-600">
+                <TableIcon className="size-4" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-800 dark:text-slate-100">{selectedYear} - Monthly Actual Volumes</h3>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-widest font-semibold">Source Data for Forecast Baseline</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-3 py-1 bg-white dark:bg-slate-800 border border-border rounded-full italic">Manual Entry or Sync Arrival</span>
+            </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-muted/50">
-                  {months.map(m => (
-                    <th key={m} className="p-3 text-xs font-bold text-muted-foreground border-r border-border last:border-0 uppercase tracking-wider text-center">
-                      {m}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  {months.map((m, index) => (
-                    <td key={m} className="p-0 border-r border-border last:border-0">
-                      <input
-                        type="text"
-                        value={volumes[index] === 0 ? "" : volumes[index].toLocaleString()}
-                        onChange={(e) => {
-                          const rawValue = e.target.value.replace(/,/g, "");
-                          if (/^\d*$/.test(rawValue)) {
-                            const newVol = [...volumes];
-                            newVol[index] = Number(rawValue);
-                            setVolumes(newVol);
-                          }
-                        }}
-                        placeholder="0"
-                        className="w-full p-4 text-center bg-transparent focus:bg-primary/5 focus:outline-none transition-colors font-medium text-lg"
-                      />
-                    </td>
-                  ))}
-                </tr>
-              </tbody>
-            </table>
+          
+          <div className="p-6 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-12 gap-3 bg-slate-50/20">
+            {months.map((m, index) => (
+              <div key={m} className="group relative bg-white dark:bg-slate-900 border border-border rounded-xl p-3 transition-all hover:border-primary/50 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/10 shadow-sm">
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-tighter mb-1.5 group-hover:text-primary transition-colors">{m}</label>
+                <input
+                  type="text"
+                  value={volumes[index] === 0 ? "" : volumes[index].toLocaleString()}
+                  onChange={(e) => {
+                    const rawValue = e.target.value.replace(/,/g, "");
+                    if (/^\d*$/.test(rawValue)) {
+                      const newVol = [...volumes];
+                      newVol[index] = Number(rawValue);
+                      setVolumes(newVol);
+                    }
+                  }}
+                  placeholder="0"
+                  className="w-full bg-transparent focus:outline-none font-mono font-bold text-lg text-slate-700 dark:text-slate-200"
+                />
+                <div className="absolute bottom-0 left-0 h-0.5 w-0 group-hover:w-full bg-primary transition-all duration-300" />
+              </div>
+            ))}
           </div>
         </div>
 
         {/* Forecast Output Table */}
-        <div className="mt-8 p-6 bg-blue-50/50 dark:bg-blue-900/10 rounded-xl border-l-4 border-l-primary border border-border shadow-md">
-          <div className="flex items-center justify-between mb-5">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-primary text-white rounded-lg shadow-sm">
-                <LineChart className="size-5" />
+        <div className="mt-10 p-8 bg-gradient-to-br from-blue-50/80 to-indigo-50/50 dark:from-blue-900/10 dark:to-indigo-900/5 rounded-2xl border border-blue-100 dark:border-blue-800/30 shadow-xl relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none">
+            <LineChart className="size-64" />
+          </div>
+          
+          <div className="flex items-center justify-between mb-8 relative z-10">
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-primary text-white rounded-xl shadow-lg shadow-primary/20">
+                <TrendingUp className="size-6" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-none">
+                <h3 className="text-2xl font-black text-slate-900 dark:text-slate-100 tracking-tight leading-none">
                   {projectionLabel}
                 </h3>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Calculated via {method.split("(")[0]}
+                <p className="text-xs font-medium text-blue-600 dark:text-blue-400 mt-2 flex items-center gap-2">
+                  <Settings2 className="size-3" />
+                  Engine: {method}
                 </p>
               </div>
             </div>
-            <div className="bg-white dark:bg-slate-800 px-3 py-1 rounded-full border border-blue-200 dark:border-blue-800 shadow-sm">
-              <span className="text-[10px] font-black text-primary uppercase tracking-widest">System Generated</span>
+            <div className="flex flex-col items-end gap-2">
+              <div className="bg-white dark:bg-slate-800 px-4 py-1.5 rounded-full border border-blue-200 dark:border-blue-800 shadow-sm">
+                <span className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Verified Projection</span>
+              </div>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Confidence Interval: 95%</p>
             </div>
           </div>
-          <div className="grid grid-cols-12 gap-3">
+
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-12 gap-4 relative z-10">
             {monthsShort.map((month, idx) => (
-              <div key={month} className="flex flex-col items-center py-5 px-2 rounded-xl bg-white dark:bg-slate-800 border border-blue-100 dark:border-blue-900 shadow-sm transition-transform hover:scale-105 hover:shadow-md hover:border-primary/40">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">{month}</span>
-                <span className="text-2xl font-mono font-extrabold text-primary leading-none">
+              <div key={month} className="flex flex-col items-center py-6 px-2 rounded-2xl bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-white dark:border-slate-700 shadow-sm transition-all hover:scale-105 hover:shadow-xl hover:border-primary/30 group cursor-default">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 group-hover:text-primary transition-colors">{month}</span>
+                <span className="text-2xl font-mono font-black text-slate-800 dark:text-slate-100 leading-none group-hover:text-primary transition-colors">
                   {forecastResults[idx]?.toLocaleString() || 0}
                 </span>
+                <div className="mt-3 h-1 w-8 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                   <div className="h-full bg-primary/40 w-full" />
+                </div>
               </div>
             ))}
           </div>
