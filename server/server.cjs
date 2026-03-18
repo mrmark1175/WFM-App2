@@ -267,11 +267,18 @@ app.post('/api/telephony/pull', async (req, res) => {
         if (baseOffer > 0) {
           const abandon = Math.floor(Math.random() * (baseOffer * 0.1));
           const answer = baseOffer - abandon;
-          const asa = Math.floor(Math.random() * 15 + 2);
+          const asa = Math.floor(Math.random() * 25 + 5);
+          
+          // More realistic SL calculation with variance and occasional fails
+          let slBase = 0.85; // Start with a decent base
+          if (hour >= 10 && hour <= 14) slBase = 0.72; // Peak hours lower SL
+          if (baseOffer > 20) slBase -= 0.1; // High volume drops SL
+          
+          const slPct = Math.min(0.99, Math.max(0.4, slBase + (Math.random() * 0.2 - 0.1)));
+          
           const avgTalk = Math.random() * 220 + 180;
           const avgHold = Math.random() * 30 + 5;
           const avgAcw = Math.random() * 60 + 30;
-          const slPct = asa < 20 ? 0.95 : 0.75;
           
           return {
             date: dateStr,
