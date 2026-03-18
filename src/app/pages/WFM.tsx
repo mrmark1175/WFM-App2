@@ -1,5 +1,5 @@
 import { PageLayout } from "../components/PageLayout";
-import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone, Grid, Monitor, PieChart, LineChart } from "lucide-react";
+import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone, Grid, Monitor, PieChart, LineChart, Database } from "lucide-react";
 import { Link } from "react-router-dom";
 import React from "react";
 
@@ -47,9 +47,10 @@ export function WFM() {
     },
     {
       title: "Performance Analytics",
-      description: "Track KPIs, adherence, and productivity metrics",
+      description: "Track KPIs, service levels, and detailed queue performance metrics",
       icon: BarChart3,
-      stats: "98% Adherence",
+      stats: "Detailed KPIs",
+      path: "/wfm/performance-analytics",
     },
     {
       title: "Interaction Arrival",
@@ -77,6 +78,13 @@ export function WFM() {
       description: "Connect and manage telephony systems and call routing",
       icon: Phone,
       stats: "5 Active Systems",
+    },
+    {
+      title: "Telephony Raw Data",
+      description: "Import and manage raw call records, AHT, and agent activity logs",
+      icon: Database,
+      stats: "Import Tool",
+      path: "/wfm/telephony-raw",
     },
   ];
 

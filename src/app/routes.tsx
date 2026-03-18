@@ -8,7 +8,9 @@ import { Forecasting } from "./pages/Forecasting";
 import { CapacityPlanning } from "./pages/CapacityPlanning";
 import { IntradayForecast } from "./pages/IntradayForecast";
 import { InteractionArrival } from "./pages/InteractionArrival";
-import { ArrivalAnalysis } from "./pages/ArrivalAnalysis"; // ✅ ADD THIS
+import { ArrivalAnalysis } from "./pages/ArrivalAnalysis";
+import { TelephonyRawData } from "./pages/TelephonyRawData";
+import { PerformanceAnalytics } from "./pages/PerformanceAnalytics";
 
 export const router = createBrowserRouter([
   { path: "/",                            Component: Home },
@@ -19,7 +21,9 @@ export const router = createBrowserRouter([
   { path: "/wfm/capacity",               Component: CapacityPlanning },
   { path: "/wfm/intraday",               Component: IntradayForecast },
   { path: "/wfm/interaction-arrival",    Component: InteractionArrival },
-  { path: "/wfm/arrival-analysis",       Component: ArrivalAnalysis }, // ✅ ADD THIS
+  { path: "/wfm/arrival-analysis",       Component: ArrivalAnalysis },
+  { path: "/wfm/telephony-raw",          Component: TelephonyRawData },
+  { path: "/wfm/performance-analytics",  Component: PerformanceAnalytics },
   { path: "/configuration",              Component: Configuration },
   { path: "*",                            Component: Home },
 ]);

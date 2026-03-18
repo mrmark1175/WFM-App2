@@ -241,21 +241,87 @@ app.post('/api/interaction-arrival', async (req, res) => {
 
 app.post('/api/telephony/pull', async (req, res) => {
   const { system, date, queue } = req.body;
+  
   if (system === 'genesys') {
     const data = Array.from({ length: 96 }, (_, i) => {
       const hour = Math.floor(i / 4);
-      const base = hour < 7 ? 5 : hour < 9 ? 30 : hour < 12 ? 80 : hour < 13 ? 50 : hour < 16 ? 75 : hour < 18 ? 40 : hour < 20 ? 20 : 5;
-      return { interval_index: i, volume: Math.round(base + (Math.random()-.5)*10), aht: Math.round(240 + (Math.random()-.5)*60) };
+      let baseOffer = 0;
+      
+      if (hour >= 8 && hour <= 18) {
+        baseOffer = Math.floor(Math.random() * 30 + 20);
+      } else if (hour >= 0 && hour <= 5) {
+        baseOffer = Math.floor(Math.random() * 5);
+      } else {
+        baseOffer = Math.floor(Math.random() * 15 + 5);
+      }
+      
+      if (baseOffer > 0) {
+        const abandon = Math.floor(Math.random() * (baseOffer * 0.1));
+        const answer = baseOffer - abandon;
+        const asa = Math.floor(Math.random() * 15 + 2);
+        const avgTalk = Math.random() * 220 + 180;
+        const avgHold = Math.random() * 30 + 5;
+        const avgAcw = Math.random() * 60 + 30;
+        const slPct = asa < 20 ? 0.95 : 0.75;
+        
+        return {
+          interval_index: i,
+          offer: baseOffer,
+          answer: answer,
+          abandon: abandon,
+          asa: asa,
+          avg_wait: asa + Math.floor(Math.random() * 5),
+          avg_talk: Math.round(avgTalk),
+          avg_hold: Math.round(avgHold),
+          avg_acw: Math.round(avgAcw),
+          avg_handle: Math.round(avgTalk + avgHold + avgAcw),
+          sl_pct: slPct,
+          hold_count: Math.floor(Math.random() * 3),
+          transfer_count: Math.floor(Math.random() * 2),
+          short_abandon: Math.floor(Math.random() * 2)
+        };
+      } else {
+        return { 
+          interval_index: i, offer: 0, answer: 0, abandon: 0, asa: 0, 
+          avg_wait: 0, avg_talk: 0, avg_hold: 0, avg_acw: 0, avg_handle: 0, 
+          sl_pct: 1, hold_count: 0, transfer_count: 0, short_abandon: 0 
+        };
+      }
     });
+    
     return res.json({ success: true, data });
   }
+  
   return res.json({ success: false, message: `${system} integration not yet configured.` });
 });
 
 app.post('/api/genesys/sync', async (req, res) => {
   try {
-    const dummyVolumeData = [100,150,200,250,300,350,400,450,500,550,600,650];
-    res.json({ success: true, data: dummyVolumeData });
+    // Return 12 months of aggregated data
+    const monthlyVolumes = Array.from({ length: 12 }, (_, monthIdx) => {
+      // Approximate 30 days per month * 96 intervals/day
+      let monthTotal = 0;
+      for (let day = 0; day < 30; day++) {
+        for (let interval = 0; interval < 96; interval++) {
+          const hour = Math.floor(interval / 4);
+          let baseOffer = 0;
+          if (hour >= 8 && hour <= 18) {
+            baseOffer = Math.floor(Math.random() * (50 - 20 + 1) + 20);
+          } else if (hour >= 0 && hour <= 5) {
+            baseOffer = Math.floor(Math.random() * 5);
+          } else {
+            baseOffer = Math.floor(Math.random() * (20 - 5 + 1) + 5);
+          }
+          if (baseOffer > 0) {
+            const abandon = Math.floor(Math.random() * (baseOffer * 0.1));
+            monthTotal += (baseOffer - abandon);
+          }
+        }
+      }
+      return monthTotal;
+    });
+    
+    res.json({ success: true, data: monthlyVolumes });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
