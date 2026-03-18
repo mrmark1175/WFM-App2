@@ -240,56 +240,68 @@ app.post('/api/interaction-arrival', async (req, res) => {
 });
 
 app.post('/api/telephony/pull', async (req, res) => {
-  const { system, date, queue } = req.body;
+  const { system, date, startDate, endDate, queue } = req.body;
   
   if (system === 'genesys') {
-    const data = Array.from({ length: 96 }, (_, i) => {
-      const hour = Math.floor(i / 4);
-      let baseOffer = 0;
-      
-      if (hour >= 8 && hour <= 18) {
-        baseOffer = Math.floor(Math.random() * 30 + 20);
-      } else if (hour >= 0 && hour <= 5) {
-        baseOffer = Math.floor(Math.random() * 5);
-      } else {
-        baseOffer = Math.floor(Math.random() * 15 + 5);
-      }
-      
-      if (baseOffer > 0) {
-        const abandon = Math.floor(Math.random() * (baseOffer * 0.1));
-        const answer = baseOffer - abandon;
-        const asa = Math.floor(Math.random() * 15 + 2);
-        const avgTalk = Math.random() * 220 + 180;
-        const avgHold = Math.random() * 30 + 5;
-        const avgAcw = Math.random() * 60 + 30;
-        const slPct = asa < 20 ? 0.95 : 0.75;
-        
-        return {
-          interval_index: i,
-          offer: baseOffer,
-          answer: answer,
-          abandon: abandon,
-          asa: asa,
-          avg_wait: asa + Math.floor(Math.random() * 5),
-          avg_talk: Math.round(avgTalk),
-          avg_hold: Math.round(avgHold),
-          avg_acw: Math.round(avgAcw),
-          avg_handle: Math.round(avgTalk + avgHold + avgAcw),
-          sl_pct: slPct,
-          hold_count: Math.floor(Math.random() * 3),
-          transfer_count: Math.floor(Math.random() * 2),
-          short_abandon: Math.floor(Math.random() * 2)
-        };
-      } else {
-        return { 
-          interval_index: i, offer: 0, answer: 0, abandon: 0, asa: 0, 
-          avg_wait: 0, avg_talk: 0, avg_hold: 0, avg_acw: 0, avg_handle: 0, 
-          sl_pct: 1, hold_count: 0, transfer_count: 0, short_abandon: 0 
-        };
-      }
-    });
+    const start = new Date((startDate || date) + 'T00:00:00');
+    const end = new Date((endDate || date) + 'T00:00:00');
+    const results = [];
     
-    return res.json({ success: true, data });
+    let current = new Date(start);
+    while (current <= end) {
+      const dateStr = current.toISOString().split('T')[0];
+      const dayData = Array.from({ length: 96 }, (_, i) => {
+        const hour = Math.floor(i / 4);
+        let baseOffer = 0;
+        
+        if (hour >= 8 && hour <= 18) {
+          baseOffer = Math.floor(Math.random() * 30 + 20);
+        } else if (hour >= 0 && hour <= 5) {
+          baseOffer = Math.floor(Math.random() * 5);
+        } else {
+          baseOffer = Math.floor(Math.random() * 15 + 5);
+        }
+        
+        if (baseOffer > 0) {
+          const abandon = Math.floor(Math.random() * (baseOffer * 0.1));
+          const answer = baseOffer - abandon;
+          const asa = Math.floor(Math.random() * 15 + 2);
+          const avgTalk = Math.random() * 220 + 180;
+          const avgHold = Math.random() * 30 + 5;
+          const avgAcw = Math.random() * 60 + 30;
+          const slPct = asa < 20 ? 0.95 : 0.75;
+          
+          return {
+            date: dateStr,
+            interval_index: i,
+            offer: baseOffer,
+            answer: answer,
+            abandon: abandon,
+            asa: asa,
+            avg_wait: asa + Math.floor(Math.random() * 5),
+            avg_talk: Math.round(avgTalk),
+            avg_hold: Math.round(avgHold),
+            avg_acw: Math.round(avgAcw),
+            avg_handle: Math.round(avgTalk + avgHold + avgAcw),
+            sl_pct: slPct,
+            hold_count: Math.floor(Math.random() * 3),
+            transfer_count: Math.floor(Math.random() * 2),
+            short_abandon: Math.floor(Math.random() * 2)
+          };
+        } else {
+          return { 
+            date: dateStr,
+            interval_index: i, offer: 0, answer: 0, abandon: 0, asa: 0, 
+            avg_wait: 0, avg_talk: 0, avg_hold: 0, avg_acw: 0, avg_handle: 0, 
+            sl_pct: 1, hold_count: 0, transfer_count: 0, short_abandon: 0 
+          };
+        }
+      });
+      results.push(...dayData);
+      current.setDate(current.getDate() + 1);
+    }
+    
+    return res.json({ success: true, data: results });
   }
   
   return res.json({ success: false, message: `${system} integration not yet configured.` });
