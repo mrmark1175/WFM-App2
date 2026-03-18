@@ -90,17 +90,24 @@ export function PerformanceAnalytics() {
   }, [startDate, endDate]);
 
   const displayData = useMemo(() => {
-    // Filter by time range first
-    const timeFiltered = rawData.filter(item => {
+    // Filter by time range and search term
+    const filtered = rawData.filter(item => {
       const intervalTime = item.interval_start.split(' ')[1];
-      return intervalTime >= startTime && intervalTime <= endTime;
+      const matchesTime = intervalTime >= startTime && intervalTime <= endTime;
+      
+      // Since mock data currently doesn't have queue_name, 
+      // we'll simulate search matches or implement actual filtering if available.
+      const matchesSearch = !searchTerm || 
+        (item as any).queue_name?.toLowerCase().includes(searchTerm.toLowerCase());
+      
+      return matchesTime && matchesSearch;
     });
 
-    if (rollupLevel === "Interval") return timeFiltered;
+    if (rollupLevel === "Interval") return filtered;
 
     const groups: Record<string, PerformanceData[]> = {};
 
-    timeFiltered.forEach(item => {
+    filtered.forEach(item => {
       let key = "";
       const d = new Date(item.date + 'T00:00:00');
       
@@ -128,17 +135,17 @@ export function PerformanceAnalytics() {
     });
 
     return Object.entries(groups).map(([key, items]) => {
-      const totalOffer = items.reduce((s, i) => s + i.offer, 0);
-      const totalAnswer = items.reduce((s, i) => s + i.answer, 0);
-      const totalAbandon = items.reduce((s, i) => s + i.abandon, 0);
+      const totalOffer = items.reduce((s, i) => s + (i.offer || 0), 0);
+      const totalAnswer = items.reduce((s, i) => s + (i.answer || 0), 0);
+      const totalAbandon = items.reduce((s, i) => s + (i.abandon || 0), 0);
       
-      const avgASA = totalAnswer > 0 ? items.reduce((s, i) => s + (i.asa * i.answer), 0) / totalAnswer : 0;
-      const avgWait = totalAnswer > 0 ? items.reduce((s, i) => s + (i.avg_wait * i.answer), 0) / totalAnswer : 0;
-      const avgHandle = totalAnswer > 0 ? items.reduce((s, i) => s + (i.avg_handle * i.answer), 0) / totalAnswer : 0;
-      const avgTalk = totalAnswer > 0 ? items.reduce((s, i) => s + (i.avg_talk * i.answer), 0) / totalAnswer : 0;
-      const avgHold = totalAnswer > 0 ? items.reduce((s, i) => s + (i.avg_hold * i.answer), 0) / totalAnswer : 0;
-      const avgAcw = totalAnswer > 0 ? items.reduce((s, i) => s + (i.avg_acw * i.answer), 0) / totalAnswer : 0;
-      const avgSL = totalOffer > 0 ? items.reduce((s, i) => s + (i.sl_pct * i.offer), 0) / totalOffer : 1;
+      const avgASA = totalAnswer > 0 ? items.reduce((s, i) => s + ((i.asa || 0) * (i.answer || 0)), 0) / totalAnswer : 0;
+      const avgWait = totalAnswer > 0 ? items.reduce((s, i) => s + ((i.avg_wait || 0) * (i.answer || 0)), 0) / totalAnswer : 0;
+      const avgHandle = totalAnswer > 0 ? items.reduce((s, i) => s + ((i.avg_handle || 0) * (i.answer || 0)), 0) / totalAnswer : 0;
+      const avgTalk = totalAnswer > 0 ? items.reduce((s, i) => s + ((i.avg_talk || 0) * (i.answer || 0)), 0) / totalAnswer : 0;
+      const avgHold = totalAnswer > 0 ? items.reduce((s, i) => s + ((i.avg_hold || 0) * (i.answer || 0)), 0) / totalAnswer : 0;
+      const avgAcw = totalAnswer > 0 ? items.reduce((s, i) => s + ((i.avg_acw || 0) * (i.answer || 0)), 0) / totalAnswer : 0;
+      const avgSL = totalOffer > 0 ? items.reduce((s, i) => s + ((i.sl_pct || 0) * (i.offer || 0)), 0) / totalOffer : 1;
 
       return {
         interval_start: key,
@@ -161,68 +168,73 @@ export function PerformanceAnalytics() {
         short_abandon: items.reduce((s, i) => s + (i.short_abandon || 0), 0),
       } as PerformanceData;
     });
-  }, [rawData, rollupLevel, startTime, endTime]);
+  }, [rawData, rollupLevel, startTime, endTime, searchTerm]);
 
   const formatPct = (val: number) => (val * 100).toFixed(1) + "%";
 
+  const formatDateLocal = (date: Date) => {
+    return date.getFullYear() + '-' + 
+           String(date.getMonth() + 1).padStart(2, '0') + '-' + 
+           String(date.getDate()).padStart(2, '0');
+  };
+
   const presets = [
     { label: "Today", action: () => {
-      const d = new Date().toISOString().split('T')[0];
-      setStartDate(d); setEndDate(d);
+      const d = new Date();
+      setStartDate(formatDateLocal(d)); setEndDate(formatDateLocal(d));
     }},
     { label: "Yesterday", action: () => {
       const d = new Date(); d.setDate(d.getDate() - 1);
-      const ds = d.toISOString().split('T')[0];
-      setStartDate(ds); setEndDate(ds);
+      setStartDate(formatDateLocal(d)); setEndDate(formatDateLocal(d));
     }},
     { label: "This week", action: () => {
       const d = new Date(); const day = d.getDay();
       const start = new Date(d); start.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
-      setStartDate(start.toISOString().split('T')[0]);
-      setEndDate(new Date().toISOString().split('T')[0]);
+      setStartDate(formatDateLocal(start));
+      setEndDate(formatDateLocal(new Date()));
     }},
     { label: "Last week", action: () => {
       const d = new Date(); const day = d.getDay();
       const start = new Date(d); start.setDate(d.getDate() - (day === 0 ? 6 : day - 1) - 7);
       const end = new Date(start); end.setDate(start.getDate() + 6);
-      setStartDate(start.toISOString().split('T')[0]);
-      setEndDate(end.toISOString().split('T')[0]);
+      setStartDate(formatDateLocal(start));
+      setEndDate(formatDateLocal(end));
     }},
     { label: "Previous 7 days", action: () => {
       const end = new Date(); const start = new Date();
       start.setDate(end.getDate() - 7);
-      setStartDate(start.toISOString().split('T')[0]);
-      setEndDate(end.toISOString().split('T')[0]);
+      setStartDate(formatDateLocal(start));
+      setEndDate(formatDateLocal(end));
     }},
     { label: "This month", action: () => {
       const start = new Date(); start.setDate(1);
-      setStartDate(start.toISOString().split('T')[0]);
-      setEndDate(new Date().toISOString().split('T')[0]);
+      setStartDate(formatDateLocal(start));
+      setEndDate(formatDateLocal(new Date()));
     }},
     { label: "This month by week", action: () => {
       const start = new Date(); start.setDate(1);
-      setStartDate(start.toISOString().split('T')[0]);
-      setEndDate(new Date().toISOString().split('T')[0]);
+      setStartDate(formatDateLocal(start));
+      setEndDate(formatDateLocal(new Date()));
       setRollupLevel("Month by Week");
     }},
     { label: "Last month", action: () => {
       const d = new Date(); d.setMonth(d.getMonth() - 1);
       const start = new Date(d.getFullYear(), d.getMonth(), 1);
       const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-      setStartDate(start.toISOString().split('T')[0]);
-      setEndDate(end.toISOString().split('T')[0]);
+      setStartDate(formatDateLocal(start));
+      setEndDate(formatDateLocal(end));
     }},
     { label: "Previous 30 days", action: () => {
       const end = new Date(); const start = new Date();
       start.setDate(end.getDate() - 30);
-      setStartDate(start.toISOString().split('T')[0]);
-      setEndDate(end.toISOString().split('T')[0]);
+      setStartDate(formatDateLocal(start));
+      setEndDate(formatDateLocal(end));
     }},
     { label: "Previous 3 months", action: () => {
       const end = new Date(); const start = new Date();
       start.setMonth(end.getMonth() - 3);
-      setStartDate(start.toISOString().split('T')[0]);
-      setEndDate(end.toISOString().split('T')[0]);
+      setStartDate(formatDateLocal(start));
+      setEndDate(formatDateLocal(end));
     }},
   ];
 

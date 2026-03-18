@@ -249,17 +249,19 @@ app.post('/api/telephony/pull', async (req, res) => {
     
     let current = new Date(start);
     while (current <= end) {
-      const dateStr = current.toISOString().split('T')[0];
+      const dateStr = current.getFullYear() + '-' + 
+                      String(current.getMonth() + 1).padStart(2, '0') + '-' + 
+                      String(current.getDate()).padStart(2, '0');
       const dayData = Array.from({ length: 96 }, (_, i) => {
         const hour = Math.floor(i / 4);
         let baseOffer = 0;
         
         if (hour >= 8 && hour <= 18) {
-          baseOffer = Math.floor(Math.random() * 30 + 20);
+          baseOffer = Math.floor(Math.random() * 15 + 10);
         } else if (hour >= 0 && hour <= 5) {
-          baseOffer = Math.floor(Math.random() * 5);
+          baseOffer = Math.floor(Math.random() * 2);
         } else {
-          baseOffer = Math.floor(Math.random() * 15 + 5);
+          baseOffer = Math.floor(Math.random() * 5 + 2);
         }
         
         if (baseOffer > 0) {
