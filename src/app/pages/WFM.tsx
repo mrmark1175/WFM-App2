@@ -13,6 +13,13 @@ export function WFM() {
       path: "/wfm/forecasting",
     },
     {
+      title: "Long-Term Forecasting",
+      description: "Advanced scenario modeling for long-term capacity and resource planning",
+      icon: LineChart,
+      stats: "12 Month View",
+      path: "/wfm/long-term-forecasting",
+    },
+    {
       title: "Workforce Planning",
       description: "Forecast staffing needs and optimize resource allocation",
       icon: Users,
