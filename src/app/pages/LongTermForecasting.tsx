@@ -108,6 +108,7 @@ export interface ForecastData {
   actualSeries: number | null;
   forecastSeries: number | null;
   confidenceBand: [number, number] | null;
+  staffingGapRange: [number, number] | null;
   historicalVolume: number; // SDLY for comparison
   aht: number;         
   shrinkage: number;
@@ -317,7 +318,9 @@ import {
   calculateLinearRegression, 
   calculateHoltWinters, 
   calculateDecomposition, 
-  calculateARIMA 
+  calculateARIMA,
+  generateInsights,
+  calculateHiringPlan
 } from "./forecasting-logic";
 
 const FORECAST_METHODS = [
@@ -490,6 +493,9 @@ export default function LongTermForecasting() {
       const forecastSeries = idx >= 11 ? (idx === 11 ? (actualsPast[11] || 0) : volume) : null;
       const confidenceBand: [number, number] | null = isFuture ? [Math.round(volume * 0.9), Math.round(volume * 1.1)] : null;
 
+      // staffingGapRange shows the delta between req and avail for shading
+      const staffingGapRange: [number, number] | null = isFuture ? [availFTE, reqFTE] : null;
+
       return {
         month: time.month,
         year: time.year,
@@ -498,6 +504,7 @@ export default function LongTermForecasting() {
         actualSeries,
         forecastSeries,
         confidenceBand,
+        staffingGapRange,
         historicalVolume,
         aht: monthlyAHT,
         shrinkage: assumptions.shrinkage,
@@ -554,6 +561,9 @@ export default function LongTermForecasting() {
       }, 0).toFixed(0)
     ) : 0,
   };
+
+  const insights = useMemo(() => generateInsights(forecastData), [forecastData]);
+  const hiringPlan = useMemo(() => calculateHiringPlan(forecastData), [forecastData]);
 
   const activeCurrency = CURRENCIES.find(c => c.code === assumptions.currency) || CURRENCIES[0];
 
@@ -669,6 +679,75 @@ export default function LongTermForecasting() {
                 </CardContent>
               </Card>
             </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {insights.length > 0 && (
+                <Card className="border-primary/20 bg-primary/5 shadow-sm border-dashed">
+                  <CardHeader className="py-3 px-6 border-b border-primary/10">
+                    <CardTitle className="text-xs font-black flex items-center gap-2 uppercase tracking-widest text-primary">
+                      <Info className="size-4" />
+                      Key Planning Insights
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="py-4 px-6">
+                    <ul className="space-y-3">
+                      {insights.map((insight, idx) => {
+                        const parts = insight.split(/(\d+(?:\.\d+)?%?)/);
+                        return (
+                          <li key={idx} className="flex items-start gap-2 text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                            <div className="mt-1.5 size-1.5 rounded-full bg-primary shrink-0" />
+                            <span>
+                              {parts.map((part, i) => 
+                                /^\d+(?:\.\d+)?%?$/.test(part) ? <strong key={i} className="text-primary font-black">{part}</strong> : part
+                              )}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+
+              {hiringPlan && (
+                <Card className={`border-dashed shadow-sm transition-all ${hiringPlan.totalHires > 0 ? "border-amber-400 bg-amber-50/50 dark:bg-amber-950/10 ring-1 ring-amber-400/20" : "border-emerald-200 bg-emerald-50/30"}`}>
+                  <CardHeader className="py-3 px-6 border-b border-amber-100 dark:border-amber-900/50 flex flex-row items-center justify-between">
+                    <CardTitle className={`text-xs font-black flex items-center gap-2 uppercase tracking-widest ${hiringPlan.totalHires > 0 ? "text-amber-700 dark:text-amber-400" : "text-emerald-700"}`}>
+                      <Users className="size-4" />
+                      Hiring Strategy
+                    </CardTitle>
+                    {hiringPlan.totalHires > 0 && <Badge className="bg-amber-500 font-black text-[8px] animate-pulse">ACTION REQUIRED</Badge>}
+                  </CardHeader>
+                  <CardContent className="py-4 px-6">
+                    <div className="space-y-4">
+                      <p className="text-[11px] font-bold text-slate-800 dark:text-slate-200 leading-relaxed">
+                        {hiringPlan.summary.split(/(\d+)/).map((part, i) => 
+                          /^\d+$/.test(part) ? <strong key={i} className="text-amber-700 dark:text-amber-400 font-black text-xs">{part}</strong> : part
+                        )}
+                      </p>
+                      {hiringPlan.totalHires > 0 && (
+                        <div className="flex items-center gap-4 p-3 bg-amber-100/50 rounded-lg border border-amber-200/50">
+                          <div>
+                            <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Target</p>
+                            <p className="text-lg font-black text-amber-900">+{hiringPlan.totalHires} <span className="text-[10px] font-bold text-amber-700">New Hires</span></p>
+                          </div>
+                          <div className="h-8 w-px bg-amber-200" />
+                          <div>
+                            <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Rate</p>
+                            <p className="text-lg font-black text-amber-900">{hiringPlan.monthlyHires} <span className="text-[10px] font-bold text-amber-700">/ Month</span></p>
+                          </div>
+                          <div className="h-8 w-px bg-amber-200" />
+                          <div>
+                            <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Start</p>
+                            <p className="text-lg font-black text-amber-900">{hiringPlan.startMonth}</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
@@ -718,33 +797,52 @@ export default function LongTermForecasting() {
                           tickLine={false}
                           tick={{ fontSize: 10, fill: '#f59e0b', fontWeight: 800 }}
                         />
+                        <Area 
+                          yAxisId="right"
+                          dataKey="staffingGapRange" 
+                          name="Staffing Risk (Gap)"
+                          stroke="none"
+                          fill="#f43f5e" 
+                          fillOpacity={0.15} 
+                        />
                         <Tooltip 
                           cursor={{ stroke: 'hsl(var(--primary))', strokeWidth: 1, strokeDasharray: '4 4' }}
                           content={({ active, payload, label }) => {
                             if (active && payload && payload.length) {
+                              const data = payload[0].payload;
+                              const gap = data.gap;
+                              const status = gap < 0 ? "Understaffed" : "Overstaffed";
+                              const statusColor = gap < 0 ? "text-rose-600" : "text-emerald-600";
+
                               return (
-                                <div className="bg-white dark:bg-slate-900 border border-border/80 p-4 rounded-xl shadow-2xl min-w-[200px] backdrop-blur-md">
+                                <div className="bg-white dark:bg-slate-900 border border-border/80 p-4 rounded-xl shadow-2xl min-w-[220px] backdrop-blur-md">
                                   <div className="flex items-center justify-between mb-3 border-b border-border pb-2">
-                                    <p className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-100">{label} {payload[0]?.payload?.year}</p>
-                                    <Badge variant="outline" className="text-[9px] font-black">{selectedScenarioId.toUpperCase()}</Badge>
+                                    <p className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-100">{label} {data.year}</p>
+                                    {!data.isFuture ? (
+                                      <Badge variant="secondary" className="text-[8px] h-4 font-black">ACTUAL</Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="text-[8px] h-4 font-black border-primary/20 text-primary">FCST</Badge>
+                                    )}
                                   </div>
                                   <div className="space-y-2">
-                                    {payload.map((entry, index) => (
-                                      <div key={index} className="flex items-center justify-between gap-6">
-                                        <div className="flex items-center gap-2">
-                                          <div className="size-2 rounded-full" style={{ backgroundColor: entry.color }} />
-                                          <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-tight">{entry.name}</span>
-                                        </div>
-                                        <span className="text-[12px] font-black tabular-nums" style={{ color: entry.color }}>
-                                          {entry.value?.toLocaleString()}
-                                        </span>
-                                      </div>
-                                    ))}
+                                    <div className="flex items-center justify-between gap-6">
+                                      <span className="text-[10px] font-bold text-muted-foreground uppercase">Volume</span>
+                                      <span className="text-[11px] font-black tabular-nums text-primary">{data.volume.toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-6">
+                                      <span className="text-[10px] font-bold text-muted-foreground uppercase">Required FTE</span>
+                                      <span className="text-[11px] font-black tabular-nums text-amber-600">{data.requiredFTE}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-6">
+                                      <span className="text-[10px] font-bold text-muted-foreground uppercase">Available FTE</span>
+                                      <span className="text-[11px] font-black tabular-nums text-emerald-600">{data.availableFTE}</span>
+                                    </div>
+                                    
                                     <div className="pt-2 border-t border-border mt-1">
                                       <div className="flex items-center justify-between">
-                                         <span className="text-[10px] font-black text-muted-foreground uppercase">Staffing Gap</span>
-                                         <span className={`text-[11px] font-black tabular-nums ${payload[1].value > payload[2].value ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                           {Number(payload[2].value - payload[1].value).toFixed(1)} FTE
+                                         <span className="text-[10px] font-black text-muted-foreground uppercase">{status}</span>
+                                         <span className={`text-[11px] font-black tabular-nums ${statusColor}`}>
+                                           {Math.abs(gap)} FTE
                                          </span>
                                       </div>
                                     </div>

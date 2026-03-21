@@ -213,3 +213,105 @@ export const calculateARIMA = (
 
   return forecast;
 };
+
+export interface BasicForecastData {
+  month: string;
+  year: string;
+  isFuture: boolean;
+  volume: number;
+  requiredFTE: number;
+  availableFTE: number;
+  gap: number;
+  aht: number;
+}
+
+/**
+ * Generates automated WFM insights based on forecast data.
+ */
+export const generateInsights = (data: BasicForecastData[]): string[] => {
+  if (data.length === 0) return [];
+
+  const futureData = data.filter(d => d.isFuture);
+  if (futureData.length === 0) return [];
+
+  const insights: string[] = [];
+
+  // 1. Peak Volume
+  const peakMonth = [...futureData].sort((a, b) => b.volume - a.volume)[0];
+  const avgVolume = futureData.reduce((sum, d) => sum + d.volume, 0) / futureData.length;
+  const peakIncrease = ((peakMonth.volume - avgVolume) / avgVolume * 100).toFixed(1);
+  insights.push(`Volume peaks in ${peakMonth.month} ${peakMonth.year} (+${peakIncrease}% vs avg)`);
+
+  // 2. Understaffing Start
+  const firstUnderstaffed = futureData.find(d => d.gap < 0);
+  if (firstUnderstaffed) {
+    insights.push(`Understaffing begins in ${firstUnderstaffed.month} ${firstUnderstaffed.year}`);
+  }
+
+  // 3. Maximum Shortage
+  const maxShortage = [...futureData].sort((a, b) => a.gap - b.gap)[0];
+  if (maxShortage && maxShortage.gap < 0) {
+    insights.push(`Max shortage: ${Math.abs(maxShortage.gap)} FTE in ${maxShortage.month} ${maxShortage.year}`);
+  }
+
+  // 4. Overstaffing
+  const firstOverstaffed = futureData.find(d => d.gap > 0);
+  if (firstOverstaffed) {
+    insights.push(`Overstaffing begins in ${firstOverstaffed.month} ${firstOverstaffed.year}`);
+  }
+
+  // 5. Sensitivity Insight
+  const totalReqFTE = futureData.reduce((sum, d) => sum + d.requiredFTE, 0) / futureData.length;
+  const avgAHT = futureData.reduce((sum, d) => sum + d.aht, 0) / futureData.length;
+  const fteImpact = (totalReqFTE * (10 / avgAHT)).toFixed(1);
+  insights.push(`Increasing AHT by 10s adds approximately ${fteImpact} FTE to total requirement`);
+
+  return insights;
+};
+
+export interface HiringRecommendation {
+  summary: string;
+  monthlyHires: number;
+  durationMonths: number;
+  totalHires: number;
+  startMonth: string;
+}
+
+/**
+ * Calculates a recommended hiring plan to eliminate staffing gaps.
+ */
+export const calculateHiringPlan = (data: BasicForecastData[]): HiringRecommendation | null => {
+  const futureData = data.filter(d => d.isFuture);
+  if (futureData.length === 0) return null;
+
+  // 1. Find the deepest shortage
+  const maxGap = Math.min(...futureData.map(d => d.gap));
+  if (maxGap >= 0) {
+    return {
+      summary: "Staffing levels are sufficient. Maintain current hiring for attrition only.",
+      monthlyHires: 0,
+      durationMonths: 0,
+      totalHires: 0,
+      startMonth: futureData[0].month
+    };
+  }
+
+  const absoluteShortage = Math.abs(maxGap);
+  const peakIdx = futureData.findIndex(d => d.gap === maxGap);
+  
+  // 2. WFM Logic: Hire 2 months before peak
+  const leadTime = 2;
+  const recommendedStartIdx = Math.max(0, peakIdx - leadTime);
+
+  // 3. Distribution: Spread over 2-3 months
+  const spreadMonths = absoluteShortage > 20 ? 3 : 2;
+  const monthlyRecommendation = Math.ceil(absoluteShortage / spreadMonths);
+
+  return {
+    summary: `Hire ${Math.ceil(absoluteShortage)} agents to bridge the ${Math.abs(maxGap)} FTE deficit by ${futureData[peakIdx].month}.`,
+    monthlyHires: monthlyRecommendation,
+    durationMonths: spreadMonths,
+    totalHires: monthlyRecommendation * spreadMonths,
+    startMonth: futureData[recommendedStartIdx].month
+  };
+};

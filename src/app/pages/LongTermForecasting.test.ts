@@ -4,7 +4,9 @@ import {
   calculateHoltWinters, 
   calculateDecomposition, 
   calculateARIMA,
-  calculateYoY
+  calculateYoY,
+  generateInsights,
+  calculateHiringPlan
 } from './forecasting-logic';
 
 describe('Statistical Forecasting Validation', () => {
@@ -158,5 +160,37 @@ describe('WFM Model Edge Case Testing', () => {
     } catch (e) {
       // If it throws, we need a fix.
     }
+  });
+});
+
+describe('WFM Insights & Hiring Engine Validation', () => {
+  const mockFutureData: any[] = [
+    { month: 'Jan', year: '2026', isFuture: true, volume: 10000, requiredFTE: 100, availableFTE: 100, gap: 0, aht: 300 },
+    { month: 'Feb', year: '2026', isFuture: true, volume: 15000, requiredFTE: 150, availableFTE: 100, gap: -50, aht: 300 },
+    { month: 'Mar', year: '2026', isFuture: true, volume: 12000, requiredFTE: 120, availableFTE: 100, gap: -20, aht: 300 },
+  ];
+
+  it('generateInsights: should identify volume peak and understaffing', () => {
+    const insights = generateInsights(mockFutureData);
+    expect(insights.some(i => i.includes('Volume peaks in Feb 2026'))).toBe(true);
+    expect(insights.some(i => i.includes('Understaffing begins in Feb 2026'))).toBe(true);
+    expect(insights.some(i => i.includes('Max shortage: 50 FTE in Feb 2026'))).toBe(true);
+  });
+
+  it('calculateHiringPlan: should recommend hiring based on peak shortage', () => {
+    const plan = calculateHiringPlan(mockFutureData);
+    expect(plan).not.toBeNull();
+    if (plan) {
+      expect(plan.totalHires).toBeGreaterThanOrEqual(50);
+      expect(plan.durationMonths).toBe(3); // Large shortage (>20)
+      expect(plan.monthlyHires).toBe(17); // 50 / 3 rounded up
+    }
+  });
+
+  it('Hiring Engine: should handle sufficient staffing gracefully', () => {
+    const sufficientData = mockFutureData.map(d => ({ ...d, gap: 10 }));
+    const plan = calculateHiringPlan(sufficientData);
+    expect(plan?.totalHires).toBe(0);
+    expect(plan?.summary).toContain('Staffing levels are sufficient');
   });
 });
