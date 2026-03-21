@@ -69,10 +69,13 @@ export interface Assumptions {
 
 export interface WorkforceSupplyInputs {
   startingHeadcount: number;
-  attritionRate: number;
+  tenuredAttritionRate: number; // For staff > 90 days
+  newHireAttritionRate: number;  // For staff < 90 days
+  trainingYield: number;         // % who graduate training
   monthlyHiring: number;
   trainingMonths: number;
-  nestingRamp: number[]; // e.g. [0, 50, 100]
+  nestingRamp: number[];         // Productivity: e.g. [50, 75, 100]
+  ahtRamp: number[];             // AHT Multiplier: e.g. [1.5, 1.2, 1.05]
   shrinkage: number;
 }
 
@@ -81,12 +84,13 @@ export interface WorkforceSupplyResult {
   headcount: number;
   effectiveHeadcount: number;
   availableFTE: number;
+  weightedAHT: number; // The floor's average AHT based on staff mix
 }
 
 export interface ForecastData {
   month: string;
   volume: number;
-  aht: number;
+  aht: number;         // Weighted average AHT for this month
   shrinkage: number;
   requiredFTE: number;
   availableFTE: number;
@@ -112,7 +116,7 @@ export interface KPIData {
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const DEFAULT_ASSUMPTIONS: Assumptions = {
-  aht: 300,
+  aht: 300, // Base AHT for tenured staff
   shrinkage: 25,
   slTarget: 80,
   occupancy: 85,
@@ -121,10 +125,13 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
 
 const DEFAULT_SUPPLY_INPUTS: WorkforceSupplyInputs = {
   startingHeadcount: 100,
-  attritionRate: 2.0,
+  tenuredAttritionRate: 1.5,
+  newHireAttritionRate: 8.0, // High "infant mortality"
+  trainingYield: 85,         // 15% drop out in training
   monthlyHiring: 10,
   trainingMonths: 1,
-  nestingRamp: [50, 75, 100],
+  nestingRamp: [50, 75, 90],
+  ahtRamp: [1.5, 1.25, 1.1], // New hires take 50% longer in M1
   shrinkage: 15,
 };
 
@@ -138,11 +145,6 @@ const validateInput = (value: number, min: number = 0, max: number = Infinity): 
 
 /**
  * Calculates Required FTE using a defensible Capacity Planning formula.
- * 
- * Improvements:
- * 1. Standard Work Month: Uses 166.67 hours (20.83 days) instead of a flat 160.
- * 2. Queuing Efficiency Factor: Applies an "Erlang Penalty" based on volume. 
- *    Smaller queues are less efficient and require more overhead to meet Service Levels.
  */
 export const calculateFTE = (
   volume: number,
@@ -152,20 +154,16 @@ export const calculateFTE = (
 ): number => {
   if (volume === 0) return 0;
 
-  // 1. Defensible Monthly Work Base: 20.83 days * 8 hours = 166.67 hours
   const workSecondsInMonth = 166.67 * 3600; 
   
-  // 2. Queuing Efficiency Factor (The "Erlang Penalty" approximation)
-  // Higher volumes achieve "Economy of Scale". 
-  let efficiencyPenalty = 1.15; // 15% overhead for small volumes (<5k)
-  if (volume > 50000) efficiencyPenalty = 1.03;      // Very large/efficient queue
-  else if (volume > 20000) efficiencyPenalty = 1.05; // Large queue
-  else if (volume > 5000) efficiencyPenalty = 1.08;  // Medium queue
+  let efficiencyPenalty = 1.15; 
+  if (volume > 50000) efficiencyPenalty = 1.03;      
+  else if (volume > 20000) efficiencyPenalty = 1.05; 
+  else if (volume > 5000) efficiencyPenalty = 1.08;  
   
   const occupancyFactor = occupancy / 100;
   const shrinkageFactor = 1 - (shrinkage / 100);
   
-  // 3. Core Formula: (Workload / Net Capacity) * Erlang Penalty
   const workloadSeconds = volume * aht;
   const capacityPerFTE = workSecondsInMonth * occupancyFactor * shrinkageFactor;
   
@@ -181,43 +179,81 @@ export const calculateStaffingGap = (requiredFTE: number, availableFTE: number):
 /**
  * Projects workforce supply over 12 months based on hiring cohorts, attrition, and productivity ramps.
  */
-export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs): WorkforceSupplyResult[] => {
+export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT: number): WorkforceSupplyResult[] => {
   const results: WorkforceSupplyResult[] = [];
+  
+  // Track hire cohorts independently
+  // Index 0: Starting tenure staff
+  // Indices 1..12: Monthly hires
   let cohorts = [inputs.startingHeadcount];
 
   for (let i = 0; i < 12; i++) {
     const monthName = MONTHS[i];
-    const attritionRate = inputs.attritionRate / 100;
     
-    cohorts = cohorts.map(size => size * (1 - attritionRate));
-    cohorts.push(inputs.monthlyHiring);
+    // 1. Apply split attrition logic
+    cohorts = cohorts.map((size, ageIndex) => {
+      // New hires (age < 4 months) have higher attrition
+      const currentAttrRate = ageIndex === 0 || (i - (ageIndex - 1)) > 3 
+        ? inputs.tenuredAttritionRate 
+        : inputs.newHireAttritionRate;
+      return size * (1 - (currentAttrRate / 100));
+    });
 
+    // 2. Add new hires adjusted for Training Yield
+    const successfulHires = inputs.monthlyHiring * (inputs.trainingYield / 100);
+    cohorts.push(successfulHires);
+
+    // 3. Calculate Mix-Weighted AHT and Effective Headcount
     let totalHeadcount = 0;
     let totalEffective = 0;
+    let totalWeightedAHTSeconds = 0;
 
     cohorts.forEach((size, ageIndex) => {
       totalHeadcount += size;
+
       if (ageIndex === 0) {
+        // Tenure group
         totalEffective += size;
+        totalWeightedAHTSeconds += size * baseAHT;
       } else {
         const monthsSinceHire = i - (ageIndex - 1);
+        
         if (monthsSinceHire < inputs.trainingMonths) {
+          // Still in training - contributes headcount but 0 productivity
           totalEffective += 0;
+          totalWeightedAHTSeconds += 0; // Doesn't take calls
         } else {
           const nestingMonthIndex = monthsSinceHire - inputs.trainingMonths;
+          
+          // Apply Productivity Ramp
           const rampLevel = inputs.nestingRamp[nestingMonthIndex] ?? 100;
           totalEffective += size * (rampLevel / 100);
+
+          // Apply AHT Learning Curve Multiplier
+          const ahtMult = inputs.ahtRamp[nestingMonthIndex] ?? 1.0;
+          totalWeightedAHTSeconds += size * (baseAHT * ahtMult);
         }
       }
     });
 
+    // 4. Determine Floor-Wide Average AHT
+    // Only agents taking calls (Effective Staff) contribute to AHT
+    const activeStaffCount = cohorts.reduce((acc, size, ageIndex) => {
+       const monthsSinceHire = i - (ageIndex - 1);
+       return (ageIndex === 0 || monthsSinceHire >= inputs.trainingMonths) ? acc + size : acc;
+    }, 0);
+
+    const weightedAHT = activeStaffCount > 0 ? (totalWeightedAHTSeconds / activeStaffCount) : baseAHT;
+
+    // 5. Apply supply-side shrinkage to get available FTE
     const availableFTE = totalEffective * (1 - (inputs.shrinkage / 100));
 
     results.push({
       month: monthName,
       headcount: Math.round(totalHeadcount),
       effectiveHeadcount: Number(totalEffective.toFixed(1)),
-      availableFTE: Number(availableFTE.toFixed(1))
+      availableFTE: Number(availableFTE.toFixed(1)),
+      weightedAHT: Math.round(weightedAHT)
     });
   }
 
@@ -248,24 +284,21 @@ export default function LongTermForecasting() {
       id: "scenario-b",
       name: "Scenario B (Efficiency)",
       assumptions: { ...DEFAULT_ASSUMPTIONS, occupancy: 90 },
-      supplyInputs: { ...DEFAULT_SUPPLY_INPUTS, attritionRate: 1.5, shrinkage: 12 }
+      supplyInputs: { ...DEFAULT_SUPPLY_INPUTS, tenuredAttritionRate: 1.0, trainingYield: 95 }
     }
   });
 
   const activeScenario = scenarios[selectedScenarioId];
 
-  // UI state derived from active scenario (allowing local edits before sync)
   const [assumptions, setAssumptions] = useState<Assumptions>(activeScenario.assumptions);
   const [supplyInputs, setSupplyInputs] = useState<WorkforceSupplyInputs>(activeScenario.supplyInputs);
   const [forecastData, setForecastData] = useState<ForecastData[]>([]);
 
-  // Sync state when active scenario changes
   useEffect(() => {
     setAssumptions(activeScenario.assumptions);
     setSupplyInputs(activeScenario.supplyInputs);
   }, [selectedScenarioId]);
 
-  // Sync edits back to scenarios collection
   const updateActiveScenario = (newAssumptions: Assumptions, newSupply: WorkforceSupplyInputs) => {
     setScenarios(prev => ({
       ...prev,
@@ -277,19 +310,23 @@ export default function LongTermForecasting() {
     }));
   };
 
+  // Supply logic now factors in base AHT to determine weighted impact
   const supplyResults = useMemo(() => {
-    return calculateWorkforceSupply(supplyInputs);
-  }, [supplyInputs]);
+    return calculateWorkforceSupply(supplyInputs, assumptions.aht);
+  }, [supplyInputs, assumptions.aht]);
 
   const handleRecalculate = () => {
     setForecastData(prev => prev.map((d, i) => {
-      const reqFTE = calculateFTE(d.volume, assumptions.aht, assumptions.shrinkage, assumptions.occupancy);
       const supply = supplyResults[i];
+      const monthlyAHT = supply?.weightedAHT || assumptions.aht;
+      
+      // Defensible Link: Demand is now driven by the Supply staff mix (Weighted AHT)
+      const reqFTE = calculateFTE(d.volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy);
       const availFTE = supply?.availableFTE ?? 0;
       
       return {
         ...d,
-        aht: assumptions.aht,
+        aht: monthlyAHT,
         shrinkage: assumptions.shrinkage,
         requiredFTE: reqFTE,
         availableFTE: availFTE,
@@ -297,7 +334,6 @@ export default function LongTermForecasting() {
         gap: calculateStaffingGap(reqFTE, availFTE)
       };
     }));
-    // Persist changes to scenarios collection
     updateActiveScenario(assumptions, supplyInputs);
   };
 
@@ -324,14 +360,15 @@ export default function LongTermForecasting() {
         if (result.success && Array.isArray(result.data)) {
           const mappedData: ForecastData[] = MONTHS.map((month, idx) => {
             const volume = result.data[idx] || 0;
-            const reqFTE = calculateFTE(volume, assumptions.aht, assumptions.shrinkage, assumptions.occupancy);
             const supply = supplyResults[idx];
+            const monthlyAHT = supply?.weightedAHT || assumptions.aht;
+            const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy);
             const availFTE = supply?.availableFTE ?? 0;
 
             return {
               month,
               volume,
-              aht: assumptions.aht,
+              aht: monthlyAHT,
               shrinkage: assumptions.shrinkage,
               requiredFTE: reqFTE,
               availableFTE: availFTE,
@@ -430,7 +467,7 @@ export default function LongTermForecasting() {
                     <Clock className="size-5 text-indigo-600 dark:text-indigo-400" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Avg. AHT</p>
+                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">W. Avg AHT</p>
                     <h3 className="text-lg font-black tracking-tight">{kpis.avgAHT}s</h3>
                   </div>
                 </CardContent>
@@ -477,16 +514,15 @@ export default function LongTermForecasting() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-            {/* 2. Main Forecast Chart Section */}
             <div className="lg:col-span-3 space-y-8">
               <Card className="border border-border/50 shadow-lg shadow-slate-200/50 dark:shadow-none overflow-hidden">
                 <CardHeader className="bg-slate-50/50 dark:bg-slate-900/50 border-b border-border/50 flex flex-row items-center justify-between py-4">
                   <div>
                     <CardTitle className="text-base font-black flex items-center gap-2">
                       <LayoutDashboard className="size-4 text-primary" />
-                      Resource Capacity Forecast
+                      Defensible Capacity Plan
                     </CardTitle>
-                    <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">Historical Actuals vs. Projected Demands</p>
+                    <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">Weighted Performance vs. Staffing Demands</p>
                   </div>
                   <div className="flex items-center gap-2">
                      <Badge variant="outline" className="text-[10px] font-black uppercase tracking-widest bg-white dark:bg-slate-800 border-primary/20 text-primary">Live Projection</Badge>
@@ -616,7 +652,6 @@ export default function LongTermForecasting() {
                 </CardContent>
               </Card>
 
-              {/* 4. Forecast Table (bottom) */}
               <Card className="border border-border/50 shadow-md">
                 <CardHeader className="flex flex-row items-center justify-between py-4 border-b border-border/50 bg-slate-50/30">
                   <div>
@@ -632,9 +667,9 @@ export default function LongTermForecasting() {
                     <TableHeader className="bg-slate-50/80 dark:bg-slate-900/80">
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="w-[140px] text-xs font-black uppercase tracking-widest pl-6">Timeline</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Proj Volume</TableHead>
+                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Proj Vol</TableHead>
+                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Weighted AHT</TableHead>
                         <TableHead className="text-right text-xs font-black uppercase tracking-widest">Req FTE</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Total HC</TableHead>
                         <TableHead className="text-right text-xs font-black uppercase tracking-widest">Avail FTE</TableHead>
                         <TableHead className="text-right text-xs font-black uppercase tracking-widest pr-6">Gap Status</TableHead>
                       </TableRow>
@@ -644,8 +679,8 @@ export default function LongTermForecasting() {
                         <TableRow key={row.month} className="group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors">
                           <TableCell className="font-bold text-sm pl-6">{row.month} 2026</TableCell>
                           <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
+                          <TableCell className="text-right font-mono text-sm text-indigo-600">{row.aht}s</TableCell>
                           <TableCell className="text-right font-mono text-sm font-bold text-amber-600">{row.requiredFTE}</TableCell>
-                          <TableCell className="text-right font-mono text-sm text-indigo-600">{row.headcount}</TableCell>
                           <TableCell className="text-right font-mono text-sm text-emerald-600 font-bold">{row.availableFTE}</TableCell>
                           <TableCell className="text-right pr-6">
                             <Badge 
@@ -660,9 +695,9 @@ export default function LongTermForecasting() {
                     </TableBody>
                   </Table>
                 </CardContent>
-              </Card>            </div>
+              </Card>
+            </div>
 
-            {/* 3. Assumptions Panel (right side) */}
             <div className="lg:col-span-1">
               <div className="sticky top-[200px] space-y-6">
                 <Card className="border border-border/80 shadow-xl overflow-hidden">
@@ -686,7 +721,7 @@ export default function LongTermForecasting() {
                     <CardContent className="pt-6 space-y-6 bg-white dark:bg-slate-950">
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <Label htmlFor="aht" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Average AHT</Label>
+                          <Label htmlFor="aht" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Base Tenured AHT</Label>
                           <span className="text-[11px] font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-primary">{assumptions.aht}s</span>
                         </div>
                         <Input id="aht" type="number" value={assumptions.aht} onChange={(e) => setAssumptions({...assumptions, aht: validateInput(Number(e.target.value))})} className="h-10 font-bold focus-visible:ring-primary/20" />
@@ -720,7 +755,7 @@ export default function LongTermForecasting() {
 
                       <div className="space-y-3 border-t border-border pt-6 mt-6">
                         <div className="flex items-center justify-between">
-                          <Label htmlFor="growth" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Annual Growth</Label>
+                          <Label htmlFor="growth" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Annual Volume Growth</Label>
                           <Badge className="bg-emerald-500 font-black tracking-tight">+{assumptions.growthRate}%</Badge>
                         </div>
                         <Input id="growth" type="number" value={assumptions.growthRate} onChange={(e) => setAssumptions({...assumptions, growthRate: validateInput(Number(e.target.value))})} className="h-10 font-bold border-emerald-200" />
@@ -737,13 +772,12 @@ export default function LongTermForecasting() {
                   )}
                 </Card>
 
-                {/* Workforce Supply Assumptions Panel */}
                 <Card className="border border-border/80 shadow-xl overflow-hidden">
                   <CardHeader className="border-b border-border/50 bg-indigo-900 text-white py-4">
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-xs font-black flex items-center gap-2 uppercase tracking-[0.2em]">
                         <Briefcase className="size-4 text-indigo-400" />
-                        Workforce Supply Assumptions
+                        Workforce Supply Factors
                       </CardTitle>
                       <Button 
                         variant="ghost" 
@@ -759,82 +793,66 @@ export default function LongTermForecasting() {
                     <CardContent className="pt-6 space-y-4 bg-white dark:bg-slate-950">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label htmlFor="startingHeadcount" className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Starting Headcount</Label>
-                          <Input id="startingHeadcount" type="number" value={supplyInputs.startingHeadcount} onChange={(e) => setSupplyInputs({...supplyInputs, startingHeadcount: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
+                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Tenured Attr. (%)</Label>
+                          <Input type="number" value={supplyInputs.tenuredAttritionRate} onChange={(e) => setSupplyInputs({...supplyInputs, tenuredAttritionRate: validateInput(Number(e.target.value), 0, 100)})} className="h-9 font-bold" />
                         </div>
                         <div className="space-y-2">
                           <div className="flex items-center gap-1">
-                            <Label htmlFor="attritionRate" className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Monthly Attrition (%)</Label>
+                            <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">New Hire Attr. (%)</Label>
                             <UITooltip>
-                              <TooltipTrigger asChild>
-                                <Info className="size-2.5 text-muted-foreground cursor-help" />
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                <p className="text-xs">Expected % of workforce leaving monthly</p>
-                              </TooltipContent>
+                              <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground" /></TooltipTrigger>
+                              <TooltipContent><p className="text-xs">Higher attrition rate for agents in first 90 days</p></TooltipContent>
                             </UITooltip>
                           </div>
-                          <Input id="attritionRate" type="number" value={supplyInputs.attritionRate} onChange={(e) => setSupplyInputs({...supplyInputs, attritionRate: validateInput(Number(e.target.value), 0, 100)})} className="h-9 font-bold" />
+                          <Input type="number" value={supplyInputs.newHireAttritionRate} onChange={(e) => setSupplyInputs({...supplyInputs, newHireAttritionRate: validateInput(Number(e.target.value), 0, 100)})} className="h-9 font-bold border-rose-200" />
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label htmlFor="monthlyHiring" className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Monthly Hiring</Label>
-                          <Input id="monthlyHiring" type="number" value={supplyInputs.monthlyHiring} onChange={(e) => setSupplyInputs({...supplyInputs, monthlyHiring: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
+                          <div className="flex items-center gap-1">
+                            <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Training Yield (%)</Label>
+                            <UITooltip>
+                              <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground" /></TooltipTrigger>
+                              <TooltipContent><p className="text-xs">% of hires who graduate to the floor</p></TooltipContent>
+                            </UITooltip>
+                          </div>
+                          <Input type="number" value={supplyInputs.trainingYield} onChange={(e) => setSupplyInputs({...supplyInputs, trainingYield: validateInput(Number(e.target.value), 0, 100)})} className="h-9 font-bold" />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="trainingMonths" className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Training (Months)</Label>
-                          <Input id="trainingMonths" type="number" value={supplyInputs.trainingMonths} onChange={(e) => setSupplyInputs({...supplyInputs, trainingMonths: validateInput(Number(e.target.value), 0, 12)})} className="h-9 font-bold" />
+                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Monthly Hiring</Label>
+                          <Input type="number" value={supplyInputs.monthlyHiring} onChange={(e) => setSupplyInputs({...supplyInputs, monthlyHiring: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
                         </div>
                       </div>
 
                       <div className="space-y-3 pt-2 border-t border-border">
-                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Nesting Productivity Ramp</Label>
+                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Productivity & Learning Curve</Label>
                         <div className="grid grid-cols-3 gap-3">
                           <div className="space-y-1">
-                            <Label className="text-[8px] font-bold text-muted-foreground">M1 (%)</Label>
-                            <Input type="number" value={supplyInputs.nestingRamp[0]} onChange={(e) => {
-                              const newRamp = [...supplyInputs.nestingRamp];
-                              newRamp[0] = validateInput(Number(e.target.value), 0, 100);
-                              setSupplyInputs({...supplyInputs, nestingRamp: newRamp});
-                            }} className="h-8 text-xs font-bold" />
+                            <Label className="text-[8px] font-bold text-muted-foreground uppercase">M1 AHT x</Label>
+                            <Input type="number" step="0.1" value={supplyInputs.ahtRamp[0]} onChange={(e) => {
+                              const newRamp = [...supplyInputs.ahtRamp];
+                              newRamp[0] = validateInput(Number(e.target.value), 1);
+                              setSupplyInputs({...supplyInputs, ahtRamp: newRamp});
+                            }} className="h-8 text-xs font-bold bg-amber-50" />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-[8px] font-bold text-muted-foreground">M2 (%)</Label>
-                            <Input type="number" value={supplyInputs.nestingRamp[1]} onChange={(e) => {
-                              const newRamp = [...supplyInputs.nestingRamp];
-                              newRamp[1] = validateInput(Number(e.target.value), 0, 100);
-                              setSupplyInputs({...supplyInputs, nestingRamp: newRamp});
-                            }} className="h-8 text-xs font-bold" />
+                            <Label className="text-[8px] font-bold text-muted-foreground uppercase">M2 AHT x</Label>
+                            <Input type="number" step="0.1" value={supplyInputs.ahtRamp[1]} onChange={(e) => {
+                              const newRamp = [...supplyInputs.ahtRamp];
+                              newRamp[1] = validateInput(Number(e.target.value), 1);
+                              setSupplyInputs({...supplyInputs, ahtRamp: newRamp});
+                            }} className="h-8 text-xs font-bold bg-amber-50" />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-[8px] font-bold text-muted-foreground">M3 (%)</Label>
-                            <Input type="number" value={supplyInputs.nestingRamp[2]} onChange={(e) => {
-                              const newRamp = [...supplyInputs.nestingRamp];
-                              newRamp[2] = validateInput(Number(e.target.value), 0, 100);
-                              setSupplyInputs({...supplyInputs, nestingRamp: newRamp});
-                            }} className="h-8 text-xs font-bold" />
+                            <Label className="text-[8px] font-bold text-muted-foreground uppercase">M3 AHT x</Label>
+                            <Input type="number" step="0.1" value={supplyInputs.ahtRamp[2]} onChange={(e) => {
+                              const newRamp = [...supplyInputs.ahtRamp];
+                              newRamp[2] = validateInput(Number(e.target.value), 1);
+                              setSupplyInputs({...supplyInputs, ahtRamp: newRamp});
+                            }} className="h-8 text-xs font-bold bg-amber-50" />
                           </div>
                         </div>
-                      </div>
-
-                      <div className="space-y-2 pt-2 border-t border-border">
-                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1">
-                            <Label htmlFor="supplyShrinkage" className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Supply Shrinkage (%)</Label>
-                            <UITooltip>
-                              <TooltipTrigger asChild>
-                                <Info className="size-2.5 text-muted-foreground cursor-help" />
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                <p className="text-xs">Non-productive time (leaves, breaks, etc.)</p>
-                              </TooltipContent>
-                            </UITooltip>
-                          </div>
-                          <span className="text-[10px] font-black text-rose-600 bg-rose-50 px-2 py-0.5 rounded">{supplyInputs.shrinkage}%</span>
-                        </div>
-                        <Input id="supplyShrinkage" type="number" value={supplyInputs.shrinkage} onChange={(e) => setSupplyInputs({...supplyInputs, shrinkage: validateInput(Number(e.target.value), 0, 100)})} className="h-9 font-bold" />
                       </div>
                     </CardContent>
                   )}
@@ -844,21 +862,14 @@ export default function LongTermForecasting() {
                   <CardHeader className="pb-2">
                     <CardTitle className="text-[10px] font-black flex items-center gap-2 uppercase tracking-[0.2em] text-blue-400">
                       <TrendingUp className="size-4" />
-                      Modeling Insights
+                      WFM Insights
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-6 pt-2">
                     <div className="space-y-2">
-                      <p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Peak Seasonality</p>
-                      <div className="flex items-end justify-between">
-                        <p className="text-xs font-bold">December 2026</p>
-                        <span className="text-[10px] font-black bg-white/10 px-2 py-0.5 rounded text-blue-300">MAX VOLUME</span>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Recruitment Need</p>
+                      <p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Staffing Deficit Warning</p>
                       <p className="text-xs font-medium leading-relaxed">
-                        To offset the <span className="text-rose-400 font-bold">-{Math.abs(kpis.staffingGap)} FTE</span> gap, you need <span className="text-emerald-400 font-bold">1 training class</span> of 10-12 agents by Q3.
+                        Hiring <span className="font-bold text-blue-300">{supplyInputs.monthlyHiring} agents</span> monthly only yields <span className="font-bold text-emerald-300">{Math.round(supplyInputs.monthlyHiring * (supplyInputs.trainingYield/100))} producers</span> due to yield leakage.
                       </p>
                     </div>
                   </CardContent>
