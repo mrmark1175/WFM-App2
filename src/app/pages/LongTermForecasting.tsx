@@ -103,7 +103,12 @@ export interface WorkforceSupplyResult {
 export interface ForecastData {
   month: string;
   year: string;
+  isFuture: boolean;
   volume: number;
+  actualSeries: number | null;
+  forecastSeries: number | null;
+  confidenceBand: [number, number] | null;
+  historicalVolume: number; // SDLY for comparison
   aht: number;         
   shrinkage: number;
   requiredFTE: number; 
@@ -173,15 +178,31 @@ const validateInput = (value: number, min: number = 0, max: number = Infinity): 
   return Math.max(min, Math.min(max, value));
 };
 
-const getTimeline = (startDateStr: string): { month: string, year: string }[] => {
+const getTimeline = (startDateStr: string, monthsPast: number = 0, monthsFuture: number = 12): { month: string, year: string, isFuture: boolean }[] => {
   const start = new Date(startDateStr);
-  return Array.from({ length: 12 }, (_, i) => {
-    const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
-    return {
+  const timeline = [];
+  
+  // Past months
+  for (let i = monthsPast; i > 0; i--) {
+    const d = new Date(start.getFullYear(), start.getMonth() - i, 1);
+    timeline.push({
       month: MONTH_NAMES[d.getMonth()],
-      year: d.getFullYear().toString()
-    };
-  });
+      year: d.getFullYear().toString(),
+      isFuture: false
+    });
+  }
+  
+  // Future months
+  for (let i = 0; i < monthsFuture; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+    timeline.push({
+      month: MONTH_NAMES[d.getMonth()],
+      year: d.getFullYear().toString(),
+      isFuture: true
+    });
+  }
+  
+  return timeline;
 };
 
 const formatCurrency = (amount: number, code: string) => {
@@ -290,9 +311,23 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
   return results;
 };
 
+import { 
+  calculateYoY, 
+  calculateMovingAverage, 
+  calculateLinearRegression, 
+  calculateHoltWinters, 
+  calculateDecomposition, 
+  calculateARIMA 
+} from "./forecasting-logic";
+
 const FORECAST_METHODS = [
-  { key: "genesys", label: "Historical Genesys Data" },
-  { key: "yoy", label: "Year-over-Year Growth" }
+  { key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" },
+  { key: "arima", label: "ARIMA (simplified version)" },
+  { key: "decomposition", label: "Decomposition (Trend + Seasonality)" },
+  { key: "ma", label: "Moving Average (baseline fallback)" },
+  { key: "genesys", label: "Direct Genesys Sync" },
+  { key: "yoy", label: "Year-over-Year Growth" },
+  { key: "regression", label: "Linear Regression" }
 ];
 
 export default function LongTermForecasting() {
@@ -301,7 +336,12 @@ export default function LongTermForecasting() {
   const [isFinancialsOpen, setIsFinancialsOpen] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState("base");
   const [loading, setLoading] = useState(true);
-  const [forecastMethod, setForecastMethod] = useState("genesys");
+  const [forecastMethod, setForecastMethod] = useState("holtwinters");
+  
+  // Forecasting Parameters State
+  const [hwParams, setHwParams] = useState({ alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 });
+  const [arimaParams, setArimaParams] = useState({ p: 1, d: 1, q: 1 });
+  const [decompParams, setDecompParams] = useState({ trendStrength: 1.0, seasonalityStrength: 1.0 });
 
   const [scenarios, setScenarios] = useState<Record<string, Scenario>>({
     "base": {
@@ -326,6 +366,7 @@ export default function LongTermForecasting() {
 
   const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);
   const [supplyInputs, setSupplyInputs] = useState<WorkforceSupplyInputs>(DEFAULT_SUPPLY_INPUTS);
+  const [historicalData, setHistoricalData] = useState<number[]>([]);
   const [forecastData, setForecastData] = useState<ForecastData[]>([]);
 
   const activeScenario = scenarios[selectedScenarioId];
@@ -371,32 +412,107 @@ export default function LongTermForecasting() {
     return calculateWorkforceSupply(supplyInputs, assumptions.aht, assumptions.startDate);
   }, [supplyInputs, assumptions.aht, assumptions.startDate]);
 
+  const calculatedVolumes = useMemo(() => {
+    if (historicalData.length === 0) return Array(12).fill(0);
+    
+    switch (forecastMethod) {
+      case "yoy":
+        return calculateYoY(historicalData, assumptions.growthRate);
+      case "ma":
+        return calculateMovingAverage(historicalData, 3);
+      case "regression":
+        return calculateLinearRegression(historicalData);
+      case "holtwinters":
+        return calculateHoltWinters(
+          historicalData, 
+          hwParams.alpha, 
+          hwParams.beta, 
+          hwParams.gamma, 
+          hwParams.seasonLength
+        );
+      case "decomposition":
+        return calculateDecomposition(
+          historicalData, 
+          decompParams.trendStrength, 
+          decompParams.seasonalityStrength
+        );
+      case "arima":
+        return calculateARIMA(
+          historicalData, 
+          arimaParams.p, 
+          arimaParams.d, 
+          arimaParams.q
+        );
+      case "genesys":
+      default:
+        return historicalData;
+    }
+  }, [forecastMethod, historicalData, assumptions.growthRate, hwParams, arimaParams, decompParams]);
+
   const handleRecalculate = () => {
-    setForecastData(prev => prev.map((d, i) => {
-      const supply = supplyResults[i];
+    if (historicalData.length === 0) return;
+
+    // Generate a 24-month timeline: 12 months past + 12 months future
+    const timeline = getTimeline(assumptions.startDate, 12, 12);
+    
+    // Past: First 12 months of historicalData
+    const actualsPast = historicalData.slice(0, 12);
+    // Future SDLY Reference: Last 12 months of historicalData (which is Sameday Last Year for the future)
+    const futureSdly = historicalData.slice(-12);
+
+    const mappedData: ForecastData[] = timeline.map((time, idx) => {
+      let volume = 0;
+      let historicalVolume = 0;
+      let isFuture = time.isFuture;
+
+      if (!isFuture) {
+        // Use actuals for past
+        volume = actualsPast[idx] || 0;
+        historicalVolume = volume; // Past volume is its own reference
+      } else {
+        // Use forecasted volumes for future
+        const forecastIdx = idx - 12;
+        volume = calculatedVolumes[forecastIdx] || 0;
+        historicalVolume = futureSdly[forecastIdx] || 0;
+      }
+
+      // Supply logic only applies to future
+      const supplyIdx = isFuture ? idx - 12 : -1;
+      const supply = supplyIdx >= 0 ? supplyResults[supplyIdx] : null;
       const monthlyAHT = supply?.weightedAHT || assumptions.aht;
-      const reqFTE = calculateFTE(d.volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin, assumptions.fteMonthlyHours);
+      const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin, assumptions.fteMonthlyHours);
       const availFTE = supply?.effectiveHeadcount ?? 0;
-      
+
+      // Series for visualization: 
+      // actualSeries includes up to the first future month for connection
+      // forecastSeries starts from the last past month for connection
+      const actualSeries = idx <= 12 ? (idx === 12 ? (calculatedVolumes[0] || 0) : volume) : null;
+      const forecastSeries = idx >= 11 ? (idx === 11 ? (actualsPast[11] || 0) : volume) : null;
+      const confidenceBand: [number, number] | null = isFuture ? [Math.round(volume * 0.9), Math.round(volume * 1.1)] : null;
+
       return {
-        ...d,
-        month: supply?.monthLabel || d.month,
-        year: supply?.yearLabel || d.year,
+        month: time.month,
+        year: time.year,
+        isFuture,
+        volume,
+        actualSeries,
+        forecastSeries,
+        confidenceBand,
+        historicalVolume,
         aht: monthlyAHT,
         shrinkage: assumptions.shrinkage,
         requiredFTE: reqFTE,
         availableFTE: availFTE,
         headcount: supply?.headcount ?? 0,
-        gap: calculateStaffingGap(reqFTE, availFTE)
+        gap: calculateStaffingGap(reqFTE, availFTE),
       };
-    }));
+    });
+    setForecastData(mappedData);
   };
 
   useEffect(() => {
-    if (forecastData.length > 0) {
-      handleRecalculate();
-    }
-  }, [assumptions, supplyResults]);
+    handleRecalculate();
+  }, [calculatedVolumes, supplyResults, assumptions]);
   
   useEffect(() => {
     const fetchMockData = async () => {
@@ -413,27 +529,7 @@ export default function LongTermForecasting() {
         const result = await response.json();
         
         if (result.success && Array.isArray(result.data)) {
-          const timeline = getTimeline(assumptions.startDate);
-          const mappedData: ForecastData[] = timeline.map(({ month, year }, idx) => {
-            const volume = result.data[idx] || 0;
-            const supply = supplyResults[idx];
-            const monthlyAHT = supply?.weightedAHT || assumptions.aht;
-            const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin, assumptions.fteMonthlyHours);
-            const availFTE = supply?.effectiveHeadcount ?? 0;
-
-            return {
-              month,
-              year,
-              volume,
-              aht: monthlyAHT,
-              shrinkage: assumptions.shrinkage,
-              requiredFTE: reqFTE,
-              availableFTE: availFTE,
-              headcount: supply?.headcount ?? 0,
-              gap: calculateStaffingGap(reqFTE, availFTE),
-            };
-          });
-          setForecastData(mappedData);
+          setHistoricalData(result.data);
         }
       } catch (error) {
         console.error("Error fetching mock data:", error);
@@ -668,15 +764,40 @@ export default function LongTermForecasting() {
                         />
                         <Area 
                           yAxisId="left"
+                          dataKey="confidenceBand" 
+                          name="Confidence Band (±10%)"
+                          stroke="none"
+                          fill="hsl(var(--primary))" 
+                          fillOpacity={0.05} 
+                        />
+                        <Line 
+                          yAxisId="left"
                           type="monotone" 
-                          dataKey="volume" 
-                          name="Volume"
+                          dataKey="actualSeries" 
+                          name="Actual Volume"
                           stroke="hsl(var(--primary))" 
-                          fillOpacity={1} 
-                          fill="url(#colorVol)" 
                           strokeWidth={4}
+                          dot={{ r: 3, fill: 'hsl(var(--primary))' }}
+                        />
+                        <Line 
+                          yAxisId="left"
+                          type="monotone" 
+                          dataKey="forecastSeries" 
+                          name="Forecasted Volume"
+                          stroke="hsl(var(--primary))" 
+                          strokeWidth={4}
+                          strokeDasharray="8 5"
                           dot={{ r: 3, fill: 'hsl(var(--background))', strokeWidth: 2, stroke: 'hsl(var(--primary))' }}
-                          activeDot={{ r: 6, strokeWidth: 0 }}
+                        />
+                        <Line 
+                          yAxisId="left"
+                          type="monotone" 
+                          dataKey="historicalVolume" 
+                          name="Historical Vol (SDLY)"
+                          stroke="hsl(var(--muted-foreground))" 
+                          strokeWidth={2}
+                          strokeDasharray="5 5"
+                          dot={false}
                         />
                         <Line 
                           yAxisId="right"
@@ -738,8 +859,12 @@ export default function LongTermForecasting() {
                     </TableHeader>
                     <TableBody>
                       {forecastData.map((row, idx) => (
-                        <TableRow key={idx} className="group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors">
-                          <TableCell className="font-bold text-sm pl-6">{row.month} {row.year}</TableCell>
+                        <TableRow key={idx} className={`group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors ${!row.isFuture ? "opacity-70 bg-slate-50/30" : ""}`}>
+                          <TableCell className="font-bold text-sm pl-6 flex items-center gap-2">
+                            {row.month} {row.year}
+                            {!row.isFuture && <Badge variant="secondary" className="text-[8px] h-4 font-black">ACTUAL</Badge>}
+                            {row.isFuture && <Badge variant="outline" className="text-[8px] h-4 font-black border-primary/20 text-primary">FCST</Badge>}
+                          </TableCell>
                           <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
                           <TableCell className="text-right font-mono text-sm text-indigo-600">{row.aht}s</TableCell>
                           <TableCell className="text-right font-mono text-sm font-bold text-amber-600">{row.requiredFTE}</TableCell>
@@ -860,6 +985,91 @@ export default function LongTermForecasting() {
                             <Badge className="bg-emerald-500 font-black tracking-tight">+{assumptions.growthRate}%</Badge>
                             </div>
                             <Input id="growth" type="number" value={assumptions.growthRate} onChange={(e) => setAssumptions({...assumptions, growthRate: validateInput(Number(e.target.value))})} className="h-10 font-bold border-emerald-200" />
+                        </div>
+                      )}
+
+                      {forecastMethod === 'holtwinters' && (
+                        <div className="space-y-4 border-t border-border pt-6 mt-6">
+                            <div className="flex items-center justify-between">
+                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">HW Smoothing</Label>
+                            <Badge className="bg-amber-500 font-black tracking-tight">Triple Exp</Badge>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-1">
+                                <Label className="text-[9px] font-bold">Alpha (Level)</Label>
+                                <Input type="number" step="0.1" min="0" max="1" value={hwParams.alpha} onChange={(e) => setHwParams({...hwParams, alpha: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[9px] font-bold">Beta (Trend)</Label>
+                                <Input type="number" step="0.1" min="0" max="1" value={hwParams.beta} onChange={(e) => setHwParams({...hwParams, beta: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[9px] font-bold">Gamma (Season)</Label>
+                                <Input type="number" step="0.1" min="0" max="1" value={hwParams.gamma} onChange={(e) => setHwParams({...hwParams, gamma: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[9px] font-bold">Season (Len)</Label>
+                                <Input type="number" min="1" max="24" value={hwParams.seasonLength} onChange={(e) => setHwParams({...hwParams, seasonLength: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                            </div>
+                        </div>
+                      )}
+
+                      {forecastMethod === 'arima' && (
+                        <div className="space-y-4 border-t border-border pt-6 mt-6">
+                            <div className="flex items-center justify-between">
+                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">ARIMA (Simplified)</Label>
+                            <Badge className="bg-emerald-500 font-black tracking-tight">p d q</Badge>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-[9px] font-bold">p (AR)</Label>
+                                <Input type="number" min="0" max="12" value={arimaParams.p} onChange={(e) => setArimaParams({...arimaParams, p: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[9px] font-bold">d (Diff)</Label>
+                                <Input type="number" min="0" max="2" value={arimaParams.d} onChange={(e) => setArimaParams({...arimaParams, d: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[9px] font-bold">q (MA)</Label>
+                                <Input type="number" min="1" max="10" value={arimaParams.q} onChange={(e) => setArimaParams({...arimaParams, q: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                            </div>
+                        </div>
+                      )}
+
+                      {forecastMethod === 'decomposition' && (
+                        <div className="space-y-4 border-t border-border pt-6 mt-6">
+                            <div className="flex items-center justify-between">
+                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Decomposition</Label>
+                            <Badge className="bg-blue-500 font-black tracking-tight">Strengths</Badge>
+                            </div>
+                            <div className="space-y-3">
+                              <div className="space-y-1">
+                                <div className="flex justify-between">
+                                  <Label className="text-[9px] font-bold">Trend Strength</Label>
+                                  <span className="text-[10px] font-bold">{decompParams.trendStrength}x</span>
+                                </div>
+                                <Input type="number" step="0.1" min="0" max="3" value={decompParams.trendStrength} onChange={(e) => setDecompParams({...decompParams, trendStrength: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="flex justify-between">
+                                  <Label className="text-[9px] font-bold">Seasonality Strength</Label>
+                                  <span className="text-[10px] font-bold">{decompParams.seasonalityStrength}x</span>
+                                </div>
+                                <Input type="number" step="0.1" min="0" max="3" value={decompParams.seasonalityStrength} onChange={(e) => setDecompParams({...decompParams, seasonalityStrength: Number(e.target.value)})} className="h-8 text-xs" />
+                              </div>
+                            </div>
+                        </div>
+                      )}
+
+                      {forecastMethod === 'ma' && (
+                        <div className="space-y-3 border-t border-border pt-6 mt-6">
+                            <div className="flex items-center justify-between">
+                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">MA Periods</Label>
+                            <Badge className="bg-indigo-500 font-black tracking-tight">Last 3 Months</Badge>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground italic">Moving average uses the most recent historical periods to project a baseline.</p>
                         </div>
                       )}
 

@@ -362,7 +362,8 @@ app.post('/api/telephony/pull', async (req, res) => {
 
 app.post('/api/genesys/sync', async (req, res) => {
   try {
-    const monthlyVolumes = Array.from({ length: 12 }, (_, monthIdx) => {
+    // Return 24 months of historical data for better statistical forecasting
+    const monthlyVolumes = Array.from({ length: 24 }, (_, monthIdx) => {
       return simulator.generateMonthlyVolume(monthIdx);
     });
     
