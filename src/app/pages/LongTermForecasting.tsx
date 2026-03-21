@@ -61,6 +61,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "../components/ui/tooltip";
+import { toast } from "sonner";
 
 // --- Data Models & Interfaces ---
 
@@ -289,13 +290,19 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
   return results;
 };
 
+const FORECAST_METHODS = [
+  { key: "genesys", label: "Historical Genesys Data" },
+  { key: "yoy", label: "Year-over-Year Growth" }
+];
+
 export default function LongTermForecasting() {
   const [isAssumptionsOpen, setIsAssumptionsOpen] = useState(true);
   const [isSupplyOpen, setIsSupplyOpen] = useState(true);
   const [isFinancialsOpen, setIsFinancialsOpen] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState("base");
   const [loading, setLoading] = useState(true);
-  
+  const [forecastMethod, setForecastMethod] = useState("genesys");
+
   const [scenarios, setScenarios] = useState<Record<string, Scenario>>({
     "base": {
       id: "base",
@@ -317,26 +324,47 @@ export default function LongTermForecasting() {
     }
   });
 
-  const activeScenario = scenarios[selectedScenarioId];
-
-  const [assumptions, setAssumptions] = useState<Assumptions>(activeScenario.assumptions);
-  const [supplyInputs, setSupplyInputs] = useState<WorkforceSupplyInputs>(activeScenario.supplyInputs);
+  const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);
+  const [supplyInputs, setSupplyInputs] = useState<WorkforceSupplyInputs>(DEFAULT_SUPPLY_INPUTS);
   const [forecastData, setForecastData] = useState<ForecastData[]>([]);
 
-  useEffect(() => {
-    setAssumptions(activeScenario.assumptions);
-    setSupplyInputs(activeScenario.supplyInputs);
-  }, [selectedScenarioId]);
+  const activeScenario = scenarios[selectedScenarioId];
 
-  const updateActiveScenario = (newAssumptions: Assumptions, newSupply: WorkforceSupplyInputs) => {
+  const updateActiveScenario = (updatedAssumptions: Assumptions, updatedSupplyInputs: WorkforceSupplyInputs) => {
     setScenarios(prev => ({
       ...prev,
       [selectedScenarioId]: {
         ...prev[selectedScenarioId],
-        assumptions: newAssumptions,
-        supplyInputs: newSupply
+        assumptions: updatedAssumptions,
+        supplyInputs: updatedSupplyInputs,
       }
     }));
+  };
+
+  useEffect(() => {
+    if (activeScenario) {
+      setAssumptions(activeScenario.assumptions);
+      setSupplyInputs(activeScenario.supplyInputs);
+    }
+  }, [selectedScenarioId, scenarios]);
+
+  const handleSaveScenario = () => {
+    updateActiveScenario(assumptions, supplyInputs);
+    toast.success("Scenario saved successfully!");
+  };
+
+  const handleNewScenario = () => {
+    const id = `scenario-${Date.now()}`;
+    const name = `New Scenario ${Object.keys(scenarios).length + 1}`;
+    const newScenario: Scenario = {
+      id,
+      name,
+      assumptions: { ...assumptions },
+      supplyInputs: { ...supplyInputs }
+    };
+    setScenarios(prev => ({ ...prev, [id]: newScenario }));
+    setSelectedScenarioId(id);
+    toast.success("New scenario created!");
   };
 
   const supplyResults = useMemo(() => {
@@ -362,7 +390,6 @@ export default function LongTermForecasting() {
         gap: calculateStaffingGap(reqFTE, availFTE)
       };
     }));
-    updateActiveScenario(assumptions, supplyInputs);
   };
 
   useEffect(() => {
@@ -466,7 +493,7 @@ export default function LongTermForecasting() {
                     </SelectContent>
                   </Select>
                 </div>
-                <Button variant="outline" size="sm" className="h-10 mt-5 gap-2 font-semibold border-dashed hover:border-primary hover:text-primary transition-all">
+                <Button variant="outline" size="sm" className="h-10 mt-5 gap-2 font-semibold border-dashed hover:border-primary hover:text-primary transition-all" onClick={handleNewScenario}>
                   <Plus className="size-4" />
                   New Scenario
                 </Button>
@@ -476,7 +503,7 @@ export default function LongTermForecasting() {
                   <Filter className="size-4" />
                   Filters
                 </Button>
-                <Button variant="default" size="sm" className="h-10 gap-2 px-6 font-bold shadow-lg shadow-primary/20">
+                <Button variant="default" size="sm" className="h-10 gap-2 px-6 font-bold shadow-lg shadow-primary/20" onClick={handleSaveScenario}>
                   <Save className="size-4" />
                   Save Scenario
                 </Button>
@@ -761,6 +788,23 @@ export default function LongTermForecasting() {
                         <Input id="startDate" type="date" value={assumptions.startDate} onChange={(e) => setAssumptions({...assumptions, startDate: e.target.value})} className="h-10 font-bold" />
                       </div>
 
+                      <div className="space-y-3 border-t border-border pt-4">
+                         <div className="flex items-center justify-between">
+                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Forecast Method</Label>
+                            <TrendingUp className="size-3.5 text-primary" />
+                         </div>
+                         <Select value={forecastMethod} onValueChange={setForecastMethod}>
+                            <SelectTrigger className="h-10 font-bold">
+                                <SelectValue placeholder="Choose forecast method..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {FORECAST_METHODS.map(m => (
+                                    <SelectItem key={m.key} value={m.key}>{m.label}</SelectItem>
+                                ))}
+                            </SelectContent>
+                         </Select>
+                      </div>
+                      
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <Label htmlFor="aht" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Base Tenured AHT</Label>
@@ -809,20 +853,25 @@ export default function LongTermForecasting() {
                         <Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(e) => setAssumptions({...assumptions, safetyMargin: validateInput(Number(e.target.value), 0, 20)})} className="h-10 font-bold" />
                       </div>
 
-                      <div className="space-y-3 border-t border-border pt-6 mt-6">
-                        <div className="flex items-center justify-between">
-                          <Label htmlFor="growth" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Annual Volume Growth</Label>
-                          <Badge className="bg-emerald-500 font-black tracking-tight">+{assumptions.growthRate}%</Badge>
+                      {forecastMethod === 'yoy' && (
+                        <div className="space-y-3 border-t border-border pt-6 mt-6">
+                            <div className="flex items-center justify-between">
+                            <Label htmlFor="growth" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">YoY Growth Rate</Label>
+                            <Badge className="bg-emerald-500 font-black tracking-tight">+{assumptions.growthRate}%</Badge>
+                            </div>
+                            <Input id="growth" type="number" value={assumptions.growthRate} onChange={(e) => setAssumptions({...assumptions, growthRate: validateInput(Number(e.target.value))})} className="h-10 font-bold border-emerald-200" />
                         </div>
-                        <Input id="growth" type="number" value={assumptions.growthRate} onChange={(e) => setAssumptions({...assumptions, growthRate: validateInput(Number(e.target.value))})} className="h-10 font-bold border-emerald-200" />
-                      </div>
+                      )}
 
                       <Button 
                         className="w-full h-11 font-black uppercase tracking-widest text-[10px] mt-4 shadow-lg shadow-primary/20"
-                        onClick={() => handleRecalculate()}
+                        onClick={() => {
+                            toast.info("Recalculating forecast and staffing...", { duration: 1500 })
+                            // No need to call a function, the useEffects handle it
+                        }}
                       >
                         <LayoutDashboard className="size-4 mr-2" />
-                        Run Simulation
+                        Recalculate
                       </Button>
                     </CardContent>
                   )}

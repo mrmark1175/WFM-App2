@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import { Home, ChevronRight } from "lucide-react"; // Added ChevronRight
 import logo from "../../assets/logo.png";
 import React from "react";
+import { Toaster } from "./ui/sonner";
 
 interface PageLayoutProps {
   children: React.ReactNode;
@@ -10,7 +11,7 @@ interface PageLayoutProps {
 
 export function PageLayout({ children, title }: PageLayoutProps) {
   const location = useLocation();
-  
+
   // Split the URL path into segments (e.g., ["wfm", "roster"])
   const pathnames = location.pathname.split("/").filter((x) => x);
 
@@ -27,6 +28,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
 
   return (
     <div className="min-h-screen bg-background">
+      <Toaster richColors position="top-right" />
       {/* Header */}
       <header className="bg-white dark:bg-slate-900 border-b border-border">
         <div className="container mx-auto px-6 py-4">
