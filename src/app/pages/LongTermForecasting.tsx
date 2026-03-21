@@ -17,7 +17,11 @@ import {
   Loader2,
   Briefcase,
   Info,
-  ShieldAlert
+  ShieldAlert,
+  Calendar,
+  Wallet,
+  Scale,
+  Coins
 } from "lucide-react";
 import {
   LineChart,
@@ -61,18 +65,24 @@ import {
 // --- Data Models & Interfaces ---
 
 export interface Assumptions {
+  startDate: string; // YYYY-MM-DD
   aht: number;
   shrinkage: number;
   slTarget: number;
   occupancy: number;
   growthRate: number;
-  safetyMargin: number; // % buffer for variance
+  safetyMargin: number; 
+  // Financial & Labor Defs
+  currency: string;
+  annualSalary: number;
+  onboardingCost: number;
+  fteMonthlyHours: number;
 }
 
 export interface WorkforceSupplyInputs {
   startingHeadcount: number;
   tenuredAttritionRate: number;
-  newHireAttritionProfile: number[]; // [M1, M2, M3] rates
+  newHireAttritionProfile: number[]; 
   trainingYield: number;
   monthlyHiring: number;
   trainingMonths: number;
@@ -82,7 +92,8 @@ export interface WorkforceSupplyInputs {
 }
 
 export interface WorkforceSupplyResult {
-  month: string;
+  monthLabel: string;
+  yearLabel: string;
   headcount: number;
   effectiveHeadcount: number;    
   weightedAHT: number;           
@@ -90,6 +101,7 @@ export interface WorkforceSupplyResult {
 
 export interface ForecastData {
   month: string;
+  year: string;
   volume: number;
   aht: number;         
   shrinkage: number;
@@ -114,21 +126,38 @@ export interface KPIData {
   estimatedCost: number;
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const CURRENCIES = [
+  { code: "USD", symbol: "$", name: "US Dollar" },
+  { code: "PHP", symbol: "₱", name: "Philippine Peso" },
+  { code: "EUR", symbol: "€", name: "Euro" },
+  { code: "GBP", symbol: "£", name: "British Pound" },
+  { code: "AUD", symbol: "A$", name: "Australian Dollar" },
+  { code: "CAD", symbol: "C$", name: "Canadian Dollar" },
+  { code: "JPY", symbol: "¥", name: "Japanese Yen" },
+  { code: "INR", symbol: "₹", name: "Indian Rupee" },
+  { code: "SGD", symbol: "S$", name: "Singapore Dollar" }
+];
 
 const DEFAULT_ASSUMPTIONS: Assumptions = {
+  startDate: "2026-01-01",
   aht: 300, 
   shrinkage: 25,
   slTarget: 80,
   occupancy: 85,
   growthRate: 5,
-  safetyMargin: 5, // 5% standard buffer
+  safetyMargin: 5, 
+  currency: "USD",
+  annualSalary: 45000,
+  onboardingCost: 5000,
+  fteMonthlyHours: 166.67,
 };
 
 const DEFAULT_SUPPLY_INPUTS: WorkforceSupplyInputs = {
   startingHeadcount: 100,
   tenuredAttritionRate: 1.5,
-  newHireAttritionProfile: [12.0, 8.0, 4.0], // High early attrition
+  newHireAttritionProfile: [12.0, 8.0, 4.0], 
   trainingYield: 85,         
   monthlyHiring: 10,
   trainingMonths: 1,
@@ -143,23 +172,37 @@ const validateInput = (value: number, min: number = 0, max: number = Infinity): 
   return Math.max(min, Math.min(max, value));
 };
 
+const getTimeline = (startDateStr: string): { month: string, year: string }[] => {
+  const start = new Date(startDateStr);
+  return Array.from({ length: 12 }, (_, i) => {
+    const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+    return {
+      month: MONTH_NAMES[d.getMonth()],
+      year: d.getFullYear().toString()
+    };
+  });
+};
+
+const formatCurrency = (amount: number, code: string) => {
+  const currency = CURRENCIES.find(c => c.code === code) || CURRENCIES[0];
+  if (amount >= 1000000) {
+    return `${currency.symbol}${(amount / 1000000).toFixed(1)}M`;
+  }
+  return `${currency.symbol}${amount.toLocaleString()}`;
+};
+
 // --- Calculation Logic ---
 
-/**
- * Calculates Gross Required FTE with Enterprise guardrails.
- */
 export const calculateFTE = (
   volume: number,
   aht: number,
   shrinkage: number,
   targetOccupancy: number,
-  safetyMargin: number
+  safetyMargin: number,
+  fteMonthlyHours: number
 ): number => {
   if (volume === 0) return 0;
-
-  const workSecondsInMonth = 166.67 * 3600; 
-  
-  // 1. DYNAMIC OCCUPANCY GUARDRAIL (Erlang Constraint)
+  const workSecondsInMonth = fteMonthlyHours * 3600; 
   let achievableOccupancyCap = 0.90; 
   if (volume < 2000) achievableOccupancyCap = 0.65;
   else if (volume < 5000) achievableOccupancyCap = 0.75;
@@ -168,19 +211,12 @@ export const calculateFTE = (
 
   const finalOccupancy = Math.min(targetOccupancy / 100, achievableOccupancyCap);
   const shrinkageFactor = 1 - (shrinkage / 100);
-  
-  // 2. SAFEGUARD AGAINST DIVISION BY ZERO
   if (finalOccupancy <= 0 || shrinkageFactor <= 0) return 9999.9;
 
-  // 3. CORE WORKLOAD CALCULATION
   const workloadSeconds = volume * aht;
   const capacityPerFTE = workSecondsInMonth * finalOccupancy * shrinkageFactor;
-  
   let baseFTE = workloadSeconds / capacityPerFTE;
-
-  // 4. APPLY SAFETY MARGIN (Enterprise Buffer)
   baseFTE = baseFTE * (1 + (safetyMargin / 100));
-  
   return Number(baseFTE.toFixed(1));
 };
 
@@ -188,31 +224,24 @@ export const calculateStaffingGap = (requiredFTE: number, availableFTE: number):
   return Number((availableFTE - requiredFTE).toFixed(1));
 };
 
-/**
- * Projects workforce supply using Attrition Profiles and Mid-Month logic.
- */
-export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT: number): WorkforceSupplyResult[] => {
+export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT: number, startDate: string): WorkforceSupplyResult[] => {
   const results: WorkforceSupplyResult[] = [];
+  const timeline = getTimeline(startDate);
   let cohorts = [inputs.startingHeadcount];
 
   for (let i = 0; i < 12; i++) {
-    const monthName = MONTHS[i];
-    
-    // 1. Apply ATTRITION PROFILE (Tenured vs. New Hire M1, M2, M3)
+    const { month, year } = timeline[i];
     cohorts = cohorts.map((size, ageIndex) => {
       let currentAttrRate = inputs.tenuredAttritionRate;
-      
       if (ageIndex > 0) {
         const monthsInService = i - (ageIndex - 1);
         if (monthsInService >= 0 && monthsInService < inputs.newHireAttritionProfile.length) {
           currentAttrRate = inputs.newHireAttritionProfile[monthsInService];
         }
       }
-      
       return size * (1 - (currentAttrRate / 100));
     });
 
-    // 2. Add hires adjusted for yield
     const successfulHires = inputs.monthlyHiring * (inputs.trainingYield / 100);
     cohorts.push(successfulHires);
 
@@ -222,13 +251,11 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
 
     cohorts.forEach((size, ageIndex) => {
       totalHeadcount += size;
-
       if (ageIndex === 0) {
         totalEffective += size;
         totalWeightedAHTSeconds += size * baseAHT;
       } else {
         const monthsSinceHire = i - (ageIndex - 1);
-        
         if (monthsSinceHire < inputs.trainingMonths) {
           totalEffective += 0;
           totalWeightedAHTSeconds += 0;
@@ -236,9 +263,7 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
           const nestingMonthIndex = monthsSinceHire - inputs.trainingMonths;
           const rampLevel = inputs.nestingRamp[nestingMonthIndex] ?? 100;
           const timingCoefficient = (monthsSinceHire === inputs.trainingMonths) ? 0.5 : 1.0;
-          
           totalEffective += size * (rampLevel / 100) * timingCoefficient;
-
           const ahtMult = inputs.ahtRamp[nestingMonthIndex] ?? 1.0;
           totalWeightedAHTSeconds += size * (baseAHT * ahtMult);
         }
@@ -253,7 +278,8 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
     const weightedAHT = activeStaffCount > 0 ? (totalWeightedAHTSeconds / activeStaffCount) : baseAHT;
 
     results.push({
-      month: monthName,
+      monthLabel: month,
+      yearLabel: year,
       headcount: Math.round(totalHeadcount),
       effectiveHeadcount: Number(totalEffective.toFixed(1)),
       weightedAHT: Math.round(weightedAHT)
@@ -266,10 +292,10 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
 export default function LongTermForecasting() {
   const [isAssumptionsOpen, setIsAssumptionsOpen] = useState(true);
   const [isSupplyOpen, setIsSupplyOpen] = useState(true);
+  const [isFinancialsOpen, setIsFinancialsOpen] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState("base");
   const [loading, setLoading] = useState(true);
   
-  // ── Scenarios State ──────────────────────────────────────────────────────
   const [scenarios, setScenarios] = useState<Record<string, Scenario>>({
     "base": {
       id: "base",
@@ -314,19 +340,20 @@ export default function LongTermForecasting() {
   };
 
   const supplyResults = useMemo(() => {
-    return calculateWorkforceSupply(supplyInputs, assumptions.aht);
-  }, [supplyInputs, assumptions.aht]);
+    return calculateWorkforceSupply(supplyInputs, assumptions.aht, assumptions.startDate);
+  }, [supplyInputs, assumptions.aht, assumptions.startDate]);
 
   const handleRecalculate = () => {
     setForecastData(prev => prev.map((d, i) => {
       const supply = supplyResults[i];
       const monthlyAHT = supply?.weightedAHT || assumptions.aht;
-      
-      const reqFTE = calculateFTE(d.volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin);
+      const reqFTE = calculateFTE(d.volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin, assumptions.fteMonthlyHours);
       const availFTE = supply?.effectiveHeadcount ?? 0;
       
       return {
         ...d,
+        month: supply?.monthLabel || d.month,
+        year: supply?.yearLabel || d.year,
         aht: monthlyAHT,
         shrinkage: assumptions.shrinkage,
         requiredFTE: reqFTE,
@@ -353,21 +380,23 @@ export default function LongTermForecasting() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             queueId: "mock-queue-id",
-            interval: "2026-01-01/2026-12-31"
+            interval: `${assumptions.startDate}/2030-12-31`
           }),
         });
         const result = await response.json();
         
         if (result.success && Array.isArray(result.data)) {
-          const mappedData: ForecastData[] = MONTHS.map((month, idx) => {
+          const timeline = getTimeline(assumptions.startDate);
+          const mappedData: ForecastData[] = timeline.map(({ month, year }, idx) => {
             const volume = result.data[idx] || 0;
             const supply = supplyResults[idx];
             const monthlyAHT = supply?.weightedAHT || assumptions.aht;
-            const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin);
+            const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin, assumptions.fteMonthlyHours);
             const availFTE = supply?.effectiveHeadcount ?? 0;
 
             return {
               month,
+              year,
               volume,
               aht: monthlyAHT,
               shrinkage: assumptions.shrinkage,
@@ -387,15 +416,23 @@ export default function LongTermForecasting() {
     };
 
     fetchMockData();
-  }, []);
+  }, [assumptions.startDate]);
 
   const kpis: KPIData = {
     totalVolume: forecastData.reduce((sum, d) => sum + d.volume, 0),
     avgAHT: forecastData.length > 0 ? Math.round(forecastData.reduce((sum, d) => sum + d.aht, 0) / forecastData.length) : 0,
     requiredFTE: forecastData.length > 0 ? Number((forecastData.reduce((sum, d) => sum + d.requiredFTE, 0) / forecastData.length).toFixed(1)) : 0,
-    staffingGap: Number(forecastData.reduce((sum, d) => sum + d.gap, 0).toFixed(1)),
-    estimatedCost: forecastData.length > 0 ? Number(((forecastData.reduce((sum, d) => sum + d.requiredFTE, 0) / forecastData.length) * 45000).toFixed(0)) : 0,
+    staffingGap: forecastData.length > 0 ? Number((forecastData.reduce((sum, d) => sum + d.gap, 0) / forecastData.length).toFixed(1)) : 0,
+    estimatedCost: forecastData.length > 0 ? Number(
+      forecastData.reduce((total, d) => {
+        const monthlyPayroll = d.headcount * (assumptions.annualSalary / 12);
+        const monthlyHiringTax = supplyInputs.monthlyHiring * assumptions.onboardingCost;
+        return total + monthlyPayroll + monthlyHiringTax;
+      }, 0).toFixed(0)
+    ) : 0,
   };
+
+  const activeCurrency = CURRENCIES.find(c => c.code === assumptions.currency) || CURRENCIES[0];
 
   if (loading) {
     return (
@@ -413,9 +450,7 @@ export default function LongTermForecasting() {
       <PageLayout title="Long-Term Forecasting">
         <div className="flex flex-col gap-8 pb-12">
           
-          {/* Sticky Header: Scenario & KPI Bar */}
           <div className="sticky top-0 z-30 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 -mx-4 px-4 py-4 space-y-4 border-b border-border shadow-sm mb-2 transition-all">
-            
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div className="flex items-center gap-4">
                 <div className="flex flex-col gap-1">
@@ -506,7 +541,7 @@ export default function LongTermForecasting() {
                   </div>
                   <div>
                     <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Est. Cost</p>
-                    <h3 className="text-lg font-black tracking-tight">${(kpis.estimatedCost / 1000000).toFixed(1)}M</h3>
+                    <h3 className="text-lg font-black tracking-tight">{formatCurrency(kpis.estimatedCost, assumptions.currency)}</h3>
                   </div>
                 </CardContent>
               </Card>
@@ -567,7 +602,7 @@ export default function LongTermForecasting() {
                               return (
                                 <div className="bg-white dark:bg-slate-900 border border-border/80 p-4 rounded-xl shadow-2xl min-w-[200px] backdrop-blur-md">
                                   <div className="flex items-center justify-between mb-3 border-b border-border pb-2">
-                                    <p className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-100">{label} 2026</p>
+                                    <p className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-100">{label} {payload[0]?.payload?.year}</p>
                                     <Badge variant="outline" className="text-[9px] font-black">{selectedScenarioId.toUpperCase()}</Badge>
                                   </div>
                                   <div className="space-y-2">
@@ -675,9 +710,9 @@ export default function LongTermForecasting() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {forecastData.map((row) => (
-                        <TableRow key={row.month} className="group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors">
-                          <TableCell className="font-bold text-sm pl-6">{row.month} 2026</TableCell>
+                      {forecastData.map((row, idx) => (
+                        <TableRow key={idx} className="group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors">
+                          <TableCell className="font-bold text-sm pl-6">{row.month} {row.year}</TableCell>
                           <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
                           <TableCell className="text-right font-mono text-sm text-indigo-600">{row.aht}s</TableCell>
                           <TableCell className="text-right font-mono text-sm font-bold text-amber-600">{row.requiredFTE}</TableCell>
@@ -695,8 +730,7 @@ export default function LongTermForecasting() {
                     </TableBody>
                   </Table>
                 </CardContent>
-              </Card>
-            </div>
+              </Card>            </div>
 
             <div className="lg:col-span-1">
               <div className="sticky top-[200px] space-y-6">
@@ -719,6 +753,14 @@ export default function LongTermForecasting() {
                   </CardHeader>
                   {isAssumptionsOpen && (
                     <CardContent className="pt-6 space-y-6 bg-white dark:bg-slate-950">
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label htmlFor="startDate" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Planning Start Date</Label>
+                          <Calendar className="size-3.5 text-primary" />
+                        </div>
+                        <Input id="startDate" type="date" value={assumptions.startDate} onChange={(e) => setAssumptions({...assumptions, startDate: e.target.value})} className="h-10 font-bold" />
+                      </div>
+
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <Label htmlFor="aht" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Base Tenured AHT</Label>
@@ -787,6 +829,62 @@ export default function LongTermForecasting() {
                 </Card>
 
                 <Card className="border border-border/80 shadow-xl overflow-hidden">
+                  <CardHeader className="border-b border-border/50 bg-emerald-900 text-white py-4">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-xs font-black flex items-center gap-2 uppercase tracking-[0.2em]">
+                        <Wallet className="size-4 text-emerald-400" />
+                        Budget & Labor Definitions
+                      </CardTitle>
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="size-6 text-white hover:bg-white/10"
+                        onClick={() => setIsFinancialsOpen(!isFinancialsOpen)}
+                      >
+                        {isFinancialsOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  {isFinancialsOpen && (
+                    <CardContent className="pt-6 space-y-4 bg-white dark:bg-slate-950">
+                      <div className="space-y-2">
+                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Planning Currency</Label>
+                        <Select value={assumptions.currency} onValueChange={(val) => setAssumptions({...assumptions, currency: val})}>
+                          <SelectTrigger className="h-9 font-bold bg-slate-50">
+                            <SelectValue placeholder="Currency" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {CURRENCIES.map(c => (
+                              <SelectItem key={c.code} value={c.code} className="font-medium">
+                                {c.code} ({c.symbol}) - {c.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Avg Annual Salary ({activeCurrency.symbol})</Label>
+                        <Input type="number" value={assumptions.annualSalary} onChange={(e) => setAssumptions({...assumptions, annualSalary: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Onboarding Cost/Hire ({activeCurrency.symbol})</Label>
+                        <Input type="number" value={assumptions.onboardingCost} onChange={(e) => setAssumptions({...assumptions, onboardingCost: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
+                      </div>
+                      <div className="space-y-2 pt-2 border-t border-border">
+                        <div className="flex items-center gap-1">
+                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">FTE Monthly Hours</Label>
+                          <UITooltip>
+                            <TooltipTrigger asChild><Scale className="size-3 text-muted-foreground" /></TooltipTrigger>
+                            <TooltipContent><p className="text-xs">Work base for 1 FTE (e.g. 166.67 for 20.83 days)</p></TooltipContent>
+                          </UITooltip>
+                        </div>
+                        <Input type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(e) => setAssumptions({...assumptions, fteMonthlyHours: validateInput(Number(e.target.value), 1)})} className="h-9 font-bold bg-slate-50" />
+                      </div>
+                    </CardContent>
+                  )}
+                </Card>
+
+                <Card className="border border-border/80 shadow-xl overflow-hidden">
                   <CardHeader className="border-b border-border/50 bg-indigo-900 text-white py-4">
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-xs font-black flex items-center gap-2 uppercase tracking-[0.2em]">
@@ -807,8 +905,8 @@ export default function LongTermForecasting() {
                     <CardContent className="pt-6 space-y-4 bg-white dark:bg-slate-950">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Tenured Attr. (%)</Label>
-                          <Input type="number" value={supplyInputs.tenuredAttritionRate} onChange={(e) => setSupplyInputs({...supplyInputs, tenuredAttritionRate: validateInput(Number(e.target.value), 0, 100)})} className="h-9 font-bold" />
+                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Starting Headcount</Label>
+                          <Input type="number" value={supplyInputs.startingHeadcount} onChange={(e) => setSupplyInputs({...supplyInputs, startingHeadcount: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
                         </div>
                         <div className="space-y-2">
                           <div className="flex items-center gap-1">
@@ -844,7 +942,7 @@ export default function LongTermForecasting() {
                           <Input type="number" value={supplyInputs.monthlyHiring} onChange={(e) => setSupplyInputs({...supplyInputs, monthlyHiring: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Training Duration</Label>
+                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Training Duration (Months)</Label>
                           <Input type="number" value={supplyInputs.trainingMonths} onChange={(e) => setSupplyInputs({...supplyInputs, trainingMonths: validateInput(Number(e.target.value), 0, 12)})} className="h-9 font-bold" />
                         </div>
                       </div>

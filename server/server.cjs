@@ -15,6 +15,60 @@ const pool = new Pool({
   port: 5432,
 });
 
+// --- CALL VOLUME SIMULATION ENGINE ---
+
+class CallVolumeSimulator {
+  constructor() {
+    this.baseVolume = 15000; // Standard monthly base
+    this.monthlySeasonality = [
+      1.05, 0.85, 0.95, 1.00, 1.05, 1.10, 
+      0.90, 0.95, 1.00, 1.15, 1.30, 1.45
+    ]; // Jan - Dec
+    this.trendFactor = 1.02; // +2% MoM growth
+  }
+
+  generateMonthlyVolume(monthIdx) {
+    // V = (Base * Trend^t * Seasonality) + Noise
+    const trend = Math.pow(this.trendFactor, monthIdx);
+    const seasonality = this.monthlySeasonality[monthIdx];
+    
+    // Add ±5% random noise
+    const noise = 1 + (Math.random() * 0.1 - 0.05);
+    
+    // Anomaly: July typically has a dip due to holidays
+    const anomaly = monthIdx === 6 ? 0.92 : 1.0;
+
+    const totalVolume = this.baseVolume * trend * seasonality * noise * anomaly;
+    return Math.round(totalVolume);
+  }
+
+  generateIntradayVolume(dateStr) {
+    const dayWeights = [0.3, 1.3, 1.1, 1.0, 1.0, 0.9, 0.4]; // Sun - Sat
+    const date = new Date(dateStr);
+    const dayOfWeek = date.getDay();
+    const dowFactor = dayWeights[dayOfWeek];
+
+    // Returns 96 intervals (15-min)
+    return Array.from({ length: 96 }, (_, i) => {
+      const hour = Math.floor(i / 4);
+      let todFactor = 0.05; // Night baseline
+
+      // Standard 8-6 Bell Curve
+      if (hour >= 8 && hour <= 10) todFactor = 0.2 + (hour - 8) * 0.4; // Ramp
+      else if (hour > 10 && hour <= 14) todFactor = 1.1; // Peak
+      else if (hour > 14 && hour <= 17) todFactor = 1.0 - (hour - 14) * 0.2; // Decline
+      else if (hour > 17 && hour <= 20) todFactor = 0.3; // Evening
+
+      const baseInterval = (this.baseVolume / 30 / 96);
+      const noise = 1 + (Math.random() * 0.2 - 0.1);
+      
+      return Math.round(baseInterval * dowFactor * todFactor * noise);
+    });
+  }
+}
+
+const simulator = new CallVolumeSimulator();
+
 // --- GET ROUTES ---
 
 app.get('/api/agents', async (req, res) => {
@@ -76,7 +130,6 @@ app.get('/api/capacity-scenarios', async (req, res) => {
   }
 });
 
-// ✅ UPDATED: includes actual_fte, actual_fte_start_date, attrition_pct, classes
 app.post('/api/capacity-scenarios', async (req, res) => {
   const {
     scenario_name, forecast_year, aht, hours_op, work_days,
@@ -105,7 +158,6 @@ app.post('/api/capacity-scenarios', async (req, res) => {
   }
 });
 
-// ✅ UPDATED: includes actual_fte, actual_fte_start_date, attrition_pct, classes
 app.put('/api/capacity-scenarios/:id', async (req, res) => {
   const { id } = req.params;
   const {
@@ -240,7 +292,7 @@ app.post('/api/interaction-arrival', async (req, res) => {
 });
 
 app.post('/api/telephony/pull', async (req, res) => {
-  const { system, date, startDate, endDate, queue } = req.body;
+  const { system, date, startDate, endDate } = req.body;
   
   if (system === 'genesys') {
     const start = new Date((startDate || date) + 'T00:00:00');
@@ -252,50 +304,42 @@ app.post('/api/telephony/pull', async (req, res) => {
       const dateStr = current.getFullYear() + '-' + 
                       String(current.getMonth() + 1).padStart(2, '0') + '-' + 
                       String(current.getDate()).padStart(2, '0');
-      const dayData = Array.from({ length: 96 }, (_, i) => {
+      
+      const intervalVolumes = simulator.generateIntradayVolume(dateStr);
+      
+      const dayData = intervalVolumes.map((offer, i) => {
         const hour = Math.floor(i / 4);
-        let baseOffer = 0;
         
-        if (hour >= 8 && hour <= 18) {
-          baseOffer = Math.floor(Math.random() * 15 + 10);
-        } else if (hour >= 0 && hour <= 5) {
-          baseOffer = Math.floor(Math.random() * 2);
-        } else {
-          baseOffer = Math.floor(Math.random() * 5 + 2);
-        }
-        
-        if (baseOffer > 0) {
-          const abandon = Math.floor(Math.random() * (baseOffer * 0.1));
-          const answer = baseOffer - abandon;
-          const asa = Math.floor(Math.random() * 25 + 5);
+        if (offer > 0) {
+          const abandon = Math.floor(offer * 0.05);
+          const answer = offer - abandon;
+          const asa = Math.floor(Math.random() * 20 + 5);
           
-          // More realistic SL calculation with variance and occasional fails
-          let slBase = 0.85; // Start with a decent base
-          if (hour >= 10 && hour <= 14) slBase = 0.72; // Peak hours lower SL
-          if (baseOffer > 20) slBase -= 0.1; // High volume drops SL
+          let slBase = 0.85; 
+          if (hour >= 10 && hour <= 14) slBase = 0.75; 
           
-          const slPct = Math.min(0.99, Math.max(0.4, slBase + (Math.random() * 0.2 - 0.1)));
+          const slPct = Math.min(0.99, Math.max(0.5, slBase + (Math.random() * 0.15 - 0.05)));
           
-          const avgTalk = Math.random() * 220 + 180;
-          const avgHold = Math.random() * 30 + 5;
-          const avgAcw = Math.random() * 60 + 30;
+          const avgTalk = Math.random() * 200 + 200;
+          const avgHold = Math.random() * 20 + 5;
+          const avgAcw = Math.random() * 40 + 20;
           
           return {
             date: dateStr,
             interval_index: i,
-            offer: baseOffer,
+            offer: offer,
             answer: answer,
             abandon: abandon,
             asa: asa,
-            avg_wait: asa + Math.floor(Math.random() * 5),
+            avg_wait: asa + Math.floor(Math.random() * 3),
             avg_talk: Math.round(avgTalk),
             avg_hold: Math.round(avgHold),
             avg_acw: Math.round(avgAcw),
             avg_handle: Math.round(avgTalk + avgHold + avgAcw),
             sl_pct: slPct,
-            hold_count: Math.floor(Math.random() * 3),
+            hold_count: Math.floor(Math.random() * 2),
             transfer_count: Math.floor(Math.random() * 2),
-            short_abandon: Math.floor(Math.random() * 2)
+            short_abandon: Math.floor(Math.random() * 1)
           };
         } else {
           return { 
@@ -318,28 +362,8 @@ app.post('/api/telephony/pull', async (req, res) => {
 
 app.post('/api/genesys/sync', async (req, res) => {
   try {
-    // Return 12 months of aggregated data
     const monthlyVolumes = Array.from({ length: 12 }, (_, monthIdx) => {
-      // Approximate 30 days per month * 96 intervals/day
-      let monthTotal = 0;
-      for (let day = 0; day < 30; day++) {
-        for (let interval = 0; interval < 96; interval++) {
-          const hour = Math.floor(interval / 4);
-          let baseOffer = 0;
-          if (hour >= 8 && hour <= 18) {
-            baseOffer = Math.floor(Math.random() * (50 - 20 + 1) + 20);
-          } else if (hour >= 0 && hour <= 5) {
-            baseOffer = Math.floor(Math.random() * 5);
-          } else {
-            baseOffer = Math.floor(Math.random() * (20 - 5 + 1) + 5);
-          }
-          if (baseOffer > 0) {
-            const abandon = Math.floor(Math.random() * (baseOffer * 0.1));
-            monthTotal += (baseOffer - abandon);
-          }
-        }
-      }
-      return monthTotal;
+      return simulator.generateMonthlyVolume(monthIdx);
     });
     
     res.json({ success: true, data: monthlyVolumes });
