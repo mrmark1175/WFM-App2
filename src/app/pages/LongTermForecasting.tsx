@@ -16,7 +16,8 @@ import {
   Plus,
   Loader2,
   Briefcase,
-  Info
+  Info,
+  ShieldAlert
 } from "lucide-react";
 import {
   LineChart,
@@ -65,35 +66,35 @@ export interface Assumptions {
   slTarget: number;
   occupancy: number;
   growthRate: number;
+  safetyMargin: number; // % buffer for variance
 }
 
 export interface WorkforceSupplyInputs {
   startingHeadcount: number;
-  tenuredAttritionRate: number; // For staff > 90 days
-  newHireAttritionRate: number;  // For staff < 90 days
-  trainingYield: number;         // % who graduate training
+  tenuredAttritionRate: number;
+  newHireAttritionProfile: number[]; // [M1, M2, M3] rates
+  trainingYield: number;
   monthlyHiring: number;
   trainingMonths: number;
-  nestingRamp: number[];         // Productivity: e.g. [50, 75, 100]
-  ahtRamp: number[];             // AHT Multiplier: e.g. [1.5, 1.2, 1.05]
-  shrinkage: number;
+  nestingRamp: number[];         
+  ahtRamp: number[];             
+  shrinkage: number;             
 }
 
 export interface WorkforceSupplyResult {
   month: string;
   headcount: number;
-  effectiveHeadcount: number;
-  availableFTE: number;
-  weightedAHT: number; // The floor's average AHT based on staff mix
+  effectiveHeadcount: number;    
+  weightedAHT: number;           
 }
 
 export interface ForecastData {
   month: string;
   volume: number;
-  aht: number;         // Weighted average AHT for this month
+  aht: number;         
   shrinkage: number;
-  requiredFTE: number;
-  availableFTE: number;
+  requiredFTE: number; 
+  availableFTE: number; 
   headcount: number;
   gap: number;
 }
@@ -116,22 +117,23 @@ export interface KPIData {
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const DEFAULT_ASSUMPTIONS: Assumptions = {
-  aht: 300, // Base AHT for tenured staff
+  aht: 300, 
   shrinkage: 25,
   slTarget: 80,
   occupancy: 85,
   growthRate: 5,
+  safetyMargin: 5, // 5% standard buffer
 };
 
 const DEFAULT_SUPPLY_INPUTS: WorkforceSupplyInputs = {
   startingHeadcount: 100,
   tenuredAttritionRate: 1.5,
-  newHireAttritionRate: 8.0, // High "infant mortality"
-  trainingYield: 85,         // 15% drop out in training
+  newHireAttritionProfile: [12.0, 8.0, 4.0], // High early attrition
+  trainingYield: 85,         
   monthlyHiring: 10,
   trainingMonths: 1,
   nestingRamp: [50, 75, 90],
-  ahtRamp: [1.5, 1.25, 1.1], // New hires take 50% longer in M1
+  ahtRamp: [1.5, 1.25, 1.1], 
   shrinkage: 15,
 };
 
@@ -144,32 +146,42 @@ const validateInput = (value: number, min: number = 0, max: number = Infinity): 
 // --- Calculation Logic ---
 
 /**
- * Calculates Required FTE using a defensible Capacity Planning formula.
+ * Calculates Gross Required FTE with Enterprise guardrails.
  */
 export const calculateFTE = (
   volume: number,
   aht: number,
   shrinkage: number,
-  occupancy: number
+  targetOccupancy: number,
+  safetyMargin: number
 ): number => {
   if (volume === 0) return 0;
 
   const workSecondsInMonth = 166.67 * 3600; 
   
-  let efficiencyPenalty = 1.15; 
-  if (volume > 50000) efficiencyPenalty = 1.03;      
-  else if (volume > 20000) efficiencyPenalty = 1.05; 
-  else if (volume > 5000) efficiencyPenalty = 1.08;  
-  
-  const occupancyFactor = occupancy / 100;
+  // 1. DYNAMIC OCCUPANCY GUARDRAIL (Erlang Constraint)
+  let achievableOccupancyCap = 0.90; 
+  if (volume < 2000) achievableOccupancyCap = 0.65;
+  else if (volume < 5000) achievableOccupancyCap = 0.75;
+  else if (volume < 15000) achievableOccupancyCap = 0.82;
+  else if (volume < 30000) achievableOccupancyCap = 0.86;
+
+  const finalOccupancy = Math.min(targetOccupancy / 100, achievableOccupancyCap);
   const shrinkageFactor = 1 - (shrinkage / 100);
   
+  // 2. SAFEGUARD AGAINST DIVISION BY ZERO
+  if (finalOccupancy <= 0 || shrinkageFactor <= 0) return 9999.9;
+
+  // 3. CORE WORKLOAD CALCULATION
   const workloadSeconds = volume * aht;
-  const capacityPerFTE = workSecondsInMonth * occupancyFactor * shrinkageFactor;
+  const capacityPerFTE = workSecondsInMonth * finalOccupancy * shrinkageFactor;
   
-  const fte = (workloadSeconds / capacityPerFTE) * efficiencyPenalty;
+  let baseFTE = workloadSeconds / capacityPerFTE;
+
+  // 4. APPLY SAFETY MARGIN (Enterprise Buffer)
+  baseFTE = baseFTE * (1 + (safetyMargin / 100));
   
-  return Number(fte.toFixed(1));
+  return Number(baseFTE.toFixed(1));
 };
 
 export const calculateStaffingGap = (requiredFTE: number, availableFTE: number): number => {
@@ -177,33 +189,33 @@ export const calculateStaffingGap = (requiredFTE: number, availableFTE: number):
 };
 
 /**
- * Projects workforce supply over 12 months based on hiring cohorts, attrition, and productivity ramps.
+ * Projects workforce supply using Attrition Profiles and Mid-Month logic.
  */
 export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT: number): WorkforceSupplyResult[] => {
   const results: WorkforceSupplyResult[] = [];
-  
-  // Track hire cohorts independently
-  // Index 0: Starting tenure staff
-  // Indices 1..12: Monthly hires
   let cohorts = [inputs.startingHeadcount];
 
   for (let i = 0; i < 12; i++) {
     const monthName = MONTHS[i];
     
-    // 1. Apply split attrition logic
+    // 1. Apply ATTRITION PROFILE (Tenured vs. New Hire M1, M2, M3)
     cohorts = cohorts.map((size, ageIndex) => {
-      // New hires (age < 4 months) have higher attrition
-      const currentAttrRate = ageIndex === 0 || (i - (ageIndex - 1)) > 3 
-        ? inputs.tenuredAttritionRate 
-        : inputs.newHireAttritionRate;
+      let currentAttrRate = inputs.tenuredAttritionRate;
+      
+      if (ageIndex > 0) {
+        const monthsInService = i - (ageIndex - 1);
+        if (monthsInService >= 0 && monthsInService < inputs.newHireAttritionProfile.length) {
+          currentAttrRate = inputs.newHireAttritionProfile[monthsInService];
+        }
+      }
+      
       return size * (1 - (currentAttrRate / 100));
     });
 
-    // 2. Add new hires adjusted for Training Yield
+    // 2. Add hires adjusted for yield
     const successfulHires = inputs.monthlyHiring * (inputs.trainingYield / 100);
     cohorts.push(successfulHires);
 
-    // 3. Calculate Mix-Weighted AHT and Effective Headcount
     let totalHeadcount = 0;
     let totalEffective = 0;
     let totalWeightedAHTSeconds = 0;
@@ -212,32 +224,27 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
       totalHeadcount += size;
 
       if (ageIndex === 0) {
-        // Tenure group
         totalEffective += size;
         totalWeightedAHTSeconds += size * baseAHT;
       } else {
         const monthsSinceHire = i - (ageIndex - 1);
         
         if (monthsSinceHire < inputs.trainingMonths) {
-          // Still in training - contributes headcount but 0 productivity
           totalEffective += 0;
-          totalWeightedAHTSeconds += 0; // Doesn't take calls
+          totalWeightedAHTSeconds += 0;
         } else {
           const nestingMonthIndex = monthsSinceHire - inputs.trainingMonths;
-          
-          // Apply Productivity Ramp
           const rampLevel = inputs.nestingRamp[nestingMonthIndex] ?? 100;
-          totalEffective += size * (rampLevel / 100);
+          const timingCoefficient = (monthsSinceHire === inputs.trainingMonths) ? 0.5 : 1.0;
+          
+          totalEffective += size * (rampLevel / 100) * timingCoefficient;
 
-          // Apply AHT Learning Curve Multiplier
           const ahtMult = inputs.ahtRamp[nestingMonthIndex] ?? 1.0;
           totalWeightedAHTSeconds += size * (baseAHT * ahtMult);
         }
       }
     });
 
-    // 4. Determine Floor-Wide Average AHT
-    // Only agents taking calls (Effective Staff) contribute to AHT
     const activeStaffCount = cohorts.reduce((acc, size, ageIndex) => {
        const monthsSinceHire = i - (ageIndex - 1);
        return (ageIndex === 0 || monthsSinceHire >= inputs.trainingMonths) ? acc + size : acc;
@@ -245,14 +252,10 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
 
     const weightedAHT = activeStaffCount > 0 ? (totalWeightedAHTSeconds / activeStaffCount) : baseAHT;
 
-    // 5. Apply supply-side shrinkage to get available FTE
-    const availableFTE = totalEffective * (1 - (inputs.shrinkage / 100));
-
     results.push({
       month: monthName,
       headcount: Math.round(totalHeadcount),
       effectiveHeadcount: Number(totalEffective.toFixed(1)),
-      availableFTE: Number(availableFTE.toFixed(1)),
       weightedAHT: Math.round(weightedAHT)
     });
   }
@@ -278,12 +281,12 @@ export default function LongTermForecasting() {
       id: "scenario-a",
       name: "Scenario A (High Growth)",
       assumptions: { ...DEFAULT_ASSUMPTIONS, growthRate: 15 },
-      supplyInputs: { ...DEFAULT_SUPPLY_INPUTS, monthlyHiring: 20 }
+      supplyInputs: { ...DEFAULT_SUPPLY_INPUTS, monthlyHiring: 20, newHireAttritionProfile: [15, 10, 5] }
     },
     "scenario-b": {
       id: "scenario-b",
       name: "Scenario B (Efficiency)",
-      assumptions: { ...DEFAULT_ASSUMPTIONS, occupancy: 90 },
+      assumptions: { ...DEFAULT_ASSUMPTIONS, occupancy: 90, safetyMargin: 3 },
       supplyInputs: { ...DEFAULT_SUPPLY_INPUTS, tenuredAttritionRate: 1.0, trainingYield: 95 }
     }
   });
@@ -310,7 +313,6 @@ export default function LongTermForecasting() {
     }));
   };
 
-  // Supply logic now factors in base AHT to determine weighted impact
   const supplyResults = useMemo(() => {
     return calculateWorkforceSupply(supplyInputs, assumptions.aht);
   }, [supplyInputs, assumptions.aht]);
@@ -320,9 +322,8 @@ export default function LongTermForecasting() {
       const supply = supplyResults[i];
       const monthlyAHT = supply?.weightedAHT || assumptions.aht;
       
-      // Defensible Link: Demand is now driven by the Supply staff mix (Weighted AHT)
-      const reqFTE = calculateFTE(d.volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy);
-      const availFTE = supply?.availableFTE ?? 0;
+      const reqFTE = calculateFTE(d.volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin);
+      const availFTE = supply?.effectiveHeadcount ?? 0;
       
       return {
         ...d,
@@ -362,8 +363,8 @@ export default function LongTermForecasting() {
             const volume = result.data[idx] || 0;
             const supply = supplyResults[idx];
             const monthlyAHT = supply?.weightedAHT || assumptions.aht;
-            const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy);
-            const availFTE = supply?.availableFTE ?? 0;
+            const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin);
+            const availFTE = supply?.effectiveHeadcount ?? 0;
 
             return {
               month,
@@ -447,7 +448,6 @@ export default function LongTermForecasting() {
               </div>
             </div>
 
-            {/* 1. Top KPI Summary Bar (Part of Sticky Header) */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               <Card className="bg-slate-50 dark:bg-slate-900 border-none shadow-none rounded-lg">
                 <CardContent className="p-4 flex items-center gap-4">
@@ -479,7 +479,7 @@ export default function LongTermForecasting() {
                     <Users className="size-5 text-amber-600 dark:text-amber-400" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Req. FTE</p>
+                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Req. HC</p>
                     <h3 className="text-lg font-black tracking-tight">{kpis.requiredFTE}</h3>
                   </div>
                 </CardContent>
@@ -522,7 +522,7 @@ export default function LongTermForecasting() {
                       <LayoutDashboard className="size-4 text-primary" />
                       Defensible Capacity Plan
                     </CardTitle>
-                    <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">Weighted Performance vs. Staffing Demands</p>
+                    <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">Gross Requirements vs. Available Headcount</p>
                   </div>
                   <div className="flex items-center gap-2">
                      <Badge variant="outline" className="text-[10px] font-black uppercase tracking-widest bg-white dark:bg-slate-800 border-primary/20 text-primary">Live Projection</Badge>
@@ -620,7 +620,7 @@ export default function LongTermForecasting() {
                           yAxisId="right"
                           type="monotone" 
                           dataKey="requiredFTE" 
-                          name="Required"
+                          name="Req. HC (Gross)"
                           stroke="#f59e0b" 
                           strokeWidth={4}
                           dot={{ r: 3, fill: 'hsl(var(--background))', strokeWidth: 2, stroke: '#f59e0b' }}
@@ -630,7 +630,7 @@ export default function LongTermForecasting() {
                           yAxisId="right"
                           type="monotone" 
                           dataKey="availableFTE" 
-                          name="Proj. Supply"
+                          name="Avail. HC (Gross)"
                           stroke="#10b981" 
                           strokeWidth={3}
                           strokeDasharray="6 4"
@@ -640,7 +640,7 @@ export default function LongTermForecasting() {
                           yAxisId="right"
                           type="monotone" 
                           dataKey="headcount" 
-                          name="Total HC"
+                          name="Total Payroll HC"
                           stroke="#6366f1" 
                           strokeWidth={2}
                           strokeDasharray="3 3"
@@ -669,8 +669,8 @@ export default function LongTermForecasting() {
                         <TableHead className="w-[140px] text-xs font-black uppercase tracking-widest pl-6">Timeline</TableHead>
                         <TableHead className="text-right text-xs font-black uppercase tracking-widest">Proj Vol</TableHead>
                         <TableHead className="text-right text-xs font-black uppercase tracking-widest">Weighted AHT</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Req FTE</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Avail FTE</TableHead>
+                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Req. HC</TableHead>
+                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Avail. HC</TableHead>
                         <TableHead className="text-right text-xs font-black uppercase tracking-widest pr-6">Gap Status</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -753,6 +753,20 @@ export default function LongTermForecasting() {
                         <Input id="occupancy" type="number" value={assumptions.occupancy} onChange={(e) => setAssumptions({...assumptions, occupancy: validateInput(Number(e.target.value), 0, 100)})} className="h-10 font-bold" />
                       </div>
 
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1">
+                            <Label htmlFor="safetyMargin" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Safety Margin (%)</Label>
+                            <UITooltip>
+                              <TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
+                              <TooltipContent><p className="text-xs">Staffing buffer for unplanned volume/AHT variance</p></TooltipContent>
+                            </UITooltip>
+                          </div>
+                          <Badge variant="outline" className="font-black text-primary border-primary/20">{assumptions.safetyMargin}%</Badge>
+                        </div>
+                        <Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(e) => setAssumptions({...assumptions, safetyMargin: validateInput(Number(e.target.value), 0, 20)})} className="h-10 font-bold" />
+                      </div>
+
                       <div className="space-y-3 border-t border-border pt-6 mt-6">
                         <div className="flex items-center justify-between">
                           <Label htmlFor="growth" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Annual Volume Growth</Label>
@@ -798,19 +812,6 @@ export default function LongTermForecasting() {
                         </div>
                         <div className="space-y-2">
                           <div className="flex items-center gap-1">
-                            <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">New Hire Attr. (%)</Label>
-                            <UITooltip>
-                              <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground" /></TooltipTrigger>
-                              <TooltipContent><p className="text-xs">Higher attrition rate for agents in first 90 days</p></TooltipContent>
-                            </UITooltip>
-                          </div>
-                          <Input type="number" value={supplyInputs.newHireAttritionRate} onChange={(e) => setSupplyInputs({...supplyInputs, newHireAttritionRate: validateInput(Number(e.target.value), 0, 100)})} className="h-9 font-bold border-rose-200" />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-1">
                             <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Training Yield (%)</Label>
                             <UITooltip>
                               <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground" /></TooltipTrigger>
@@ -819,39 +820,48 @@ export default function LongTermForecasting() {
                           </div>
                           <Input type="number" value={supplyInputs.trainingYield} onChange={(e) => setSupplyInputs({...supplyInputs, trainingYield: validateInput(Number(e.target.value), 0, 100)})} className="h-9 font-bold" />
                         </div>
+                      </div>
+
+                      <div className="space-y-3 pt-2 border-t border-border">
+                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Infant Mortality (Attrition M1-M3)</Label>
+                        <div className="grid grid-cols-3 gap-3">
+                          {supplyInputs.newHireAttritionProfile.map((val, idx) => (
+                            <div key={idx} className="space-y-1">
+                              <Label className="text-[8px] font-bold text-muted-foreground uppercase">Month {idx + 1} %</Label>
+                              <Input type="number" value={val} onChange={(e) => {
+                                const newProfile = [...supplyInputs.newHireAttritionProfile];
+                                newProfile[idx] = validateInput(Number(e.target.value), 0, 100);
+                                setSupplyInputs({...supplyInputs, newHireAttritionProfile: newProfile});
+                              }} className="h-8 text-xs font-bold border-rose-100" />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4 pt-2 border-t border-border">
                         <div className="space-y-2">
                           <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Monthly Hiring</Label>
                           <Input type="number" value={supplyInputs.monthlyHiring} onChange={(e) => setSupplyInputs({...supplyInputs, monthlyHiring: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
                         </div>
+                        <div className="space-y-2">
+                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Training Duration</Label>
+                          <Input type="number" value={supplyInputs.trainingMonths} onChange={(e) => setSupplyInputs({...supplyInputs, trainingMonths: validateInput(Number(e.target.value), 0, 12)})} className="h-9 font-bold" />
+                        </div>
                       </div>
 
                       <div className="space-y-3 pt-2 border-t border-border">
-                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Productivity & Learning Curve</Label>
+                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">AHT Learning Multipliers</Label>
                         <div className="grid grid-cols-3 gap-3">
-                          <div className="space-y-1">
-                            <Label className="text-[8px] font-bold text-muted-foreground uppercase">M1 AHT x</Label>
-                            <Input type="number" step="0.1" value={supplyInputs.ahtRamp[0]} onChange={(e) => {
-                              const newRamp = [...supplyInputs.ahtRamp];
-                              newRamp[0] = validateInput(Number(e.target.value), 1);
-                              setSupplyInputs({...supplyInputs, ahtRamp: newRamp});
-                            }} className="h-8 text-xs font-bold bg-amber-50" />
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-[8px] font-bold text-muted-foreground uppercase">M2 AHT x</Label>
-                            <Input type="number" step="0.1" value={supplyInputs.ahtRamp[1]} onChange={(e) => {
-                              const newRamp = [...supplyInputs.ahtRamp];
-                              newRamp[1] = validateInput(Number(e.target.value), 1);
-                              setSupplyInputs({...supplyInputs, ahtRamp: newRamp});
-                            }} className="h-8 text-xs font-bold bg-amber-50" />
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-[8px] font-bold text-muted-foreground uppercase">M3 AHT x</Label>
-                            <Input type="number" step="0.1" value={supplyInputs.ahtRamp[2]} onChange={(e) => {
-                              const newRamp = [...supplyInputs.ahtRamp];
-                              newRamp[2] = validateInput(Number(e.target.value), 1);
-                              setSupplyInputs({...supplyInputs, ahtRamp: newRamp});
-                            }} className="h-8 text-xs font-bold bg-amber-50" />
-                          </div>
+                          {supplyInputs.ahtRamp.map((val, idx) => (
+                            <div key={idx} className="space-y-1">
+                              <Label className="text-[8px] font-bold text-muted-foreground uppercase">M{idx + 1} AHT x</Label>
+                              <Input type="number" step="0.1" value={val} onChange={(e) => {
+                                const newRamp = [...supplyInputs.ahtRamp];
+                                newRamp[idx] = validateInput(Number(e.target.value), 1);
+                                setSupplyInputs({...supplyInputs, ahtRamp: newRamp});
+                              }} className="h-8 text-xs font-bold bg-amber-50" />
+                            </div>
+                          ))}
                         </div>
                       </div>
                     </CardContent>
@@ -867,9 +877,9 @@ export default function LongTermForecasting() {
                   </CardHeader>
                   <CardContent className="space-y-6 pt-2">
                     <div className="space-y-2">
-                      <p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Staffing Deficit Warning</p>
+                      <p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Capacity Risk Warning</p>
                       <p className="text-xs font-medium leading-relaxed">
-                        Hiring <span className="font-bold text-blue-300">{supplyInputs.monthlyHiring} agents</span> monthly only yields <span className="font-bold text-emerald-300">{Math.round(supplyInputs.monthlyHiring * (supplyInputs.trainingYield/100))} producers</span> due to yield leakage.
+                        Achievable occupancy is capped at <span className="text-amber-300 font-bold">{(kpis.totalVolume < 5000 ? 75 : 86)}%</span> for your current volume profile. Reducing target occupancy below the cap improves SL predictability.
                       </p>
                     </div>
                   </CardContent>
