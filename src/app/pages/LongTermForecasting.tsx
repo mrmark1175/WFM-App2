@@ -108,7 +108,8 @@ export interface ForecastData {
   actualSeries: number | null;
   forecastSeries: number | null;
   confidenceBand: [number, number] | null;
-  staffingGapRange: [number, number] | null;
+  understaffedRange: [number, number] | null;
+  overstaffedRange: [number, number] | null;
   historicalVolume: number; // SDLY for comparison
   aht: number;         
   shrinkage: number;
@@ -493,8 +494,11 @@ export default function LongTermForecasting() {
       const forecastSeries = idx >= 11 ? (idx === 11 ? (actualsPast[11] || 0) : volume) : null;
       const confidenceBand: [number, number] | null = isFuture ? [Math.round(volume * 0.9), Math.round(volume * 1.1)] : null;
 
-      // staffingGapRange shows the delta between req and avail for shading
-      const staffingGapRange: [number, number] | null = isFuture ? [availFTE, reqFTE] : null;
+      // Calculate ranges for shading: 
+      // understaffedRange: shades red when Req > Avail
+      // overstaffedRange: shades green when Avail > Req
+      const understaffedRange: [number, number] | null = isFuture ? [availFTE, Math.max(availFTE, reqFTE)] : null;
+      const overstaffedRange: [number, number] | null = isFuture ? [reqFTE, Math.max(reqFTE, availFTE)] : null;
 
       return {
         month: time.month,
@@ -504,7 +508,8 @@ export default function LongTermForecasting() {
         actualSeries,
         forecastSeries,
         confidenceBand,
-        staffingGapRange,
+        understaffedRange,
+        overstaffedRange,
         historicalVolume,
         aht: monthlyAHT,
         shrinkage: assumptions.shrinkage,
@@ -799,11 +804,21 @@ export default function LongTermForecasting() {
                         />
                         <Area 
                           yAxisId="right"
-                          dataKey="staffingGapRange" 
-                          name="Staffing Risk (Gap)"
+                          dataKey="understaffedRange" 
+                          name="Staffing Risk (Shortage)"
                           stroke="none"
                           fill="#f43f5e" 
                           fillOpacity={0.15} 
+                          isAnimationActive={false}
+                        />
+                        <Area 
+                          yAxisId="right"
+                          dataKey="overstaffedRange" 
+                          name="Staffing Surplus"
+                          stroke="none"
+                          fill="#10b981" 
+                          fillOpacity={0.1} 
+                          isAnimationActive={false}
                         />
                         <Tooltip 
                           cursor={{ stroke: 'hsl(var(--primary))', strokeWidth: 1, strokeDasharray: '4 4' }}
@@ -867,6 +882,7 @@ export default function LongTermForecasting() {
                           stroke="none"
                           fill="hsl(var(--primary))" 
                           fillOpacity={0.05} 
+                          isAnimationActive={false}
                         />
                         <Line 
                           yAxisId="left"
