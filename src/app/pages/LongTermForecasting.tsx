@@ -55,6 +55,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { Badge } from "../components/ui/badge";
+import { Switch } from "../components/ui/switch";
 import {
   Tooltip as UITooltip,
   TooltipContent,
@@ -78,6 +79,9 @@ export interface Assumptions {
   annualSalary: number;
   onboardingCost: number;
   fteMonthlyHours: number;
+  // Manual Entry Support
+  useManualVolume: boolean;
+  manualHistoricalData: number[];
 }
 
 export interface WorkforceSupplyInputs {
@@ -160,6 +164,8 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   annualSalary: 45000,
   onboardingCost: 5000,
   fteMonthlyHours: 166.67,
+  useManualVolume: false,
+  manualHistoricalData: new Array(12).fill(10000),
 };
 
 const DEFAULT_SUPPLY_INPUTS: WorkforceSupplyInputs = {
@@ -416,19 +422,27 @@ export default function LongTermForecasting() {
     return calculateWorkforceSupply(supplyInputs, assumptions.aht, assumptions.startDate);
   }, [supplyInputs, assumptions.aht, assumptions.startDate]);
 
+  const effectiveHistoricalData = useMemo(() => {
+    if (assumptions.useManualVolume) {
+      // Pad to 24 months for statistical stability if manual is only 12
+      return [...assumptions.manualHistoricalData, ...assumptions.manualHistoricalData];
+    }
+    return historicalData;
+  }, [assumptions.useManualVolume, assumptions.manualHistoricalData, historicalData]);
+
   const calculatedVolumes = useMemo(() => {
-    if (historicalData.length === 0) return Array(12).fill(0);
+    if (effectiveHistoricalData.length === 0) return Array(12).fill(0);
     
     switch (forecastMethod) {
       case "yoy":
-        return calculateYoY(historicalData, assumptions.growthRate);
+        return calculateYoY(effectiveHistoricalData, assumptions.growthRate);
       case "ma":
-        return calculateMovingAverage(historicalData, 3);
+        return calculateMovingAverage(effectiveHistoricalData, 3);
       case "regression":
-        return calculateLinearRegression(historicalData);
+        return calculateLinearRegression(effectiveHistoricalData);
       case "holtwinters":
         return calculateHoltWinters(
-          historicalData, 
+          effectiveHistoricalData, 
           hwParams.alpha, 
           hwParams.beta, 
           hwParams.gamma, 
@@ -436,33 +450,33 @@ export default function LongTermForecasting() {
         );
       case "decomposition":
         return calculateDecomposition(
-          historicalData, 
+          effectiveHistoricalData, 
           decompParams.trendStrength, 
           decompParams.seasonalityStrength
         );
       case "arima":
         return calculateARIMA(
-          historicalData, 
+          effectiveHistoricalData, 
           arimaParams.p, 
           arimaParams.d, 
           arimaParams.q
         );
       case "genesys":
       default:
-        return historicalData;
+        return effectiveHistoricalData.slice(-12); // Always take the most recent 12
     }
-  }, [forecastMethod, historicalData, assumptions.growthRate, hwParams, arimaParams, decompParams]);
+  }, [forecastMethod, effectiveHistoricalData, assumptions.growthRate, hwParams, arimaParams, decompParams]);
 
   const handleRecalculate = () => {
-    if (historicalData.length === 0) return;
+    if (effectiveHistoricalData.length === 0) return;
 
     // Generate a 24-month timeline: 12 months past + 12 months future
     const timeline = getTimeline(assumptions.startDate, 12, 12);
     
-    // Past: First 12 months of historicalData
-    const actualsPast = historicalData.slice(0, 12);
-    // Future SDLY Reference: Last 12 months of historicalData (which is Sameday Last Year for the future)
-    const futureSdly = historicalData.slice(-12);
+    // Past: First 12 months of historical data source
+    const actualsPast = effectiveHistoricalData.slice(-24, -12);
+    // Future SDLY Reference: Last 12 months of historical data source
+    const futureSdly = effectiveHistoricalData.slice(-12);
 
     const mappedData: ForecastData[] = timeline.map((time, idx) => {
       let volume = 0;
@@ -1031,9 +1045,62 @@ export default function LongTermForecasting() {
 
                       <div className="space-y-3 border-t border-border pt-4">
                          <div className="flex items-center justify-between">
-                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Forecast Method</Label>
-                            <TrendingUp className="size-3.5 text-primary" />
+                            <div className="flex items-center gap-2">
+                              <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Data Source</Label>
+                              <Badge variant="outline" className="text-[8px] font-bold">{assumptions.useManualVolume ? "MANUAL" : "API"}</Badge>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-bold text-muted-foreground">Manual</span>
+                              <Switch 
+                                checked={assumptions.useManualVolume} 
+                                onCheckedChange={(checked) => setAssumptions({...assumptions, useManualVolume: checked})} 
+                              />
+                            </div>
                          </div>
+                         
+                         {assumptions.useManualVolume && (
+                           <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                             <div className="flex items-center justify-between">
+                               <p className="text-[9px] font-bold text-muted-foreground uppercase">Monthly Actuals (Last 12m)</p>
+                               {!loading && historicalData.length > 0 && (
+                                 <Button 
+                                   variant="ghost" 
+                                   size="sm" 
+                                   className="h-6 text-[8px] font-black border border-primary/20 text-primary uppercase"
+                                   onClick={() => {
+                                     setAssumptions({
+                                       ...assumptions, 
+                                       manualHistoricalData: historicalData.slice(-12)
+                                     });
+                                     toast.success("Copied latest API data to manual fields");
+                                   }}
+                                 >
+                                   Copy from API
+                                 </Button>
+                               )}
+                             </div>
+                             <div className="grid grid-cols-3 gap-2">
+                               {assumptions.manualHistoricalData.map((vol, i) => (
+                                 <div key={i} className="space-y-1">
+                                   <Label className="text-[8px] font-bold text-muted-foreground uppercase">{MONTH_NAMES[i]}</Label>
+                                   <Input 
+                                     type="number" 
+                                     value={vol} 
+                                     onChange={(e) => {
+                                       const newData = [...assumptions.manualHistoricalData];
+                                       newData[i] = Number(e.target.value);
+                                       setAssumptions({...assumptions, manualHistoricalData: newData});
+                                     }}
+                                     className="h-8 text-xs font-bold"
+                                   />
+                                 </div>
+                               ))}
+                             </div>
+                           </div>
+                         )}
+                      </div>
+
+                      <div className="space-y-3 border-t border-border pt-4">
                          <Select value={forecastMethod} onValueChange={setForecastMethod}>
                             <SelectTrigger className="h-10 font-bold">
                                 <SelectValue placeholder="Choose forecast method..." />
