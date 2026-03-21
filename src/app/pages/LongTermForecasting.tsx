@@ -114,8 +114,8 @@ export interface ForecastData {
   aht: number;         
   shrinkage: number;
   requiredFTE: number; 
-  availableFTE: number; 
-  headcount: number;
+  availableFTE: number | null; 
+  headcount: number | null;
   gap: number;
 }
 
@@ -485,7 +485,9 @@ export default function LongTermForecasting() {
       const supply = supplyIdx >= 0 ? supplyResults[supplyIdx] : null;
       const monthlyAHT = supply?.weightedAHT || assumptions.aht;
       const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin, assumptions.fteMonthlyHours);
-      const availFTE = supply?.effectiveHeadcount ?? 0;
+      
+      const availFTE = isFuture ? (supply?.effectiveHeadcount ?? 0) : null;
+      const headcount = isFuture ? (supply?.headcount ?? 0) : null;
 
       // Series for visualization: 
       // actualSeries includes up to the first future month for connection
@@ -497,8 +499,8 @@ export default function LongTermForecasting() {
       // Calculate ranges for shading: 
       // understaffedRange: shades red when Req > Avail
       // overstaffedRange: shades green when Avail > Req
-      const understaffedRange: [number, number] | null = isFuture ? [availFTE, Math.max(availFTE, reqFTE)] : null;
-      const overstaffedRange: [number, number] | null = isFuture ? [reqFTE, Math.max(reqFTE, availFTE)] : null;
+      const understaffedRange: [number, number] | null = isFuture ? [availFTE || 0, Math.max(availFTE || 0, reqFTE)] : null;
+      const overstaffedRange: [number, number] | null = isFuture ? [reqFTE, Math.max(reqFTE, availFTE || 0)] : null;
 
       return {
         month: time.month,
@@ -515,8 +517,8 @@ export default function LongTermForecasting() {
         shrinkage: assumptions.shrinkage,
         requiredFTE: reqFTE,
         availableFTE: availFTE,
-        headcount: supply?.headcount ?? 0,
-        gap: calculateStaffingGap(reqFTE, availFTE),
+        headcount: headcount,
+        gap: isFuture ? calculateStaffingGap(reqFTE, availFTE || 0) : 0,
       };
     });
     setForecastData(mappedData);
@@ -554,13 +556,13 @@ export default function LongTermForecasting() {
   }, [assumptions.startDate]);
 
   const kpis: KPIData = {
-    totalVolume: forecastData.reduce((sum, d) => sum + d.volume, 0),
-    avgAHT: forecastData.length > 0 ? Math.round(forecastData.reduce((sum, d) => sum + d.aht, 0) / forecastData.length) : 0,
-    requiredFTE: forecastData.length > 0 ? Number((forecastData.reduce((sum, d) => sum + d.requiredFTE, 0) / forecastData.length).toFixed(1)) : 0,
-    staffingGap: forecastData.length > 0 ? Number((forecastData.reduce((sum, d) => sum + d.gap, 0) / forecastData.length).toFixed(1)) : 0,
-    estimatedCost: forecastData.length > 0 ? Number(
-      forecastData.reduce((total, d) => {
-        const monthlyPayroll = d.headcount * (assumptions.annualSalary / 12);
+    totalVolume: forecastData.filter(d => d.isFuture).reduce((sum, d) => sum + d.volume, 0),
+    avgAHT: forecastData.filter(d => d.isFuture).length > 0 ? Math.round(forecastData.filter(d => d.isFuture).reduce((sum, d) => sum + d.aht, 0) / forecastData.filter(d => d.isFuture).length) : 0,
+    requiredFTE: forecastData.filter(d => d.isFuture).length > 0 ? Number((forecastData.filter(d => d.isFuture).reduce((sum, d) => sum + d.requiredFTE, 0) / forecastData.filter(d => d.isFuture).length).toFixed(1)) : 0,
+    staffingGap: forecastData.filter(d => d.isFuture).length > 0 ? Number((forecastData.filter(d => d.isFuture).reduce((sum, d) => sum + d.gap, 0) / forecastData.filter(d => d.isFuture).length).toFixed(1)) : 0,
+    estimatedCost: forecastData.filter(d => d.isFuture).length > 0 ? Number(
+      forecastData.filter(d => d.isFuture).reduce((total, d) => {
+        const monthlyPayroll = (d.headcount || 0) * (assumptions.annualSalary / 12);
         const monthlyHiringTax = supplyInputs.monthlyHiring * assumptions.onboardingCost;
         return total + monthlyPayroll + monthlyHiringTax;
       }, 0).toFixed(0)
@@ -982,13 +984,13 @@ export default function LongTermForecasting() {
                           <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
                           <TableCell className="text-right font-mono text-sm text-indigo-600">{row.aht}s</TableCell>
                           <TableCell className="text-right font-mono text-sm font-bold text-amber-600">{row.requiredFTE}</TableCell>
-                          <TableCell className="text-right font-mono text-sm text-emerald-600 font-bold">{row.availableFTE}</TableCell>
+                          <TableCell className="text-right font-mono text-sm text-emerald-600 font-bold">{row.availableFTE?.toLocaleString() ?? "-"}</TableCell>
                           <TableCell className="text-right pr-6">
                             <Badge 
                               variant={row.gap >= 0 ? "default" : "destructive"} 
                               className={`font-black text-xs tracking-tight min-w-[60px] justify-center ${row.gap >= 0 ? "bg-emerald-500 hover:bg-emerald-600 border-none" : ""}`}
                             >
-                              {row.gap > 0 ? `+${row.gap}` : row.gap}
+                              {row.isFuture ? (row.gap > 0 ? `+${row.gap}` : row.gap) : "-"}
                             </Badge>
                           </TableCell>
                         </TableRow>
