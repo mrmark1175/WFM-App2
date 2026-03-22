@@ -188,7 +188,7 @@ const validateInput = (value: number, min: number = 0, max: number = Infinity): 
 
 const getTimeline = (startDateStr: string, monthsPast: number = 0, monthsFuture: number = 12): { month: string, year: string, isFuture: boolean }[] => {
   const start = new Date(startDateStr);
-  const timeline = [];
+  const timeline: { month: string, year: string, isFuture: boolean }[] = [];
   
   // Past months
   for (let i = monthsPast; i > 0; i--) {
@@ -352,6 +352,7 @@ export default function LongTermForecasting() {
   const [hwParams, setHwParams] = useState({ alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 });
   const [arimaParams, setArimaParams] = useState({ p: 1, d: 1, q: 1 });
   const [decompParams, setDecompParams] = useState({ trendStrength: 1.0, seasonalityStrength: 1.0 });
+  const [expandedYears, setExpandedYears] = useState<Record<string, boolean>>({});
 
   const [scenarios, setScenarios] = useState<Record<string, Scenario>>({
     "base": {
@@ -435,7 +436,7 @@ export default function LongTermForecasting() {
     
     switch (forecastMethod) {
       case "yoy":
-        return calculateYoY(effectiveHistoricalData, assumptions.growthRate);
+        return calculateYoY(effectiveHistoricalData.slice(-12), assumptions.growthRate);
       case "ma":
         return calculateMovingAverage(effectiveHistoricalData, 3);
       case "regression":
@@ -470,12 +471,10 @@ export default function LongTermForecasting() {
   const handleRecalculate = () => {
     if (effectiveHistoricalData.length === 0) return;
 
-    // Generate a 24-month timeline: 12 months past + 12 months future
-    const timeline = getTimeline(assumptions.startDate, 12, 12);
+    // Generate a 36-month timeline: 24 months past + 12 months future
+    const timeline = getTimeline(assumptions.startDate, 24, 12);
     
-    // Past: First 12 months of historical data source
-    const actualsPast = effectiveHistoricalData.slice(-24, -12);
-    // Future SDLY Reference: Last 12 months of historical data source
+    // Future SDLY Reference: Last 12 months of historical data source (indices 12-23)
     const futureSdly = effectiveHistoricalData.slice(-12);
 
     const mappedData: ForecastData[] = timeline.map((time, idx) => {
@@ -484,18 +483,18 @@ export default function LongTermForecasting() {
       let isFuture = time.isFuture;
 
       if (!isFuture) {
-        // Use actuals for past
-        volume = actualsPast[idx] || 0;
+        // Use actuals for past (idx 0-23)
+        volume = effectiveHistoricalData[idx] || 0;
         historicalVolume = volume; // Past volume is its own reference
       } else {
-        // Use forecasted volumes for future
-        const forecastIdx = idx - 12;
+        // Use forecasted volumes for future (idx 24-35)
+        const forecastIdx = idx - 24;
         volume = calculatedVolumes[forecastIdx] || 0;
         historicalVolume = futureSdly[forecastIdx] || 0;
       }
 
       // Supply logic only applies to future
-      const supplyIdx = isFuture ? idx - 12 : -1;
+      const supplyIdx = isFuture ? idx - 24 : -1;
       const supply = supplyIdx >= 0 ? supplyResults[supplyIdx] : null;
       const monthlyAHT = supply?.weightedAHT || assumptions.aht;
       const reqFTE = calculateFTE(volume, monthlyAHT, assumptions.shrinkage, assumptions.occupancy, assumptions.safetyMargin, assumptions.fteMonthlyHours);
@@ -504,10 +503,10 @@ export default function LongTermForecasting() {
       const headcount = isFuture ? (supply?.headcount ?? 0) : null;
 
       // Series for visualization: 
-      // actualSeries includes up to the first future month for connection
-      // forecastSeries starts from the last past month for connection
-      const actualSeries = idx <= 12 ? (idx === 12 ? (calculatedVolumes[0] || 0) : volume) : null;
-      const forecastSeries = idx >= 11 ? (idx === 11 ? (actualsPast[11] || 0) : volume) : null;
+      // actualSeries includes up to the first future month for connection (idx 0-24)
+      // forecastSeries starts from the last past month for connection (idx 23-35)
+      const actualSeries = idx <= 24 ? (idx === 24 ? (calculatedVolumes[0] || 0) : volume) : null;
+      const forecastSeries = idx >= 23 ? (idx === 23 ? (effectiveHistoricalData[23] || 0) : volume) : null;
       const confidenceBand: [number, number] | null = isFuture ? [Math.round(volume * 0.9), Math.round(volume * 1.1)] : null;
 
       // Calculate ranges for shading: 
@@ -535,7 +534,14 @@ export default function LongTermForecasting() {
         gap: isFuture ? calculateStaffingGap(reqFTE, availFTE || 0) : 0,
       };
     });
+    
     setForecastData(mappedData);
+    
+    // Auto-expand the forecast year if not already expanded
+    if (timeline.length > 0) {
+        const forecastYear = timeline[timeline.length - 1].year;
+        setExpandedYears(prev => ({ ...prev, [forecastYear]: true }));
+    }
   };
 
   useEffect(() => {
@@ -988,26 +994,43 @@ export default function LongTermForecasting() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {forecastData.map((row, idx) => (
-                        <TableRow key={idx} className={`group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors ${!row.isFuture ? "opacity-70 bg-slate-50/30" : ""}`}>
-                          <TableCell className="font-bold text-sm pl-6 flex items-center gap-2">
-                            {row.month} {row.year}
-                            {!row.isFuture && <Badge variant="secondary" className="text-[8px] h-4 font-black">ACTUAL</Badge>}
-                            {row.isFuture && <Badge variant="outline" className="text-[8px] h-4 font-black border-primary/20 text-primary">FCST</Badge>}
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
-                          <TableCell className="text-right font-mono text-sm text-indigo-600">{row.aht}s</TableCell>
-                          <TableCell className="text-right font-mono text-sm font-bold text-amber-600">{row.requiredFTE}</TableCell>
-                          <TableCell className="text-right font-mono text-sm text-emerald-600 font-bold">{row.availableFTE?.toLocaleString() ?? "-"}</TableCell>
-                          <TableCell className="text-right pr-6">
-                            <Badge 
-                              variant={row.gap >= 0 ? "default" : "destructive"} 
-                              className={`font-black text-xs tracking-tight min-w-[60px] justify-center ${row.gap >= 0 ? "bg-emerald-500 hover:bg-emerald-600 border-none" : ""}`}
-                            >
-                              {row.isFuture ? (row.gap > 0 ? `+${row.gap}` : row.gap) : "-"}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
+                      {Object.entries(forecastData.reduce((acc, row) => {
+                        if (!acc[row.year]) acc[row.year] = [];
+                        acc[row.year].push(row);
+                        return acc;
+                      }, {} as Record<string, ForecastData[]>)).map(([year, rows]) => (
+                        <React.Fragment key={year}>
+                          <TableRow className="bg-muted/30 hover:bg-muted/50 cursor-pointer" onClick={() => setExpandedYears(prev => ({ ...prev, [year]: !prev[year] }))}>
+                            <TableCell colSpan={6} className="py-2 pl-4">
+                              <div className="flex items-center gap-2 font-bold text-xs uppercase tracking-widest text-muted-foreground">
+                                {expandedYears[year] ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                                {year} ({rows.length} Months)
+                                {rows.some(r => r.isFuture) && <Badge variant="outline" className="text-[8px] h-4 ml-2 border-primary/20 text-primary">FORECAST YEAR</Badge>}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                          {expandedYears[year] && rows.map((row, idx) => (
+                            <TableRow key={`${year}-${idx}`} className={`group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors ${!row.isFuture ? "opacity-70 bg-slate-50/30" : ""}`}>
+                              <TableCell className="font-bold text-sm pl-6 flex items-center gap-2">
+                                {row.month}
+                                {!row.isFuture && <Badge variant="secondary" className="text-[8px] h-4 font-black">ACTUAL</Badge>}
+                                {row.isFuture && <Badge variant="outline" className="text-[8px] h-4 font-black border-primary/20 text-primary">FCST</Badge>}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
+                              <TableCell className="text-right font-mono text-sm text-indigo-600">{row.aht}s</TableCell>
+                              <TableCell className="text-right font-mono text-sm font-bold text-amber-600">{row.requiredFTE}</TableCell>
+                              <TableCell className="text-right font-mono text-sm text-emerald-600 font-bold">{row.availableFTE?.toLocaleString() ?? "-"}</TableCell>
+                              <TableCell className="text-right pr-6">
+                                <Badge 
+                                  variant={row.gap >= 0 ? "default" : "destructive"} 
+                                  className={`font-black text-xs tracking-tight min-w-[60px] justify-center ${row.gap >= 0 ? "bg-emerald-500 hover:bg-emerald-600 border-none" : ""}`}
+                                >
+                                  {row.isFuture ? (row.gap > 0 ? `+${row.gap}` : row.gap) : "-"}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </React.Fragment>
                       ))}
                     </TableBody>
                   </Table>
