@@ -6,7 +6,7 @@
  */
 export const calculateYoY = (historicalData: number[], growthRate: number): number[] => {
   const growthMultiplier = 1 + growthRate / 100;
-  return historicalData.map(volume => Math.round(volume * growthMultiplier));
+  return historicalData.map(volume => Math.max(0, Math.round(volume * growthMultiplier)));
 };
 
 /**
@@ -19,7 +19,7 @@ export const calculateMovingAverage = (historicalData: number[], periods: number
   const recentData = historicalData.slice(-Math.min(periods, historicalData.length));
   const avg = recentData.reduce((a, b) => a + b, 0) / recentData.length;
   
-  return Array(12).fill(Math.round(avg));
+  return Array(12).fill(Math.max(0, Math.round(avg)));
 };
 
 /**
@@ -74,6 +74,9 @@ export const calculateHoltWinters = (
   const seasons = Math.floor(data.length / seasonLength);
   
   let level = data.slice(0, seasonLength).reduce((a, b) => a + b, 0) / seasonLength;
+  // Prevent initial level from being 0 to avoid immediate division errors
+  if (level === 0) level = 0.0001;
+
   let trend = (data.slice(seasonLength, 2 * seasonLength).reduce((a, b) => a + b, 0) - 
                 data.slice(0, seasonLength).reduce((a, b) => a + b, 0)) / (seasonLength * seasonLength);
 
@@ -83,23 +86,32 @@ export const calculateHoltWinters = (
     for (let j = 0; j < seasons; j++) {
       sumOverSeasons += data[j * seasonLength + i];
     }
-    seasonal.push(sumOverSeasons / seasons / level);
+    // Prevent division by zero if level is small
+    const safeLevel = level === 0 ? 0.0001 : level;
+    seasonal.push(sumOverSeasons / seasons / safeLevel);
   }
+
+  // Ensure seasonal indices aren't zero to prevent future division by zero
+  seasonal = seasonal.map(s => s === 0 ? 0.0001 : s);
 
   for (let i = 0; i < data.length; i++) {
     const value = data[i];
     const lastLevel = level;
     const lastTrend = trend;
     const lastSeasonal = seasonal[i % seasonLength];
+    
+    // Safeguard denominators
+    const safeSeasonal = lastSeasonal === 0 ? 0.0001 : lastSeasonal;
+    const safeLevel = level === 0 ? 0.0001 : level;
 
-    level = alpha * (value / lastSeasonal) + (1 - alpha) * (lastLevel + lastTrend);
+    level = alpha * (value / safeSeasonal) + (1 - alpha) * (lastLevel + lastTrend);
     trend = beta * (level - lastLevel) + (1 - beta) * lastTrend;
-    seasonal[i % seasonLength] = gamma * (value / level) + (1 - gamma) * lastSeasonal;
+    seasonal[i % seasonLength] = gamma * (value / safeLevel) + (1 - gamma) * lastSeasonal;
   }
 
   return Array.from({ length: forecastLength }, (_, i) => {
     const m = i + 1;
-    return Math.round((level + m * trend) * seasonal[i % seasonLength]);
+    return Math.max(0, Math.round((level + m * trend) * seasonal[i % seasonLength]));
   });
 };
 
@@ -128,7 +140,9 @@ export const calculateDecomposition = (
   for (let i = 0; i < n; i++) {
     if (trend[i] !== null) {
       const monthIdx = i % 12;
-      seasonalIndices[monthIdx] += historicalData[i] / trend[i];
+      // Prevent division by zero if trend is 0
+      const safeTrend = trend[i] === 0 ? 0.0001 : trend[i];
+      seasonalIndices[monthIdx] += historicalData[i] / safeTrend;
       counts[monthIdx]++;
     }
   }
@@ -205,7 +219,7 @@ export const calculateARIMA = (
   for (let i = 0; i < 12; i++) {
     // Project the difference forward, applying q-based smoothing to the growth
     const nextValue = currentLastValue + (currentLastDiff * qFactor);
-    forecast.push(Math.round(nextValue));
+    forecast.push(Math.max(0, Math.round(nextValue)));
     
     // Update for next iteration (simplified persistence)
     currentLastValue = nextValue;
@@ -220,7 +234,7 @@ export interface BasicForecastData {
   isFuture: boolean;
   volume: number;
   requiredFTE: number;
-  availableFTE: number;
+  availableFTE: number | null;
   gap: number;
   aht: number;
 }

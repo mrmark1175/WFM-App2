@@ -30,7 +30,7 @@ class CallVolumeSimulator {
   generateMonthlyVolume(monthIdx) {
     // V = (Base * Trend^t * Seasonality) + Noise
     const trend = Math.pow(this.trendFactor, monthIdx);
-    const seasonality = this.monthlySeasonality[monthIdx];
+    const seasonality = this.monthlySeasonality[monthIdx % 12];
     
     // Add ±5% random noise
     const noise = 1 + (Math.random() * 0.1 - 0.05);
