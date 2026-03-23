@@ -21,7 +21,8 @@ import {
   Calendar,
   Wallet,
   Scale,
-  Coins
+  Coins,
+  Trash2
 } from "lucide-react";
 import {
   LineChart,
@@ -382,27 +383,124 @@ export default function LongTermForecasting() {
 
   const activeScenario = scenarios[selectedScenarioId];
 
-  const updateActiveScenario = (updatedAssumptions: Assumptions, updatedSupplyInputs: WorkforceSupplyInputs) => {
-    setScenarios(prev => ({
-      ...prev,
-      [selectedScenarioId]: {
-        ...prev[selectedScenarioId],
-        assumptions: updatedAssumptions,
-        supplyInputs: updatedSupplyInputs,
+  // Load scenarios from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem("lt_forecast_scenarios");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && Object.keys(parsed).length > 0) {
+          setScenarios(parsed);
+          // If current selection is invalid, switch to first available
+          if (!parsed[selectedScenarioId]) {
+            const firstId = Object.keys(parsed)[0];
+            setSelectedScenarioId(firstId);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to parse scenarios", e);
       }
-    }));
-  };
+    }
+  }, []);
 
   useEffect(() => {
     if (activeScenario) {
       setAssumptions(activeScenario.assumptions);
       setSupplyInputs(activeScenario.supplyInputs);
     }
-  }, [selectedScenarioId, scenarios]);
+  }, [selectedScenarioId]);
+
+  useEffect(() => {
+    const savedInputs = localStorage.getItem("lt_forecast_user_inputs");
+    if (savedInputs) {
+      try {
+        const parsed = JSON.parse(savedInputs);
+        if (parsed.planParameters) {
+          const { forecastMethod: fm, hwParams: hw, arimaParams: ar, decompParams: dp, ...rest } = parsed.planParameters;
+          setAssumptions(prev => ({ 
+            ...prev, 
+            ...rest, 
+            ...(parsed.budget || {}), 
+            ...(parsed.laborDefinitions || {}) 
+          }));
+          if (fm) setForecastMethod(fm);
+          if (hw) setHwParams(hw);
+          if (ar) setArimaParams(ar);
+          if (dp) setDecompParams(dp);
+        }
+        if (parsed.workforceSupplyFactors) {
+          setSupplyInputs(prev => ({ ...prev, ...parsed.workforceSupplyFactors }));
+        }
+      } catch (e) {
+        console.error("Failed to load user inputs", e);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const dataToSave = {
+      planParameters: {
+        ...assumptions,
+        forecastMethod,
+        hwParams,
+        arimaParams,
+        decompParams
+      },
+      budget: { ...assumptions },
+      laborDefinitions: { ...assumptions },
+      workforceSupplyFactors: { ...supplyInputs }
+    };
+    localStorage.setItem("lt_forecast_user_inputs", JSON.stringify(dataToSave));
+  }, [assumptions, supplyInputs, forecastMethod, hwParams, arimaParams, decompParams]);
+
+  const saveScenariosToStorage = (updatedScenarios: Record<string, Scenario>) => {
+    localStorage.setItem("lt_forecast_scenarios", JSON.stringify(updatedScenarios));
+  };
 
   const handleSaveScenario = () => {
-    updateActiveScenario(assumptions, supplyInputs);
+    const name = window.prompt("Enter scenario name:", activeScenario?.name || "New Scenario");
+    if (!name || name.trim() === "") return;
+
+    const newId = `scenario-${Date.now()}`;
+    const newScenario: Scenario = {
+      id: newId,
+      name: name.trim(),
+      assumptions: { ...assumptions },
+      supplyInputs: { ...supplyInputs }
+    };
+
+    const updated = { ...scenarios, [newId]: newScenario };
+    setScenarios(updated);
+    saveScenariosToStorage(updated);
+    setSelectedScenarioId(newId);
     toast.success("Scenario saved successfully!");
+  };
+
+  const handleDeleteScenario = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (!window.confirm("Are you sure you want to delete this scenario?")) return;
+
+    const updated = { ...scenarios };
+    delete updated[id];
+
+    if (Object.keys(updated).length === 0) {
+       // Restore default if all deleted
+       const defaultScenario: Scenario = {
+          id: "base",
+          name: "Base Case (Steady)",
+          assumptions: DEFAULT_ASSUMPTIONS,
+          supplyInputs: DEFAULT_SUPPLY_INPUTS
+       };
+       updated["base"] = defaultScenario;
+    }
+
+    setScenarios(updated);
+    saveScenariosToStorage(updated);
+    
+    if (id === selectedScenarioId || !updated[selectedScenarioId]) {
+        setSelectedScenarioId(Object.keys(updated)[0]);
+    }
+    toast.success("Scenario deleted");
   };
 
   const handleNewScenario = () => {
@@ -414,7 +512,9 @@ export default function LongTermForecasting() {
       assumptions: { ...assumptions },
       supplyInputs: { ...supplyInputs }
     };
-    setScenarios(prev => ({ ...prev, [id]: newScenario }));
+    const updated = { ...scenarios, [id]: newScenario };
+    setScenarios(updated);
+    saveScenariosToStorage(updated);
     setSelectedScenarioId(id);
     toast.success("New scenario created!");
   };
@@ -614,14 +714,28 @@ export default function LongTermForecasting() {
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div className="flex items-center gap-4">
                 <div className="flex flex-col gap-1">
-                  <Label className="text-[10px] font-black uppercase text-muted-foreground tracking-widest">Active Planning Scenario</Label>
+                  <Label className="text-xs font-black uppercase text-muted-foreground tracking-widest">Active Planning Scenario</Label>
                   <Select value={selectedScenarioId} onValueChange={setSelectedScenarioId}>
                     <SelectTrigger className="w-[220px] h-10 border-primary/20 bg-primary/5 font-bold text-primary focus:ring-primary/20">
-                      <SelectValue placeholder="Select Scenario" />
+                      <span className="truncate">{scenarios[selectedScenarioId]?.name || "Select Scenario"}</span>
                     </SelectTrigger>
                     <SelectContent>
                       {Object.values(scenarios).map(s => (
-                        <SelectItem key={s.id} value={s.id} className="font-medium">{s.name}</SelectItem>
+                        <SelectItem key={s.id} value={s.id} className="font-medium group">
+                            <div className="flex items-center justify-between w-full min-w-[200px] gap-2">
+                                <span className="truncate">{s.name}</span>
+                                {s.id !== 'base' && (
+                                    <div
+                                        role="button"
+                                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 hover:text-destructive rounded transition-all shrink-0 z-50"
+                                        onClick={(e) => handleDeleteScenario(e, s.id)}
+                                        title="Delete Scenario"
+                                    >
+                                        <Trash2 className="size-3.5" />
+                                    </div>
+                                )}
+                            </div>
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -650,7 +764,7 @@ export default function LongTermForecasting() {
                     <TrendingUp className="size-5 text-primary" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Forecast Vol</p>
+                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Forecast Vol</p>
                     <h3 className="text-lg font-black tracking-tight">{kpis.totalVolume.toLocaleString()}</h3>
                   </div>
                 </CardContent>
@@ -662,7 +776,7 @@ export default function LongTermForecasting() {
                     <Clock className="size-5 text-indigo-600 dark:text-indigo-400" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">W. Avg AHT</p>
+                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">W. Avg AHT</p>
                     <h3 className="text-lg font-black tracking-tight">{kpis.avgAHT}s</h3>
                   </div>
                 </CardContent>
@@ -674,7 +788,7 @@ export default function LongTermForecasting() {
                     <Users className="size-5 text-amber-600 dark:text-amber-400" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Req. HC</p>
+                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Req. HC</p>
                     <h3 className="text-lg font-black tracking-tight">{kpis.requiredFTE}</h3>
                   </div>
                 </CardContent>
@@ -686,7 +800,7 @@ export default function LongTermForecasting() {
                     <AlertCircle className={`size-5 ${kpis.staffingGap < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`} />
                   </div>
                   <div>
-                    <p className={`text-[10px] font-bold uppercase tracking-widest ${kpis.staffingGap < 0 ? "text-rose-600" : "text-emerald-600"}`}>Gap</p>
+                    <p className={`text-xs font-bold uppercase tracking-widest ${kpis.staffingGap < 0 ? "text-rose-600" : "text-emerald-600"}`}>Gap</p>
                     <h3 className={`text-lg font-black tracking-tight ${kpis.staffingGap < 0 ? "text-rose-700 dark:text-rose-300" : "text-emerald-700 dark:text-emerald-300"}`}>
                       {kpis.staffingGap > 0 ? `+${kpis.staffingGap}` : kpis.staffingGap}
                     </h3>
@@ -700,7 +814,7 @@ export default function LongTermForecasting() {
                     <DollarSign className="size-5 text-slate-600 dark:text-slate-400" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Est. Cost</p>
+                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Est. Cost</p>
                     <h3 className="text-lg font-black tracking-tight">{formatCurrency(kpis.estimatedCost, assumptions.currency)}</h3>
                   </div>
                 </CardContent>
@@ -711,7 +825,7 @@ export default function LongTermForecasting() {
               {insights.length > 0 && (
                 <Card className="border-primary/20 bg-primary/5 shadow-sm border-dashed">
                   <CardHeader className="py-3 px-6 border-b border-primary/10">
-                    <CardTitle className="text-xs font-black flex items-center gap-2 uppercase tracking-widest text-primary">
+                    <CardTitle className="text-sm font-black flex items-center gap-2 uppercase tracking-widest text-primary">
                       <Info className="size-4" />
                       Key Planning Insights
                     </CardTitle>
@@ -721,7 +835,7 @@ export default function LongTermForecasting() {
                       {insights.map((insight, idx) => {
                         const parts = insight.split(/(\d+(?:\.\d+)?%?)/);
                         return (
-                          <li key={idx} className="flex items-start gap-2 text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                          <li key={idx} className="flex items-start gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
                             <div className="mt-1.5 size-1.5 rounded-full bg-primary shrink-0" />
                             <span>
                               {parts.map((part, i) => 
@@ -739,33 +853,33 @@ export default function LongTermForecasting() {
               {hiringPlan && (
                 <Card className={`border-dashed shadow-sm transition-all ${hiringPlan.totalHires > 0 ? "border-amber-400 bg-amber-50/50 dark:bg-amber-950/10 ring-1 ring-amber-400/20" : "border-emerald-200 bg-emerald-50/30"}`}>
                   <CardHeader className="py-3 px-6 border-b border-amber-100 dark:border-amber-900/50 flex flex-row items-center justify-between">
-                    <CardTitle className={`text-xs font-black flex items-center gap-2 uppercase tracking-widest ${hiringPlan.totalHires > 0 ? "text-amber-700 dark:text-amber-400" : "text-emerald-700"}`}>
+                    <CardTitle className={`text-sm font-black flex items-center gap-2 uppercase tracking-widest ${hiringPlan.totalHires > 0 ? "text-amber-700 dark:text-amber-400" : "text-emerald-700"}`}>
                       <Users className="size-4" />
                       Hiring Strategy
                     </CardTitle>
-                    {hiringPlan.totalHires > 0 && <Badge className="bg-amber-500 font-black text-[8px] animate-pulse">ACTION REQUIRED</Badge>}
+                    {hiringPlan.totalHires > 0 && <Badge className="bg-amber-500 font-black text-xs animate-pulse">ACTION REQUIRED</Badge>}
                   </CardHeader>
                   <CardContent className="py-4 px-6">
                     <div className="space-y-4">
-                      <p className="text-[11px] font-bold text-slate-800 dark:text-slate-200 leading-relaxed">
+                      <p className="text-sm font-bold text-slate-800 dark:text-slate-200 leading-relaxed">
                         {hiringPlan.summary.split(/(\d+)/).map((part, i) => 
-                          /^\d+$/.test(part) ? <strong key={i} className="text-amber-700 dark:text-amber-400 font-black text-xs">{part}</strong> : part
+                          /^\d+$/.test(part) ? <strong key={i} className="text-amber-700 dark:text-amber-400 font-black text-sm">{part}</strong> : part
                         )}
                       </p>
                       {hiringPlan.totalHires > 0 && (
                         <div className="flex items-center gap-4 p-3 bg-amber-100/50 rounded-lg border border-amber-200/50">
                           <div>
-                            <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Target</p>
-                            <p className="text-lg font-black text-amber-900">+{hiringPlan.totalHires} <span className="text-[10px] font-bold text-amber-700">New Hires</span></p>
+                            <p className="text-xs font-bold text-amber-800 uppercase tracking-wider">Target</p>
+                            <p className="text-lg font-black text-amber-900">+{hiringPlan.totalHires} <span className="text-xs font-bold text-amber-700">New Hires</span></p>
                           </div>
                           <div className="h-8 w-px bg-amber-200" />
                           <div>
-                            <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Rate</p>
-                            <p className="text-lg font-black text-amber-900">{hiringPlan.monthlyHires} <span className="text-[10px] font-bold text-amber-700">/ Month</span></p>
+                            <p className="text-xs font-bold text-amber-800 uppercase tracking-wider">Rate</p>
+                            <p className="text-lg font-black text-amber-900">{hiringPlan.monthlyHires} <span className="text-xs font-bold text-amber-700">/ Month</span></p>
                           </div>
                           <div className="h-8 w-px bg-amber-200" />
                           <div>
-                            <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Start</p>
+                            <p className="text-xs font-bold text-amber-800 uppercase tracking-wider">Start</p>
                             <p className="text-lg font-black text-amber-900">{hiringPlan.startMonth}</p>
                           </div>
                         </div>
@@ -786,10 +900,10 @@ export default function LongTermForecasting() {
                       <LayoutDashboard className="size-4 text-primary" />
                       Defensible Capacity Plan
                     </CardTitle>
-                    <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">Gross Requirements vs. Available Headcount</p>
+                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Gross Requirements vs. Available Headcount</p>
                   </div>
                   <div className="flex items-center gap-2">
-                     <Badge variant="outline" className="text-[10px] font-black uppercase tracking-widest bg-white dark:bg-slate-800 border-primary/20 text-primary">Live Projection</Badge>
+                     <Badge variant="outline" className="text-xs font-black uppercase tracking-widest bg-white dark:bg-slate-800 border-primary/20 text-primary">Live Projection</Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="pt-6">
@@ -807,14 +921,14 @@ export default function LongTermForecasting() {
                           dataKey="month" 
                           axisLine={false}
                           tickLine={false}
-                          tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))', fontWeight: 700 }}
+                          tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))', fontWeight: 700 }}
                           dy={10}
                         />
                         <YAxis 
                           yAxisId="left"
                           axisLine={false}
                           tickLine={false}
-                          tick={{ fontSize: 10, fill: 'hsl(var(--primary))', fontWeight: 800 }}
+                          tick={{ fontSize: 12, fill: 'hsl(var(--primary))', fontWeight: 800 }}
                           tickFormatter={(value) => value >= 1000 ? `${(value / 1000).toFixed(0)}k` : value}
                         />
                         <YAxis 
@@ -822,7 +936,7 @@ export default function LongTermForecasting() {
                           orientation="right" 
                           axisLine={false}
                           tickLine={false}
-                          tick={{ fontSize: 10, fill: '#f59e0b', fontWeight: 800 }}
+                          tick={{ fontSize: 12, fill: '#f59e0b', fontWeight: 800 }}
                         />
                         <Area 
                           yAxisId="right"
@@ -856,29 +970,29 @@ export default function LongTermForecasting() {
                                   <div className="flex items-center justify-between mb-3 border-b border-border pb-2">
                                     <p className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-slate-100">{label} {data.year}</p>
                                     {!data.isFuture ? (
-                                      <Badge variant="secondary" className="text-[8px] h-4 font-black">ACTUAL</Badge>
+                                      <Badge variant="secondary" className="text-xs h-4 font-black">ACTUAL</Badge>
                                     ) : (
-                                      <Badge variant="outline" className="text-[8px] h-4 font-black border-primary/20 text-primary">FCST</Badge>
+                                      <Badge variant="outline" className="text-xs h-4 font-black border-primary/20 text-primary">FCST</Badge>
                                     )}
                                   </div>
                                   <div className="space-y-2">
                                     <div className="flex items-center justify-between gap-6">
-                                      <span className="text-[10px] font-bold text-muted-foreground uppercase">Volume</span>
-                                      <span className="text-[11px] font-black tabular-nums text-primary">{data.volume.toLocaleString()}</span>
+                                      <span className="text-xs font-bold text-muted-foreground uppercase">Volume</span>
+                                      <span className="text-sm font-black tabular-nums text-primary">{data.volume.toLocaleString()}</span>
                                     </div>
                                     <div className="flex items-center justify-between gap-6">
-                                      <span className="text-[10px] font-bold text-muted-foreground uppercase">Required FTE</span>
-                                      <span className="text-[11px] font-black tabular-nums text-amber-600">{data.requiredFTE}</span>
+                                      <span className="text-xs font-bold text-muted-foreground uppercase">Required FTE</span>
+                                      <span className="text-sm font-black tabular-nums text-amber-600">{data.requiredFTE}</span>
                                     </div>
                                     <div className="flex items-center justify-between gap-6">
-                                      <span className="text-[10px] font-bold text-muted-foreground uppercase">Available FTE</span>
-                                      <span className="text-[11px] font-black tabular-nums text-emerald-600">{data.availableFTE}</span>
+                                      <span className="text-xs font-bold text-muted-foreground uppercase">Available FTE</span>
+                                      <span className="text-sm font-black tabular-nums text-emerald-600">{data.availableFTE}</span>
                                     </div>
                                     
                                     <div className="pt-2 border-t border-border mt-1">
                                       <div className="flex items-center justify-between">
-                                         <span className="text-[10px] font-black text-muted-foreground uppercase">{status}</span>
-                                         <span className={`text-[11px] font-black tabular-nums ${statusColor}`}>
+                                         <span className="text-xs font-black text-muted-foreground uppercase">{status}</span>
+                                         <span className={`text-sm font-black tabular-nums ${statusColor}`}>
                                            {Math.abs(gap)} FTE
                                          </span>
                                       </div>
@@ -895,7 +1009,7 @@ export default function LongTermForecasting() {
                           align="right"
                           height={40}
                           iconType="circle"
-                          wrapperStyle={{ paddingTop: '0px', paddingBottom: '30px', fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}
+                          wrapperStyle={{ paddingTop: '0px', paddingBottom: '30px', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}
                         />
                         <Area 
                           yAxisId="left"
@@ -985,12 +1099,12 @@ export default function LongTermForecasting() {
                   <Table>
                     <TableHeader className="bg-slate-50/80 dark:bg-slate-900/80">
                       <TableRow className="hover:bg-transparent">
-                        <TableHead className="w-[140px] text-xs font-black uppercase tracking-widest pl-6">Timeline</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Proj Vol</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Weighted AHT</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Req. HC</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest">Avail. HC</TableHead>
-                        <TableHead className="text-right text-xs font-black uppercase tracking-widest pr-6">Gap Status</TableHead>
+                        <TableHead className="w-[140px] text-sm font-black uppercase tracking-widest pl-6">Timeline</TableHead>
+                        <TableHead className="text-right text-sm font-black uppercase tracking-widest">Proj Vol</TableHead>
+                        <TableHead className="text-right text-sm font-black uppercase tracking-widest">Weighted AHT</TableHead>
+                        <TableHead className="text-right text-sm font-black uppercase tracking-widest">Req. HC</TableHead>
+                        <TableHead className="text-right text-sm font-black uppercase tracking-widest">Avail. HC</TableHead>
+                        <TableHead className="text-right text-sm font-black uppercase tracking-widest pr-6">Gap Status</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1002,10 +1116,10 @@ export default function LongTermForecasting() {
                         <React.Fragment key={year}>
                           <TableRow className="bg-muted/30 hover:bg-muted/50 cursor-pointer" onClick={() => setExpandedYears(prev => ({ ...prev, [year]: !prev[year] }))}>
                             <TableCell colSpan={6} className="py-2 pl-4">
-                              <div className="flex items-center gap-2 font-bold text-xs uppercase tracking-widest text-muted-foreground">
+                              <div className="flex items-center gap-2 font-bold text-sm uppercase tracking-widest text-muted-foreground">
                                 {expandedYears[year] ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
                                 {year} ({rows.length} Months)
-                                {rows.some(r => r.isFuture) && <Badge variant="outline" className="text-[8px] h-4 ml-2 border-primary/20 text-primary">FORECAST YEAR</Badge>}
+                                {rows.some(r => r.isFuture) && <Badge variant="outline" className="text-xs h-4 ml-2 border-primary/20 text-primary">FORECAST YEAR</Badge>}
                               </div>
                             </TableCell>
                           </TableRow>
@@ -1013,8 +1127,8 @@ export default function LongTermForecasting() {
                             <TableRow key={`${year}-${idx}`} className={`group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors ${!row.isFuture ? "opacity-70 bg-slate-50/30" : ""}`}>
                               <TableCell className="font-bold text-sm pl-6 flex items-center gap-2">
                                 {row.month}
-                                {!row.isFuture && <Badge variant="secondary" className="text-[8px] h-4 font-black">ACTUAL</Badge>}
-                                {row.isFuture && <Badge variant="outline" className="text-[8px] h-4 font-black border-primary/20 text-primary">FCST</Badge>}
+                                {!row.isFuture && <Badge variant="secondary" className="text-xs h-4 font-black">ACTUAL</Badge>}
+                                {row.isFuture && <Badge variant="outline" className="text-xs h-4 font-black border-primary/20 text-primary">FCST</Badge>}
                               </TableCell>
                               <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
                               <TableCell className="text-right font-mono text-sm text-indigo-600">{row.aht}s</TableCell>
@@ -1042,7 +1156,7 @@ export default function LongTermForecasting() {
                 <Card className="border border-border/80 shadow-xl overflow-hidden">
                   <CardHeader className="border-b border-border/50 bg-slate-900 text-white py-4">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-xs font-black flex items-center gap-2 uppercase tracking-[0.2em]">
+                      <CardTitle className="text-sm font-black flex items-center gap-2 uppercase tracking-[0.2em]">
                         <Settings2 className="size-4 text-blue-400" />
                         Plan Parameters
                       </CardTitle>
@@ -1060,7 +1174,7 @@ export default function LongTermForecasting() {
                     <CardContent className="pt-6 space-y-6 bg-white dark:bg-slate-950">
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <Label htmlFor="startDate" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Planning Start Date</Label>
+                          <Label htmlFor="startDate" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Planning Start Date</Label>
                           <Calendar className="size-3.5 text-primary" />
                         </div>
                         <Input id="startDate" type="date" value={assumptions.startDate} onChange={(e) => setAssumptions({...assumptions, startDate: e.target.value})} className="h-10 font-bold" />
@@ -1069,11 +1183,11 @@ export default function LongTermForecasting() {
                       <div className="space-y-3 border-t border-border pt-4">
                          <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Data Source</Label>
-                              <Badge variant="outline" className="text-[8px] font-bold">{assumptions.useManualVolume ? "MANUAL" : "API"}</Badge>
+                              <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Data Source</Label>
+                              <Badge variant="outline" className="text-xs font-bold">{assumptions.useManualVolume ? "MANUAL" : "API"}</Badge>
                             </div>
                             <div className="flex items-center gap-2">
-                              <span className="text-[9px] font-bold text-muted-foreground">Manual</span>
+                              <span className="text-xs font-bold text-muted-foreground">Manual</span>
                               <Switch 
                                 checked={assumptions.useManualVolume} 
                                 onCheckedChange={(checked) => setAssumptions({...assumptions, useManualVolume: checked})} 
@@ -1084,12 +1198,12 @@ export default function LongTermForecasting() {
                          {assumptions.useManualVolume && (
                            <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
                              <div className="flex items-center justify-between">
-                               <p className="text-[9px] font-bold text-muted-foreground uppercase">Monthly Actuals (Last 12m)</p>
+                               <p className="text-xs font-bold text-muted-foreground uppercase">Monthly Actuals (Last 12m)</p>
                                {!loading && historicalData.length > 0 && (
                                  <Button 
                                    variant="ghost" 
                                    size="sm" 
-                                   className="h-6 text-[8px] font-black border border-primary/20 text-primary uppercase"
+                                   className="h-6 text-xs font-black border border-primary/20 text-primary uppercase"
                                    onClick={() => {
                                      setAssumptions({
                                        ...assumptions, 
@@ -1105,7 +1219,7 @@ export default function LongTermForecasting() {
                              <div className="grid grid-cols-3 gap-2">
                                {assumptions.manualHistoricalData.map((vol, i) => (
                                  <div key={i} className="space-y-1">
-                                   <Label className="text-[8px] font-bold text-muted-foreground uppercase">{MONTH_NAMES[i]}</Label>
+                                   <Label className="text-xs font-bold text-muted-foreground uppercase">{MONTH_NAMES[i]}</Label>
                                    <Input 
                                      type="number" 
                                      value={vol} 
@@ -1138,8 +1252,8 @@ export default function LongTermForecasting() {
                       
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <Label htmlFor="aht" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Base Tenured AHT</Label>
-                          <span className="text-[11px] font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-primary">{assumptions.aht}s</span>
+                          <Label htmlFor="aht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Base Tenured AHT</Label>
+                          <span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-primary">{assumptions.aht}s</span>
                         </div>
                         <Input id="aht" type="number" value={assumptions.aht} onChange={(e) => setAssumptions({...assumptions, aht: validateInput(Number(e.target.value))})} className="h-10 font-bold focus-visible:ring-primary/20" />
                       </div>
@@ -1147,7 +1261,7 @@ export default function LongTermForecasting() {
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-1">
-                            <Label htmlFor="shrinkage" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Total Shrinkage</Label>
+                            <Label htmlFor="shrinkage" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Total Shrinkage</Label>
                             <UITooltip>
                               <TooltipTrigger asChild>
                                 <Info className="size-3 text-muted-foreground cursor-help" />
@@ -1157,15 +1271,15 @@ export default function LongTermForecasting() {
                               </TooltipContent>
                             </UITooltip>
                           </div>
-                          <span className="text-[11px] font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span>
+                          <span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span>
                         </div>
                         <Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(e) => setAssumptions({...assumptions, shrinkage: validateInput(Number(e.target.value), 0, 100)})} className="h-10 font-bold focus-visible:ring-rose-500/10" />
                       </div>
 
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <Label htmlFor="occupancy" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Max Occupancy</Label>
-                          <span className="text-[11px] font-black bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded text-indigo-600">{assumptions.occupancy}%</span>
+                          <Label htmlFor="occupancy" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Max Occupancy</Label>
+                          <span className="text-xs font-black bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded text-indigo-600">{assumptions.occupancy}%</span>
                         </div>
                         <Input id="occupancy" type="number" value={assumptions.occupancy} onChange={(e) => setAssumptions({...assumptions, occupancy: validateInput(Number(e.target.value), 0, 100)})} className="h-10 font-bold" />
                       </div>
@@ -1173,13 +1287,13 @@ export default function LongTermForecasting() {
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-1">
-                            <Label htmlFor="safetyMargin" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Safety Margin (%)</Label>
+                            <Label htmlFor="safetyMargin" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Safety Margin (%)</Label>
                             <UITooltip>
                               <TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
                               <TooltipContent><p className="text-xs">Staffing buffer for unplanned volume/AHT variance</p></TooltipContent>
                             </UITooltip>
                           </div>
-                          <Badge variant="outline" className="font-black text-primary border-primary/20">{assumptions.safetyMargin}%</Badge>
+                          <Badge variant="outline" className="font-black text-xs text-primary border-primary/20">{assumptions.safetyMargin}%</Badge>
                         </div>
                         <Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(e) => setAssumptions({...assumptions, safetyMargin: validateInput(Number(e.target.value), 0, 20)})} className="h-10 font-bold" />
                       </div>
@@ -1187,7 +1301,7 @@ export default function LongTermForecasting() {
                       {forecastMethod === 'yoy' && (
                         <div className="space-y-3 border-t border-border pt-6 mt-6">
                             <div className="flex items-center justify-between">
-                            <Label htmlFor="growth" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">YoY Growth Rate</Label>
+                            <Label htmlFor="growth" className="text-xs font-black uppercase tracking-widest text-muted-foreground">YoY Growth Rate</Label>
                             <Badge className="bg-emerald-500 font-black tracking-tight">+{assumptions.growthRate}%</Badge>
                             </div>
                             <Input id="growth" type="number" value={assumptions.growthRate} onChange={(e) => setAssumptions({...assumptions, growthRate: validateInput(Number(e.target.value))})} className="h-10 font-bold border-emerald-200" />
@@ -1197,24 +1311,24 @@ export default function LongTermForecasting() {
                       {forecastMethod === 'holtwinters' && (
                         <div className="space-y-4 border-t border-border pt-6 mt-6">
                             <div className="flex items-center justify-between">
-                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">HW Smoothing</Label>
+                            <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">HW Smoothing</Label>
                             <Badge className="bg-amber-500 font-black tracking-tight">Triple Exp</Badge>
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                               <div className="space-y-1">
-                                <Label className="text-[9px] font-bold">Alpha (Level)</Label>
+                                <Label className="text-xs font-bold">Alpha (Level)</Label>
                                 <Input type="number" step="0.1" min="0" max="1" value={hwParams.alpha} onChange={(e) => setHwParams({...hwParams, alpha: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
                               <div className="space-y-1">
-                                <Label className="text-[9px] font-bold">Beta (Trend)</Label>
+                                <Label className="text-xs font-bold">Beta (Trend)</Label>
                                 <Input type="number" step="0.1" min="0" max="1" value={hwParams.beta} onChange={(e) => setHwParams({...hwParams, beta: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
                               <div className="space-y-1">
-                                <Label className="text-[9px] font-bold">Gamma (Season)</Label>
+                                <Label className="text-xs font-bold">Gamma (Season)</Label>
                                 <Input type="number" step="0.1" min="0" max="1" value={hwParams.gamma} onChange={(e) => setHwParams({...hwParams, gamma: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
                               <div className="space-y-1">
-                                <Label className="text-[9px] font-bold">Season (Len)</Label>
+                                <Label className="text-xs font-bold">Season (Len)</Label>
                                 <Input type="number" min="1" max="24" value={hwParams.seasonLength} onChange={(e) => setHwParams({...hwParams, seasonLength: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
                             </div>
@@ -1224,20 +1338,20 @@ export default function LongTermForecasting() {
                       {forecastMethod === 'arima' && (
                         <div className="space-y-4 border-t border-border pt-6 mt-6">
                             <div className="flex items-center justify-between">
-                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">ARIMA (Simplified)</Label>
+                            <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">ARIMA (Simplified)</Label>
                             <Badge className="bg-emerald-500 font-black tracking-tight">p d q</Badge>
                             </div>
                             <div className="grid grid-cols-3 gap-2">
                               <div className="space-y-1">
-                                <Label className="text-[9px] font-bold">p (AR)</Label>
+                                <Label className="text-xs font-bold">p (AR)</Label>
                                 <Input type="number" min="0" max="12" value={arimaParams.p} onChange={(e) => setArimaParams({...arimaParams, p: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
                               <div className="space-y-1">
-                                <Label className="text-[9px] font-bold">d (Diff)</Label>
+                                <Label className="text-xs font-bold">d (Diff)</Label>
                                 <Input type="number" min="0" max="2" value={arimaParams.d} onChange={(e) => setArimaParams({...arimaParams, d: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
                               <div className="space-y-1">
-                                <Label className="text-[9px] font-bold">q (MA)</Label>
+                                <Label className="text-xs font-bold">q (MA)</Label>
                                 <Input type="number" min="1" max="10" value={arimaParams.q} onChange={(e) => setArimaParams({...arimaParams, q: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
                             </div>
@@ -1247,21 +1361,21 @@ export default function LongTermForecasting() {
                       {forecastMethod === 'decomposition' && (
                         <div className="space-y-4 border-t border-border pt-6 mt-6">
                             <div className="flex items-center justify-between">
-                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Decomposition</Label>
+                            <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Decomposition</Label>
                             <Badge className="bg-blue-500 font-black tracking-tight">Strengths</Badge>
                             </div>
                             <div className="space-y-3">
                               <div className="space-y-1">
                                 <div className="flex justify-between">
-                                  <Label className="text-[9px] font-bold">Trend Strength</Label>
-                                  <span className="text-[10px] font-bold">{decompParams.trendStrength}x</span>
+                                  <Label className="text-xs font-bold">Trend Strength</Label>
+                                  <span className="text-xs font-bold">{decompParams.trendStrength}x</span>
                                 </div>
                                 <Input type="number" step="0.1" min="0" max="3" value={decompParams.trendStrength} onChange={(e) => setDecompParams({...decompParams, trendStrength: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
                               <div className="space-y-1">
                                 <div className="flex justify-between">
-                                  <Label className="text-[9px] font-bold">Seasonality Strength</Label>
-                                  <span className="text-[10px] font-bold">{decompParams.seasonalityStrength}x</span>
+                                  <Label className="text-xs font-bold">Seasonality Strength</Label>
+                                  <span className="text-xs font-bold">{decompParams.seasonalityStrength}x</span>
                                 </div>
                                 <Input type="number" step="0.1" min="0" max="3" value={decompParams.seasonalityStrength} onChange={(e) => setDecompParams({...decompParams, seasonalityStrength: Number(e.target.value)})} className="h-8 text-xs" />
                               </div>
@@ -1272,15 +1386,15 @@ export default function LongTermForecasting() {
                       {forecastMethod === 'ma' && (
                         <div className="space-y-3 border-t border-border pt-6 mt-6">
                             <div className="flex items-center justify-between">
-                            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">MA Periods</Label>
+                            <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">MA Periods</Label>
                             <Badge className="bg-indigo-500 font-black tracking-tight">Last 3 Months</Badge>
                             </div>
-                            <p className="text-[10px] text-muted-foreground italic">Moving average uses the most recent historical periods to project a baseline.</p>
+                            <p className="text-xs text-muted-foreground italic">Moving average uses the most recent historical periods to project a baseline.</p>
                         </div>
                       )}
 
                       <Button 
-                        className="w-full h-11 font-black uppercase tracking-widest text-[10px] mt-4 shadow-lg shadow-primary/20"
+                        className="w-full h-11 font-black uppercase tracking-widest text-xs mt-4 shadow-lg shadow-primary/20"
                         onClick={() => {
                             toast.info("Recalculating forecast and staffing...", { duration: 1500 })
                             // No need to call a function, the useEffects handle it
@@ -1296,7 +1410,7 @@ export default function LongTermForecasting() {
                 <Card className="border border-border/80 shadow-xl overflow-hidden">
                   <CardHeader className="border-b border-border/50 bg-emerald-900 text-white py-4">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-xs font-black flex items-center gap-2 uppercase tracking-[0.2em]">
+                      <CardTitle className="text-sm font-black flex items-center gap-2 uppercase tracking-[0.2em]">
                         <Wallet className="size-4 text-emerald-400" />
                         Budget & Labor Definitions
                       </CardTitle>
@@ -1313,7 +1427,7 @@ export default function LongTermForecasting() {
                   {isFinancialsOpen && (
                     <CardContent className="pt-6 space-y-4 bg-white dark:bg-slate-950">
                       <div className="space-y-2">
-                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Planning Currency</Label>
+                        <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Planning Currency</Label>
                         <Select value={assumptions.currency} onValueChange={(val) => setAssumptions({...assumptions, currency: val})}>
                           <SelectTrigger className="h-9 font-bold bg-slate-50">
                             <SelectValue placeholder="Currency" />
@@ -1328,16 +1442,16 @@ export default function LongTermForecasting() {
                         </Select>
                       </div>
                       <div className="space-y-2">
-                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Avg Annual Salary ({activeCurrency.symbol})</Label>
+                        <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Avg Annual Salary ({activeCurrency.symbol})</Label>
                         <Input type="number" value={assumptions.annualSalary} onChange={(e) => setAssumptions({...assumptions, annualSalary: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
                       </div>
                       <div className="space-y-2">
-                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Onboarding Cost/Hire ({activeCurrency.symbol})</Label>
+                        <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Onboarding Cost/Hire ({activeCurrency.symbol})</Label>
                         <Input type="number" value={assumptions.onboardingCost} onChange={(e) => setAssumptions({...assumptions, onboardingCost: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
                       </div>
                       <div className="space-y-2 pt-2 border-t border-border">
                         <div className="flex items-center gap-1">
-                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">FTE Monthly Hours</Label>
+                          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">FTE Monthly Hours</Label>
                           <UITooltip>
                             <TooltipTrigger asChild><Scale className="size-3 text-muted-foreground" /></TooltipTrigger>
                             <TooltipContent><p className="text-xs">Work base for 1 FTE (e.g. 166.67 for 20.83 days)</p></TooltipContent>
@@ -1352,7 +1466,7 @@ export default function LongTermForecasting() {
                 <Card className="border border-border/80 shadow-xl overflow-hidden">
                   <CardHeader className="border-b border-border/50 bg-indigo-900 text-white py-4">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-xs font-black flex items-center gap-2 uppercase tracking-[0.2em]">
+                      <CardTitle className="text-sm font-black flex items-center gap-2 uppercase tracking-[0.2em]">
                         <Briefcase className="size-4 text-indigo-400" />
                         Workforce Supply Factors
                       </CardTitle>
@@ -1370,14 +1484,14 @@ export default function LongTermForecasting() {
                     <CardContent className="pt-6 space-y-4 bg-white dark:bg-slate-950">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Starting Headcount</Label>
+                          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Starting Headcount</Label>
                           <Input type="number" value={supplyInputs.startingHeadcount} onChange={(e) => setSupplyInputs({...supplyInputs, startingHeadcount: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
                         </div>
                         <div className="space-y-2">
                           <div className="flex items-center gap-1">
-                            <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Training Yield (%)</Label>
+                            <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Training Yield (%)</Label>
                             <UITooltip>
-                              <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground" /></TooltipTrigger>
+                              <TooltipTrigger asChild><Info className="size-3 text-muted-foreground" /></TooltipTrigger>
                               <TooltipContent><p className="text-xs">% of hires who graduate to the floor</p></TooltipContent>
                             </UITooltip>
                           </div>
@@ -1386,11 +1500,11 @@ export default function LongTermForecasting() {
                       </div>
 
                       <div className="space-y-3 pt-2 border-t border-border">
-                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Infant Mortality (Attrition M1-M3)</Label>
+                        <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Infant Mortality (Attrition M1-M3)</Label>
                         <div className="grid grid-cols-3 gap-3">
                           {supplyInputs.newHireAttritionProfile.map((val, idx) => (
                             <div key={idx} className="space-y-1">
-                              <Label className="text-[8px] font-bold text-muted-foreground uppercase">Month {idx + 1} %</Label>
+                              <Label className="text-xs font-bold text-muted-foreground uppercase">Month {idx + 1} %</Label>
                               <Input type="number" value={val} onChange={(e) => {
                                 const newProfile = [...supplyInputs.newHireAttritionProfile];
                                 newProfile[idx] = validateInput(Number(e.target.value), 0, 100);
@@ -1403,21 +1517,21 @@ export default function LongTermForecasting() {
 
                       <div className="grid grid-cols-2 gap-4 pt-2 border-t border-border">
                         <div className="space-y-2">
-                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Monthly Hiring</Label>
+                          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Monthly Hiring</Label>
                           <Input type="number" value={supplyInputs.monthlyHiring} onChange={(e) => setSupplyInputs({...supplyInputs, monthlyHiring: validateInput(Number(e.target.value))})} className="h-9 font-bold" />
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Training Duration (Months)</Label>
+                          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Training Duration (Months)</Label>
                           <Input type="number" value={supplyInputs.trainingMonths} onChange={(e) => setSupplyInputs({...supplyInputs, trainingMonths: validateInput(Number(e.target.value), 0, 12)})} className="h-9 font-bold" />
                         </div>
                       </div>
 
                       <div className="space-y-3 pt-2 border-t border-border">
-                        <Label className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">AHT Learning Multipliers</Label>
+                        <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">AHT Learning Multipliers</Label>
                         <div className="grid grid-cols-3 gap-3">
                           {supplyInputs.ahtRamp.map((val, idx) => (
                             <div key={idx} className="space-y-1">
-                              <Label className="text-[8px] font-bold text-muted-foreground uppercase">M{idx + 1} AHT x</Label>
+                              <Label className="text-xs font-bold text-muted-foreground uppercase">M{idx + 1} AHT x</Label>
                               <Input type="number" step="0.1" value={val} onChange={(e) => {
                                 const newRamp = [...supplyInputs.ahtRamp];
                                 newRamp[idx] = validateInput(Number(e.target.value), 1);
