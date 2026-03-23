@@ -1,5 +1,5 @@
 import { PageLayout } from "../components/PageLayout";
-import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone, Grid, Monitor, PieChart, LineChart, Database } from "lucide-react";
+import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone, Grid, Monitor, PieChart, LineChart, Database, Layers } from "lucide-react";
 import { Link } from "react-router-dom";
 import React from "react";
 
@@ -18,6 +18,13 @@ export function WFM() {
       icon: LineChart,
       stats: "12 Month View",
       path: "/wfm/long-term-forecasting",
+    },
+    {
+      title: "Long-Term Forecasting (Blended)",
+      description: "Multi-channel capacity planning with FTE blending (Voice, Email, Chat)",
+      icon: Layers,
+      stats: "Advanced Blending",
+      path: "/wfm/long-term-forecasting-blended",
     },
     {
       title: "Workforce Planning",
