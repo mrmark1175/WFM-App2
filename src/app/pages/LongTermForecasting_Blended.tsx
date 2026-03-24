@@ -82,6 +82,9 @@ export interface ChannelSettings {
   aht: number;
   occupancy: number;
   concurrency?: number; // For chat
+  // ── NEW: per-channel SLA targets ──────────────────────────────────────────
+  slaTarget: number;   // e.g. 80  → 80% of contacts answered within asaTarget
+  asaTarget: number;   // seconds. Voice/Chat: e.g. 20 s. Email: e.g. 14400 s (4 h)
 }
 
 export interface Assumptions {
@@ -184,9 +187,10 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   safetyMargin: 5, 
   blendingEfficiency: 5, // Default 5% blending gain
   channels: {
-    voice: { isActive: true, aht: 300, occupancy: 85 },
-    email: { isActive: false, aht: 600, occupancy: 100 },
-    chat: { isActive: false, aht: 450, occupancy: 85, concurrency: 2 }
+    // slaTarget = % contacts answered within asaTarget seconds
+    voice: { isActive: true,  aht: 300, occupancy: 85, slaTarget: 80, asaTarget: 20   },
+    email: { isActive: false, aht: 600, occupancy: 100, slaTarget: 90, asaTarget: 14400 }, // 4 h
+    chat:  { isActive: false, aht: 450, occupancy: 85, concurrency: 2, slaTarget: 80, asaTarget: 30 }
   },
   currency: "USD",
   annualSalary: 45000,
@@ -259,6 +263,98 @@ const formatCurrency = (amount: number, code: string) => {
   return `${currency.symbol}${amount.toLocaleString()}`;
 };
 
+// --- Erlang C Engine ---
+// ─────────────────────────────────────────────────────────────────────────────
+// Erlang C gives the probability that an arriving contact must wait in queue
+// before an agent is available.
+//
+//   A  = traffic intensity in Erlangs = (contacts_per_interval × AHT) / interval_duration
+//   N  = number of agents (integer ≥ ceil(A)+1 for a stable system)
+//
+//   P(C) = [A^N / N! × N/(N-A)]
+//          ─────────────────────────────────────────────────────
+//          Σ_{k=0}^{N-1}(A^k / k!) + [A^N / N! × N/(N-A)]
+//
+//   P(wait > t) = P(C) × exp(−(N−A) × t / AHT)
+//
+//   SLA        = 1 − P(wait > ASA)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Returns Erlang-C probability P(C): probability an arriving contact waits.
+ * Uses an iterative approach to avoid factorial overflow for large N.
+ */
+const erlangCProbability = (N: number, A: number): number => {
+  if (N <= 0 || A <= 0) return 0;
+  if (A >= N) return 1; // Unstable – traffic exceeds capacity
+
+  // Build running sum  Σ_{k=0}^{N-1} A^k / k!  iteratively
+  let term = 1;        // A^0 / 0! = 1
+  let sumTerms = 1;
+  for (let k = 1; k <= N - 1; k++) {
+    term = (term * A) / k;
+    sumTerms += term;
+  }
+  // Last term for k = N: (term × A / N) × N / (N − A)
+  const lastTerm = ((term * A) / N) * (N / (N - A));
+  return lastTerm / (sumTerms + lastTerm);
+};
+
+/**
+ * Returns the service level (0–1) achievable with N agents
+ * given traffic A, target answer speed asaSeconds, and AHT in seconds.
+ */
+const getSLAFromAgents = (
+  N: number,
+  A: number,
+  asaSeconds: number,
+  ahtSeconds: number
+): number => {
+  if (N <= 0 || A <= 0) return 1;
+  if (A >= N) return 0; // System unstable
+  const pc = erlangCProbability(N, A);
+  const probWaitExceedsASA = pc * Math.exp(-(N - A) * asaSeconds / ahtSeconds);
+  return 1 - probWaitExceedsASA;
+};
+
+/**
+ * Finds the minimum integer number of agents required so that
+ *   SLA(N, A, ASA) ≥ targetSLA   (targetSLA expressed as 0–1)
+ *
+ * @param contactsPerInterval  Average contacts arriving in one interval
+ * @param ahtSeconds           Average Handle Time in seconds
+ * @param asaSeconds           Target speed-of-answer in seconds
+ * @param targetSLA            Required service level as a fraction (e.g. 0.80)
+ * @param intervalSeconds      Length of the planning interval in seconds (default 1800 = 30 min)
+ */
+const findMinAgentsForSLA = (
+  contactsPerInterval: number,
+  ahtSeconds: number,
+  asaSeconds: number,
+  targetSLA: number,
+  intervalSeconds: number = 1800
+): number => {
+  if (contactsPerInterval <= 0) return 0;
+
+  // Traffic intensity A (Erlangs) for this interval
+  const A = (contactsPerInterval * ahtSeconds) / intervalSeconds;
+
+  if (A <= 0) return 0;
+
+  // Minimum stable N is ceil(A) + 1
+  let N = Math.ceil(A) + 1;
+  const maxSearch = Math.ceil(A) + 500; // Safety cap
+
+  while (N <= maxSearch) {
+    if (getSLAFromAgents(N, A, asaSeconds, ahtSeconds) >= targetSLA) {
+      return N;
+    }
+    N++;
+  }
+
+  return maxSearch; // Fallback – should not be reached in normal operation
+};
+
 // --- Calculation Logic ---
 
 export const calculateFTE = (
@@ -270,34 +366,70 @@ export const calculateFTE = (
 ): number => {
   if (volume === 0 || !channelSettings.isActive) return 0;
 
-  const workSecondsInMonth = fteMonthlyHours * 3600; 
-  let achievableOccupancyCap = 0.90; 
-  
-  // Dynamic occupancy cap logic based on volume
-  if (volume < 2000) achievableOccupancyCap = 0.65;
-  else if (volume < 5000) achievableOccupancyCap = 0.75;
-  else if (volume < 15000) achievableOccupancyCap = 0.82;
-  else if (volume < 30000) achievableOccupancyCap = 0.86;
-
-  const finalOccupancy = Math.min(channelSettings.occupancy / 100, achievableOccupancyCap);
   const shrinkageFactor = 1 - (shrinkage / 100);
+  if (shrinkageFactor <= 0) return 9999.9;
 
-  if (finalOccupancy <= 0 || shrinkageFactor <= 0) return 9999.9;
+  // Resolve SLA parameters (fall back to legacy global values if absent)
+  const slaTarget  = ((channelSettings.slaTarget  ?? 80)  ) / 100; // fraction
+  const asaTarget  = channelSettings.asaTarget  ?? 20;              // seconds
 
-  let workloadSeconds = volume * channelSettings.aht;
+  // ─── Email (asynchronous) ──────────────────────────────────────────────────
+  // Email does not form an Erlang-C queue; it uses a workload / occupancy model.
+  // A per-channel SLA is recorded but does not change the staffing formula here
+  // because email response windows are measured in hours, not seconds.
+  // ──────────────────────────────────────────────────────────────────────────
+  const EMAIL_ASA_THRESHOLD_SECONDS = 3600; // ≥ 1 h → treat as async
+  const isEmailLike = asaTarget >= EMAIL_ASA_THRESHOLD_SECONDS;
 
-  // Apply concurrency for chat
-  if (channelSettings.concurrency && channelSettings.concurrency > 1) {
-    workloadSeconds = workloadSeconds / channelSettings.concurrency;
+  if (isEmailLike) {
+    const workSecondsInMonth = fteMonthlyHours * 3600;
+
+    // Dynamic occupancy cap (same logic as original)
+    let achievableOccupancyCap = 0.90;
+    if (volume < 2000)        achievableOccupancyCap = 0.65;
+    else if (volume < 5000)   achievableOccupancyCap = 0.75;
+    else if (volume < 15000)  achievableOccupancyCap = 0.82;
+    else if (volume < 30000)  achievableOccupancyCap = 0.86;
+
+    const finalOccupancy = Math.min(channelSettings.occupancy / 100, achievableOccupancyCap);
+    if (finalOccupancy <= 0) return 9999.9;
+
+    const capacityPerFTE = workSecondsInMonth * finalOccupancy * shrinkageFactor;
+    let baseFTE = (volume * channelSettings.aht) / capacityPerFTE;
+    baseFTE = baseFTE * (1 + safetyMargin / 100);
+    return Number(baseFTE.toFixed(1));
   }
 
-  const capacityPerFTE = workSecondsInMonth * finalOccupancy * shrinkageFactor;
-  let baseFTE = workloadSeconds / capacityPerFTE;
-  
-  // Apply safety margin
-  baseFTE = baseFTE * (1 + (safetyMargin / 100));
+  // ─── Voice & Chat – Erlang C ───────────────────────────────────────────────
+  // 1. Convert monthly volume to average contacts per 30-min planning interval
+  const intervalSeconds   = 1800; // 30-min intervals
+  const intervalsPerMonth = (fteMonthlyHours * 3600) / intervalSeconds;
 
-  return Number(baseFTE.toFixed(1));
+  let effectiveAHT      = channelSettings.aht;
+  let effectiveContacts = volume / intervalsPerMonth;
+
+  // Chat concurrency: each agent handles `c` simultaneous sessions.
+  // We model this by reducing effective contacts per agent (divide by concurrency).
+  if (channelSettings.concurrency && channelSettings.concurrency > 1) {
+    effectiveContacts = effectiveContacts / channelSettings.concurrency;
+  }
+
+  // 2. Find minimum net (on-floor) agents per interval to meet the SLA
+  const minAgents = findMinAgentsForSLA(
+    effectiveContacts,
+    effectiveAHT,
+    asaTarget,
+    slaTarget,
+    intervalSeconds
+  );
+
+  // 3. Gross FTE = net agents ÷ shrinkage factor  (shrinkage raises headcount need)
+  let grossFTE = minAgents / shrinkageFactor;
+
+  // 4. Apply safety margin
+  grossFTE = grossFTE * (1 + safetyMargin / 100);
+
+  return Number(grossFTE.toFixed(1));
 };
 
 export const calculateStaffingGap = (requiredFTE: number, availableFTE: number): number => {
@@ -1124,7 +1256,7 @@ export default function LongTermForecastingBlended() {
                           yAxisId="right"
                           type="monotone" 
                           dataKey="requiredFTE" 
-                          name="Req. HC (Gross)"
+                          name="Req. HC (Blended)"
                           stroke="#f59e0b" 
                           strokeWidth={4}
                           dot={{ r: 3, fill: 'hsl(var(--background))', strokeWidth: 2, stroke: '#f59e0b' }}
@@ -1220,7 +1352,8 @@ export default function LongTermForecastingBlended() {
                     </TableBody>
                   </Table>
                 </CardContent>
-              </Card>            </div>
+              </Card>
+            </div>
 
             <div className="lg:col-span-1">
               <div className="sticky top-[200px] space-y-6">
@@ -1251,7 +1384,7 @@ export default function LongTermForecastingBlended() {
                           <Badge variant="outline" className="text-[10px] uppercase font-bold text-primary">Blended FTE</Badge>
                         </div>
                         
-                        {/* Voice Toggle */}
+                        {/* ── Voice ── */}
                         <div className="space-y-2 p-2 rounded-md bg-slate-50 dark:bg-slate-900 border border-border/50">
                           <div className="flex items-center justify-between">
                             <Label className="text-xs font-bold flex items-center gap-2">
@@ -1267,36 +1400,78 @@ export default function LongTermForecastingBlended() {
                             />
                           </div>
                           {assumptions.channels.voice.isActive && (
+                            <>
+                              {/* Row 1: AHT + Occ % */}
                               <div className="grid grid-cols-2 gap-2 mt-2">
-                                  <div>
-                                      <Label className="text-[10px] text-muted-foreground font-bold">Base AHT</Label>
-                                      <Input 
-                                        type="number" 
-                                        className="h-7 text-xs" 
-                                        value={assumptions.channels.voice.aht} 
-                                        onChange={(e) => setAssumptions({
-                                            ...assumptions, 
-                                            channels: { ...assumptions.channels, voice: { ...assumptions.channels.voice, aht: Number(e.target.value) } }
-                                        })}
-                                      />
-                                  </div>
-                                  <div>
-                                      <Label className="text-[10px] text-muted-foreground font-bold">Occ %</Label>
-                                      <Input 
-                                        type="number" 
-                                        className="h-7 text-xs" 
-                                        value={assumptions.channels.voice.occupancy} 
-                                        onChange={(e) => setAssumptions({
-                                            ...assumptions, 
-                                            channels: { ...assumptions.channels, voice: { ...assumptions.channels.voice, occupancy: Number(e.target.value) } }
-                                        })}
-                                      />
-                                  </div>
+                                <div>
+                                  <Label className="text-[10px] text-muted-foreground font-bold">Base AHT</Label>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs" 
+                                    value={assumptions.channels.voice.aht} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, voice: { ...assumptions.channels.voice, aht: Number(e.target.value) } }
+                                    })}
+                                  />
+                                </div>
+                                <div>
+                                  <Label className="text-[10px] text-muted-foreground font-bold">Occ %</Label>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs" 
+                                    value={assumptions.channels.voice.occupancy} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, voice: { ...assumptions.channels.voice, occupancy: Number(e.target.value) } }
+                                    })}
+                                  />
+                                </div>
                               </div>
+                              {/* Row 2: SLA Target % + ASA (s) — NEW */}
+                              <div className="grid grid-cols-2 gap-2 mt-1">
+                                <div>
+                                  <div className="flex items-center gap-1">
+                                    <Label className="text-[10px] text-muted-foreground font-bold">SLA Target %</Label>
+                                    <UITooltip>
+                                      <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground cursor-help" /></TooltipTrigger>
+                                      <TooltipContent><p className="text-xs">% of calls answered within ASA (Erlang C)</p></TooltipContent>
+                                    </UITooltip>
+                                  </div>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs border-green-200 bg-green-50 dark:bg-green-950/20" 
+                                    value={assumptions.channels.voice.slaTarget} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, voice: { ...assumptions.channels.voice, slaTarget: validateInput(Number(e.target.value), 1, 100) } }
+                                    })}
+                                  />
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-1">
+                                    <Label className="text-[10px] text-muted-foreground font-bold">ASA (s)</Label>
+                                    <UITooltip>
+                                      <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground cursor-help" /></TooltipTrigger>
+                                      <TooltipContent><p className="text-xs">Target speed of answer in seconds (e.g. 20)</p></TooltipContent>
+                                    </UITooltip>
+                                  </div>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs border-green-200 bg-green-50 dark:bg-green-950/20" 
+                                    value={assumptions.channels.voice.asaTarget} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, voice: { ...assumptions.channels.voice, asaTarget: validateInput(Number(e.target.value), 1) } }
+                                    })}
+                                  />
+                                </div>
+                              </div>
+                            </>
                           )}
                         </div>
 
-                        {/* Email Toggle */}
+                        {/* ── Email ── */}
                         <div className="space-y-2 p-2 rounded-md bg-slate-50 dark:bg-slate-900 border border-border/50">
                           <div className="flex items-center justify-between">
                             <Label className="text-xs font-bold flex items-center gap-2">
@@ -1312,33 +1487,75 @@ export default function LongTermForecastingBlended() {
                             />
                           </div>
                           {assumptions.channels.email.isActive && (
+                            <>
+                              {/* Row 1: AHT + Occ % */}
                               <div className="grid grid-cols-2 gap-2 mt-2">
-                                  <div>
-                                      <Label className="text-[10px] text-muted-foreground font-bold">AHT</Label>
-                                      <Input 
-                                        type="number" 
-                                        className="h-7 text-xs" 
-                                        value={assumptions.channels.email.aht} 
-                                        onChange={(e) => setAssumptions({
-                                            ...assumptions, 
-                                            channels: { ...assumptions.channels, email: { ...assumptions.channels.email, aht: Number(e.target.value) } }
-                                        })}
-                                      />
-                                  </div>
-                                  <div>
-                                      <Label className="text-[10px] text-muted-foreground font-bold">Occ %</Label>
-                                      <Input 
-                                        type="number" 
-                                        className="h-7 text-xs" 
-                                        disabled
-                                        value={assumptions.channels.email.occupancy} 
-                                      />
-                                  </div>
+                                <div>
+                                  <Label className="text-[10px] text-muted-foreground font-bold">AHT</Label>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs" 
+                                    value={assumptions.channels.email.aht} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, email: { ...assumptions.channels.email, aht: Number(e.target.value) } }
+                                    })}
+                                  />
+                                </div>
+                                <div>
+                                  <Label className="text-[10px] text-muted-foreground font-bold">Occ %</Label>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs" 
+                                    disabled
+                                    value={assumptions.channels.email.occupancy} 
+                                  />
+                                </div>
                               </div>
+                              {/* Row 2: SLA Target % + ASA (s) — NEW */}
+                              <div className="grid grid-cols-2 gap-2 mt-1">
+                                <div>
+                                  <div className="flex items-center gap-1">
+                                    <Label className="text-[10px] text-muted-foreground font-bold">SLA Target %</Label>
+                                    <UITooltip>
+                                      <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground cursor-help" /></TooltipTrigger>
+                                      <TooltipContent><p className="text-xs">% of emails responded within ASA window</p></TooltipContent>
+                                    </UITooltip>
+                                  </div>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs border-blue-200 bg-blue-50 dark:bg-blue-950/20" 
+                                    value={assumptions.channels.email.slaTarget} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, email: { ...assumptions.channels.email, slaTarget: validateInput(Number(e.target.value), 1, 100) } }
+                                    })}
+                                  />
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-1">
+                                    <Label className="text-[10px] text-muted-foreground font-bold">ASA (s)</Label>
+                                    <UITooltip>
+                                      <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground cursor-help" /></TooltipTrigger>
+                                      <TooltipContent><p className="text-xs">Response window in seconds (e.g. 14400 = 4 h). Email uses workload model.</p></TooltipContent>
+                                    </UITooltip>
+                                  </div>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs border-blue-200 bg-blue-50 dark:bg-blue-950/20" 
+                                    value={assumptions.channels.email.asaTarget} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, email: { ...assumptions.channels.email, asaTarget: validateInput(Number(e.target.value), 1) } }
+                                    })}
+                                  />
+                                </div>
+                              </div>
+                            </>
                           )}
                         </div>
 
-                        {/* Chat Toggle */}
+                        {/* ── Chat ── */}
                         <div className="space-y-2 p-2 rounded-md bg-slate-50 dark:bg-slate-900 border border-border/50">
                           <div className="flex items-center justify-between">
                             <Label className="text-xs font-bold flex items-center gap-2">
@@ -1354,44 +1571,86 @@ export default function LongTermForecastingBlended() {
                             />
                           </div>
                           {assumptions.channels.chat.isActive && (
+                            <>
+                              {/* Row 1: AHT + Occ % + Conc. */}
                               <div className="grid grid-cols-3 gap-2 mt-2">
-                                  <div className="col-span-1">
-                                      <Label className="text-[10px] text-muted-foreground font-bold">AHT</Label>
-                                      <Input 
-                                        type="number" 
-                                        className="h-7 text-xs" 
-                                        value={assumptions.channels.chat.aht} 
-                                        onChange={(e) => setAssumptions({
-                                            ...assumptions, 
-                                            channels: { ...assumptions.channels, chat: { ...assumptions.channels.chat, aht: Number(e.target.value) } }
-                                        })}
-                                      />
-                                  </div>
-                                  <div className="col-span-1">
-                                      <Label className="text-[10px] text-muted-foreground font-bold">Occ %</Label>
-                                      <Input 
-                                        type="number" 
-                                        className="h-7 text-xs" 
-                                        value={assumptions.channels.chat.occupancy} 
-                                        onChange={(e) => setAssumptions({
-                                            ...assumptions, 
-                                            channels: { ...assumptions.channels, chat: { ...assumptions.channels.chat, occupancy: Number(e.target.value) } }
-                                        })}
-                                      />
-                                  </div>
-                                  <div className="col-span-1">
-                                      <Label className="text-[10px] text-muted-foreground font-bold">Conc.</Label>
-                                      <Input 
-                                        type="number" 
-                                        className="h-7 text-xs" 
-                                        value={assumptions.channels.chat.concurrency} 
-                                        onChange={(e) => setAssumptions({
-                                            ...assumptions, 
-                                            channels: { ...assumptions.channels, chat: { ...assumptions.channels.chat, concurrency: Number(e.target.value) } }
-                                        })}
-                                      />
-                                  </div>
+                                <div className="col-span-1">
+                                  <Label className="text-[10px] text-muted-foreground font-bold">AHT</Label>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs" 
+                                    value={assumptions.channels.chat.aht} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, chat: { ...assumptions.channels.chat, aht: Number(e.target.value) } }
+                                    })}
+                                  />
+                                </div>
+                                <div className="col-span-1">
+                                  <Label className="text-[10px] text-muted-foreground font-bold">Occ %</Label>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs" 
+                                    value={assumptions.channels.chat.occupancy} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, chat: { ...assumptions.channels.chat, occupancy: Number(e.target.value) } }
+                                    })}
+                                  />
+                                </div>
+                                <div className="col-span-1">
+                                  <Label className="text-[10px] text-muted-foreground font-bold">Conc.</Label>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs" 
+                                    value={assumptions.channels.chat.concurrency} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, chat: { ...assumptions.channels.chat, concurrency: Number(e.target.value) } }
+                                    })}
+                                  />
+                                </div>
                               </div>
+                              {/* Row 2: SLA Target % + ASA (s) — NEW */}
+                              <div className="grid grid-cols-2 gap-2 mt-1">
+                                <div>
+                                  <div className="flex items-center gap-1">
+                                    <Label className="text-[10px] text-muted-foreground font-bold">SLA Target %</Label>
+                                    <UITooltip>
+                                      <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground cursor-help" /></TooltipTrigger>
+                                      <TooltipContent><p className="text-xs">% of chats connected within ASA (Erlang C)</p></TooltipContent>
+                                    </UITooltip>
+                                  </div>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs border-amber-200 bg-amber-50 dark:bg-amber-950/20" 
+                                    value={assumptions.channels.chat.slaTarget} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, chat: { ...assumptions.channels.chat, slaTarget: validateInput(Number(e.target.value), 1, 100) } }
+                                    })}
+                                  />
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-1">
+                                    <Label className="text-[10px] text-muted-foreground font-bold">ASA (s)</Label>
+                                    <UITooltip>
+                                      <TooltipTrigger asChild><Info className="size-2.5 text-muted-foreground cursor-help" /></TooltipTrigger>
+                                      <TooltipContent><p className="text-xs">Target connect speed in seconds (e.g. 30)</p></TooltipContent>
+                                    </UITooltip>
+                                  </div>
+                                  <Input 
+                                    type="number" 
+                                    className="h-7 text-xs border-amber-200 bg-amber-50 dark:bg-amber-950/20" 
+                                    value={assumptions.channels.chat.asaTarget} 
+                                    onChange={(e) => setAssumptions({
+                                        ...assumptions, 
+                                        channels: { ...assumptions.channels, chat: { ...assumptions.channels.chat, asaTarget: validateInput(Number(e.target.value), 1) } }
+                                    })}
+                                  />
+                                </div>
+                              </div>
+                            </>
                           )}
                         </div>
                         
@@ -1510,21 +1769,13 @@ export default function LongTermForecastingBlended() {
                           </div>
                           <span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span>
                         </div>
-                        <Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(e) => setAssumptions({...assumptions, shrinkage: validateInput(Number(e.target.value), 0, 100)})} className="h-10 font-bold focus-visible:ring-rose-500/10" />
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1">
-                            <Label htmlFor="safetyMargin" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Safety Margin (%)</Label>
-                            <UITooltip>
-                              <TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
-                              <TooltipContent><p className="text-xs">Staffing buffer for unplanned volume/AHT variance</p></TooltipContent>
-                            </UITooltip>
-                          </div>
-                          <Badge variant="outline" className="font-black text-xs text-primary border-primary/20">{assumptions.safetyMargin}%</Badge>
-                        </div>
-                        <Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(e) => setAssumptions({...assumptions, safetyMargin: validateInput(Number(e.target.value), 0, 20)})} className="h-10 font-bold" />
+                        <Input 
+                          id="shrinkage" 
+                          type="number" 
+                          value={assumptions.shrinkage} 
+                          onChange={(e) => setAssumptions({...assumptions, shrinkage: validateInput(Number(e.target.value), 0, 60)})} 
+                          className="h-9 font-bold border-rose-100" 
+                        />
                       </div>
 
                       {forecastMethod === 'yoy' && (

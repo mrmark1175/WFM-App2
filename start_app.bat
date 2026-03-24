@@ -1,2 +1,2 @@
 start npm run dev
-start node server.cjs
+start node server/server.cjs

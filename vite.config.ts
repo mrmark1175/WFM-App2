@@ -13,8 +13,9 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-  // --- ADD THIS SERVER SECTION ---
   server: {
+    host: true,
+    allowedHosts: true, // ✅ FIX (not 'all')
     proxy: {
       '/api': {
         target: 'http://localhost:5000',
@@ -23,6 +24,5 @@ export default defineConfig({
       },
     },
   },
-  // -------------------------------
   assetsInclude: ['**/*.svg', '**/*.csv'],
 })
