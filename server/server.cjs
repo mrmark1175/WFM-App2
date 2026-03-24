@@ -1,6 +1,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const { getCurrentUser } = require('./auth.cjs');
 
 const app = express();
 app.use(cors()); 
@@ -72,8 +73,9 @@ const simulator = new CallVolumeSimulator();
 // --- GET ROUTES ---
 
 app.get('/api/agents', async (req, res) => {
+  const user = getCurrentUser(req);
   try {
-    const result = await pool.query('SELECT * FROM agents'); 
+    const result = await pool.query('SELECT * FROM agents WHERE organization_id = $1', [user.organization_id]); 
     res.json(result.rows);
   } catch (err) {
     console.error("Database Error:", err.message);
@@ -82,11 +84,16 @@ app.get('/api/agents', async (req, res) => {
 });
 
 app.get('/api/forecasts', async (req, res) => {
+  const user = getCurrentUser(req);
+  const channel = req.query.channel || 'voice';
   try {
     const result = await pool.query(
       `SELECT year_label, forecast_method, monthly_volumes, forecast_results,
-              alpha, beta, gamma, total_volume, peak_volume, created_at
-       FROM forecasts ORDER BY year_label ASC`
+              alpha, beta, gamma, total_volume, peak_volume, created_at, channel
+       FROM forecasts 
+       WHERE organization_id = $1 AND channel = $2
+       ORDER BY year_label ASC`,
+      [user.organization_id, channel]
     );
     res.json(result.rows);
   } catch (err) {
@@ -96,8 +103,13 @@ app.get('/api/forecasts', async (req, res) => {
 });
 
 app.get('/api/forecasts/latest', async (req, res) => {
+  const user = getCurrentUser(req);
+  const channel = req.query.channel || 'voice';
   try {
-    const result = await pool.query('SELECT * FROM forecasts ORDER BY created_at DESC LIMIT 1');
+    const result = await pool.query(
+      'SELECT * FROM forecasts WHERE organization_id = $1 AND channel = $2 ORDER BY created_at DESC LIMIT 1',
+      [user.organization_id, channel]
+    );
     res.json(result.rows[0] || null);
   } catch (err) {
     console.error("Fetch Error:", err.message);
@@ -107,9 +119,12 @@ app.get('/api/forecasts/latest', async (req, res) => {
 
 app.get('/api/forecasts/:year', async (req, res) => {
   const { year } = req.params;
+  const user = getCurrentUser(req);
+  const channel = req.query.channel || 'voice';
   try {
     const result = await pool.query(
-      'SELECT * FROM forecasts WHERE year_label = $1', [year]
+      'SELECT * FROM forecasts WHERE year_label = $1 AND organization_id = $2 AND channel = $3', 
+      [year, user.organization_id, channel]
     );
     res.json(result.rows[0] || null);
   } catch (err) {
@@ -121,8 +136,13 @@ app.get('/api/forecasts/:year', async (req, res) => {
 // --- CAPACITY SCENARIOS ROUTES ---
 
 app.get('/api/capacity-scenarios', async (req, res) => {
+  const user = getCurrentUser(req);
+  const channel = req.query.channel || 'voice';
   try {
-    const result = await pool.query('SELECT * FROM capacity_scenarios ORDER BY created_at ASC');
+    const result = await pool.query(
+      'SELECT * FROM capacity_scenarios WHERE organization_id = $1 AND channel = $2 ORDER BY created_at ASC',
+      [user.organization_id, channel]
+    );
     res.json(result.rows);
   } catch (err) {
     console.error("Scenarios Fetch Error:", err.message);
@@ -131,24 +151,27 @@ app.get('/api/capacity-scenarios', async (req, res) => {
 });
 
 app.post('/api/capacity-scenarios', async (req, res) => {
+  const user = getCurrentUser(req);
   const {
     scenario_name, forecast_year, aht, hours_op, work_days,
     day_pcts, shrinkage, occupancy, target_sl, asa, selected_week,
-    actual_fte, actual_fte_start_date, attrition_pct, classes
+    actual_fte, actual_fte_start_date, attrition_pct, classes, channel
   } = req.body;
+  const targetChannel = channel || 'voice';
+
   try {
     const result = await pool.query(
       `INSERT INTO capacity_scenarios
         (scenario_name, forecast_year, aht, hours_op, work_days, day_pcts,
          shrinkage, occupancy, target_sl, asa, selected_week,
-         actual_fte, actual_fte_start_date, attrition_pct, classes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         actual_fte, actual_fte_start_date, attrition_pct, classes, organization_id, channel)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        RETURNING *`,
       [
         scenario_name, forecast_year, aht, hours_op, work_days,
         JSON.stringify(day_pcts), shrinkage, occupancy, target_sl, asa, selected_week ?? 0,
         actual_fte ?? 0, actual_fte_start_date ?? '', attrition_pct ?? 0,
-        JSON.stringify(classes || [])
+        JSON.stringify(classes || []), user.organization_id, targetChannel
       ]
     );
     res.status(201).json(result.rows[0]);
@@ -160,11 +183,19 @@ app.post('/api/capacity-scenarios', async (req, res) => {
 
 app.put('/api/capacity-scenarios/:id', async (req, res) => {
   const { id } = req.params;
+  const user = getCurrentUser(req);
   const {
     scenario_name, forecast_year, aht, hours_op, work_days,
     day_pcts, shrinkage, occupancy, target_sl, asa, selected_week,
     actual_fte, actual_fte_start_date, attrition_pct, classes
   } = req.body;
+  
+  // Note: We don't update channel here typically, or if we do, we need it in body.
+  // Assuming channel is immutable for a scenario or passed in body if mutable.
+  // For backward compatibility, we stick to updating fields, but we should scope by channel if possible?
+  // Actually, ID is unique PK, so finding by ID is enough. But we add org_id check.
+  // We can leave channel out of WHERE clause since ID is specific.
+  
   try {
     const result = await pool.query(
       `UPDATE capacity_scenarios SET
@@ -172,12 +203,12 @@ app.put('/api/capacity-scenarios/:id', async (req, res) => {
         day_pcts=$6, shrinkage=$7, occupancy=$8, target_sl=$9, asa=$10,
         selected_week=$11, actual_fte=$12, actual_fte_start_date=$13,
         attrition_pct=$14, classes=$15, updated_at=NOW()
-       WHERE id=$16 RETURNING *`,
+       WHERE id=$16 AND organization_id=$17 RETURNING *`,
       [
         scenario_name, forecast_year, aht, hours_op, work_days,
         JSON.stringify(day_pcts), shrinkage, occupancy, target_sl, asa,
         selected_week ?? 0, actual_fte ?? 0, actual_fte_start_date ?? '',
-        attrition_pct ?? 0, JSON.stringify(classes || []), id
+        attrition_pct ?? 0, JSON.stringify(classes || []), id, user.organization_id
       ]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: "Scenario not found" });
@@ -190,8 +221,9 @@ app.put('/api/capacity-scenarios/:id', async (req, res) => {
 
 app.delete('/api/capacity-scenarios/:id', async (req, res) => {
   const { id } = req.params;
+  const user = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM capacity_scenarios WHERE id=$1', [id]);
+    await pool.query('DELETE FROM capacity_scenarios WHERE id=$1 AND organization_id=$2', [id, user.organization_id]);
     res.json({ success: true });
   } catch (err) {
     console.error("Scenario Delete Error:", err.message);
@@ -202,31 +234,37 @@ app.delete('/api/capacity-scenarios/:id', async (req, res) => {
 // --- FORECAST ROUTES ---
 
 app.post('/api/forecasts', async (req, res) => {
-  const { year_label, forecast_method, monthly_volumes, total_volume, peak_volume, forecast_results, alpha, beta, gamma } = req.body;
+  const user = getCurrentUser(req);
+  const { year_label, forecast_method, monthly_volumes, total_volume, peak_volume, forecast_results, alpha, beta, gamma, channel } = req.body;
+  const targetChannel = channel || 'voice';
+
   try {
     const result = await pool.query(
-      `INSERT INTO forecasts (year_label, forecast_method, monthly_volumes, total_volume, peak_volume, forecast_results, alpha, beta, gamma)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (year_label) DO UPDATE SET
+      `INSERT INTO forecasts (year_label, forecast_method, monthly_volumes, total_volume, peak_volume, forecast_results, alpha, beta, gamma, organization_id, channel)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (year_label, organization_id, channel) DO UPDATE SET
          forecast_method=EXCLUDED.forecast_method, monthly_volumes=EXCLUDED.monthly_volumes,
          total_volume=EXCLUDED.total_volume, peak_volume=EXCLUDED.peak_volume,
          forecast_results=EXCLUDED.forecast_results, alpha=EXCLUDED.alpha,
          beta=EXCLUDED.beta, gamma=EXCLUDED.gamma, created_at=NOW()
        RETURNING *`,
       [year_label, forecast_method, JSON.stringify(monthly_volumes), total_volume, peak_volume,
-       JSON.stringify(forecast_results || []), alpha ?? 0.3, beta ?? 0.1, gamma ?? 0.2]
+       JSON.stringify(forecast_results || []), alpha ?? 0.3, beta ?? 0.1, gamma ?? 0.2, user.organization_id, targetChannel]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error("Database Error:", err.message);
-    res.status(500).json({ error: "Failed to save forecast to database" });
+    res.status(500).json({ error: "Failed to save forecast to database", details: err.message });
   }
 });
 
 app.delete('/api/forecasts/:year', async (req, res) => {
   const { year } = req.params;
+  const user = getCurrentUser(req);
+  const channel = req.query.channel || 'voice';
+  
   try {
-    await pool.query('DELETE FROM forecasts WHERE year_label = $1', [year]);
+    await pool.query('DELETE FROM forecasts WHERE year_label = $1 AND organization_id = $2 AND channel = $3', [year, user.organization_id, channel]);
     res.json({ success: true });
   } catch (err) {
     console.error("Delete Error:", err.message);
@@ -237,12 +275,15 @@ app.delete('/api/forecasts/:year', async (req, res) => {
 // --- INTERACTION ARRIVAL ROUTES ---
 
 app.get('/api/interaction-arrival', async (req, res) => {
-  const { startDate, endDate } = req.query;
+  const { startDate, endDate, channel } = req.query;
+  const user = getCurrentUser(req);
+  const targetChannel = channel || 'voice';
+
   try {
     const result = await pool.query(
-      `SELECT interval_date, interval_index, volume, aht FROM interaction_arrival
-       WHERE interval_date BETWEEN $1 AND $2 ORDER BY interval_date ASC, interval_index ASC`,
-      [startDate, endDate]
+      `SELECT interval_date, interval_index, volume, aht, channel FROM interaction_arrival
+       WHERE organization_id = $3 AND channel = $4 AND interval_date BETWEEN $1 AND $2 ORDER BY interval_date ASC, interval_index ASC`,
+      [startDate, endDate, user.organization_id, targetChannel]
     );
     res.json(result.rows);
   } catch (err) {
@@ -252,7 +293,10 @@ app.get('/api/interaction-arrival', async (req, res) => {
 });
 
 app.post('/api/interaction-arrival', async (req, res) => {
-  const { records } = req.body;
+  const { records, channel } = req.body;
+  const user = getCurrentUser(req);
+  const targetChannel = channel || 'voice'; // If entire batch is for one channel, passed in body.
+  
   if (!Array.isArray(records) || records.length === 0)
     return res.status(400).json({ error: 'records array is required' });
 
@@ -264,17 +308,24 @@ app.post('/api/interaction-arrival', async (req, res) => {
 
     for (let i = 0; i < records.length; i += BATCH_SIZE) {
       const batch = records.slice(i, i + BATCH_SIZE);
+      // Allow record-level channel override, else fallback to body-level, else 'voice'
       const values = batch.map((_, j) =>
-        `($${j*4+1},$${j*4+2},$${j*4+3},$${j*4+4})`
+        `($${j*6+1},$${j*6+2},$${j*6+3},$${j*6+4},$${j*6+5},$${j*6+6})`
       ).join(',');
+      
       const flat = batch.flatMap(r => [
-        r.interval_date, r.interval_index, r.volume ?? 0, r.aht ?? 0
+        r.interval_date, 
+        r.interval_index, 
+        r.volume ?? 0, 
+        r.aht ?? 0, 
+        user.organization_id,
+        r.channel || targetChannel 
       ]);
 
       await client.query(
-        `INSERT INTO interaction_arrival (interval_date, interval_index, volume, aht)
+        `INSERT INTO interaction_arrival (interval_date, interval_index, volume, aht, organization_id, channel)
          VALUES ${values}
-         ON CONFLICT (interval_date, interval_index) DO UPDATE SET
+         ON CONFLICT (interval_date, interval_index, organization_id, channel) DO UPDATE SET
            volume=EXCLUDED.volume, aht=EXCLUDED.aht, updated_at=NOW()`,
         flat
       );
@@ -373,4 +424,4 @@ app.post('/api/genesys/sync', async (req, res) => {
   }
 });
 
-app.listen(5000, () => { console.log('Backend Server is running on http://localhost:5000'); });
+app.listen(process.env.PORT || 5000, () => { console.log(`Backend Server is running on http://localhost:${process.env.PORT || 5000}`); });
