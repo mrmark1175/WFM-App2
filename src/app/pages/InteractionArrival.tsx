@@ -5,6 +5,7 @@ import { useNavigate, Link } from "react-router-dom";
 interface CellData { volume: number; aht: number; }
 type GridData = Record<string, Record<number, CellData>>;
 interface IntervalRow { label: string; indices: number[]; }
+type ChannelKey = "voice" | "chat" | "email" | "cases";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const API_BASE   = "http://localhost:5000";
@@ -26,6 +27,13 @@ const TELEPHONY_SYSTEMS = [
   { id: "nice",    label: "NICE CXone",     icon: "🎯" },
   { id: "cisco",   label: "Cisco UCCE",     icon: "🔧" },
   { id: "custom",  label: "Custom API",     icon: "⚙️" },
+];
+
+const CHANNEL_OPTIONS: { value: ChannelKey; label: string }[] = [
+  { value: "voice", label: "Voice" },
+  { value: "chat", label: "Chat" },
+  { value: "email", label: "Email" },
+  { value: "cases", label: "Cases" },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -456,6 +464,7 @@ export function InteractionArrival() {
   // ── Core state ───────────────────────────────────────────────────────────────
   const [activeTab,    setActiveTab]    = useState<"volume" | "aht" | "distribution">("volume");
   const [intervalSize, setIntervalSize] = useState<15 | 30 | 60>(15);
+  const [selectedChannel, setSelectedChannel] = useState<ChannelKey>("voice");
   const [startDate,    setStartDate]    = useState<string>(lastMonday());
   const [endDate,      setEndDate]      = useState<string>(addDays(lastMonday(), 6));
   const [data,         setData]         = useState<GridData>({});
@@ -511,7 +520,7 @@ export function InteractionArrival() {
     if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current);
     fetchDebounceRef.current = setTimeout(() => {
       setIsLoading(true);
-      fetch(`${API_BASE}/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}`)
+      fetch(`${API_BASE}/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}&channel=${selectedChannel}`)
         .then(r => r.json())
         .then((records: any[]) => {
           if (!Array.isArray(records)) return;
@@ -521,13 +530,13 @@ export function InteractionArrival() {
             if (!newData[ds]) newData[ds] = {};
             newData[ds][r.interval_index] = { volume: r.volume || 0, aht: r.aht || 0 };
           });
-          setData(prev => ({ ...prev, ...newData }));
+          setData(newData);
         })
         .catch(() => {})
         .finally(() => setIsLoading(false));
     }, 400);
     return () => { if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current); };
-  }, [startDate, endDate]);
+  }, [startDate, endDate, selectedChannel]);
 
   const handleGridPaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
     if (!anchorCell) return;
@@ -599,7 +608,7 @@ export function InteractionArrival() {
         const chunk = records.slice(i, i + CHUNK_SIZE);
         const res = await fetch(`${API_BASE}/api/interaction-arrival`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ records: chunk }),
+          body: JSON.stringify({ channel: selectedChannel, records: chunk }),
         });
         if (!res.ok) { setSaveStatus("error"); return; }
       }
@@ -612,7 +621,7 @@ export function InteractionArrival() {
     try {
       const res = await fetch(`${API_BASE}/api/telephony/pull`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ system: telephonySystem, date: pullDate, queue: pullQueue }),
+        body: JSON.stringify({ system: telephonySystem, date: pullDate, queue: pullQueue, channel: selectedChannel }),
       });
       const result = await res.json();
       if (result.success && result.data) {
@@ -732,6 +741,21 @@ export function InteractionArrival() {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>Channel:</span>
+            <select
+              value={selectedChannel}
+              onChange={e => setSelectedChannel(e.target.value as ChannelKey)}
+              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }}
+            >
+              {CHANNEL_OPTIONS.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
 
           <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { PageLayout } from "../components/PageLayout";
-import { 
+import {
   TrendingUp, 
   Plus, 
   LineChart, 
@@ -22,7 +22,17 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
+type ChannelKey = "voice" | "chat" | "email" | "cases";
+
+const CHANNEL_OPTIONS: { value: ChannelKey; label: string }[] = [
+  { value: "voice", label: "Voice" },
+  { value: "chat", label: "Chat" },
+  { value: "email", label: "Email" },
+  { value: "cases", label: "Cases" },
+];
+
 export function Forecasting() {
+  const [selectedChannel, setSelectedChannel] = useState<ChannelKey>("voice");
   const [volumes, setVolumes] = useState(Array(12).fill(0));
   const [selectedYear, setSelectedYear] = useState("Year 1");
   const [basisYearFrom, setBasisYearFrom] = useState("Year 1");
@@ -63,7 +73,7 @@ export function Forecasting() {
     const fetchAllYears = async () => {
       try {
         // 1. Try saved forecasts first
-        const res  = await fetch("http://localhost:5000/api/forecasts");
+        const res  = await fetch(`http://localhost:5000/api/forecasts?channel=${selectedChannel}`);
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
           const savedYears = data.map((d: any) => d.year_label);
@@ -75,7 +85,7 @@ export function Forecasting() {
         // 2. No saved forecasts — detect calendar years from arrival data
         //    without pulling all records
         const probe = await fetch(
-          "http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31"
+          `http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31&channel=${selectedChannel}`
         );
         const recs: any[] = await probe.json();
         if (Array.isArray(recs) && recs.length > 0) {
@@ -97,13 +107,13 @@ export function Forecasting() {
       }
     };
     fetchAllYears();
-  }, []);
+  }, [selectedChannel]);
 
   // ── Helper: Fetch and aggregate Arrival Data ──────────────────────────────
   const fetchArrivalRollup = async (calendarYear: number): Promise<number[] | null> => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/interaction-arrival?startDate=${calendarYear}-01-01&endDate=${calendarYear}-12-31`
+        `http://localhost:5000/api/interaction-arrival?startDate=${calendarYear}-01-01&endDate=${calendarYear}-12-31&channel=${selectedChannel}`
       );
       const recs: any[] = await res.json();
       if (!Array.isArray(recs) || recs.length === 0) return null;
@@ -136,7 +146,7 @@ export function Forecasting() {
     if (!selectedYear) return;
     const fetchYearData = async () => {
       try {
-        const response = await fetch(`http://localhost:5000/api/forecasts/${selectedYear}`);
+        const response = await fetch(`http://localhost:5000/api/forecasts/${selectedYear}?channel=${selectedChannel}`);
         const data = await response.json();
         
         if (data && data.monthly_volumes) {
@@ -177,7 +187,7 @@ export function Forecasting() {
       }
     };
     fetchYearData();
-  }, [selectedYear]);
+  }, [selectedYear, selectedChannel]);
 
   const forecastingMethods = [
     { id: "holt-winters", name: "Holt-Winters (Triple Exponential Smoothing)" },
@@ -197,6 +207,7 @@ export function Forecasting() {
     setIsSaving(true);
     setSaveMsg(null);
     const payload = {
+      channel: selectedChannel,
       year_label: selectedYear,
       forecast_method: method,
       monthly_volumes: volumes,
@@ -269,7 +280,7 @@ export function Forecasting() {
         calendarYear = asNumber;
       } else {
         setSyncStep("Probing arrival database…");
-        const probeRes = await fetch("http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31");
+        const probeRes = await fetch(`http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31&channel=${selectedChannel}`);
         const probeRecs: any[] = await probeRes.json();
         if (Array.isArray(probeRecs) && probeRecs.length > 0) {
           const calYears = Array.from(new Set(probeRecs.map(r => new Date((r.interval_date as string).split("T")[0] + "T00:00:00").getFullYear()))).sort() as number[];
@@ -308,9 +319,9 @@ export function Forecasting() {
   const handleDeleteYear = async (yearToDelete: string) => {
     if (years.length === 1) return; // always keep at least one tab
     try {
-      await fetch(`http://localhost:5000/api/forecasts/${encodeURIComponent(yearToDelete)}`, {
-        method: "DELETE",
-      });
+        await fetch(`http://localhost:5000/api/forecasts/${encodeURIComponent(yearToDelete)}?channel=${selectedChannel}`, {
+          method: "DELETE",
+        });
     } catch { /* ignore network errors */ }
     const newYears = years.filter(y => y !== yearToDelete);
     setYears(newYears);
@@ -514,7 +525,7 @@ export function Forecasting() {
       
       if (yearsToFetch.length > 0) {
         const fetches = yearsToFetch.map(y =>
-          fetch(`http://localhost:5000/api/forecasts/${y}`).then(r => r.json())
+          fetch(`http://localhost:5000/api/forecasts/${y}?channel=${selectedChannel}`).then(r => r.json())
         );
         const results = await Promise.all(fetches);
         historical = results.flatMap((d: any) => {
@@ -725,6 +736,19 @@ export function Forecasting() {
 
             {/* Method Selector */}
             <div className="space-y-1.5 border-l border-border pl-8">
+              <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Channel</label>
+              <div className="relative group mb-4">
+                <select
+                  value={selectedChannel}
+                  onChange={(e) => setSelectedChannel(e.target.value as ChannelKey)}
+                  className="appearance-none bg-slate-50 border border-border rounded-lg px-4 py-2 text-sm pr-10 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all hover:border-slate-400 min-w-[180px]"
+                >
+                  {CHANNEL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none group-hover:text-primary transition-colors" />
+              </div>
               <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Model Selection</label>
               <div className="relative group">
                 <select

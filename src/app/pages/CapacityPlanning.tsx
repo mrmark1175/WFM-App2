@@ -6,6 +6,7 @@ import { useNavigate, Link } from "react-router-dom";
 interface FTEParams {
   callVolume: number; ahtSec: number; hoursOp: number;
   shrinkage: number; occupancy: number; targetSL: number; asaSec: number;
+  channel?: ChannelKey; concurrency?: number;
 }
 interface FTEResult {
   erlangs: number; rawAgents: number; fte: number; achievedSL: number; actualOcc: number;
@@ -29,12 +30,40 @@ interface Scenario {
   selected_week: number;
   actual_fte?: number; actual_fte_start_date?: string;
   attrition_pct?: number; classes?: TrainingClass[];
+  channel?: ChannelKey;
   created_at?: string; updated_at?: string;
 }
+
+type ChannelKey = "voice" | "chat" | "email" | "cases";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const API_BASE = "http://localhost:5000";
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const CHANNEL_OPTIONS: { value: ChannelKey; label: string }[] = [
+  { value: "voice", label: "Voice" },
+  { value: "chat", label: "Chat" },
+  { value: "email", label: "Email" },
+  { value: "cases", label: "Cases" },
+];
+const CHAT_DEFAULT_CONCURRENCY = 2;
+
+function isAsyncChannel(channel: ChannelKey): boolean {
+  return channel === "email" || channel === "cases";
+}
+
+function getChannelDefaults(channel: ChannelKey) {
+  switch (channel) {
+    case "chat":
+      return { aht: 450, occupancy: 85, targetSL: 80, asa: 30 };
+    case "email":
+      return { aht: 600, occupancy: 100, targetSL: 90, asa: 14400 };
+    case "cases":
+      return { aht: 900, occupancy: 100, targetSL: 90, asa: 14400 };
+    case "voice":
+    default:
+      return { aht: 320, occupancy: 85, targetSL: 80, asa: 20 };
+  }
+}
 
 function todayStr(): string { return new Date().toISOString().split("T")[0]; }
 function newId(): string { return Math.random().toString(36).slice(2, 9); }
@@ -154,13 +183,39 @@ function minAgentsForSL(A: number, ahtSec: number, asaSec: number, targetSL: num
   for (let i = 0; i < 200; i++) { if (computeServiceLevel(A, N, ahtSec, asaSec) >= targetSL) return N; N++; }
   return N;
 }
-function computeFTE({ callVolume, ahtSec, hoursOp, shrinkage, occupancy, targetSL, asaSec }: FTEParams): FTEResult {
-  const A = (callVolume / (hoursOp * 3600)) * ahtSec;
+function computeFTE({ callVolume, ahtSec, hoursOp, shrinkage, occupancy, targetSL, asaSec, channel = "voice", concurrency = CHAT_DEFAULT_CONCURRENCY }: FTEParams): FTEResult {
+  if (callVolume <= 0 || ahtSec <= 0 || hoursOp <= 0) {
+    return { erlangs: 0, rawAgents: 0, fte: 0, achievedSL: 0, actualOcc: 0 };
+  }
+
+  const shrinkageFactor = 1 - shrinkage / 100;
+  const occupancyFactor = occupancy / 100;
+  if (shrinkageFactor <= 0 || occupancyFactor <= 0) {
+    return { erlangs: 0, rawAgents: 0, fte: 9999.9, achievedSL: 0, actualOcc: 0 };
+  }
+
+  if (isAsyncChannel(channel)) {
+    const workloadSeconds = callVolume * ahtSec;
+    const staffedSecondsPerAgent = hoursOp * 3600 * occupancyFactor;
+    const rawAgents = Math.max(1, Math.ceil(workloadSeconds / staffedSecondsPerAgent));
+    const fte = +(rawAgents / shrinkageFactor).toFixed(1);
+    const actualOcc = +Math.min(100, (workloadSeconds / (rawAgents * hoursOp * 3600)) * 100).toFixed(1);
+    return {
+      erlangs: +(workloadSeconds / 3600).toFixed(2),
+      rawAgents,
+      fte,
+      achievedSL: 0,
+      actualOcc,
+    };
+  }
+
+  const effectiveVolume = channel === "chat" ? callVolume / Math.max(1, concurrency) : callVolume;
+  const A = (effectiveVolume / (hoursOp * 3600)) * ahtSec;
   const rawAgents = minAgentsForSL(A, ahtSec, asaSec, targetSL / 100);
   const actualOcc = A / rawAgents;
-  const cap = actualOcc > occupancy / 100 ? Math.ceil(A / (occupancy / 100)) : rawAgents;
+  const cap = actualOcc > occupancyFactor ? Math.ceil(A / occupancyFactor) : rawAgents;
   const sl = computeServiceLevel(A, cap, ahtSec, asaSec) * 100;
-  return { erlangs: +A.toFixed(2), rawAgents: cap, fte: +(cap / (1 - shrinkage / 100)).toFixed(1), achievedSL: +sl.toFixed(1), actualOcc: +((A / cap) * 100).toFixed(1) };
+  return { erlangs: +A.toFixed(2), rawAgents: cap, fte: +(cap / shrinkageFactor).toFixed(1), achievedSL: +sl.toFixed(1), actualOcc: +((A / cap) * 100).toFixed(1) };
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -266,6 +321,7 @@ function SliderInput({ label, value, min, max, step = 1, unit, onChange }: {
 // ── Main component ────────────────────────────────────────────────────────────
 export function CapacityPlanning() {
   const navigate = useNavigate();
+  const [selectedChannel, setSelectedChannel] = useState<ChannelKey>("voice");
 
   // Planning parameters
   const [aht, setAht] = useState<number>(320);
@@ -303,6 +359,15 @@ export function CapacityPlanning() {
   const isLoadingScenario = useRef<boolean>(false);
 
   const startMonday = useMemo(() => getMondayOf(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), []);
+  const isAsyncSelectedChannel = isAsyncChannel(selectedChannel);
+
+  useEffect(() => {
+    setSelectedForecastYear("");
+    setAvailableYears([]);
+    setProjectionVolumes(Array(12).fill(0));
+    setScenarios([]);
+    setActiveScenarioId(null);
+  }, [selectedChannel]);
 
   useEffect(() => {
     if (isLoadingScenario.current) return;
@@ -327,13 +392,14 @@ export function CapacityPlanning() {
 
   // Build save payload including new workforce fields
   const buildPayload = useCallback((overrideName?: string) => ({
+    channel: selectedChannel,
     scenario_name: overrideName ?? (scenarios.find(s => s.id === activeScenarioId)?.scenario_name ?? "Scenario 1"),
     forecast_year: selectedForecastYear,
     aht, hours_op: hoursOp, work_days: workDays, day_pcts: dayPcts,
     shrinkage, occupancy, target_sl: targetSL, asa, selected_week: selectedWeek,
     actual_fte: actualFTE, actual_fte_start_date: actualFTEDate,
     attrition_pct: attritionPct, classes,
-  }), [scenarios, activeScenarioId, selectedForecastYear, aht, hoursOp, workDays, dayPcts,
+  }), [selectedChannel, scenarios, activeScenarioId, selectedForecastYear, aht, hoursOp, workDays, dayPcts,
        shrinkage, occupancy, targetSL, asa, selectedWeek, actualFTE, actualFTEDate, attritionPct, classes]);
 
   const saveScenario = useCallback(async (id: number | null = activeScenarioId) => {
@@ -378,20 +444,20 @@ export function CapacityPlanning() {
   useEffect(() => {
     const fetchScenarios = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/capacity-scenarios`);
+        const res = await fetch(`${API_BASE}/api/capacity-scenarios?channel=${selectedChannel}`);
         const data: Scenario[] = await res.json();
         if (Array.isArray(data) && data.length > 0) { setScenarios(data); loadScenario(data[0]); }
         else await createNewScenario("Scenario 1", true);
       } catch { }
     };
     fetchScenarios();
-  }, []);
+  }, [selectedChannel, loadScenario]);
 
   useEffect(() => {
     const fetchYears = async () => {
       setIsLoading(true); setLoadError("");
       try {
-        const res = await fetch(`${API_BASE}/api/forecasts`);
+        const res = await fetch(`${API_BASE}/api/forecasts?channel=${selectedChannel}`);
         if (!res.ok) throw new Error();
         const data: ForecastRecord[] = await res.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -411,14 +477,14 @@ export function CapacityPlanning() {
       } finally { setIsLoading(false); }
     };
     fetchYears();
-  }, []);
+  }, [selectedChannel]);
 
   useEffect(() => {
     if (!selectedForecastYear || selectedForecastYear === "Sample") return;
     const fetchProjection = async () => {
       setIsLoading(true);
       try {
-        const res = await fetch(`${API_BASE}/api/forecasts/${encodeURIComponent(selectedForecastYear)}`);
+        const res = await fetch(`${API_BASE}/api/forecasts/${encodeURIComponent(selectedForecastYear)}?channel=${selectedChannel}`);
         if (!res.ok) throw new Error();
         const data: ForecastRecord = await res.json();
         if (data) {
@@ -431,19 +497,21 @@ export function CapacityPlanning() {
       finally { setIsLoading(false); }
     };
     fetchProjection();
-  }, [selectedForecastYear, availableYears]);
+  }, [selectedForecastYear, availableYears, selectedChannel]);
 
   const createNewScenario = async (name?: string, isFirst = false) => {
     const newName = name ?? `Scenario ${scenarios.length + 1}`;
+    const defaults = getChannelDefaults(selectedChannel);
     try {
       const res = await fetch(`${API_BASE}/api/capacity-scenarios`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          channel: selectedChannel,
           scenario_name: newName, forecast_year: selectedForecastYear,
-          aht: isFirst ? 320 : aht, hours_op: isFirst ? 50 : hoursOp,
+          aht: isFirst ? defaults.aht : aht, hours_op: isFirst ? 50 : hoursOp,
           work_days: isFirst ? 5 : workDays, day_pcts: isFirst ? [20,20,20,20,20] : dayPcts,
-          shrinkage: isFirst ? 30 : shrinkage, occupancy: isFirst ? 85 : occupancy,
-          target_sl: isFirst ? 80 : targetSL, asa: isFirst ? 20 : asa, selected_week: 0,
+          shrinkage: isFirst ? 30 : shrinkage, occupancy: isFirst ? defaults.occupancy : occupancy,
+          target_sl: isFirst ? defaults.targetSL : targetSL, asa: isFirst ? defaults.asa : asa, selected_week: 0,
           actual_fte: isFirst ? 0 : actualFTE, actual_fte_start_date: isFirst ? todayStr() : actualFTEDate,
           attrition_pct: isFirst ? 0 : attritionPct, classes: isFirst ? [] : classes,
         }),
@@ -451,7 +519,7 @@ export function CapacityPlanning() {
       const created: Scenario = await res.json();
       setScenarios(prev => [...prev, created]); loadScenario(created);
     } catch {
-      const fake: Scenario = { id: Date.now(), scenario_name: newName, forecast_year: selectedForecastYear,
+      const fake: Scenario = { id: Date.now(), scenario_name: newName, forecast_year: selectedForecastYear, channel: selectedChannel,
         aht, hours_op: hoursOp, work_days: workDays, day_pcts: dayPcts, shrinkage, occupancy,
         target_sl: targetSL, asa, selected_week: 0, actual_fte: actualFTE,
         actual_fte_start_date: actualFTEDate, attrition_pct: attritionPct, classes };
@@ -461,7 +529,7 @@ export function CapacityPlanning() {
 
   const deleteScenario = async (id: number) => {
     if (scenarios.length <= 1) return;
-    try { await fetch(`${API_BASE}/api/capacity-scenarios/${id}`, { method: "DELETE" }); } catch { }
+    try { await fetch(`${API_BASE}/api/capacity-scenarios/${id}?channel=${selectedChannel}`, { method: "DELETE" }); } catch { }
     const remaining = scenarios.filter(s => s.id !== id);
     setScenarios(remaining);
     if (activeScenarioId === id) loadScenario(remaining[remaining.length - 1]);
@@ -492,8 +560,8 @@ export function CapacityPlanning() {
     [projectionVolumes, startMonday, workDays]);
 
   const weeklyResults = useMemo<WeekResult[]>(() =>
-    weeks.map(w => ({ ...w, ...computeFTE({ callVolume: w.baseVol, ahtSec: aht, hoursOp, shrinkage, occupancy, targetSL, asaSec: asa }) })),
-    [weeks, aht, hoursOp, shrinkage, occupancy, targetSL, asa]);
+    weeks.map(w => ({ ...w, ...computeFTE({ callVolume: w.baseVol, ahtSec: aht, hoursOp, shrinkage, occupancy, targetSL, asaSec: asa, channel: selectedChannel, concurrency: CHAT_DEFAULT_CONCURRENCY }) })),
+    [weeks, aht, hoursOp, shrinkage, occupancy, targetSL, asa, selectedChannel]);
 
   const actualFTEByWeek = useMemo(() =>
     computeActualFTEByWeek(actualFTE, actualFTEDate, attritionPct, classes, weeks),
@@ -517,18 +585,18 @@ export function CapacityPlanning() {
     return activeDays.map((day, i) => {
       const pct = (dayPcts[i] ?? 0) / totalPct;
       const vol = Math.round((selWeek?.baseVol || 0) * pct);
-      return { day, vol, ...computeFTE({ callVolume: vol, ahtSec: aht, hoursOp: hoursOp / workDays, shrinkage, occupancy, targetSL, asaSec: asa }) };
+      return { day, vol, ...computeFTE({ callVolume: vol, ahtSec: aht, hoursOp: hoursOp / workDays, shrinkage, occupancy, targetSL, asaSec: asa, channel: selectedChannel, concurrency: CHAT_DEFAULT_CONCURRENCY }) };
     });
-  }, [selWeek, aht, hoursOp, shrinkage, occupancy, targetSL, asa, workDays, dayPcts]);
+  }, [selWeek, aht, hoursOp, shrinkage, occupancy, targetSL, asa, workDays, dayPcts, selectedChannel]);
 
   const selActualSL = useMemo(() => {
-    if (!sel || !selActualFTE || selActualFTE <= 0) return 0;
+    if (isAsyncSelectedChannel || !sel || !selActualFTE || selActualFTE <= 0) return 0;
     // Raw agents = actual FTE * (1 - shrinkage%)
     const rawAgents = selActualFTE * (1 - shrinkage / 100);
     const A = sel.erlangs;
     if (rawAgents <= A) return 0;
     return computeServiceLevel(A, rawAgents, aht, asa) * 100;
-  }, [sel, selActualFTE, shrinkage, aht, asa]);
+  }, [isAsyncSelectedChannel, sel, selActualFTE, shrinkage, aht, asa]);
 
   const maxFTE = Math.max(...weeklyResults.map(w => w.fte), hasWorkforceData ? Math.max(...actualFTEByWeek) : 0, 1);
   const maxProjectionVol = Math.max(...projectionVolumes, 1);
@@ -638,6 +706,18 @@ export function CapacityPlanning() {
               {projectionLabel && <span style={{ fontSize: 12, color: "#6b7280", display: "flex", alignItems: "center", gap: 4 }}><span style={{ color: "#d1d5db" }}>→</span><span style={{ fontWeight: 600, color: "#f97316" }}>{projectionLabel}</span></span>}
             </div>
           )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 600 }}>Channel</span>
+            <select
+              value={selectedChannel}
+              onChange={e => setSelectedChannel(e.target.value as ChannelKey)}
+              style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, border: "1px solid #e5e7eb", background: "#fff", color: "#111827" }}
+            >
+              {CHANNEL_OPTIONS.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
           {forecastMethod && <span style={{ fontSize: 12, color: "#6b7280", padding: "3px 10px", background: "#f3f4f6", borderRadius: 99 }}>{forecastMethod.split("(")[0].trim()}</span>}
           {loadError && <span style={{ fontSize: 12, color: "#b45309", background: "#fef9c3", padding: "4px 10px", borderRadius: 6 }}>⚠️ {loadError}</span>}
           <Link to="/wfm/forecasting" style={{ marginLeft: "auto", fontSize: 12, color: "#f97316", textDecoration: "none", fontWeight: 600 }} onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")} onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}>↗ Edit in Forecasting</Link>
@@ -675,13 +755,14 @@ export function CapacityPlanning() {
               <SliderInput label="Working Days per Week" value={workDays} min={1} max={7} step={1} unit="d" onChange={setWorkDays} />
               <SliderInput label="Shrinkage" value={shrinkage} min={5} max={50} unit="%" onChange={setShrinkage} />
               <SliderInput label="Max Occupancy" value={occupancy} min={60} max={100} unit="%" onChange={setOccupancy} />
-              <SliderInput label="Target Service Level" value={targetSL} min={50} max={99} unit="%" onChange={setTargetSL} />
-              <SliderInput label="Target ASA" value={asa} min={5} max={120} unit="s" onChange={setAsa} />
+              {!isAsyncSelectedChannel && <SliderInput label="Target Service Level" value={targetSL} min={50} max={99} unit="%" onChange={setTargetSL} />}
+              {!isAsyncSelectedChannel && <SliderInput label="Target ASA" value={asa} min={5} max={120} unit="s" onChange={setAsa} />}
               <div style={{ background: "#fff7ed", borderRadius: 8, padding: "10px 12px", marginTop: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: "#c2410c", marginBottom: 4 }}>MODEL INFO</div>
                 <div style={{ fontSize: 11, color: "#9a3412", lineHeight: 1.5 }}>
-                  Using <strong>Erlang C</strong> formula.<br />
-                  SL = {targetSL}% answered within {asa}s.<br />
+                  {selectedChannel === "voice" && <>Using <strong>Erlang C</strong> formula.<br />SL = {targetSL}% answered within {asa}s.<br /></>}
+                  {selectedChannel === "chat" && <>Using <strong>Erlang C</strong> formula with <strong>{CHAT_DEFAULT_CONCURRENCY} concurrent chats</strong> per agent.<br />SL = {targetSL}% connected within {asa}s.<br /></>}
+                  {isAsyncSelectedChannel && <>Using an <strong>async workload model</strong> based on total handling hours.<br />No strict ASA queue target is enforced for {selectedChannel}.<br /></>}
                   ≈ <strong>{(hoursOp / workDays).toFixed(1)}h/day</strong> × {workDays}d/week
                 </div>
               </div>
@@ -905,7 +986,7 @@ export function CapacityPlanning() {
               {/* Metric cards */}
               {sel && (
                 <div style={{ display: "flex", gap: 12, marginTop: 20, flexWrap: "wrap" }}>
-                  <MetricCard label="Total Volume" value={selWeek?.baseVol.toLocaleString() ?? "—"} sub={`${sel.erlangs} Erlangs`} />
+                  <MetricCard label="Total Volume" value={selWeek?.baseVol.toLocaleString() ?? "—"} sub={isAsyncSelectedChannel ? `${sel.erlangs} handling hrs` : `${sel.erlangs} Erlangs`} />
                   <MetricCard label="Required FTE" value={sel.fte} sub={`${sel.rawAgents} base agents`} accent="#f97316" />
                   
                   {hasWorkforceData && selActualFTE > 0 && (
@@ -922,9 +1003,9 @@ export function CapacityPlanning() {
                     />
                   )}
 
-                  <MetricCard label="SL from Required" value={<Badge value={sel.achievedSL} target={targetSL} unit="%" />} sub={`Target: ${targetSL}%`} />
+                  {!isAsyncSelectedChannel && <MetricCard label="SL from Required" value={<Badge value={sel.achievedSL} target={targetSL} unit="%" />} sub={`Target: ${targetSL}%`} />}
                   
-                  {hasWorkforceData && selActualFTE > 0 && (
+                  {!isAsyncSelectedChannel && hasWorkforceData && selActualFTE > 0 && (
                     <MetricCard label="SL from Actual FTE" value={<Badge value={+selActualSL.toFixed(1)} target={targetSL} unit="%" />} sub={`Based on ${Math.round(selActualFTE)} FTE`} />
                   )}
 
@@ -969,7 +1050,7 @@ export function CapacityPlanning() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      {["Day", "% of Week", "Call Volume", "Erlangs (A)", "Base Agents", "Req. FTE", "Svc Level", "Occupancy"].map(h => (
+                      {["Day", "% of Week", "Volume", isAsyncSelectedChannel ? "Workload Hrs" : "Erlangs (A)", "Base Agents", "Req. FTE", ...(isAsyncSelectedChannel ? [] : ["Svc Level"]), "Occupancy"].map(h => (
                         <th key={h} style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textAlign: "left", padding: "0 10px 10px 0", textTransform: "uppercase", letterSpacing: ".04em" }}>{h}</th>
                       ))}
                     </tr>
@@ -995,7 +1076,7 @@ export function CapacityPlanning() {
                         <td style={{ padding: "8px 10px 8px 0", fontSize: 13, color: "#6b7280" }}>{d.erlangs}</td>
                         <td style={{ padding: "8px 10px 8px 0", fontSize: 13, color: "#374151", fontWeight: 500 }}>{d.rawAgents}</td>
                         <td style={{ padding: "8px 10px 8px 0", fontSize: 14, fontWeight: 700, color: "#f97316" }}>{d.fte}</td>
-                        <td style={{ padding: "8px 10px 8px 0" }}><Badge value={d.achievedSL} target={targetSL} unit="%" /></td>
+                        {!isAsyncSelectedChannel && <td style={{ padding: "8px 10px 8px 0" }}><Badge value={d.achievedSL} target={targetSL} unit="%" /></td>}
                         <td style={{ padding: "8px 10px 8px 0" }}><Badge value={d.actualOcc} target={75} unit="%" /></td>
                       </tr>
                     ))}
@@ -1005,7 +1086,7 @@ export function CapacityPlanning() {
                       <td style={{ padding: "10px 10px 10px 0", fontWeight: 700, fontSize: 13 }}>{dailyBreakdown.reduce((a,d)=>a+d.vol,0).toLocaleString()}</td>
                       <td colSpan={2} />
                       <td style={{ padding: "10px 10px 10px 0", fontWeight: 700, fontSize: 14, color: "#f97316" }}>{sel.fte} avg</td>
-                      <td colSpan={2} />
+                      <td colSpan={isAsyncSelectedChannel ? 1 : 2} />
                     </tr>
                   </tbody>
                 </table>
