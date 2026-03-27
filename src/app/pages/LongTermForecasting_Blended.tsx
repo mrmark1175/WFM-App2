@@ -132,10 +132,13 @@ export interface WorkforceSupplyResult {
 }
 
 export interface ForecastData {
+  scenarioId?: string;
   month: string;
   year: string;
   isFuture: boolean;
   volume: number;
+  apiVolume?: number;
+  manualVolume?: number;
   actualSeries: number | null;
   forecastSeries: number | null;
   confidenceBand: [number, number] | null;
@@ -143,6 +146,8 @@ export interface ForecastData {
   overstaffedRange: [number, number] | null;
   historicalVolume: number; // SDLY for comparison
   aht: number;         
+  apiAHT?: number;
+  manualAHT?: number;
   shrinkage: number;
   requiredFTE: number; 
   availableFTE: number | null; 
@@ -153,6 +158,7 @@ export interface ForecastData {
 export interface Scenario {
   id: string;
   name: string;
+  version: number;
   assumptions: Assumptions;
   supplyInputs: WorkforceSupplyInputs;
 }
@@ -212,6 +218,9 @@ const DEFAULT_SUPPLY_INPUTS: WorkforceSupplyInputs = {
   shrinkage: 15,
 };
 
+const LEGACY_SCENARIO_VERSION = 1;
+const CURRENT_SCENARIO_VERSION = 2;
+
 const FORECAST_METHODS = [
   { key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" },
   { key: "arima", label: "ARIMA (simplified version)" },
@@ -226,6 +235,108 @@ const FORECAST_METHODS = [
 
 const validateInput = (value: number, min: number = 0, max: number = Infinity): number => {
   return Math.max(min, Math.min(max, value));
+};
+
+const getForecastRowKey = (row: Pick<ForecastData, "scenarioId" | "month" | "year" | "isFuture">) =>
+  `${row.scenarioId || "default"}-${row.year}-${row.month}-${row.isFuture ? "future" : "actual"}`;
+
+const getDisplayVolume = (
+  baseVolume: number,
+  channels?: Assumptions["channels"]
+): number => {
+  const safeBaseVolume = Number.isFinite(baseVolume) ? baseVolume : 0;
+  const safeChannels = channels || DEFAULT_ASSUMPTIONS.channels;
+
+  return Math.round(
+    (safeChannels.voice?.isActive ? safeBaseVolume : 0) +
+    (safeChannels.email?.isActive ? safeBaseVolume * 0.2 : 0) +
+    (safeChannels.chat?.isActive ? safeBaseVolume * 0.3 : 0)
+  );
+};
+
+const getRowDisplayVolume = (
+  row: ForecastData,
+  channels?: Assumptions["channels"],
+  isApiOverride: boolean = false
+) => {
+  if (isApiOverride) {
+    return row.apiVolume ?? getDisplayVolume(row.volume, channels);
+  }
+
+  return row.manualVolume ?? getDisplayVolume(row.volume, channels);
+};
+
+const getRowDisplayAHT = (
+  row: ForecastData,
+  isApiOverride: boolean = false
+) => {
+  if (isApiOverride) {
+    return row.apiAHT ?? row.aht;
+  }
+
+  return row.manualAHT ?? row.aht;
+};
+
+const normalizeChannels = (channels?: Partial<Assumptions["channels"]>): Assumptions["channels"] => ({
+  ...DEFAULT_ASSUMPTIONS.channels,
+  ...channels,
+  voice: {
+    ...DEFAULT_ASSUMPTIONS.channels.voice,
+    ...(channels?.voice || {}),
+  },
+  email: {
+    ...DEFAULT_ASSUMPTIONS.channels.email,
+    ...(channels?.email || {}),
+  },
+  chat: {
+    ...DEFAULT_ASSUMPTIONS.channels.chat,
+    ...(channels?.chat || {}),
+  },
+});
+
+const upgradeScenarioToV2 = (scenario: Partial<Scenario>): Scenario => {
+  const assumptions = {
+    ...DEFAULT_ASSUMPTIONS,
+    ...(scenario.assumptions || {}),
+    channels: normalizeChannels(scenario.assumptions?.channels),
+  };
+
+  return {
+    id: scenario.id || `scenario-${Date.now()}`,
+    name: scenario.name || "Scenario",
+    version: CURRENT_SCENARIO_VERSION,
+    assumptions,
+    supplyInputs: {
+      ...DEFAULT_SUPPLY_INPUTS,
+      ...(scenario.supplyInputs || {}),
+    },
+  };
+};
+
+const normalizeScenarioRecord = (scenarioRecord: Record<string, Partial<Scenario>>): Record<string, Scenario> => {
+  return Object.fromEntries(
+    Object.entries(scenarioRecord).map(([id, scenario]) => {
+      const scenarioVersion = scenario.version ?? LEGACY_SCENARIO_VERSION;
+      const upgraded = scenarioVersion === LEGACY_SCENARIO_VERSION
+        ? upgradeScenarioToV2({ ...scenario, id: scenario.id || id })
+        : {
+            ...scenario,
+            id: scenario.id || id,
+            version: CURRENT_SCENARIO_VERSION,
+            assumptions: {
+              ...DEFAULT_ASSUMPTIONS,
+              ...(scenario.assumptions || {}),
+              channels: normalizeChannels(scenario.assumptions?.channels),
+            },
+            supplyInputs: {
+              ...DEFAULT_SUPPLY_INPUTS,
+              ...(scenario.supplyInputs || {}),
+            },
+          };
+
+      return [id, upgraded];
+    })
+  );
 };
 
 const getTimeline = (startDateStr: string, monthsPast: number = 0, monthsFuture: number = 12): { month: string, year: string, isFuture: boolean }[] => {
@@ -508,6 +619,7 @@ export default function LongTermForecastingBlended() {
   const [selectedScenarioId, setSelectedScenarioId] = useState("base");
   const [loading, setLoading] = useState(true);
   const [forecastMethod, setForecastMethod] = useState("holtwinters");
+  const [isApiOverride, setIsApiOverride] = useState(false);
   
   // Forecasting Parameters State
   const [hwParams, setHwParams] = useState({ alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 });
@@ -519,18 +631,21 @@ export default function LongTermForecastingBlended() {
     "base": {
       id: "base",
       name: "Base Case (Steady)",
+      version: CURRENT_SCENARIO_VERSION,
       assumptions: DEFAULT_ASSUMPTIONS,
       supplyInputs: DEFAULT_SUPPLY_INPUTS
     },
     "scenario-a": {
       id: "scenario-a",
       name: "Scenario A (High Growth)",
+      version: CURRENT_SCENARIO_VERSION,
       assumptions: { ...DEFAULT_ASSUMPTIONS, growthRate: 15 },
       supplyInputs: { ...DEFAULT_SUPPLY_INPUTS, monthlyHiring: 20, newHireAttritionProfile: [15, 10, 5] }
     },
     "scenario-b": {
       id: "scenario-b",
       name: "Scenario B (Efficiency)",
+      version: CURRENT_SCENARIO_VERSION,
       assumptions: { ...DEFAULT_ASSUMPTIONS, blendingEfficiency: 10, safetyMargin: 3 },
       supplyInputs: { ...DEFAULT_SUPPLY_INPUTS, tenuredAttritionRate: 1.0, trainingYield: 95 }
     }
@@ -550,10 +665,12 @@ export default function LongTermForecastingBlended() {
       try {
         const parsed = JSON.parse(saved);
         if (parsed && Object.keys(parsed).length > 0) {
-          setScenarios(parsed);
+          const normalizedScenarios = normalizeScenarioRecord(parsed);
+          setScenarios(normalizedScenarios);
+          localStorage.setItem("lt_forecast_scenarios", JSON.stringify(normalizedScenarios));
           // If current selection is invalid, switch to first available
-          if (!parsed[selectedScenarioId]) {
-            const firstId = Object.keys(parsed)[0];
+          if (!normalizedScenarios[selectedScenarioId]) {
+            const firstId = Object.keys(normalizedScenarios)[0];
             setSelectedScenarioId(firstId);
           }
         }
@@ -614,7 +731,8 @@ export default function LongTermForecastingBlended() {
   }, [assumptions, supplyInputs, forecastMethod, hwParams, arimaParams, decompParams]);
 
   const saveScenariosToStorage = (updatedScenarios: Record<string, Scenario>) => {
-    localStorage.setItem("lt_forecast_scenarios", JSON.stringify(updatedScenarios));
+    const normalizedScenarios = normalizeScenarioRecord(updatedScenarios);
+    localStorage.setItem("lt_forecast_scenarios", JSON.stringify(normalizedScenarios));
   };
 
   const handleSaveScenario = () => {
@@ -625,6 +743,7 @@ export default function LongTermForecastingBlended() {
     const newScenario: Scenario = {
       id: newId,
       name: name.trim(),
+      version: CURRENT_SCENARIO_VERSION,
       assumptions: { ...assumptions },
       supplyInputs: { ...supplyInputs }
     };
@@ -648,6 +767,7 @@ export default function LongTermForecastingBlended() {
        const defaultScenario: Scenario = {
           id: "base",
           name: "Base Case (Steady)",
+          version: CURRENT_SCENARIO_VERSION,
           assumptions: DEFAULT_ASSUMPTIONS,
           supplyInputs: DEFAULT_SUPPLY_INPUTS
        };
@@ -669,6 +789,7 @@ export default function LongTermForecastingBlended() {
     const newScenario: Scenario = {
       id,
       name,
+      version: CURRENT_SCENARIO_VERSION,
       assumptions: { ...assumptions },
       supplyInputs: { ...supplyInputs }
     };
@@ -677,6 +798,28 @@ export default function LongTermForecastingBlended() {
     saveScenariosToStorage(updated);
     setSelectedScenarioId(id);
     toast.success("New scenario created!");
+  };
+
+  const handleForecastRowInput = (
+    rowKey: string,
+    field: "manualVolume" | "manualAHT",
+    value: string
+  ) => {
+    const normalizedValue = value.trim();
+    const parsedValue = normalizedValue === "" ? undefined : Number(normalizedValue);
+
+    setForecastData(prev =>
+      prev.map(row => {
+        if (getForecastRowKey(row) !== rowKey) return row;
+
+        return {
+          ...row,
+          [field]: parsedValue !== undefined && Number.isFinite(parsedValue)
+            ? validateInput(parsedValue)
+            : undefined,
+        };
+      })
+    );
   };
 
   const supplyResults = useMemo(() => {
@@ -736,6 +879,8 @@ export default function LongTermForecastingBlended() {
     
     // Future SDLY Reference: Last 12 months of historical data source (indices 12-23)
     const futureSdly = effectiveHistoricalData.slice(-12);
+    const apiHistoricalData = historicalData;
+    const apiFutureReference = historicalData.slice(-12);
 
     const mappedData: ForecastData[] = timeline.map((time, idx) => {
       let volume = 0;
@@ -808,6 +953,10 @@ export default function LongTermForecastingBlended() {
       
       const availFTE = isFuture ? (supply?.effectiveHeadcount ?? 0) : null;
       const headcount = isFuture ? (supply?.headcount ?? 0) : null;
+      const apiVolume = isFuture
+        ? apiFutureReference[idx - 24]
+        : apiHistoricalData[idx];
+      const apiAHT = monthlyAHT;
 
       const actualSeries = idx <= 24 ? (idx === 24 ? (calculatedVolumes[0] || 0) : volume) : null;
       const forecastSeries = idx >= 23 ? (idx === 23 ? (effectiveHistoricalData[23] || 0) : volume) : null;
@@ -817,10 +966,12 @@ export default function LongTermForecastingBlended() {
       const overstaffedRange: [number, number] | null = isFuture ? [reqFTE, Math.max(reqFTE, availFTE || 0)] : null;
 
       return {
+        scenarioId: selectedScenarioId,
         month: time.month,
         year: time.year,
         isFuture,
         volume,
+        apiVolume: Number.isFinite(apiVolume) ? apiVolume : undefined,
         actualSeries,
         forecastSeries,
         confidenceBand,
@@ -828,6 +979,7 @@ export default function LongTermForecastingBlended() {
         overstaffedRange,
         historicalVolume,
         aht: monthlyAHT,
+        apiAHT,
         shrinkage: assumptions.shrinkage,
         requiredFTE: reqFTE,
         availableFTE: availFTE,
@@ -836,7 +988,26 @@ export default function LongTermForecastingBlended() {
       };
     });
     
-    setForecastData(mappedData);
+    setForecastData(prev => {
+      const previousOverrides = new Map(
+        prev.map(row => [
+          getForecastRowKey(row),
+          {
+            manualVolume: row.manualVolume,
+            manualAHT: row.manualAHT,
+          },
+        ])
+      );
+
+      return mappedData.map(row => {
+        const savedOverrides = previousOverrides.get(getForecastRowKey(row));
+        return {
+          ...row,
+          manualVolume: savedOverrides?.manualVolume,
+          manualAHT: savedOverrides?.manualAHT,
+        };
+      });
+    });
     
     if (timeline.length > 0) {
         const forecastYear = timeline[timeline.length - 1].year;
@@ -1326,15 +1497,38 @@ export default function LongTermForecastingBlended() {
                               </div>
                             </TableCell>
                           </TableRow>
-                          {expandedYears[year] && rows.map((row, idx) => (
-                            <TableRow key={`${year}-${idx}`} className={`group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors ${!row.isFuture ? "opacity-70 bg-slate-50/30" : ""}`}>
+                          {expandedYears[year] && rows.map((row) => {
+                            const rowKey = getForecastRowKey(row);
+                            const displayVolume = getRowDisplayVolume(row, assumptions.channels, isApiOverride);
+                            const displayAHT = getRowDisplayAHT(row, isApiOverride);
+
+                            return (
+                            <TableRow key={rowKey} className={`group hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors ${!row.isFuture ? "opacity-70 bg-slate-50/30" : ""}`}>
                               <TableCell className="font-bold text-sm pl-6 flex items-center gap-2">
                                 {row.month}
                                 {!row.isFuture && <Badge variant="secondary" className="text-xs h-4 font-black">ACTUAL</Badge>}
                                 {row.isFuture && <Badge variant="outline" className="text-xs h-4 font-black border-primary/20 text-primary">FCST</Badge>}
                               </TableCell>
-                              <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
-                              <TableCell className="text-right font-mono text-sm text-indigo-600">{row.aht}s</TableCell>
+                              <TableCell className="text-right">
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  value={displayVolume}
+                                  onChange={(e) => handleForecastRowInput(rowKey, "manualVolume", e.target.value)}
+                                  disabled={isApiOverride}
+                                  className={`ml-auto h-8 w-28 text-right font-mono text-sm font-bold text-primary ${isApiOverride ? "opacity-60 cursor-not-allowed bg-slate-100 dark:bg-slate-900" : ""}`}
+                                />
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  value={displayAHT}
+                                  onChange={(e) => handleForecastRowInput(rowKey, "manualAHT", e.target.value)}
+                                  disabled={isApiOverride}
+                                  className={`ml-auto h-8 w-24 text-right font-mono text-sm text-indigo-600 ${isApiOverride ? "opacity-60 cursor-not-allowed bg-slate-100 dark:bg-slate-900" : ""}`}
+                                />
+                              </TableCell>
                               <TableCell className="text-right font-mono text-sm font-bold text-amber-600">{row.requiredFTE}</TableCell>
                               <TableCell className="text-right font-mono text-sm text-emerald-600 font-bold">{row.availableFTE?.toLocaleString() ?? "-"}</TableCell>
                               <TableCell className="text-right pr-6">
@@ -1346,7 +1540,7 @@ export default function LongTermForecastingBlended() {
                                 </Badge>
                               </TableCell>
                             </TableRow>
-                          ))}
+                          )})}
                         </React.Fragment>
                       ))}
                     </TableBody>
@@ -1688,57 +1882,28 @@ export default function LongTermForecastingBlended() {
                          <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Data Source</Label>
-                              <Badge variant="outline" className="text-xs font-bold">{assumptions.useManualVolume ? "MANUAL" : "API"}</Badge>
+                              <Badge variant="outline" className="text-xs font-bold">{isApiOverride ? "API OVERRIDE" : "MANUAL/CALC"}</Badge>
                             </div>
                             <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-muted-foreground">Manual</span>
+                              <span className="text-xs font-bold text-muted-foreground">API Override</span>
                               <Switch 
-                                checked={assumptions.useManualVolume} 
-                                onCheckedChange={(checked) => setAssumptions({...assumptions, useManualVolume: checked})} 
+                                checked={isApiOverride} 
+                                onCheckedChange={setIsApiOverride} 
                               />
                             </div>
                          </div>
-                         
-                         {assumptions.useManualVolume && (
-                           <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                             <div className="flex items-center justify-between">
-                               <p className="text-xs font-bold text-muted-foreground uppercase">Monthly Actuals (Last 12m)</p>
-                               {!loading && historicalData.length > 0 && (
-                                 <Button 
-                                   variant="ghost" 
-                                   size="sm" 
-                                   className="h-6 text-xs font-black border border-primary/20 text-primary uppercase"
-                                   onClick={() => {
-                                     setAssumptions({
-                                       ...assumptions, 
-                                       manualHistoricalData: historicalData.slice(-12)
-                                     });
-                                     toast.success("Copied latest API data to manual fields");
-                                   }}
-                                 >
-                                   Copy from API
-                                 </Button>
-                               )}
-                             </div>
-                             <div className="grid grid-cols-3 gap-2">
-                               {assumptions.manualHistoricalData.map((vol, i) => (
-                                 <div key={i} className="space-y-1">
-                                   <Label className="text-xs font-bold text-muted-foreground uppercase">{MONTH_NAMES[i]}</Label>
-                                   <Input 
-                                     type="number" 
-                                     value={vol} 
-                                     onChange={(e) => {
-                                       const newData = [...assumptions.manualHistoricalData];
-                                       newData[i] = Number(e.target.value);
-                                       setAssumptions({...assumptions, manualHistoricalData: newData});
-                                     }}
-                                     className="h-8 text-xs font-bold"
-                                   />
-                                 </div>
-                               ))}
-                             </div>
-                           </div>
-                         )}
+                         <div className={`rounded-lg border p-3 transition-colors ${isApiOverride ? "border-primary/30 bg-primary/5" : "border-border bg-slate-50/50 dark:bg-slate-900/40"}`}>
+                           <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                             {isApiOverride
+                               ? "Table values are locked to API-backed monthly data when available."
+                               : "Table values use manual overrides first, then fall back to calculated values."}
+                           </p>
+                           {isApiOverride && historicalData.length === 0 && (
+                             <p className="mt-2 text-xs font-medium text-muted-foreground">
+                               API data is unavailable. The table will safely fall back to calculated values.
+                             </p>
+                           )}
+                         </div>
                       </div>
 
                       <div className="space-y-3 border-t border-border pt-4">
