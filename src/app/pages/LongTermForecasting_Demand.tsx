@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import { calculateYoY, calculateMovingAverage, calculateLinearRegression, calculateHoltWinters, calculateDecomposition, calculateARIMA } from "./forecasting-logic";
 import { buildDemandHelpPrintHtml, demandForecastHelpSections } from "./LongTermForecasting_Demand.help";
 
-interface Assumptions { startDate: string; aht: number; shrinkage: number; slTarget: number; occupancy: number; growthRate: number; safetyMargin: number; currency: string; annualSalary: number; onboardingCost: number; fteMonthlyHours: number; useManualVolume: boolean; manualHistoricalData: number[]; }
+interface Assumptions { startDate: string; aht: number; emailAht: number; chatAht: number; shrinkage: number; slTarget: number; occupancy: number; growthRate: number; safetyMargin: number; currency: string; annualSalary: number; onboardingCost: number; fteMonthlyHours: number; useManualVolume: boolean; manualHistoricalData: number[]; }
 interface DemandForecastData { month: string; year: string; isFuture: boolean; volume: number; workloadHours: number; aht: number; occupancy: number; shrinkage: number; requiredFTE: number; actualVolume: number | null; forecastVolume: number | null; historicalVolume: number; }
 interface PlannerSnapshot {
   assumptions: Assumptions;
@@ -25,8 +25,10 @@ interface PlannerSnapshot {
   arimaParams: { p: number; d: number; q: number };
   decompParams: { trendStrength: number; seasonalityStrength: number };
   historicalOverrides: Record<number, string>;
+  channelHistoricalOverrides: Record<ChannelKey, Record<number, string>>;
   activeBlendPreset: BlendPresetId;
   isHistoricalSourceOpen: boolean;
+  selectedHistoricalChannel: ChannelKey;
 }
 interface Scenario { id: string; name: string; assumptions: Assumptions; snapshot: PlannerSnapshot; }
 interface HistoricalSourceRow { index: number; monthLabel: string; apiVolume: number; overrideVolume: string; finalVolume: number; variancePct: number | null; isOverridden: boolean; }
@@ -38,11 +40,13 @@ interface FutureStaffingRow extends DemandForecastData { activeBlendPreset: stri
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const FORECAST_METHODS = [{ key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" }, { key: "arima", label: "ARIMA (simplified version)" }, { key: "decomposition", label: "Decomposition (Trend + Seasonality)" }, { key: "ma", label: "Moving Average (baseline fallback)" }, { key: "genesys", label: "Direct Genesys Sync" }, { key: "yoy", label: "Year-over-Year Growth" }, { key: "regression", label: "Linear Regression" }];
-const DEFAULT_ASSUMPTIONS: Assumptions = { startDate: "2026-01-01", aht: 300, shrinkage: 25, slTarget: 80, occupancy: 85, growthRate: 5, safetyMargin: 5, currency: "USD", annualSalary: 45000, onboardingCost: 5000, fteMonthlyHours: 166.67, useManualVolume: false, manualHistoricalData: new Array(12).fill(10000) };
+const DEFAULT_ASSUMPTIONS: Assumptions = { startDate: "2026-01-01", aht: 300, emailAht: 600, chatAht: 450, shrinkage: 25, slTarget: 80, occupancy: 85, growthRate: 5, safetyMargin: 5, currency: "USD", annualSalary: 45000, onboardingCost: 5000, fteMonthlyHours: 166.67, useManualVolume: false, manualHistoricalData: new Array(12).fill(10000) };
+const EMPTY_CHANNEL_DATA: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [] };
+const EMPTY_CHANNEL_OVERRIDES: Record<ChannelKey, Record<number, string>> = { voice: {}, email: {}, chat: {} };
 const DEFAULT_SCENARIOS: Record<string, Scenario> = {
-  base: createScenario("base", "Base Case (Steady)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, {}, "all-blended", false)),
-  "scenario-a": createScenario("scenario-a", "Scenario A (High Growth)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS, growthRate: 15 }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, {}, "all-blended", false)),
-  "scenario-b": createScenario("scenario-b", "Scenario B (Efficiency)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS, occupancy: 90, safetyMargin: 3 }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, {}, "all-blended", false)),
+  base: createScenario("base", "Base Case (Steady)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, EMPTY_CHANNEL_OVERRIDES, "all-blended", false, "voice")),
+  "scenario-a": createScenario("scenario-a", "Scenario A (High Growth)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS, growthRate: 15 }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, EMPTY_CHANNEL_OVERRIDES, "all-blended", false, "voice")),
+  "scenario-b": createScenario("scenario-b", "Scenario B (Efficiency)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS, occupancy: 90, safetyMargin: 3 }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, EMPTY_CHANNEL_OVERRIDES, "all-blended", false, "voice")),
 };
 const BLEND_PRESETS: BlendPreset[] = [
   { id: "voice-only", label: "Voice only", description: "Only voice shares the staffed pool", pools: [["voice"], ["email"], ["chat"]] },
@@ -82,9 +86,10 @@ function buildPlannerSnapshot(
   hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number },
   arimaParams: { p: number; d: number; q: number },
   decompParams: { trendStrength: number; seasonalityStrength: number },
-  historicalOverrides: Record<number, string>,
+  channelHistoricalOverrides: Record<ChannelKey, Record<number, string>>,
   activeBlendPreset: BlendPresetId,
   isHistoricalSourceOpen: boolean,
+  selectedHistoricalChannel: ChannelKey,
 ): PlannerSnapshot {
   return {
     assumptions: cloneAssumptions(assumptions),
@@ -92,9 +97,15 @@ function buildPlannerSnapshot(
     hwParams: { ...hwParams },
     arimaParams: { ...arimaParams },
     decompParams: { ...decompParams },
-    historicalOverrides: { ...historicalOverrides },
+    historicalOverrides: { ...channelHistoricalOverrides.voice },
+    channelHistoricalOverrides: {
+      voice: { ...channelHistoricalOverrides.voice },
+      email: { ...channelHistoricalOverrides.email },
+      chat: { ...channelHistoricalOverrides.chat },
+    },
     activeBlendPreset,
     isHistoricalSourceOpen,
+    selectedHistoricalChannel,
   };
 }
 function createScenario(id: string, name: string, snapshot: PlannerSnapshot): Scenario { return ({
@@ -108,6 +119,12 @@ function createScenario(id: string, name: string, snapshot: PlannerSnapshot): Sc
     arimaParams: { ...snapshot.arimaParams },
     decompParams: { ...snapshot.decompParams },
     historicalOverrides: { ...snapshot.historicalOverrides },
+    channelHistoricalOverrides: {
+      voice: { ...snapshot.channelHistoricalOverrides.voice },
+      email: { ...snapshot.channelHistoricalOverrides.email },
+      chat: { ...snapshot.channelHistoricalOverrides.chat },
+    },
+    selectedHistoricalChannel: snapshot.selectedHistoricalChannel,
   },
 }); }
 function normalizeScenario(value: unknown, fallbackId: string): Scenario | null {
@@ -122,8 +139,14 @@ function normalizeScenario(value: unknown, fallbackId: string): Scenario | null 
     arimaParams: { p: 1, d: 1, q: 1, ...(snapshot?.arimaParams || {}) },
     decompParams: { trendStrength: 1, seasonalityStrength: 1, ...(snapshot?.decompParams || {}) },
     historicalOverrides: normalizeHistoricalOverrides(snapshot?.historicalOverrides),
+    channelHistoricalOverrides: {
+      voice: Object.keys(normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.voice)).length > 0 ? normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.voice) : normalizeHistoricalOverrides(snapshot?.historicalOverrides),
+      email: normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.email),
+      chat: normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.chat),
+    },
     activeBlendPreset: normalizeBlendPreset(snapshot?.activeBlendPreset),
     isHistoricalSourceOpen: typeof snapshot?.isHistoricalSourceOpen === "boolean" ? snapshot.isHistoricalSourceOpen : false,
+    selectedHistoricalChannel: snapshot?.selectedHistoricalChannel === "email" || snapshot?.selectedHistoricalChannel === "chat" ? snapshot.selectedHistoricalChannel : "voice",
   });
 }
 const getTimeline = (startDateStr: string, monthsPast = 0, monthsFuture = 12) => {
@@ -192,13 +215,14 @@ const getCalculatedVolumes = (data: number[], forecastMethod: string, assumption
   }
 };
 const buildDemandForecastData = (data: number[], assumptions: Assumptions, forecastMethod: string, hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number }, arimaParams: { p: number; d: number; q: number }, decompParams: { trendStrength: number; seasonalityStrength: number }): DemandForecastData[] => {
+  const historyLength = data.length;
   const calculatedVolumes = getCalculatedVolumes(data, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
-  const timeline = getTimeline(assumptions.startDate, 24, 12);
+  const timeline = getTimeline(assumptions.startDate, historyLength, 12);
   return timeline.map((time, idx) => {
     const isFuture = time.isFuture;
-    const historicalVolume = !isFuture ? data[idx] || 0 : null;
-    const forecastVolume = isFuture ? calculatedVolumes[idx - 24] || 0 : null;
-    const volume = isFuture ? forecastVolume || 0 : historicalVolume || 0;
+    const historicalVolume = !isFuture ? data[idx] ?? 0 : null;
+    const forecastVolume = isFuture ? calculatedVolumes[idx - historyLength] ?? 0 : null;
+    const volume = isFuture ? forecastVolume ?? 0 : historicalVolume ?? 0;
     return {
       month: time.month,
       year: time.year,
@@ -228,20 +252,30 @@ export default function LongTermForecastingDemand() {
   const [decompParams, setDecompParams] = useState({ trendStrength: 1, seasonalityStrength: 1 });
   const [scenarios, setScenarios] = useState<Record<string, Scenario>>(DEFAULT_SCENARIOS);
   const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);
-  const [historicalApiData, setHistoricalApiData] = useState<number[]>([]);
-  const [historicalOverrides, setHistoricalOverrides] = useState<Record<number, string>>({});
+  const [historicalChannelView, setHistoricalChannelView] = useState<ChannelKey>("voice");
+  const [historicalApiDataByChannel, setHistoricalApiDataByChannel] = useState<Record<ChannelKey, number[]>>(EMPTY_CHANNEL_DATA);
+  const [historicalOverridesByChannel, setHistoricalOverridesByChannel] = useState<Record<ChannelKey, Record<number, string>>>(EMPTY_CHANNEL_OVERRIDES);
   const hasHydratedRef = useRef(false);
   const activeScenario = scenarios[selectedScenarioId];
-  const getCurrentPlannerSnapshot = () => buildPlannerSnapshot(assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalOverrides, activeBlendPreset, isHistoricalSourceOpen);
+  const historicalApiData = historicalApiDataByChannel.voice;
+  const historicalOverrides = historicalOverridesByChannel.voice;
+  const visibleHistoricalApiData = historicalApiDataByChannel[historicalChannelView];
+  const visibleHistoricalOverrides = historicalOverridesByChannel[historicalChannelView];
+  const getCurrentPlannerSnapshot = () => buildPlannerSnapshot(assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalOverridesByChannel, activeBlendPreset, isHistoricalSourceOpen, historicalChannelView);
   const applyPlannerSnapshot = (snapshot: PlannerSnapshot) => {
     setAssumptions(cloneAssumptions(snapshot.assumptions));
     setForecastMethod(snapshot.forecastMethod);
     setHwParams({ ...snapshot.hwParams });
     setArimaParams({ ...snapshot.arimaParams });
     setDecompParams({ ...snapshot.decompParams });
-    setHistoricalOverrides({ ...snapshot.historicalOverrides });
+    setHistoricalOverridesByChannel({
+      voice: { ...(snapshot.channelHistoricalOverrides?.voice || snapshot.historicalOverrides || {}) },
+      email: { ...(snapshot.channelHistoricalOverrides?.email || {}) },
+      chat: { ...(snapshot.channelHistoricalOverrides?.chat || {}) },
+    });
     setActiveBlendPreset(snapshot.activeBlendPreset);
     setIsHistoricalSourceOpen(snapshot.isHistoricalSourceOpen);
+    setHistoricalChannelView(snapshot.selectedHistoricalChannel || "voice");
   };
 
   useEffect(() => {
@@ -290,17 +324,27 @@ export default function LongTermForecastingDemand() {
       selectedScenarioId,
       plannerSnapshot: getCurrentPlannerSnapshot(),
     }));
-  }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalOverrides, activeBlendPreset, isHistoricalSourceOpen, selectedScenarioId]);
+  }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalOverridesByChannel, activeBlendPreset, isHistoricalSourceOpen, historicalChannelView, selectedScenarioId]);
   useEffect(() => {
     const fetchMockData = async () => {
       setLoading(true);
       try {
-        const response = await fetch("http://localhost:5000/api/genesys/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queueId: "mock-queue-id", interval: `${assumptions.startDate}/2030-12-31` }) });
-        const result = await response.json();
-        if (result.success && Array.isArray(result.data)) {
-          setHistoricalApiData(result.data);
-          setHistoricalOverrides((current) => Object.fromEntries(Object.entries(current).filter(([key]) => Number(key) < result.data.length)));
-        }
+        const channels: ChannelKey[] = ["voice", "email", "chat"];
+        const results = await Promise.all(channels.map(async (channel) => {
+          const response = await fetch("http://localhost:5000/api/genesys/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queueId: "mock-queue-id", channel, interval: `${assumptions.startDate}/2030-12-31` }) });
+          const result = await response.json();
+          return { channel, data: result.success && Array.isArray(result.data) ? result.data : [] };
+        }));
+        const nextApiData = results.reduce<Record<ChannelKey, number[]>>((acc, { channel, data }) => {
+          acc[channel] = data;
+          return acc;
+        }, { voice: [], email: [], chat: [] });
+        setHistoricalApiDataByChannel(nextApiData);
+        setHistoricalOverridesByChannel((current) => ({
+          voice: Object.fromEntries(Object.entries(current.voice).filter(([key]) => Number(key) < nextApiData.voice.length)),
+          email: Object.fromEntries(Object.entries(current.email).filter(([key]) => Number(key) < nextApiData.email.length)),
+          chat: Object.fromEntries(Object.entries(current.chat).filter(([key]) => Number(key) < nextApiData.chat.length)),
+        }));
       } catch (error) { console.error("Error fetching mock data:", error); }
       finally { setLoading(false); }
     };
@@ -360,47 +404,48 @@ export default function LongTermForecastingDemand() {
     toast.success("Scenario renamed");
   };
   const handleOverrideToggle = (index: number, checked: boolean) => {
-    setHistoricalOverrides((current) => {
+    setHistoricalOverridesByChannel((current) => {
+      const nextChannelOverrides = { ...current[historicalChannelView] };
       if (!checked) {
-        const next = { ...current };
-        delete next[index];
-        return next;
+        delete nextChannelOverrides[index];
+      } else {
+        nextChannelOverrides[index] = nextChannelOverrides[index] && nextChannelOverrides[index] !== "" ? nextChannelOverrides[index] : String(visibleHistoricalApiData[index] ?? "");
       }
-      return { ...current, [index]: current[index] && current[index] !== "" ? current[index] : String(historicalApiData[index] ?? "") };
+      return { ...current, [historicalChannelView]: nextChannelOverrides };
     });
   };
   const handleOverrideChange = (index: number, nextValue: string) => {
     if (!/^\d*$/.test(nextValue)) return;
-    setHistoricalOverrides((current) => ({ ...current, [index]: nextValue }));
+    setHistoricalOverridesByChannel((current) => ({ ...current, [historicalChannelView]: { ...current[historicalChannelView], [index]: nextValue } }));
   };
   const handleOverrideBlur = (index: number) => {
-    setHistoricalOverrides((current) => {
-      const existing = current[index];
+    setHistoricalOverridesByChannel((current) => {
+      const nextChannelOverrides = { ...current[historicalChannelView] };
+      const existing = nextChannelOverrides[index];
       if (existing === undefined) return current;
       if (existing === "") {
-        const next = { ...current };
-        delete next[index];
-        return next;
+        delete nextChannelOverrides[index];
+        return { ...current, [historicalChannelView]: nextChannelOverrides };
       }
       const parsedValue = Number.parseInt(existing, 10);
       if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-        const next = { ...current };
-        delete next[index];
-        return next;
+        delete nextChannelOverrides[index];
+        return { ...current, [historicalChannelView]: nextChannelOverrides };
       }
-      return { ...current, [index]: String(parsedValue) };
+      nextChannelOverrides[index] = String(parsedValue);
+      return { ...current, [historicalChannelView]: nextChannelOverrides };
     });
   };
   const handleResetMonthOverride = (index: number) => {
-    setHistoricalOverrides((current) => {
-      const next = { ...current };
-      delete next[index];
-      return next;
+    setHistoricalOverridesByChannel((current) => {
+      const nextChannelOverrides = { ...current[historicalChannelView] };
+      delete nextChannelOverrides[index];
+      return { ...current, [historicalChannelView]: nextChannelOverrides };
     });
   };
   const handleResetAllOverrides = () => {
-    setHistoricalOverrides({});
-    toast.success("All historical overrides reset");
+    setHistoricalOverridesByChannel((current) => ({ ...current, [historicalChannelView]: {} }));
+    toast.success(`All ${CHANNEL_ASSUMPTION_META[historicalChannelView].label.toLowerCase()} historical overrides reset`);
   };
   const handlePrintQuickGuide = () => {
     const printWindow = window.open("", "_blank", "noopener,noreferrer,width=900,height=1000");
@@ -421,16 +466,46 @@ export default function LongTermForecastingDemand() {
     const parsedValue = Number.parseInt(overrideValue, 10);
     return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : apiVolume;
   }), [historicalApiData, historicalOverrides]);
+  // Per-channel final historical data (applies each channel's own overrides)
+  const finalHistoricalDataByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
+    const applyOverrides = (channel: ChannelKey) =>
+      historicalApiDataByChannel[channel].map((apiVolume, index) => {
+        const ov = historicalOverridesByChannel[channel][index];
+        if (ov === undefined || ov === "") return apiVolume;
+        const parsed = Number.parseInt(ov, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : apiVolume;
+      });
+    return { voice: finalHistoricalData, email: applyOverrides("email"), chat: applyOverrides("chat") };
+  }, [finalHistoricalData, historicalApiDataByChannel, historicalOverridesByChannel]);
+  // Per-channel 12-month forecast volumes — uses each channel's own history when available
+  const forecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
+    const voiceForecast = getCalculatedVolumes(finalHistoricalDataByChannel.voice, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
+    const emailHistory = finalHistoricalDataByChannel.email;
+    const chatHistory = finalHistoricalDataByChannel.chat;
+    const emailForecast = emailHistory.length > 0
+      ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
+    const chatForecast = chatHistory.length > 0
+      ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
+    return { voice: voiceForecast, email: emailForecast, chat: chatForecast };
+  }, [finalHistoricalDataByChannel, forecastMethod, assumptions, hwParams, arimaParams, decompParams]);
+  const visibleFinalHistoricalData = useMemo(() => visibleHistoricalApiData.map((apiVolume, index) => {
+    const overrideValue = visibleHistoricalOverrides[index];
+    if (overrideValue === undefined || overrideValue === "") return apiVolume;
+    const parsedValue = Number.parseInt(overrideValue, 10);
+    return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : apiVolume;
+  }), [visibleHistoricalApiData, visibleHistoricalOverrides]);
   const historicalSourceRows = useMemo<HistoricalSourceRow[]>(() => {
-    const labels = getHistoricalTimeline(assumptions.startDate, historicalApiData.length);
-    return historicalApiData.map((apiVolume, index) => {
-      const overrideVolume = historicalOverrides[index] ?? "";
+    const labels = getHistoricalTimeline(assumptions.startDate, visibleHistoricalApiData.length);
+    return visibleHistoricalApiData.map((apiVolume, index) => {
+      const overrideVolume = visibleHistoricalOverrides[index] ?? "";
       const hasOverride = overrideVolume !== "" && Number.parseInt(overrideVolume, 10) > 0;
-      const finalVolume = finalHistoricalData[index] ?? apiVolume;
+      const finalVolume = visibleFinalHistoricalData[index] ?? apiVolume;
       const variancePct = hasOverride && apiVolume > 0 ? Number((((finalVolume - apiVolume) / apiVolume) * 100).toFixed(1)) : null;
       return { index, monthLabel: labels[index] ?? `Month ${index + 1}`, apiVolume, overrideVolume, finalVolume, variancePct, isOverridden: hasOverride };
     });
-  }, [assumptions.startDate, historicalApiData, historicalOverrides, finalHistoricalData]);
+  }, [assumptions.startDate, visibleHistoricalApiData, visibleHistoricalOverrides, visibleFinalHistoricalData]);
   const overrideCount = useMemo(() => historicalSourceRows.filter((row) => row.isOverridden).length, [historicalSourceRows]);
   const forecastData = useMemo(() => buildDemandForecastData(finalHistoricalData, assumptions, forecastMethod, hwParams, arimaParams, decompParams), [finalHistoricalData, assumptions, forecastMethod, hwParams, arimaParams, decompParams]);
   const volumeTrendChartData = useMemo(() => forecastData.map((row) => ({
@@ -439,11 +514,13 @@ export default function LongTermForecastingDemand() {
     forecastVolume: row.forecastVolume,
   })), [forecastData]);
   const selectedBlendPreset = useMemo(() => BLEND_PRESETS.find((preset) => preset.id === activeBlendPreset) || BLEND_PRESETS[4], [activeBlendPreset]);
-  const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row) => {
+  const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row, futureIdx) => {
+    const emailForecastVol = forecastVolumesByChannel.email[futureIdx] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email);
+    const chatForecastVol = forecastVolumesByChannel.chat[futureIdx] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat);
     const channelMetrics: Record<ChannelKey, { volume: number; workloadHours: number }> = {
       voice: { volume: row.volume, workloadHours: row.workloadHours },
-      email: { volume: Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email), workloadHours: Number(((row.volume * CHANNEL_VOLUME_FACTORS.email * EMAIL_AHT_SECONDS) / 3600).toFixed(1)) },
-      chat: { volume: Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat), workloadHours: Number((((row.volume * CHANNEL_VOLUME_FACTORS.chat * CHAT_AHT_SECONDS) / 3600) / CHAT_CONCURRENCY).toFixed(1)) },
+      email: { volume: emailForecastVol, workloadHours: Number(((emailForecastVol * assumptions.emailAht) / 3600).toFixed(1)) },
+      chat: { volume: chatForecastVol, workloadHours: Number((((chatForecastVol * assumptions.chatAht) / 3600) / CHAT_CONCURRENCY).toFixed(1)) },
     };
     const pools = selectedBlendPreset.pools.map((channels, index) => {
       const workloadHours = Number(channels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
@@ -461,7 +538,7 @@ export default function LongTermForecastingDemand() {
       totalRequiredFTE: Number(pools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
       pools,
     };
-  }), [forecastData, selectedBlendPreset, assumptions]);
+  }), [forecastData, forecastVolumesByChannel, selectedBlendPreset, assumptions]);
   const kpis = useMemo(() => futureData.length === 0 ? { avgVolume: 0, avgWorkloadHours: 0, avgRequiredFTE: 0 } : ({
     avgVolume: Math.round(futureData.reduce((sum, row) => sum + row.volume, 0) / futureData.length),
     avgWorkloadHours: Number((futureData.reduce((sum, row) => sum + row.workloadHours, 0) / futureData.length).toFixed(1)),
@@ -475,25 +552,54 @@ export default function LongTermForecastingDemand() {
   const scenarioComparisonData = useMemo(() => {
     const scenarioEntries = Object.values(scenarios);
     if (scenarioEntries.length === 0 || finalHistoricalData.length === 0) return [];
-    const scenarioForecasts = scenarioEntries.map((scenario) => ({ scenario, forecast: buildDemandForecastData(finalHistoricalData, scenario.assumptions, forecastMethod, hwParams, arimaParams, decompParams).filter((row) => row.isFuture).map((row) => {
-      const channelMetrics: Record<ChannelKey, { volume: number; workloadHours: number }> = {
-        voice: { volume: row.volume, workloadHours: row.workloadHours },
-        email: { volume: Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email), workloadHours: Number(((row.volume * CHANNEL_VOLUME_FACTORS.email * EMAIL_AHT_SECONDS) / 3600).toFixed(1)) },
-        chat: { volume: Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat), workloadHours: Number((((row.volume * CHANNEL_VOLUME_FACTORS.chat * CHAT_AHT_SECONDS) / 3600) / CHAT_CONCURRENCY).toFixed(1)) },
-      };
-      const totalRequiredFTE = selectedBlendPreset.pools.reduce((sum, channels) => {
-        const workloadHours = channels.reduce((poolSum, channel) => poolSum + channelMetrics[channel].workloadHours, 0);
-        const referenceVolume = channels.reduce((poolSum, channel) => poolSum + channelMetrics[channel].volume, 0);
-        return sum + calculatePooledFTE(workloadHours, referenceVolume, scenario.assumptions);
-      }, 0);
-      return { ...row, totalRequiredFTE: Number(totalRequiredFTE.toFixed(1)) };
-    }) }));
+    const scenarioForecasts = scenarioEntries.map((scenario) => {
+      const snap = scenario.snapshot;
+      // Apply each scenario's own overrides to the current API data per channel
+      const buildSnapHistory = (channel: ChannelKey) =>
+        historicalApiDataByChannel[channel].map((v, i) => {
+          const ov = snap.channelHistoricalOverrides?.[channel]?.[i];
+          if (ov === undefined || ov === "") return v;
+          const parsed = parseInt(ov, 10);
+          return Number.isFinite(parsed) && parsed > 0 ? parsed : v;
+        });
+      const snapVoiceHistory = buildSnapHistory("voice").length > 0 ? buildSnapHistory("voice") : finalHistoricalData;
+      const snapEmailHistory = buildSnapHistory("email");
+      const snapChatHistory = buildSnapHistory("chat");
+      const voiceForecast = getCalculatedVolumes(snapVoiceHistory, snap.forecastMethod, scenario.assumptions, snap.hwParams, snap.arimaParams, snap.decompParams);
+      const emailForecast = snapEmailHistory.length > 0
+        ? getCalculatedVolumes(snapEmailHistory, snap.forecastMethod, scenario.assumptions, snap.hwParams, snap.arimaParams, snap.decompParams)
+        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
+      const chatForecast = snapChatHistory.length > 0
+        ? getCalculatedVolumes(snapChatHistory, snap.forecastMethod, scenario.assumptions, snap.hwParams, snap.arimaParams, snap.decompParams)
+        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
+      const snapBlendPreset = BLEND_PRESETS.find((p) => p.id === snap.activeBlendPreset) ?? selectedBlendPreset;
+      const snapEmailAht = scenario.assumptions.emailAht ?? EMAIL_AHT_SECONDS;
+      const snapChatAht = scenario.assumptions.chatAht ?? CHAT_AHT_SECONDS;
+      const forecast = buildDemandForecastData(snapVoiceHistory, scenario.assumptions, snap.forecastMethod, snap.hwParams, snap.arimaParams, snap.decompParams)
+        .filter((row) => row.isFuture)
+        .map((row, fi) => {
+          const emailVol = emailForecast[fi] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email);
+          const chatVol = chatForecast[fi] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat);
+          const channelMetrics: Record<ChannelKey, { volume: number; workloadHours: number }> = {
+            voice: { volume: row.volume, workloadHours: row.workloadHours },
+            email: { volume: emailVol, workloadHours: Number(((emailVol * snapEmailAht) / 3600).toFixed(1)) },
+            chat: { volume: chatVol, workloadHours: Number((((chatVol * snapChatAht) / 3600) / CHAT_CONCURRENCY).toFixed(1)) },
+          };
+          const totalRequiredFTE = snapBlendPreset.pools.reduce((sum, channels) => {
+            const workloadHours = channels.reduce((poolSum, ch) => poolSum + channelMetrics[ch].workloadHours, 0);
+            const referenceVolume = channels.reduce((poolSum, ch) => poolSum + channelMetrics[ch].volume, 0);
+            return sum + calculatePooledFTE(workloadHours, referenceVolume, scenario.assumptions);
+          }, 0);
+          return { ...row, totalRequiredFTE: Number(totalRequiredFTE.toFixed(1)) };
+        });
+      return { scenario, forecast };
+    });
     return Array.from({ length: 12 }, (_, index) => {
       const point: Record<string, string | number> = { month: scenarioForecasts[0]?.forecast[index] ? `${scenarioForecasts[0].forecast[index].month} '${scenarioForecasts[0].forecast[index].year.slice(2)}` : `M${index + 1}` };
       scenarioForecasts.forEach(({ scenario, forecast }) => { point[scenario.id] = forecast[index]?.totalRequiredFTE ?? 0; });
       return point;
     });
-  }, [scenarios, finalHistoricalData, forecastMethod, hwParams, arimaParams, decompParams, selectedBlendPreset]);
+  }, [scenarios, historicalApiDataByChannel, finalHistoricalData, selectedBlendPreset]);
   const scenarioColors = ["#2563eb", "#f59e0b", "#10b981", "#7c3aed", "#ef4444", "#0f766e"];
   const poolExplainability = useMemo(() => selectedBlendPreset.pools.map((channels, index) => ({
     poolName: `Pool ${String.fromCharCode(65 + index)}`,
@@ -514,17 +620,17 @@ export default function LongTermForecastingDemand() {
       key: "email" as const,
       label: CHANNEL_ASSUMPTION_META.email.label,
       volumeRule: "20% of omni forecast volume",
-      ahtRule: `${EMAIL_AHT_SECONDS}s AHT`,
+      ahtRule: `${assumptions.emailAht}s AHT`,
       workloadRule: "Volume x AHT / 3600",
     },
     {
       key: "chat" as const,
       label: CHANNEL_ASSUMPTION_META.chat.label,
       volumeRule: "30% of omni forecast volume",
-      ahtRule: `${CHAT_AHT_SECONDS}s AHT`,
+      ahtRule: `${assumptions.chatAht}s AHT`,
       workloadRule: `Volume x AHT / 3600 / ${CHAT_CONCURRENCY} concurrency`,
     },
-  ], [assumptions.aht]);
+  ], [assumptions.aht, assumptions.emailAht, assumptions.chatAht]);
 
   if (loading) return <PageLayout title="Long Term Forecasting  Demand"><div className="h-[60vh] flex flex-col items-center justify-center gap-4"><Loader2 className="size-12 text-primary animate-spin" /><p className="text-muted-foreground font-medium">Loading demand forecast data...</p></div></PageLayout>;
 
@@ -624,8 +730,28 @@ export default function LongTermForecastingDemand() {
               <div className="overflow-hidden">
                 <CardContent className={`space-y-4 pt-6 transition-opacity duration-200 ${isHistoricalSourceOpen ? "opacity-100" : "opacity-0"}`}>
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                    <div className="text-sm text-muted-foreground">
-                      Final Historical Volume Used feeds trend, growth, seasonality, forecast volume, and required staffing outputs.
+                    <div className="space-y-3">
+                      <div className="text-sm text-muted-foreground">
+                        Final Historical Volume Used feeds trend, growth, seasonality, forecast volume, and required staffing outputs.
+                      </div>
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                        <div className="w-full sm:w-[220px]">
+                          <Label className="text-[11px] font-black uppercase tracking-widest text-muted-foreground">Channel View</Label>
+                          <Select value={historicalChannelView} onValueChange={(value) => setHistoricalChannelView(value as ChannelKey)}>
+                            <SelectTrigger className="mt-2 h-10 font-semibold">
+                              <SelectValue placeholder="Select channel" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="voice">Voice</SelectItem>
+                              <SelectItem value="email">Email</SelectItem>
+                              <SelectItem value="chat">Chat</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="text-sm font-semibold text-foreground">
+                          Currently Viewing: <span className={CHANNEL_ASSUMPTION_META[historicalChannelView].colorClass}>{CHANNEL_ASSUMPTION_META[historicalChannelView].label}</span>
+                        </div>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Button variant="outline" size="sm" className="gap-2" onClick={handleResetAllOverrides} disabled={overrideCount === 0}>
@@ -639,10 +765,10 @@ export default function LongTermForecastingDemand() {
                       <TableHeader className="bg-slate-50/80 dark:bg-slate-900/80">
                         <TableRow className="hover:bg-transparent">
                           <TableHead className="pl-6 text-xs font-black uppercase tracking-widest">Month</TableHead>
-                          <TableHead className="text-right text-xs font-black uppercase tracking-widest">API Historical Volume</TableHead>
+                          <TableHead className="text-right text-xs font-black uppercase tracking-widest">API Volume</TableHead>
                           <TableHead className="text-right text-xs font-black uppercase tracking-widest">Override Volume</TableHead>
-                          <TableHead className="text-right text-xs font-black uppercase tracking-widest">Final Historical Volume Used</TableHead>
-                          <TableHead className="text-right text-xs font-black uppercase tracking-widest">Variance vs API (%)</TableHead>
+                          <TableHead className="text-right text-xs font-black uppercase tracking-widest">Final Volume Used</TableHead>
+                          <TableHead className="text-right text-xs font-black uppercase tracking-widest">Variance %</TableHead>
                           <TableHead className="pr-6 text-right text-xs font-black uppercase tracking-widest">Override Toggle / Edit State</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -783,6 +909,8 @@ export default function LongTermForecastingDemand() {
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="startDate" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Planning Start Date</Label><Calendar className="size-3.5 text-primary" /></div><Input id="startDate" type="date" value={assumptions.startDate} onChange={(event) => setAssumptions({ ...assumptions, startDate: event.target.value })} className="h-10 font-bold" /></div>
                   <div className="space-y-3 border-t border-border pt-4"><Select value={forecastMethod} onValueChange={setForecastMethod}><SelectTrigger className="h-10 font-bold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger><SelectContent>{FORECAST_METHODS.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}</SelectContent></Select></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">AHT Assumption</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-primary">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Email AHT</Label><span className="text-xs font-black bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded text-emerald-700 dark:text-emerald-300">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Chat AHT</Label><span className="text-xs font-black bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded text-amber-700 dark:text-amber-300">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label htmlFor="shrinkage" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Shrinkage</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing shrinkage assumption</p></TooltipContent></UITooltip></div><span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span></div><Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(event) => setAssumptions({ ...assumptions, shrinkage: validateInput(Number(event.target.value), 0, 100) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="occupancy" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Occupancy</Label><span className="text-xs font-black bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded text-indigo-600">{assumptions.occupancy}%</span></div><Input id="occupancy" type="number" value={assumptions.occupancy} onChange={(event) => setAssumptions({ ...assumptions, occupancy: validateInput(Number(event.target.value), 0, 100) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Badge variant="outline" className="font-black text-xs text-primary border-primary/20">{assumptions.safetyMargin}%</Badge></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-bold" /></div>

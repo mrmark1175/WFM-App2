@@ -15,9 +15,11 @@ export const demandForecastHelpSections: DemandHelpSection[] = [
   {
     title: "Historical Data Source",
     points: [
-      "API Historical Volume is the original system-fed baseline.",
-      "Override Volume lets planners replace a month with business-judgment input.",
+      "Channel View lets you switch between Voice, Email, and Chat historical datasets so you can see the right API baseline.",
+      "API Historical Volume is the original system-fed baseline for the selected channel.",
+      "Override Volume lets planners replace a month with business-judgment input for that channel only, and overrides persist independently per channel.",
       "Final Historical Volume Used is what the forecast engine actually uses for trend, growth, seasonality, and future staffing outputs.",
+      "Reset actions affect only the currently selected channel so edits on other channels stay intact.",
     ],
   },
   {
