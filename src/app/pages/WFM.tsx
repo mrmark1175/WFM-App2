@@ -20,6 +20,13 @@ export function WFM() {
       path: "/wfm/long-term-forecasting",
     },
     {
+      title: "Long Term Forecasting (Demand)",
+      description: "Forecast monthly contact demand and required staffing needs",
+      icon: LineChart,
+      stats: "Demand Only",
+      path: "/wfm/long-term-forecasting-demand",
+    },
+    {
       title: "Long-Term Forecasting (Blended)",
       description: "Multi-channel capacity planning with FTE blending (Voice, Email, Chat)",
       icon: Layers,
