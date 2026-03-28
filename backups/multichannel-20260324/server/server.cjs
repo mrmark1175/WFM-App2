@@ -20,88 +20,50 @@ const pool = new Pool({
 
 class CallVolumeSimulator {
   constructor() {
-    this.channelProfiles = {
-      voice: {
-        baseVolume: 18500,
-        trendFactor: 1.006,
-        monthlySeasonality: [1.08, 0.92, 0.96, 0.98, 1.01, 1.03, 0.95, 0.97, 1.00, 1.08, 1.18, 1.24],
-        dayWeights: [0.38, 1.12, 1.05, 1.02, 1.04, 0.98, 0.52],
-        intradayShape: [0.04, 0.04, 0.03, 0.03, 0.03, 0.05, 0.09, 0.16, 0.34, 0.57, 0.78, 0.92, 0.99, 1.00, 0.98, 0.94, 0.88, 0.76, 0.60, 0.42, 0.28, 0.18, 0.10, 0.06],
-      },
-      email: {
-        baseVolume: 7200,
-        trendFactor: 1.012,
-        monthlySeasonality: [1.02, 0.95, 1.00, 1.03, 1.05, 1.01, 0.96, 0.98, 1.02, 1.10, 1.15, 1.08],
-        dayWeights: [0.22, 1.24, 1.12, 1.02, 0.98, 0.86, 0.28],
-        intradayShape: [0.01, 0.01, 0.01, 0.01, 0.02, 0.03, 0.06, 0.12, 0.26, 0.54, 0.76, 0.90, 0.96, 1.00, 0.97, 0.93, 0.86, 0.78, 0.66, 0.46, 0.28, 0.15, 0.08, 0.03],
-      },
-      chat: {
-        baseVolume: 9800,
-        trendFactor: 1.018,
-        monthlySeasonality: [0.94, 0.92, 0.96, 0.99, 1.03, 1.07, 1.10, 1.12, 1.05, 1.08, 1.16, 1.20],
-        dayWeights: [0.30, 1.10, 1.08, 1.04, 1.03, 1.00, 0.46],
-        intradayShape: [0.03, 0.03, 0.02, 0.02, 0.03, 0.05, 0.08, 0.14, 0.28, 0.48, 0.68, 0.82, 0.92, 0.98, 1.00, 0.98, 0.96, 0.92, 0.84, 0.70, 0.54, 0.34, 0.18, 0.08],
-      },
-    };
+    this.baseVolume = 15000; // Standard monthly base
+    this.monthlySeasonality = [
+      1.05, 0.85, 0.95, 1.00, 1.05, 1.10, 
+      0.90, 0.95, 1.00, 1.15, 1.30, 1.45
+    ]; // Jan - Dec
+    this.trendFactor = 1.02; // +2% MoM growth
   }
 
-  getChannelProfile(channel = 'voice') {
-    return this.channelProfiles[channel] || this.channelProfiles.voice;
+  generateMonthlyVolume(monthIdx) {
+    // V = (Base * Trend^t * Seasonality) + Noise
+    const trend = Math.pow(this.trendFactor, monthIdx);
+    const seasonality = this.monthlySeasonality[monthIdx % 12];
+    
+    // Add ±5% random noise
+    const noise = 1 + (Math.random() * 0.1 - 0.05);
+    
+    // Anomaly: July typically has a dip due to holidays
+    const anomaly = monthIdx === 6 ? 0.92 : 1.0;
+
+    const totalVolume = this.baseVolume * trend * seasonality * noise * anomaly;
+    return Math.round(totalVolume);
   }
 
-  deterministicNoise(seed, amplitude = 0.05) {
-    let hash = 2166136261;
-    for (let i = 0; i < seed.length; i++) {
-      hash ^= seed.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    const normalized = (hash >>> 0) / 4294967295;
-    return 1 + ((normalized * 2) - 1) * amplitude;
-  }
-
-  getMonthlyEventFactor(channel, monthIdx) {
-    const monthOfYear = monthIdx % 12;
-    if (channel === 'voice') {
-      if (monthOfYear === 0) return 1.03;
-      if (monthOfYear === 6) return 0.94;
-      if (monthOfYear === 10) return 1.04;
-      if (monthOfYear === 11) return 1.08;
-    }
-    if (channel === 'email') {
-      if (monthOfYear === 1) return 1.04;
-      if (monthOfYear === 5) return 0.97;
-      if (monthOfYear === 10) return 1.06;
-    }
-    if (channel === 'chat') {
-      if (monthOfYear >= 5 && monthOfYear <= 7) return 1.05;
-      if (monthOfYear === 10 || monthOfYear === 11) return 1.07;
-    }
-    return 1;
-  }
-
-  generateMonthlyVolume(monthIdx, channel = 'voice') {
-    const profile = this.getChannelProfile(channel);
-    const trend = Math.pow(profile.trendFactor, monthIdx);
-    const seasonality = profile.monthlySeasonality[monthIdx % 12];
-    const eventFactor = this.getMonthlyEventFactor(channel, monthIdx);
-    const noise = this.deterministicNoise(`${channel}-monthly-${monthIdx}`, 0.035);
-    const totalVolume = profile.baseVolume * trend * seasonality * eventFactor * noise;
-    return Math.max(0, Math.round(totalVolume));
-  }
-
-  generateIntradayVolume(dateStr, channel = 'voice') {
-    const profile = this.getChannelProfile(channel);
+  generateIntradayVolume(dateStr) {
+    const dayWeights = [0.3, 1.3, 1.1, 1.0, 1.0, 0.9, 0.4]; // Sun - Sat
     const date = new Date(dateStr);
     const dayOfWeek = date.getDay();
-    const dowFactor = profile.dayWeights[dayOfWeek];
-    const seasonalFactor = profile.monthlySeasonality[date.getMonth()];
-    const baseInterval = (profile.baseVolume * seasonalFactor / 30 / 96) * dowFactor * this.deterministicNoise(`${channel}-${dateStr}-day`, 0.08);
+    const dowFactor = dayWeights[dayOfWeek];
+
+    // Returns 96 intervals (15-min)
     return Array.from({ length: 96 }, (_, i) => {
       const hour = Math.floor(i / 4);
-      const quarterHourBias = [0.94, 1.02, 1.05, 0.99][i % 4];
-      const todFactor = profile.intradayShape[hour] || 0.02;
-      const noise = this.deterministicNoise(`${channel}-${dateStr}-${i}`, 0.09);
-      return Math.max(0, Math.round(baseInterval * todFactor * quarterHourBias * noise));
+      let todFactor = 0.05; // Night baseline
+
+      // Standard 8-6 Bell Curve
+      if (hour >= 8 && hour <= 10) todFactor = 0.2 + (hour - 8) * 0.4; // Ramp
+      else if (hour > 10 && hour <= 14) todFactor = 1.1; // Peak
+      else if (hour > 14 && hour <= 17) todFactor = 1.0 - (hour - 14) * 0.2; // Decline
+      else if (hour > 17 && hour <= 20) todFactor = 0.3; // Evening
+
+      const baseInterval = (this.baseVolume / 30 / 96);
+      const noise = 1 + (Math.random() * 0.2 - 0.1);
+      
+      return Math.round(baseInterval * dowFactor * todFactor * noise);
     });
   }
 }
@@ -381,10 +343,9 @@ app.post('/api/interaction-arrival', async (req, res) => {
 });
 
 app.post('/api/telephony/pull', async (req, res) => {
-  const { system, date, startDate, endDate, channel } = req.body;
+  const { system, date, startDate, endDate } = req.body;
   
   if (system === 'genesys') {
-    const targetChannel = channel || 'voice';
     const start = new Date((startDate || date) + 'T00:00:00');
     const end = new Date((endDate || date) + 'T00:00:00');
     const results = [];
@@ -395,7 +356,7 @@ app.post('/api/telephony/pull', async (req, res) => {
                       String(current.getMonth() + 1).padStart(2, '0') + '-' + 
                       String(current.getDate()).padStart(2, '0');
       
-      const intervalVolumes = simulator.generateIntradayVolume(dateStr, targetChannel);
+      const intervalVolumes = simulator.generateIntradayVolume(dateStr);
       
       const dayData = intervalVolumes.map((offer, i) => {
         const hour = Math.floor(i / 4);
@@ -410,9 +371,9 @@ app.post('/api/telephony/pull', async (req, res) => {
           
           const slPct = Math.min(0.99, Math.max(0.5, slBase + (Math.random() * 0.15 - 0.05)));
           
-          const avgTalk = targetChannel === 'email' ? Math.random() * 260 + 320 : targetChannel === 'chat' ? Math.random() * 180 + 220 : Math.random() * 200 + 200;
-          const avgHold = targetChannel === 'email' ? Math.random() * 8 + 2 : Math.random() * 20 + 5;
-          const avgAcw = targetChannel === 'chat' ? Math.random() * 25 + 15 : Math.random() * 40 + 20;
+          const avgTalk = Math.random() * 200 + 200;
+          const avgHold = Math.random() * 20 + 5;
+          const avgAcw = Math.random() * 40 + 20;
           
           return {
             date: dateStr,
@@ -452,17 +413,15 @@ app.post('/api/telephony/pull', async (req, res) => {
 
 app.post('/api/genesys/sync', async (req, res) => {
   try {
-    const targetChannel = req.body.channel || 'voice';
     // Return 24 months of historical data for better statistical forecasting
     const monthlyVolumes = Array.from({ length: 24 }, (_, monthIdx) => {
-      return simulator.generateMonthlyVolume(monthIdx, targetChannel);
+      return simulator.generateMonthlyVolume(monthIdx);
     });
     
-    res.json({ success: true, channel: targetChannel, data: monthlyVolumes });
+    res.json({ success: true, data: monthlyVolumes });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
 app.listen(process.env.PORT || 5000, () => { console.log(`Backend Server is running on http://localhost:${process.env.PORT || 5000}`); });
-

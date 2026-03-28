@@ -555,14 +555,25 @@ export const calculateWorkforceSupply = (inputs: WorkforceSupplyInputs, baseAHT:
   for (let i = 0; i < 12; i++) {
     const { month, year } = timeline[i];
     cohorts = cohorts.map((size, ageIndex) => {
+      const safeSize = Math.max(0, Number.isFinite(size) ? size : 0);
       let currentAttrRate = inputs.tenuredAttritionRate;
+
       if (ageIndex > 0) {
-        const monthsInService = i - (ageIndex - 1);
-        if (monthsInService >= 0 && monthsInService < inputs.newHireAttritionProfile.length) {
-          currentAttrRate = inputs.newHireAttritionProfile[monthsInService];
+        // Each hired cohort ages by one tenure month per planning month.
+        // Month 1 of the projection array is applied on the cohort's first attrition cycle.
+        const monthsSinceHire = i - ageIndex;
+        if (monthsSinceHire >= 0 && monthsSinceHire < inputs.newHireAttritionProfile.length) {
+          currentAttrRate = inputs.newHireAttritionProfile[monthsSinceHire];
         }
       }
-      return size * (1 - (currentAttrRate / 100));
+
+      const safeAttritionRate = validateInput(
+        Number.isFinite(currentAttrRate) ? currentAttrRate : inputs.tenuredAttritionRate,
+        0,
+        100
+      );
+
+      return Math.max(0, safeSize * (1 - (safeAttritionRate / 100)));
     });
 
     const successfulHires = inputs.monthlyHiring * (inputs.trainingYield / 100);
@@ -2133,6 +2144,24 @@ export default function LongTermForecastingBlended() {
                         </div>
                         <div className="space-y-2">
                           <div className="flex items-center gap-1">
+                            <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Tenured Attrition (%)</Label>
+                            <UITooltip>
+                              <TooltipTrigger asChild><Info className="size-3 text-muted-foreground" /></TooltipTrigger>
+                              <TooltipContent><p className="text-xs">Monthly attrition applied after the new-hire attrition window ends</p></TooltipContent>
+                            </UITooltip>
+                          </div>
+                          <Input
+                            type="number"
+                            value={supplyInputs.tenuredAttritionRate}
+                            onChange={(e) => setSupplyInputs({...supplyInputs, tenuredAttritionRate: validateInput(Number(e.target.value), 0, 100)})}
+                            className="h-9 font-bold"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-1">
                             <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Training Yield (%)</Label>
                             <UITooltip>
                               <TooltipTrigger asChild><Info className="size-3 text-muted-foreground" /></TooltipTrigger>
@@ -2144,7 +2173,13 @@ export default function LongTermForecastingBlended() {
                       </div>
 
                       <div className="space-y-3 pt-2 border-t border-border">
-                        <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Infant Mortality (Attrition M1-M3)</Label>
+                        <div className="flex items-center gap-1">
+                          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Attrition Projection</Label>
+                          <UITooltip>
+                            <TooltipTrigger asChild><Info className="size-3 text-muted-foreground" /></TooltipTrigger>
+                            <TooltipContent><p className="text-xs">Monthly attrition rates for new hires during early tenure</p></TooltipContent>
+                          </UITooltip>
+                        </div>
                         <div className="grid grid-cols-3 gap-3">
                           {supplyInputs.newHireAttritionProfile.map((val, idx) => (
                             <div key={idx} className="space-y-1">
@@ -2154,6 +2189,27 @@ export default function LongTermForecastingBlended() {
                                 newProfile[idx] = validateInput(Number(e.target.value), 0, 100);
                                 setSupplyInputs({...supplyInputs, newHireAttritionProfile: newProfile});
                               }} className="h-8 text-xs font-bold border-rose-100" />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 pt-2 border-t border-border">
+                        <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Nesting Productivity Ramp (%)</Label>
+                        <div className="grid grid-cols-3 gap-3">
+                          {supplyInputs.nestingRamp.map((val, idx) => (
+                            <div key={idx} className="space-y-1">
+                              <Label className="text-xs font-bold text-muted-foreground uppercase">M{idx + 1} Prod %</Label>
+                              <Input
+                                type="number"
+                                value={val}
+                                onChange={(e) => {
+                                  const newRamp = [...supplyInputs.nestingRamp];
+                                  newRamp[idx] = validateInput(Number(e.target.value), 0, 100);
+                                  setSupplyInputs({...supplyInputs, nestingRamp: newRamp});
+                                }}
+                                className="h-8 text-xs font-bold bg-blue-50"
+                              />
                             </div>
                           ))}
                         </div>
@@ -2184,6 +2240,12 @@ export default function LongTermForecastingBlended() {
                             </div>
                           ))}
                         </div>
+                      </div>
+
+                      <div className="rounded-lg border border-border bg-slate-50/60 dark:bg-slate-900/40 p-3">
+                        <p className="text-xs font-medium text-muted-foreground">
+                          Shrinkage is applied from Plan Parameters under <span className="font-bold">Total Shrinkage</span>. It is intentionally not repeated here to avoid double-counting workforce supply.
+                        </p>
                       </div>
                     </CardContent>
                   )}
