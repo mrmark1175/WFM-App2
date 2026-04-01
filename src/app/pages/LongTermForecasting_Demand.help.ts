@@ -44,7 +44,7 @@ export const demandForecastHelpSections: DemandHelpSection[] = [
     points: [
       "The page uses occupancy, shrinkage, channel-specific SLA target percentages, answer-seconds thresholds, ASA targets, operating hours, safety margin, and FTE monthly hours assumptions configured on the page.",
       "Monthly forecast workload is converted into average concurrent demand during the configured open hours, then translated into staffed seats and required FTE.",
-      "For blended pools, workload is summed first and the service targets are weighted across the included channels before FTE is calculated.",
+      "For dedicated channels, required FTE is calculated from each channel's own workload and service targets. For blended pools, combined workload is recalculated at the pool level using weighted service targets and a pool-level occupancy cap.",
       "Total Required FTE is the sum of all shared-pool and standalone-pool FTE outputs for the month.",
     ],
   },
