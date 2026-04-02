@@ -15,9 +15,11 @@ export const demandForecastHelpSections: DemandHelpSection[] = [
   {
     title: "Historical Data Source",
     points: [
-      "API Historical Volume is the original system-fed baseline.",
-      "Override Volume lets planners replace a month with business-judgment input.",
+      "Channel View lets you switch between Voice, Email, and Chat historical datasets so you can see the right API baseline or enter manual history for that channel.",
+      "API Historical Volume is the original system-fed baseline for the selected channel, and Clear API Data lets planners remove that baseline when no client API access is available.",
+      "Override Volume lets planners enter their own monthly volume for that channel only, and overrides persist independently per channel.",
       "Final Historical Volume Used is what the forecast engine actually uses for trend, growth, seasonality, and future staffing outputs.",
+      "Reset actions affect only the currently selected channel so edits on other channels stay intact.",
     ],
   },
   {
@@ -34,20 +36,22 @@ export const demandForecastHelpSections: DemandHelpSection[] = [
       "Voice uses the page forecast volume and current AHT assumption.",
       "Email uses 20% of omni forecast volume at 600 seconds AHT.",
       "Chat uses 30% of omni forecast volume at 450 seconds AHT with concurrency of 2.",
+      "Voice, Email, and Chat each have their own SLA and ASA targets, so staffing can reflect different response expectations by channel.",
     ],
   },
   {
     title: "How Required FTE Is Calculated",
     points: [
-      "The page uses trusted occupancy, shrinkage, safety margin, and FTE monthly hours assumptions already configured on the page.",
-      "For blended pools, workload is summed before FTE is calculated. This avoids rounded-per-channel aggregation errors.",
+      "The page uses occupancy, shrinkage, channel-specific SLA target percentages, answer-seconds thresholds, ASA targets, operating hours, safety margin, and FTE monthly hours assumptions configured on the page.",
+      "Monthly forecast workload is converted into average concurrent demand during the configured open hours, then translated into staffed seats and required FTE.",
+      "For dedicated channels, required FTE is calculated from each channel's own workload and service targets. For blended pools, combined workload is recalculated at the pool level using weighted service targets and a pool-level occupancy cap.",
       "Total Required FTE is the sum of all shared-pool and standalone-pool FTE outputs for the month.",
     ],
   },
   {
     title: "How To Use It",
     points: [
-      "Start by reviewing historical source data and apply overrides only where the API baseline needs correction.",
+      "Start by reviewing historical source data, or clear the API baseline and key in your own monthly volumes if client API data is unavailable.",
       "Choose the blend preset that matches the operating model for the agent group.",
       "Review the output cards, staffing trend, and demand forecast detail table to compare demand impact month by month.",
     ],
