@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { PageLayout } from "../components/PageLayout";
+import { apiUrl } from "../lib/api";
 import {
   TrendingUp,
   Users,
@@ -1034,7 +1035,7 @@ export default function LongTermForecastingBlended() {
     const fetchMockData = async () => {
       setLoading(true);
       try {
-        const response = await fetch("http://localhost:5000/api/genesys/sync", {
+        const response = await fetch(apiUrl("/api/genesys/sync"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

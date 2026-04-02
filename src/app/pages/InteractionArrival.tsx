@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { apiUrl } from "../lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface CellData { volume: number; aht: number; }
@@ -8,7 +9,6 @@ interface IntervalRow { label: string; indices: number[]; }
 type ChannelKey = "voice" | "chat" | "email" | "cases";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const API_BASE   = "http://localhost:5000";
 const SLOT_COUNT = 96;
 const ROW_H      = 28;
 const COL_W      = 96;
@@ -520,7 +520,7 @@ export function InteractionArrival() {
     if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current);
     fetchDebounceRef.current = setTimeout(() => {
       setIsLoading(true);
-      fetch(`${API_BASE}/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}&channel=${selectedChannel}`)
+      fetch(apiUrl(`/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}&channel=${selectedChannel}`))
         .then(r => r.json())
         .then((records: any[]) => {
           if (!Array.isArray(records)) return;
@@ -606,7 +606,7 @@ export function InteractionArrival() {
       const CHUNK_SIZE = 2000;
       for (let i = 0; i < records.length; i += CHUNK_SIZE) {
         const chunk = records.slice(i, i + CHUNK_SIZE);
-        const res = await fetch(`${API_BASE}/api/interaction-arrival`, {
+        const res = await fetch(apiUrl("/api/interaction-arrival"), {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channel: selectedChannel, records: chunk }),
         });
@@ -619,7 +619,7 @@ export function InteractionArrival() {
   const handlePull = async () => {
     setIsPulling(true); setPullMsg(null);
     try {
-      const res = await fetch(`${API_BASE}/api/telephony/pull`, {
+      const res = await fetch(apiUrl("/api/telephony/pull"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ system: telephonySystem, date: pullDate, queue: pullQueue, channel: selectedChannel }),
       });

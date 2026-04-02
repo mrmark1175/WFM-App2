@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PageLayout } from "../components/PageLayout";
+import { apiUrl } from "../lib/api";
 import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -60,6 +61,8 @@ interface PlannerSnapshot {
 }
 interface Scenario { id: string; name: string; assumptions: Assumptions; snapshot: PlannerSnapshot; }
 interface HistoricalSourceRow { index: number; monthLabel: string; apiVolume: number; overrideVolume: string; finalVolume: number; variancePct: number | null; isOverridden: boolean; canEdit: boolean; stateLabel: "API" | "Editing" | "Manual"; }
+interface DemandPlannerScenarioRecord { scenario_id: string; scenario_name: string; planner_snapshot: Partial<PlannerSnapshot>; }
+interface LongTermActualRecord { year_index: number; month_index: number; volume: number; }
 type ChannelKey = "voice" | "email" | "chat";
 type BlendPresetId = "voice-only" | "voice-email" | "voice-chat" | "email-chat" | "all-blended" | "dedicated";
 interface BlendPreset { id: BlendPresetId; label: string; description: string; pools: ChannelKey[][]; }
@@ -446,6 +449,16 @@ export default function LongTermForecastingDemand() {
   const visibleHistoricalApiData = historicalApiDataByChannel[historicalChannelView];
   const visibleHistoricalOverrides = historicalOverridesByChannel[historicalChannelView];
   const getCurrentPlannerSnapshot = () => buildPlannerSnapshot(assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, historicalOverridesByChannel, activeBlendPreset, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView);
+  const normalizePersistedScenarios = (records: DemandPlannerScenarioRecord[]) => records.reduce<Record<string, Scenario>>((acc, record) => {
+    const nextScenario = normalizeScenario({
+      id: record.scenario_id,
+      name: record.scenario_name,
+      assumptions: DEFAULT_ASSUMPTIONS,
+      snapshot: record.planner_snapshot,
+    }, record.scenario_id);
+    if (nextScenario) acc[nextScenario.id] = nextScenario;
+    return acc;
+  }, {});
   const applyPlannerSnapshot = (snapshot: PlannerSnapshot) => {
     setAssumptions(cloneAssumptions(snapshot.assumptions));
     setForecastMethod(snapshot.forecastMethod);
@@ -469,44 +482,60 @@ export default function LongTermForecastingDemand() {
   };
 
   useEffect(() => {
-    let nextScenarios = DEFAULT_SCENARIOS;
-    try {
-      const savedScenarios = localStorage.getItem(SCENARIOS_STORAGE_KEY);
-      if (savedScenarios) {
-        const parsed = JSON.parse(savedScenarios) as Record<string, unknown>;
-        const normalized = Object.entries(parsed).reduce<Record<string, Scenario>>((acc, [id, scenario]) => {
-          const nextScenario = normalizeScenario(scenario, id);
-          if (nextScenario) acc[nextScenario.id] = nextScenario;
-          return acc;
-        }, {});
-        if (Object.keys(normalized).length > 0) nextScenarios = normalized;
-      }
-    } catch (error) {
-      console.error("Failed to parse demand scenarios", error);
-    }
-    setScenarios(nextScenarios);
-    try {
-      const savedInputs = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
-      if (savedInputs) {
-        const parsed = JSON.parse(savedInputs) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
-        const nextSelectedScenarioId = parsed.selectedScenarioId && nextScenarios[parsed.selectedScenarioId] ? parsed.selectedScenarioId : Object.keys(nextScenarios)[0] || "base";
-        setSelectedScenarioId(nextSelectedScenarioId);
-        const fallbackSnapshot = nextScenarios[nextSelectedScenarioId]?.snapshot;
-        if (parsed.plannerSnapshot) {
-          applyPlannerSnapshot(normalizeScenario({ id: nextSelectedScenarioId, name: nextScenarios[nextSelectedScenarioId]?.name || "Scenario", assumptions: fallbackSnapshot?.assumptions || DEFAULT_ASSUMPTIONS, snapshot: parsed.plannerSnapshot }, nextSelectedScenarioId)?.snapshot || fallbackSnapshot || getCurrentPlannerSnapshot());
-        } else if (fallbackSnapshot) {
-          applyPlannerSnapshot(fallbackSnapshot);
+    const hydratePlanner = async () => {
+      let nextScenarios = DEFAULT_SCENARIOS;
+      try {
+        const response = await fetch(apiUrl("/api/demand-planner-scenarios"));
+        if (response.ok) {
+          const records = await response.json() as DemandPlannerScenarioRecord[];
+          const normalized = Array.isArray(records) ? normalizePersistedScenarios(records) : {};
+          if (Object.keys(normalized).length > 0) nextScenarios = normalized;
         }
-      } else {
-        const initialScenarioId = Object.keys(nextScenarios)[0] || "base";
-        setSelectedScenarioId(initialScenarioId);
-        if (nextScenarios[initialScenarioId]?.snapshot) applyPlannerSnapshot(nextScenarios[initialScenarioId].snapshot);
+      } catch (error) {
+        console.error("Failed to load persisted demand scenarios", error);
       }
-    } catch (error) {
-      console.error("Failed to load demand user inputs", error);
-    } finally {
-      hasHydratedRef.current = true;
-    }
+      if (nextScenarios === DEFAULT_SCENARIOS) {
+        try {
+          const savedScenarios = localStorage.getItem(SCENARIOS_STORAGE_KEY);
+          if (savedScenarios) {
+            const parsed = JSON.parse(savedScenarios) as Record<string, unknown>;
+            const normalized = Object.entries(parsed).reduce<Record<string, Scenario>>((acc, [id, scenario]) => {
+              const nextScenario = normalizeScenario(scenario, id);
+              if (nextScenario) acc[nextScenario.id] = nextScenario;
+              return acc;
+            }, {});
+            if (Object.keys(normalized).length > 0) nextScenarios = normalized;
+          }
+        } catch (error) {
+          console.error("Failed to parse demand scenarios", error);
+        }
+      }
+      setScenarios(nextScenarios);
+      try {
+        const savedInputs = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
+        if (savedInputs) {
+          const parsed = JSON.parse(savedInputs) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
+          const nextSelectedScenarioId = parsed.selectedScenarioId && nextScenarios[parsed.selectedScenarioId] ? parsed.selectedScenarioId : Object.keys(nextScenarios)[0] || "base";
+          setSelectedScenarioId(nextSelectedScenarioId);
+          const fallbackSnapshot = nextScenarios[nextSelectedScenarioId]?.snapshot;
+          if (parsed.plannerSnapshot) {
+            applyPlannerSnapshot(normalizeScenario({ id: nextSelectedScenarioId, name: nextScenarios[nextSelectedScenarioId]?.name || "Scenario", assumptions: fallbackSnapshot?.assumptions || DEFAULT_ASSUMPTIONS, snapshot: parsed.plannerSnapshot }, nextSelectedScenarioId)?.snapshot || fallbackSnapshot || getCurrentPlannerSnapshot());
+          } else if (fallbackSnapshot) {
+            applyPlannerSnapshot(fallbackSnapshot);
+          }
+        } else {
+          const initialScenarioId = Object.keys(nextScenarios)[0] || "base";
+          setSelectedScenarioId(initialScenarioId);
+          if (nextScenarios[initialScenarioId]?.snapshot) applyPlannerSnapshot(nextScenarios[initialScenarioId].snapshot);
+        }
+      } catch (error) {
+        console.error("Failed to load demand user inputs", error);
+      } finally {
+        hasHydratedRef.current = true;
+      }
+    };
+
+    hydratePlanner();
   }, []);
   useEffect(() => {
     if (!hasHydratedRef.current) return;
@@ -516,12 +545,24 @@ export default function LongTermForecastingDemand() {
     }));
   }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, historicalOverridesByChannel, activeBlendPreset, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, selectedScenarioId]);
   useEffect(() => {
-    const fetchMockData = async () => {
+    const fetchHistoricalData = async () => {
       setLoading(true);
       try {
         const channels: ChannelKey[] = ["voice", "email", "chat"];
         const results = await Promise.all(channels.map(async (channel) => {
-          const response = await fetch("http://localhost:5000/api/genesys/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queueId: "mock-queue-id", channel, interval: `${assumptions.startDate}/2030-12-31` }) });
+          try {
+            const actualsResponse = await fetch(apiUrl(`/api/long-term-actuals?channel=${channel}`));
+            if (actualsResponse.ok) {
+              const actuals = await actualsResponse.json() as LongTermActualRecord[];
+              if (Array.isArray(actuals) && actuals.length > 0) {
+                return { channel, data: actuals.map((row) => Number(row.volume) || 0) };
+              }
+            }
+          } catch (error) {
+            console.error(`Error fetching ${channel} long term actuals`, error);
+          }
+
+          const response = await fetch(apiUrl("/api/genesys/sync"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queueId: "mock-queue-id", channel, interval: `${assumptions.startDate}/2030-12-31` }) });
           const result = await response.json();
           return { channel, data: result.success && Array.isArray(result.data) ? result.data : [] };
         }));
@@ -543,17 +584,28 @@ export default function LongTermForecastingDemand() {
       } catch (error) { console.error("Error fetching mock data:", error); }
       finally { setLoading(false); }
     };
-    fetchMockData();
+    fetchHistoricalData();
   }, [assumptions.startDate]);
 
   const saveScenariosToStorage = (updated: Record<string, Scenario>) => localStorage.setItem(SCENARIOS_STORAGE_KEY, JSON.stringify(updated));
+  const persistScenario = async (scenario: Scenario) => {
+    const response = await fetch(apiUrl(`/api/demand-planner-scenarios/${scenario.id}`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scenario_name: scenario.name,
+        planner_snapshot: scenario.snapshot,
+      }),
+    });
+    if (!response.ok) throw new Error("Failed to persist scenario");
+  };
   const handleScenarioChange = (nextScenarioId: string) => {
     const scenario = scenarios[nextScenarioId];
     if (!scenario) return;
     setSelectedScenarioId(nextScenarioId);
     applyPlannerSnapshot(scenario.snapshot);
   };
-  const handleSaveScenario = () => {
+  const handleSaveScenario = async () => {
     const id = activeScenario?.id || "base";
     const existing = scenarios[id];
     const snapshot = getCurrentPlannerSnapshot();
@@ -562,9 +614,15 @@ export default function LongTermForecastingDemand() {
     setScenarios(updated);
     saveScenariosToStorage(updated);
     setSelectedScenarioId(id);
-    toast.success("Scenario saved successfully");
+    try {
+      await persistScenario(updatedScenario);
+      toast.success("Scenario saved successfully");
+    } catch (error) {
+      console.error("Failed to persist demand scenario", error);
+      toast.error("Scenario saved locally, but cloud save failed");
+    }
   };
-  const handleDeleteScenario = (event: React.MouseEvent, id: string) => {
+  const handleDeleteScenario = async (event: React.MouseEvent, id: string) => {
     event.stopPropagation();
     if (!window.confirm("Are you sure you want to delete this scenario?")) return;
     const updated = { ...scenarios };
@@ -575,7 +633,13 @@ export default function LongTermForecastingDemand() {
     saveScenariosToStorage(updated);
     setSelectedScenarioId(nextScenarioId);
     if (updated[nextScenarioId]?.snapshot) applyPlannerSnapshot(updated[nextScenarioId].snapshot);
-    toast.success("Scenario deleted");
+    try {
+      await fetch(apiUrl(`/api/demand-planner-scenarios/${id}`), { method: "DELETE" });
+      toast.success("Scenario deleted");
+    } catch (error) {
+      console.error("Failed to delete persisted demand scenario", error);
+      toast.error("Scenario deleted locally, but cloud delete failed");
+    }
   };
   const handleNewScenario = () => {
     const id = `scenario-${Date.now()}`;
@@ -586,17 +650,21 @@ export default function LongTermForecastingDemand() {
     setSelectedScenarioId(id);
     toast.success("New scenario created");
   };
-  const handleRenameScenario = () => {
+  const handleRenameScenario = async () => {
     if (!activeScenario) return;
     const nextName = window.prompt("Rename scenario:", activeScenario.name);
     if (!nextName || nextName.trim() === "" || nextName.trim() === activeScenario.name) return;
-    const updated = {
-      ...scenarios,
-      [activeScenario.id]: createScenario(activeScenario.id, nextName.trim(), activeScenario.snapshot),
-    };
+    const renamedScenario = createScenario(activeScenario.id, nextName.trim(), activeScenario.snapshot);
+    const updated = { ...scenarios, [activeScenario.id]: renamedScenario };
     setScenarios(updated);
     saveScenariosToStorage(updated);
-    toast.success("Scenario renamed");
+    try {
+      await persistScenario(renamedScenario);
+      toast.success("Scenario renamed");
+    } catch (error) {
+      console.error("Failed to persist renamed demand scenario", error);
+      toast.error("Scenario renamed locally, but cloud save failed");
+    }
   };
   const handleOverrideToggle = (index: number, checked: boolean) => {
     setHistoricalOverridesByChannel((current) => {

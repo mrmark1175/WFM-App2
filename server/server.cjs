@@ -1,8 +1,8 @@
 const express = require('express');
 const path = require('path');
-const { Pool } = require('pg');
 const cors = require('cors');
 const { getCurrentUser } = require('./auth.cjs');
+const { pool } = require('./db.cjs');
 
 const app = express();
 const distPath = path.resolve(__dirname, '../dist');
@@ -10,13 +10,18 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'exordium_db',
-  password: '837177',
-  port: 5432,
-});
+async function ensureAppTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS demand_planner_scenarios (
+      scenario_id text NOT NULL,
+      scenario_name text NOT NULL,
+      planner_snapshot jsonb NOT NULL,
+      organization_id integer NOT NULL DEFAULT 1,
+      updated_at timestamp with time zone NOT NULL DEFAULT now(),
+      PRIMARY KEY (scenario_id, organization_id)
+    )
+  `);
+}
 
 // --- CALL VOLUME SIMULATION ENGINE ---
 
@@ -466,11 +471,100 @@ app.post('/api/genesys/sync', async (req, res) => {
   }
 });
 
+app.get('/api/long-term-actuals', async (req, res) => {
+  const user = getCurrentUser(req);
+  const channel = req.query.channel || 'voice';
+
+  try {
+    const result = await pool.query(
+      `SELECT year_index, month_index, volume, updated_at, channel
+       FROM long_term_actuals
+       WHERE organization_id = $1 AND channel = $2
+       ORDER BY year_index ASC, month_index ASC`,
+      [user.organization_id, channel]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Long Term Actuals Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch long term actuals' });
+  }
+});
+
+app.get('/api/demand-planner-scenarios', async (req, res) => {
+  const user = getCurrentUser(req);
+
+  try {
+    const result = await pool.query(
+      `SELECT scenario_id, scenario_name, planner_snapshot, updated_at
+       FROM demand_planner_scenarios
+       WHERE organization_id = $1
+       ORDER BY updated_at ASC`,
+      [user.organization_id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Demand Planner Scenarios Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch demand planner scenarios' });
+  }
+});
+
+app.put('/api/demand-planner-scenarios/:id', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { id } = req.params;
+  const { scenario_name, planner_snapshot } = req.body;
+
+  if (!scenario_name || !planner_snapshot || typeof planner_snapshot !== 'object') {
+    return res.status(400).json({ error: 'scenario_name and planner_snapshot are required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO demand_planner_scenarios (scenario_id, scenario_name, planner_snapshot, organization_id, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (scenario_id, organization_id) DO UPDATE SET
+         scenario_name = EXCLUDED.scenario_name,
+         planner_snapshot = EXCLUDED.planner_snapshot,
+         updated_at = NOW()
+       RETURNING scenario_id, scenario_name, planner_snapshot, updated_at`,
+      [id, scenario_name, JSON.stringify(planner_snapshot), user.organization_id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Demand Planner Scenario Save Error:', err.message);
+    res.status(500).json({ error: 'Failed to save demand planner scenario' });
+  }
+});
+
+app.delete('/api/demand-planner-scenarios/:id', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { id } = req.params;
+
+  try {
+    await pool.query(
+      'DELETE FROM demand_planner_scenarios WHERE scenario_id = $1 AND organization_id = $2',
+      [id, user.organization_id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Demand Planner Scenario Delete Error:', err.message);
+    res.status(500).json({ error: 'Failed to delete demand planner scenario' });
+  }
+});
+
 app.use(express.static(distPath));
 
 app.get('/{*splat}', (req, res) => {
   res.sendFile(path.join(distPath, 'index.html'));
 });
 
-app.listen(process.env.PORT || 5000, () => { console.log(`Backend Server is running on http://localhost:${process.env.PORT || 5000}`); });
+ensureAppTables()
+  .then(() => {
+    app.listen(process.env.PORT || 5000, () => {
+      console.log(`Backend Server is running on http://localhost:${process.env.PORT || 5000}`);
+    });
+  })
+  .catch((error) => {
+    console.error('Startup schema initialization failed:', error.message);
+    process.exit(1);
+  });
 

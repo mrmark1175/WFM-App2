@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { apiUrl } from "../lib/api";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -15,7 +16,6 @@ type ChannelKey = "voice" | "chat" | "email" | "cases";
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
-const API_BASE  = "http://localhost:5000";
 const SLOT_COUNT = 96;
 const MONTHS    = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTHS_FULL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -177,7 +177,7 @@ export function ArrivalAnalysis() {
     setIsLoading(true);
     const start = "2020-01-01";
     const end   = new Date().toISOString().split("T")[0];
-    fetch(`${API_BASE}/api/interaction-arrival?startDate=${start}&endDate=${end}&channel=${selectedChannel}`)
+    fetch(apiUrl(`/api/interaction-arrival?startDate=${start}&endDate=${end}&channel=${selectedChannel}`))
       .then(r => r.json())
       .then((records: any[]) => {
         if (!Array.isArray(records)) return;

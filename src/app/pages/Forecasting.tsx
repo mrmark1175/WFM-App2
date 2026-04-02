@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { PageLayout } from "../components/PageLayout";
+import { apiUrl } from "../lib/api";
 import {
   TrendingUp, 
   Plus, 
@@ -73,7 +74,7 @@ export function Forecasting() {
     const fetchAllYears = async () => {
       try {
         // 1. Try saved forecasts first
-        const res  = await fetch(`http://localhost:5000/api/forecasts?channel=${selectedChannel}`);
+        const res  = await fetch(apiUrl(`/api/forecasts?channel=${selectedChannel}`));
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
           const savedYears = data.map((d: any) => d.year_label);
@@ -85,7 +86,7 @@ export function Forecasting() {
         // 2. No saved forecasts — detect calendar years from arrival data
         //    without pulling all records
         const probe = await fetch(
-          `http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31&channel=${selectedChannel}`
+          apiUrl(`/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31&channel=${selectedChannel}`)
         );
         const recs: any[] = await probe.json();
         if (Array.isArray(recs) && recs.length > 0) {
@@ -113,7 +114,7 @@ export function Forecasting() {
   const fetchArrivalRollup = async (calendarYear: number): Promise<number[] | null> => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/interaction-arrival?startDate=${calendarYear}-01-01&endDate=${calendarYear}-12-31&channel=${selectedChannel}`
+        apiUrl(`/api/interaction-arrival?startDate=${calendarYear}-01-01&endDate=${calendarYear}-12-31&channel=${selectedChannel}`)
       );
       const recs: any[] = await res.json();
       if (!Array.isArray(recs) || recs.length === 0) return null;
@@ -146,7 +147,7 @@ export function Forecasting() {
     if (!selectedYear) return;
     const fetchYearData = async () => {
       try {
-        const response = await fetch(`http://localhost:5000/api/forecasts/${selectedYear}?channel=${selectedChannel}`);
+        const response = await fetch(apiUrl(`/api/forecasts/${selectedYear}?channel=${selectedChannel}`));
         const data = await response.json();
         
         if (data && data.monthly_volumes) {
@@ -219,7 +220,7 @@ export function Forecasting() {
       gamma,
     };
     try {
-      const response = await fetch("http://localhost:5000/api/forecasts", {
+      const response = await fetch(apiUrl("/api/forecasts"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -241,7 +242,7 @@ export function Forecasting() {
   const handleGenesysSync = async () => {
     setIsSyncing(true);
     try {
-      const response = await fetch("http://localhost:5000/api/genesys/sync", {
+      const response = await fetch(apiUrl("/api/genesys/sync"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -281,7 +282,7 @@ export function Forecasting() {
         calendarYear = asNumber;
       } else {
         setSyncStep("Probing arrival database…");
-        const probeRes = await fetch(`http://localhost:5000/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31&channel=${selectedChannel}`);
+        const probeRes = await fetch(apiUrl(`/api/interaction-arrival?startDate=2020-01-01&endDate=2030-12-31&channel=${selectedChannel}`));
         const probeRecs: any[] = await probeRes.json();
         if (Array.isArray(probeRecs) && probeRecs.length > 0) {
           const calYears = Array.from(new Set(probeRecs.map(r => new Date((r.interval_date as string).split("T")[0] + "T00:00:00").getFullYear()))).sort() as number[];
@@ -320,7 +321,7 @@ export function Forecasting() {
   const handleDeleteYear = async (yearToDelete: string) => {
     if (years.length === 1) return; // always keep at least one tab
     try {
-        await fetch(`http://localhost:5000/api/forecasts/${encodeURIComponent(yearToDelete)}?channel=${selectedChannel}`, {
+        await fetch(apiUrl(`/api/forecasts/${encodeURIComponent(yearToDelete)}?channel=${selectedChannel}`), {
           method: "DELETE",
         });
     } catch { /* ignore network errors */ }
@@ -526,7 +527,7 @@ export function Forecasting() {
       
       if (yearsToFetch.length > 0) {
         const fetches = yearsToFetch.map(y =>
-          fetch(`http://localhost:5000/api/forecasts/${y}?channel=${selectedChannel}`).then(r => r.json())
+          fetch(apiUrl(`/api/forecasts/${y}?channel=${selectedChannel}`)).then(r => r.json())
         );
         const results = await Promise.all(fetches);
         historical = results.flatMap((d: any) => {
