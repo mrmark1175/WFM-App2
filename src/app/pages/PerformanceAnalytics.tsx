@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { PageLayout } from "../components/PageLayout";
+import { apiUrl } from "../lib/api";
 import { 
   BarChart3, 
   Download, 
@@ -54,7 +55,7 @@ export function PerformanceAnalytics() {
   const fetchPerformance = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(`http://localhost:5000/api/telephony/pull`, {
+      const res = await fetch(apiUrl("/api/telephony/pull"), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ system: 'genesys', startDate, endDate })

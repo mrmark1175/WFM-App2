@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PageLayout } from "../components/PageLayout";
+import { apiUrl } from "../lib/api";
 import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -521,7 +522,7 @@ export default function LongTermForecastingDemand() {
       try {
         const channels: ChannelKey[] = ["voice", "email", "chat"];
         const results = await Promise.all(channels.map(async (channel) => {
-          const response = await fetch("http://localhost:5000/api/genesys/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queueId: "mock-queue-id", channel, interval: `${assumptions.startDate}/2030-12-31` }) });
+          const response = await fetch(apiUrl("/api/genesys/sync"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queueId: "mock-queue-id", channel, interval: `${assumptions.startDate}/2030-12-31` }) });
           const result = await response.json();
           return { channel, data: result.success && Array.isArray(result.data) ? result.data : [] };
         }));

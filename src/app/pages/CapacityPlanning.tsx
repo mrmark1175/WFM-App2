@@ -1,6 +1,7 @@
 import React from "react";
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { apiUrl } from "../lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface FTEParams {
@@ -37,7 +38,6 @@ interface Scenario {
 type ChannelKey = "voice" | "chat" | "email" | "cases";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const API_BASE = "http://localhost:5000";
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const CHANNEL_OPTIONS: { value: ChannelKey; label: string }[] = [
   { value: "voice", label: "Voice" },
@@ -406,7 +406,7 @@ export function CapacityPlanning() {
     if (!id) return;
     setSaveStatus("saving");
     try {
-      await fetch(`${API_BASE}/api/capacity-scenarios/${id}`, {
+      await fetch(apiUrl(`/api/capacity-scenarios/${id}`), {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildPayload()),
       });
@@ -444,7 +444,7 @@ export function CapacityPlanning() {
   useEffect(() => {
     const fetchScenarios = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/capacity-scenarios?channel=${selectedChannel}`);
+        const res = await fetch(apiUrl(`/api/capacity-scenarios?channel=${selectedChannel}`));
         const data: Scenario[] = await res.json();
         if (Array.isArray(data) && data.length > 0) { setScenarios(data); loadScenario(data[0]); }
         else await createNewScenario("Scenario 1", true);
@@ -457,7 +457,7 @@ export function CapacityPlanning() {
     const fetchYears = async () => {
       setIsLoading(true); setLoadError("");
       try {
-        const res = await fetch(`${API_BASE}/api/forecasts?channel=${selectedChannel}`);
+        const res = await fetch(apiUrl(`/api/forecasts?channel=${selectedChannel}`));
         if (!res.ok) throw new Error();
         const data: ForecastRecord[] = await res.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -484,7 +484,7 @@ export function CapacityPlanning() {
     const fetchProjection = async () => {
       setIsLoading(true);
       try {
-        const res = await fetch(`${API_BASE}/api/forecasts/${encodeURIComponent(selectedForecastYear)}?channel=${selectedChannel}`);
+        const res = await fetch(apiUrl(`/api/forecasts/${encodeURIComponent(selectedForecastYear)}?channel=${selectedChannel}`));
         if (!res.ok) throw new Error();
         const data: ForecastRecord = await res.json();
         if (data) {
@@ -503,7 +503,7 @@ export function CapacityPlanning() {
     const newName = name ?? `Scenario ${scenarios.length + 1}`;
     const defaults = getChannelDefaults(selectedChannel);
     try {
-      const res = await fetch(`${API_BASE}/api/capacity-scenarios`, {
+      const res = await fetch(apiUrl("/api/capacity-scenarios"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: selectedChannel,
@@ -529,7 +529,7 @@ export function CapacityPlanning() {
 
   const deleteScenario = async (id: number) => {
     if (scenarios.length <= 1) return;
-    try { await fetch(`${API_BASE}/api/capacity-scenarios/${id}?channel=${selectedChannel}`, { method: "DELETE" }); } catch { }
+    try { await fetch(apiUrl(`/api/capacity-scenarios/${id}?channel=${selectedChannel}`), { method: "DELETE" }); } catch { }
     const remaining = scenarios.filter(s => s.id !== id);
     setScenarios(remaining);
     if (activeScenarioId === id) loadScenario(remaining[remaining.length - 1]);
@@ -540,7 +540,7 @@ export function CapacityPlanning() {
     if (!trimmed) { setRenamingId(null); return; }
     setScenarios(prev => prev.map(s => s.id === id ? { ...s, scenario_name: trimmed } : s));
     try {
-      await fetch(`${API_BASE}/api/capacity-scenarios/${id}`, {
+      await fetch(apiUrl(`/api/capacity-scenarios/${id}`), {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildPayload(trimmed)),
       });

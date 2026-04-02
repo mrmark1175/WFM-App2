@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react"; // Add useEffect here
 import { Link } from "react-router-dom";
+import { apiUrl } from "../lib/api";
 
 // Define what an Agent looks like based on your pgAdmin data
 interface Agent {
@@ -18,7 +19,7 @@ export function EmployeeRoster() {
 
   useEffect(() => {
     // 1. Ask the backend for the data
-    fetch("http://localhost:5000/api/agents")
+    fetch(apiUrl("/api/agents"))
       .then((res) => res.json())
       .then((data) => {
         // 2. Save the data and stop the spinner
