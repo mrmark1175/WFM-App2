@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "start": "node server/server.cjs"
+    "start": "node server/server.cjs",
+    "migrate:supabase": "node server/migrate_to_supabase.cjs"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
