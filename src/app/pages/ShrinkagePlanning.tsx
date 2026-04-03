@@ -275,6 +275,18 @@ export function ShrinkagePlanning() {
   const shiftMinutes = Math.round(hoursPerDay * 60);
   const daysPerYear = daysPerWeek * 52;
 
+  // Persist to localStorage so LongTermForecasting_Demand can read it
+  React.useEffect(() => {
+    localStorage.setItem(
+      "wfm_shrinkage_totals",
+      JSON.stringify({
+        totalExcl: totalExclHolidays,
+        totalIncl: totalInclHolidays,
+        lastUpdated: new Date().toISOString(),
+      })
+    );
+  }, [totalExclHolidays, totalInclHolidays]);
+
   return (
     <PageLayout title="Shrinkage Planning">
       <div className="flex gap-6 items-start">
@@ -630,6 +642,12 @@ function ShrinkageSummary({
             <span>0%</span>
             <span>100%</span>
           </div>
+        </div>
+
+        {/* Integration note */}
+        <div className="rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200/60 dark:border-blue-700/40 p-2.5 text-[10px] text-blue-700 dark:text-blue-300 space-y-1">
+          <p className="font-semibold">💡 Tip:</p>
+          <p>These shrinkage values are available in <strong>Long Term Forecasting (Demand)</strong> → Demand Assumptions → Shrinkage dropdown.</p>
         </div>
       </CardContent>
     </Card>

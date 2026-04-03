@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X } from "lucide-react";
@@ -35,6 +36,7 @@ interface Assumptions {
   chatAht: number;
   chatConcurrency: number;
   shrinkage: number;
+  shrinkageSource: "manual" | "planner_excl" | "planner_incl";
   voiceSlaTarget: number;
   voiceSlaAnswerSeconds: number;
   voiceAsaTargetSeconds: number;
@@ -55,8 +57,8 @@ interface Assumptions {
   operatingDaysPerWeek: number;
   useManualVolume: boolean;
   manualHistoricalData: number[];
-  useShrinkageModeler: boolean;
-  shrinkageItems: ShrinkageItem[];
+  useShrinkageModeler?: boolean;
+  shrinkageItems?: ShrinkageItem[];
 }
 interface DemandForecastData { month: string; year: string; isFuture: boolean; volume: number; workloadHours: number; aht: number; occupancy: number; shrinkage: number; requiredFTE: number; actualVolume: number | null; forecastVolume: number | null; historicalVolume: number; }
 interface PlannerSnapshot {
@@ -201,6 +203,7 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   chatAht: 450,
   chatConcurrency: 2,
   shrinkage: 25,
+  shrinkageSource: "manual",
   voiceSlaTarget: 80,
   voiceSlaAnswerSeconds: 20,
   voiceAsaTargetSeconds: 15,
@@ -965,6 +968,26 @@ export default function LongTermForecastingDemand() {
       plannerSnapshot: getCurrentPlannerSnapshot(),
     }));
   }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, historicalOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, selectedScenarioId]);
+
+  // Sync shrinkage from Shrinkage Planner when planner source is selected
+  useEffect(() => {
+    const source = assumptions.shrinkageSource;
+    if (source === "planner_excl" || source === "planner_incl") {
+      try {
+        const stored = localStorage.getItem("wfm_shrinkage_totals");
+        if (stored) {
+          const parsed = JSON.parse(stored) as { totalExcl?: number; totalIncl?: number; lastUpdated?: string };
+          const value = source === "planner_excl" ? parsed.totalExcl : parsed.totalIncl;
+          if (typeof value === "number" && value >= 0 && value < 100) {
+            setAssumptions((prev) => ({ ...prev, shrinkage: value }));
+          }
+        }
+      } catch {
+        // ignore malformed localStorage
+      }
+    }
+  }, [assumptions.shrinkageSource]);
+
   useEffect(() => {
     const fetchHistoricalData = async () => {
       setLoading(true);
@@ -1531,6 +1554,59 @@ export default function LongTermForecastingDemand() {
   ], [assumptions.aht, assumptions.emailAht, assumptions.chatAht, assumptions.voiceSlaTarget, assumptions.voiceSlaAnswerSeconds, assumptions.voiceAsaTargetSeconds, assumptions.emailSlaTarget, assumptions.emailSlaAnswerSeconds, assumptions.emailAsaTargetSeconds, assumptions.chatSlaTarget, assumptions.chatSlaAnswerSeconds, assumptions.chatAsaTargetSeconds, hasExplicitHistoryByChannel, averageChannelMetrics, includedChannels]);
   const openHoursPerMonth = useMemo(() => Number(getOpenHoursPerMonth(assumptions).toFixed(1)), [assumptions]);
 
+  // Helper component: display shrinkage sourced from Shrinkage Planner
+  const ShrinkagePlannerLink: React.FC<{
+    source: "planner_excl" | "planner_incl";
+    shrinkage: number;
+  }> = ({ source, shrinkage }) => {
+    const stored = (() => {
+      try {
+        const raw = localStorage.getItem("wfm_shrinkage_totals");
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    const hasValue =
+      stored &&
+      typeof (source === "planner_excl" ? stored.totalExcl : stored.totalIncl) ===
+        "number";
+    const lastUpdated = stored?.lastUpdated
+      ? new Date(stored.lastUpdated).toLocaleString()
+      : null;
+
+    return (
+      <div className="rounded-lg border border-rose-200/60 dark:border-rose-700/40 bg-rose-50/40 dark:bg-rose-950/20 p-3 space-y-2">
+        {hasValue ? (
+          <>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {source === "planner_excl" ? "Excl. holidays" : "Incl. holidays"}
+              </span>
+              <span className="text-sm font-black text-rose-600">{shrinkage}%</span>
+            </div>
+            {lastUpdated && (
+              <p className="text-[10px] text-muted-foreground">
+                Updated: {lastUpdated}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            No Shrinkage Planner data found. Visit the Shrinkage Planning page
+            first.
+          </p>
+        )}
+        <Link
+          to="/wfm/shrinkage"
+          className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
+          Open Shrinkage Planning <ChevronRight className="size-3" />
+        </Link>
+      </div>
+    );
+  };
+
   if (loading) return <PageLayout title="Long Term Forecasting  Demand"><div className="h-[60vh] flex flex-col items-center justify-center gap-4"><Loader2 className="size-12 text-primary animate-spin" /><p className="text-muted-foreground font-medium">Loading demand forecast data...</p></div></PageLayout>;
 
   return (
@@ -1961,57 +2037,44 @@ export default function LongTermForecastingDemand() {
                         <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Shrinkage</Label>
                         <UITooltip>
                           <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
-                          <TooltipContent><p className="text-xs">{assumptions.useShrinkageModeler ? "Computed from individual shrinkage components below." : "Enter shrinkage % manually, or switch to Modeler to build it from components."}</p></TooltipContent>
+                          <TooltipContent><p className="text-xs">FTE gross-up. Use Manual for a flat %, or pull from the Shrinkage Planner.</p></TooltipContent>
                         </UITooltip>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-muted-foreground font-medium">Model</span>
-                          <Switch checked={assumptions.useShrinkageModeler} onCheckedChange={handleShrinkageModelerToggle} className="scale-75 origin-right" />
-                        </div>
-                      </div>
+                      <span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">
+                        {assumptions.shrinkage}%
+                      </span>
                     </div>
-                    {!assumptions.useShrinkageModeler ? (
-                      <Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(event) => setAssumptions({ ...assumptions, shrinkage: validateInput(Number(event.target.value), 0, 99) })} className="h-10 font-bold" />
-                    ) : (
-                      <div className="rounded-xl border border-border/60 overflow-hidden">
-                        {/* header row */}
-                        <div className="grid grid-cols-[1.5rem_1fr_2.5rem_4.5rem_3rem_2.5rem] gap-x-1 items-center px-2 py-1.5 bg-slate-100 dark:bg-slate-800 text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                          <span />
-                          <span>Component</span>
-                          <span className="text-center">Occ.</span>
-                          <span>Freq.</span>
-                          <span className="text-center">Min.</span>
-                          <span className="text-right">%</span>
-                        </div>
-                        {(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => {
-                          const daysPerYear = assumptions.operatingDaysPerWeek * 52;
-                          const minutesPerYear = assumptions.operatingHoursPerDay * 60 * daysPerYear;
-                          const annualOccurrences = item.frequency === "per_day" ? item.occurrences * daysPerYear
-                            : item.frequency === "per_week" ? item.occurrences * 52
-                            : item.frequency === "per_month" ? item.occurrences * 12
-                            : item.occurrences;
-                          const contribution = minutesPerYear > 0 ? Number(((annualOccurrences * item.durationMinutes / minutesPerYear) * 100).toFixed(1)) : 0;
-                          return (
-                            <div key={item.id} className={`grid grid-cols-[1.5rem_1fr_2.5rem_4.5rem_3rem_2.5rem] gap-x-1 items-center px-2 py-1.5 border-t border-border/40 text-xs transition-colors ${item.enabled ? "" : "opacity-40"}`}>
-                              <Checkbox checked={item.enabled} onCheckedChange={(checked) => handleShrinkageItemChange(item.id, { enabled: checked === true })} className="size-3.5" />
-                              <span className="font-medium leading-tight text-[11px]">{item.label}</span>
-                              <Input type="number" min="1" max="999" value={item.occurrences} disabled={!item.enabled} onChange={(e) => handleShrinkageItemChange(item.id, { occurrences: Math.max(1, Number(e.target.value)) })} className="h-6 text-[10px] px-0.5 text-center font-bold" />
-                              <Select value={item.frequency} disabled={!item.enabled} onValueChange={(value) => handleShrinkageItemChange(item.id, { frequency: value as ShrinkageFrequency })}>
-                                <SelectTrigger className="h-6 text-[10px] px-1"><SelectValue /></SelectTrigger>
-                                <SelectContent>{SHRINKAGE_FREQUENCY_OPTIONS.map((opt) => <SelectItem key={opt.value} value={opt.value} className="text-xs">{opt.label}</SelectItem>)}</SelectContent>
-                              </Select>
-                              <Input type="number" min="1" max="9999" value={item.durationMinutes} disabled={!item.enabled} onChange={(e) => handleShrinkageItemChange(item.id, { durationMinutes: Math.max(1, Number(e.target.value)) })} className="h-6 text-[10px] px-0.5 text-center font-bold" />
-                              <span className={`text-right text-[11px] font-black ${item.enabled ? "text-rose-500" : "text-muted-foreground"}`}>{item.enabled ? `${contribution}%` : "—"}</span>
-                            </div>
-                          );
-                        })}
-                        <div className="flex items-center justify-between px-2 py-2 bg-rose-50/60 dark:bg-rose-950/20 border-t border-rose-200/50">
-                          <span className="text-[11px] font-black uppercase tracking-widest text-rose-700 dark:text-rose-400">Total Shrinkage</span>
-                          <span className="text-sm font-black text-rose-600">{assumptions.shrinkage}%</span>
-                        </div>
-                      </div>
+
+                    <Select
+                      value={assumptions.shrinkageSource ?? "manual"}
+                      onValueChange={(val) =>
+                        setAssumptions((prev) => ({ ...prev, shrinkageSource: val as Assumptions["shrinkageSource"] }))
+                      }>
+                      <SelectTrigger className="h-9 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="manual" className="text-xs">Manual entry</SelectItem>
+                        <SelectItem value="planner_excl" className="text-xs">Shrinkage Planner (excl. holidays)</SelectItem>
+                        <SelectItem value="planner_incl" className="text-xs">Shrinkage Planner (incl. holidays)</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    {(assumptions.shrinkageSource ?? "manual") === "manual" && (
+                      <Input
+                        id="shrinkage"
+                        type="number"
+                        value={assumptions.shrinkage}
+                        onChange={(e) =>
+                          setAssumptions({ ...assumptions, shrinkage: validateInput(Number(e.target.value), 0, 99) })
+                        }
+                        className="h-10 font-bold"
+                      />
+                    )}
+
+                    {((assumptions.shrinkageSource ?? "manual") === "planner_excl" ||
+                      (assumptions.shrinkageSource ?? "manual") === "planner_incl") && (
+                      <ShrinkagePlannerLink source={assumptions.shrinkageSource!} shrinkage={assumptions.shrinkage} />
                     )}
                   </div>
                   <div className="space-y-3">
