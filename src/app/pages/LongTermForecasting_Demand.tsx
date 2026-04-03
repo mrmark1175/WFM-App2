@@ -67,8 +67,78 @@ type ChannelKey = "voice" | "email" | "chat";
 type BlendPresetId = "voice-only" | "voice-email" | "voice-chat" | "email-chat" | "all-blended" | "dedicated";
 interface BlendPreset { id: BlendPresetId; label: string; description: string; pools: ChannelKey[][]; }
 interface PoolSummary { poolName: string; channels: ChannelKey[]; workloadHours: number; fte: number; isShared: boolean; }
-interface ChannelStaffingMetrics { volume: number; workloadHours: number; staffedConcurrentAgents: number; concurrencyBuffer: number; requiredFTE: number; }
-interface FutureStaffingRow extends DemandForecastData { activeBlendPreset: string; sharedPoolWorkload: number; sharedPoolFTE: number; standalonePoolFTE: number; totalRequiredFTE: number; pools: PoolSummary[]; }
+interface ChannelStaffingMetrics {
+  channel: ChannelKey;
+  model: string;
+  volume: number;
+  workloadHours: number;
+  intensity: number;
+  rawAgents: number;
+  requiredOccupancy: number;
+  requiredFTE: number;
+  achievedServiceLevel: number;
+}
+interface ChannelMixEntry {
+  channel: ChannelKey;
+  volume: number;
+  workloadHours: number;
+  ahtSeconds: number;
+}
+interface ErlangCStaffingInputs {
+  volume: number;
+  ahtSeconds: number;
+  targetServiceLevelPct: number;
+  targetAnswerTimeSeconds: number;
+  intervalHours: number;
+}
+interface ErlangCStaffingResult {
+  intensity: number;
+  agents: number;
+  occupancyPct: number;
+  serviceLevelPct: number;
+  waitProbability: number;
+}
+interface BlendedFteInputs {
+  voiceVolume: number;
+  voiceAhtSeconds: number;
+  voiceTargetServiceLevelPct: number;
+  voiceTargetAnswerTimeSeconds: number;
+  chatVolume: number;
+  chatAhtSeconds: number;
+  chatConcurrency: number;
+  emailVolume: number;
+  emailAhtSeconds: number;
+  intervalHours: number;
+  shrinkagePct: number;
+  safetyMarginPct?: number;
+}
+interface BlendedFteResult {
+  voiceErlang: ErlangCStaffingResult;
+  baseVoiceStaff: number;
+  voiceWorkloadHours: number;
+  voiceAvailableHours: number;
+  voiceIdleHours: number;
+  rawChatWorkloadHours: number;
+  concurrentChatWorkloadHours: number;
+  netChatWorkloadHours: number;
+  remainingIdleHours: number;
+  emailWorkloadHours: number;
+  netEmailWorkloadHours: number;
+  chatEquivalentStaff: number;
+  emailEquivalentStaff: number;
+  totalBaseStaff: number;
+  totalFteAfterShrinkage: number;
+  totalFteWithSafetyMargin: number;
+}
+interface FutureStaffingRow extends DemandForecastData {
+  activeBlendPreset: string;
+  sharedPoolWorkload: number;
+  sharedPoolFTE: number;
+  standalonePoolFTE: number;
+  totalRequiredFTE: number;
+  pools: PoolSummary[];
+  channelMetrics: Record<ChannelKey, ChannelStaffingMetrics>;
+}
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const FORECAST_METHODS = [{ key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" }, { key: "arima", label: "ARIMA (simplified version)" }, { key: "decomposition", label: "Decomposition (Trend + Seasonality)" }, { key: "ma", label: "Moving Average (baseline fallback)" }, { key: "genesys", label: "Direct Genesys Sync" }, { key: "yoy", label: "Year-over-Year Growth" }, { key: "regression", label: "Linear Regression" }];
@@ -131,12 +201,41 @@ const SCENARIOS_STORAGE_KEY = "lt_forecast_demand_scenarios";
 const validateInput = (value: number, min = 0, max = Infinity) => Math.max(min, Math.min(max, value));
 const formatInteger = (value: number) => value.toLocaleString();
 const getOpenHoursPerMonth = (assumptions: Assumptions) => assumptions.operatingHoursPerDay * assumptions.operatingDaysPerWeek * WEEKS_PER_MONTH;
-const getServiceLevelBufferMultiplier = (serviceLevelPercent: number, answerSeconds: number, asaSeconds: number, ahtSeconds: number) => {
-  const serviceLevelWeight = Math.max(0.15, Math.min(1.2, serviceLevelPercent / 100));
-  const responsivenessWeight = Math.max(0.65, Math.min(2.5, Math.sqrt(ahtSeconds / Math.max(answerSeconds, 1))));
-  const asaWeight = Math.max(0.65, Math.min(2.5, Math.sqrt(ahtSeconds / Math.max(asaSeconds, 1))));
-  return serviceLevelWeight * ((responsivenessWeight + asaWeight) / 2);
+const getOpenSecondsPerMonth = (assumptions: Assumptions) => getOpenHoursPerMonth(assumptions) * 3600;
+const getOpenSecondsPerDay = (assumptions: Assumptions) => assumptions.operatingHoursPerDay * 3600;
+const getBusinessDaysPerMonth = (assumptions: Assumptions) => assumptions.operatingDaysPerWeek * WEEKS_PER_MONTH;
+const getChannelModelLabel = (channel: ChannelKey) => {
+  if (channel === "chat") return `Modified Erlang C (${CHAT_CONCURRENCY} concurrent chats)`;
+  if (channel === "email") return "Deferred backlog model";
+  return "Erlang C";
 };
+const roundTo = (value: number, digits: number) => Number(value.toFixed(digits));
+const factorial = (value: number): number => {
+  if (!Number.isInteger(value) || value < 0) return NaN;
+  let result = 1;
+  for (let i = 2; i <= value; i++) {
+    result *= i;
+    if (!Number.isFinite(result)) return Infinity;
+  }
+  return result;
+};
+const poissonTerm = (intensity: number, agents: number): number => {
+  if (!Number.isFinite(intensity) || intensity < 0 || !Number.isInteger(agents) || agents < 0) return 0;
+  if (agents === 0) return 1;
+  const powerTerm = intensity ** agents;
+  const factorialTerm = factorial(agents);
+  if (Number.isFinite(powerTerm) && Number.isFinite(factorialTerm) && factorialTerm > 0) {
+    return powerTerm / factorialTerm;
+  }
+  let iterativeTerm = 1;
+  for (let i = 1; i <= agents; i++) {
+    iterativeTerm *= intensity / i;
+  }
+  return iterativeTerm;
+};
+const occupancyFromIntensity = (intensity: number, agents: number): number => (
+  agents > 0 ? intensity / agents : 0
+);
 const getChannelServiceTargets = (assumptions: Assumptions, channel: ChannelKey) => {
   if (channel === "email") {
     return {
@@ -158,56 +257,226 @@ const getChannelServiceTargets = (assumptions: Assumptions, channel: ChannelKey)
     asaTargetSeconds: assumptions.voiceAsaTargetSeconds,
   };
 };
+const getChannelAhtSeconds = (assumptions: Assumptions, channel: ChannelKey) => {
+  if (channel === "email") return assumptions.emailAht;
+  if (channel === "chat") return assumptions.chatAht;
+  return assumptions.aht;
+};
+const getChannelEffectiveAhtSeconds = (assumptions: Assumptions, channel: ChannelKey) => (
+  channel === "chat" ? assumptions.chatAht / CHAT_CONCURRENCY : getChannelAhtSeconds(assumptions, channel)
+);
+const getChannelWorkloadHours = (channel: ChannelKey, volume: number, assumptions: Assumptions) => (
+  volume <= 0 ? 0 : roundTo((volume * getChannelEffectiveAhtSeconds(assumptions, channel)) / 3600, 1)
+);
+function erlangC(intensity: number, agents: number): number {
+  const agentCount = Math.max(0, Math.floor(agents));
+  if (agentCount <= 0 || intensity <= 0) return 0;
+  const occupancy = occupancyFromIntensity(intensity, agentCount);
+  if (occupancy >= 1) return 1;
+  let denominator = 0;
+  for (let i = 0; i < agentCount; i++) {
+    denominator += poissonTerm(intensity, i);
+  }
+  const delayedTerm = poissonTerm(intensity, agentCount) * (1 / (1 - occupancy));
+  if (denominator + delayedTerm <= 0) return 1;
+  return Math.min(1, Math.max(0, delayedTerm / (denominator + delayedTerm)));
+}
+function computeServiceLevel(intensity: number, agents: number, ahtSeconds: number, answerSeconds: number): number {
+  if (agents <= intensity) return 0;
+  return 1 - erlangC(intensity, agents) * Math.exp(-((agents - intensity) * answerSeconds) / ahtSeconds);
+}
+function minAgentsForServiceLevel(intensity: number, ahtSeconds: number, answerSeconds: number, targetServiceLevel: number): number {
+  let agents = Math.max(1, Math.floor(intensity) + 1);
+  for (let i = 0; i < 500; i++) {
+    if (computeServiceLevel(intensity, agents, ahtSeconds, answerSeconds) >= targetServiceLevel) return agents;
+    agents += 1;
+  }
+  return agents;
+}
+export const calculateErlangCStaffing = ({
+  volume,
+  ahtSeconds,
+  targetServiceLevelPct,
+  targetAnswerTimeSeconds,
+  intervalHours,
+}: ErlangCStaffingInputs): ErlangCStaffingResult => {
+  const safeIntervalHours = Math.max(intervalHours, 0);
+  const safeAhtSeconds = Math.max(ahtSeconds, 0);
+  if (volume <= 0 || safeAhtSeconds <= 0 || safeIntervalHours <= 0) {
+    return { intensity: 0, agents: 0, occupancyPct: 0, serviceLevelPct: 0, waitProbability: 0 };
+  }
+  const intervalSeconds = safeIntervalHours * 3600;
+  const intensity = (volume * safeAhtSeconds) / intervalSeconds;
+  if (intensity <= 0) {
+    return { intensity: 0, agents: 0, occupancyPct: 0, serviceLevelPct: 0, waitProbability: 0 };
+  }
+  const agents = minAgentsForServiceLevel(
+    intensity,
+    safeAhtSeconds,
+    Math.max(targetAnswerTimeSeconds, 1),
+    validateInput(targetServiceLevelPct, 0, 100) / 100,
+  );
+  const waitProbability = erlangC(intensity, agents);
+  const serviceLevelPct = computeServiceLevel(intensity, agents, safeAhtSeconds, Math.max(targetAnswerTimeSeconds, 1)) * 100;
+  return {
+    intensity: roundTo(intensity, 3),
+    agents,
+    occupancyPct: roundTo(occupancyFromIntensity(intensity, agents) * 100, 1),
+    serviceLevelPct: roundTo(serviceLevelPct, 1),
+    waitProbability: roundTo(waitProbability * 100, 1),
+  };
+};
+export const calculateBlendedTriChannelRequirement = ({
+  voiceVolume,
+  voiceAhtSeconds,
+  voiceTargetServiceLevelPct,
+  voiceTargetAnswerTimeSeconds,
+  chatVolume,
+  chatAhtSeconds,
+  chatConcurrency,
+  emailVolume,
+  emailAhtSeconds,
+  intervalHours,
+  shrinkagePct,
+  safetyMarginPct = 0,
+}: BlendedFteInputs): BlendedFteResult => {
+  const safeIntervalHours = Math.max(intervalHours, 0);
+  const safeShrinkageFactor = 1 - shrinkagePct / 100;
+  const safeChatConcurrency = chatConcurrency > 0 ? chatConcurrency : 1;
+  const voiceErlang = calculateErlangCStaffing({
+    volume: voiceVolume,
+    ahtSeconds: voiceAhtSeconds,
+    targetServiceLevelPct: voiceTargetServiceLevelPct,
+    targetAnswerTimeSeconds: voiceTargetAnswerTimeSeconds,
+    intervalHours: safeIntervalHours,
+  });
+  const baseVoiceStaff = voiceErlang.agents;
+  const voiceWorkloadHours = Math.max(0, (voiceVolume * Math.max(voiceAhtSeconds, 0)) / 3600);
+  const voiceAvailableHours = baseVoiceStaff * safeIntervalHours;
+  const voiceIdleHours = Math.max(0, voiceAvailableHours - voiceWorkloadHours);
+  const rawChatWorkloadHours = Math.max(0, (chatVolume * Math.max(chatAhtSeconds, 0)) / 3600);
+  const concurrentChatWorkloadHours = rawChatWorkloadHours / safeChatConcurrency;
+  const netChatWorkloadHours = Math.max(0, concurrentChatWorkloadHours - voiceIdleHours);
+  const remainingIdleHours = Math.max(0, voiceIdleHours - concurrentChatWorkloadHours);
+  const emailWorkloadHours = Math.max(0, (emailVolume * Math.max(emailAhtSeconds, 0)) / 3600);
+  const netEmailWorkloadHours = Math.max(0, emailWorkloadHours - remainingIdleHours);
+  const chatEquivalentStaff = safeIntervalHours > 0 ? netChatWorkloadHours / safeIntervalHours : 0;
+  const emailEquivalentStaff = safeIntervalHours > 0 ? netEmailWorkloadHours / safeIntervalHours : 0;
+  const totalBaseStaff = baseVoiceStaff + chatEquivalentStaff + emailEquivalentStaff;
+  const totalFteAfterShrinkage = safeShrinkageFactor > 0 ? totalBaseStaff / safeShrinkageFactor : 9999.9;
+  const totalFteWithSafetyMargin = Number.isFinite(totalFteAfterShrinkage)
+    ? totalFteAfterShrinkage * (1 + Math.max(safetyMarginPct, 0) / 100)
+    : 9999.9;
+  return {
+    voiceErlang,
+    baseVoiceStaff,
+    voiceWorkloadHours: roundTo(voiceWorkloadHours, 3),
+    voiceAvailableHours: roundTo(voiceAvailableHours, 3),
+    voiceIdleHours: roundTo(voiceIdleHours, 3),
+    rawChatWorkloadHours: roundTo(rawChatWorkloadHours, 3),
+    concurrentChatWorkloadHours: roundTo(concurrentChatWorkloadHours, 3),
+    netChatWorkloadHours: roundTo(netChatWorkloadHours, 3),
+    remainingIdleHours: roundTo(remainingIdleHours, 3),
+    emailWorkloadHours: roundTo(emailWorkloadHours, 3),
+    netEmailWorkloadHours: roundTo(netEmailWorkloadHours, 3),
+    chatEquivalentStaff: roundTo(chatEquivalentStaff, 3),
+    emailEquivalentStaff: roundTo(emailEquivalentStaff, 3),
+    totalBaseStaff: roundTo(totalBaseStaff, 3),
+    totalFteAfterShrinkage: roundTo(totalFteAfterShrinkage, 3),
+    totalFteWithSafetyMargin: roundTo(totalFteWithSafetyMargin, 3),
+  };
+};
+// Example with 3.0 concurrent chats:
+// calculateBlendedTriChannelRequirement({
+//   voiceVolume: 9600,
+//   voiceAhtSeconds: 300,
+//   voiceTargetServiceLevelPct: 80,
+//   voiceTargetAnswerTimeSeconds: 20,
+//   chatVolume: 7200,
+//   chatAhtSeconds: 420,
+//   chatConcurrency: 3,
+//   emailVolume: 5400,
+//   emailAhtSeconds: 480,
+//   intervalHours: 160,
+//   shrinkagePct: 25,
+// });
+const getGrossRequiredFTE = (rawAgents: number, assumptions: Assumptions) => {
+  const shrinkageFactor = 1 - assumptions.shrinkage / 100;
+  const staffedHoursPerSeat = getOpenHoursPerMonth(assumptions);
+  const productiveHoursPerFte = assumptions.fteMonthlyHours * shrinkageFactor;
+  if (rawAgents <= 0 || staffedHoursPerSeat <= 0 || productiveHoursPerFte <= 0) return 9999.9;
+  return roundTo(((rawAgents * staffedHoursPerSeat) / productiveHoursPerFte) * (1 + assumptions.safetyMargin / 100), 1);
+};
+const getZeroChannelStaffingMetrics = (channel: ChannelKey, volume = 0, workloadHours = 0): ChannelStaffingMetrics => ({
+  channel,
+  model: getChannelModelLabel(channel),
+  volume,
+  workloadHours,
+  intensity: 0,
+  rawAgents: 0,
+  requiredOccupancy: 0,
+  requiredFTE: 0,
+  achievedServiceLevel: 0,
+});
 const getChannelStaffingMetrics = (
   channel: ChannelKey,
   volume: number,
-  workloadHours: number,
   assumptions: Assumptions,
-  ahtSeconds: number,
 ): ChannelStaffingMetrics => {
-  if (workloadHours <= 0 || volume <= 0) {
-    return { volume, workloadHours, staffedConcurrentAgents: 0, concurrencyBuffer: 0, requiredFTE: 0 };
+  const workloadHours = getChannelWorkloadHours(channel, volume, assumptions);
+  if (workloadHours <= 0 || volume <= 0) return getZeroChannelStaffingMetrics(channel, volume, workloadHours);
+  const openSecondsPerMonth = getOpenSecondsPerMonth(assumptions);
+  if (openSecondsPerMonth <= 0 || assumptions.fteMonthlyHours <= 0) {
+    return {
+      ...getZeroChannelStaffingMetrics(channel, volume, workloadHours),
+      rawAgents: 9999.9,
+      requiredFTE: 9999.9,
+    };
   }
-  const openHoursPerMonth = getOpenHoursPerMonth(assumptions);
-  const shrinkageFactor = 1 - assumptions.shrinkage / 100;
-  if (openHoursPerMonth <= 0 || shrinkageFactor <= 0 || assumptions.fteMonthlyHours <= 0) {
-    return { volume, workloadHours, staffedConcurrentAgents: 9999.9, concurrencyBuffer: 0, requiredFTE: 9999.9 };
-  }
-  let achievableOccupancyCap = 0.9;
-  if (volume < 2000) achievableOccupancyCap = 0.65;
-  else if (volume < 5000) achievableOccupancyCap = 0.75;
-  else if (volume < 15000) achievableOccupancyCap = 0.82;
-  else if (volume < 30000) achievableOccupancyCap = 0.86;
-  const finalOccupancy = Math.min(assumptions.occupancy / 100, achievableOccupancyCap);
-  if (finalOccupancy <= 0) {
-    return { volume, workloadHours, staffedConcurrentAgents: 9999.9, concurrencyBuffer: 0, requiredFTE: 9999.9 };
-  }
-  const averageBusyAgentsPerOpenHour = workloadHours / openHoursPerMonth;
-  const staffedConcurrentAgents = averageBusyAgentsPerOpenHour / (finalOccupancy * shrinkageFactor);
   const serviceTargets = getChannelServiceTargets(assumptions, channel);
-  const serviceLevelBufferMultiplier = getServiceLevelBufferMultiplier(
-    serviceTargets.slaTarget,
-    serviceTargets.slaAnswerSeconds,
-    serviceTargets.asaTargetSeconds,
-    ahtSeconds,
-  );
-  const concurrencyBuffer = serviceLevelBufferMultiplier * Math.sqrt(Math.max(staffedConcurrentAgents, 1));
-  let requiredFTE = ((staffedConcurrentAgents + concurrencyBuffer) * openHoursPerMonth) / assumptions.fteMonthlyHours;
-  requiredFTE = requiredFTE * (1 + assumptions.safetyMargin / 100);
+  if (channel === "email") {
+    const intensity = (volume * assumptions.emailAht) / openSecondsPerMonth;
+    const businessDaysPerMonth = Math.max(getBusinessDaysPerMonth(assumptions), 1);
+    const dailyVolume = volume / businessDaysPerMonth;
+    const dailyWorkloadSeconds = dailyVolume * assumptions.emailAht;
+    const responseWindowSeconds = Math.max(Math.min(serviceTargets.slaAnswerSeconds, openSecondsPerMonth), assumptions.emailAht);
+    const sameDayWindowSeconds = Math.max(Math.min(responseWindowSeconds, getOpenSecondsPerDay(assumptions)), assumptions.emailAht);
+    const clearanceAgents = Math.max(1, Math.ceil(intensity));
+    const backlogAgents = Math.max(1, Math.ceil((dailyWorkloadSeconds * (serviceTargets.slaTarget / 100)) / responseWindowSeconds));
+    const rawAgents = Math.max(clearanceAgents, backlogAgents);
+    const requiredOccupancy = rawAgents > 0 ? (intensity / rawAgents) * 100 : 0;
+    const achievableServiceLevel = dailyWorkloadSeconds <= 0 ? 0 : Math.min(100, ((rawAgents * sameDayWindowSeconds) / dailyWorkloadSeconds) * 100);
+    return {
+      channel,
+      model: getChannelModelLabel(channel),
+      volume,
+      workloadHours,
+      intensity: roundTo(intensity, 2),
+      rawAgents,
+      requiredOccupancy: roundTo(requiredOccupancy, 1),
+      requiredFTE: getGrossRequiredFTE(rawAgents, assumptions),
+      achievedServiceLevel: roundTo(achievableServiceLevel, 1),
+    };
+  }
+  const effectiveAhtSeconds = getChannelEffectiveAhtSeconds(assumptions, channel);
+  const erlangStaffing = calculateErlangCStaffing({
+    volume,
+    ahtSeconds: effectiveAhtSeconds,
+    targetServiceLevelPct: serviceTargets.slaTarget,
+    targetAnswerTimeSeconds: serviceTargets.slaAnswerSeconds,
+    intervalHours: getOpenHoursPerMonth(assumptions),
+  });
   return {
+    channel,
+    model: getChannelModelLabel(channel),
     volume,
     workloadHours,
-    staffedConcurrentAgents: Number(staffedConcurrentAgents.toFixed(3)),
-    concurrencyBuffer: Number(concurrencyBuffer.toFixed(3)),
-    requiredFTE: Number(requiredFTE.toFixed(1)),
+    intensity: roundTo(erlangStaffing.intensity, 2),
+    rawAgents: erlangStaffing.agents,
+    requiredOccupancy: erlangStaffing.occupancyPct,
+    requiredFTE: getGrossRequiredFTE(erlangStaffing.agents, assumptions),
+    achievedServiceLevel: erlangStaffing.serviceLevelPct,
   };
-};
-const getAchievableOccupancyCap = (volume: number) => {
-  if (volume < 2000) return 0.65;
-  if (volume < 5000) return 0.75;
-  if (volume < 15000) return 0.82;
-  if (volume < 30000) return 0.86;
-  return 0.9;
 };
 function normalizeHistoricalOverrides(value: unknown): Record<number, string> {
   if (!value || typeof value !== "object") return {};
@@ -343,48 +612,37 @@ const getHistoricalTimeline = (startDateStr: string, historyLength: number) => {
     return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
   });
 };
-const calculateFTE = (volume: number, aht: number, assumptions: Assumptions, channel: ChannelKey = "voice") => {
-  const workloadHours = (volume * aht) / 3600;
-  return getChannelStaffingMetrics(channel, volume, workloadHours, assumptions, aht).requiredFTE;
+const calculateFTE = (volume: number, assumptions: Assumptions, channel: ChannelKey = "voice") => {
+  return getChannelStaffingMetrics(channel, volume, assumptions).requiredFTE;
 };
 const calculatePooledFTE = (
   workloadHours: number,
   referenceVolume: number,
   assumptions: Assumptions,
-  channelMix?: Array<{ channel: ChannelKey; volume: number; workloadHours: number; ahtSeconds: number }>
+  channelMix?: ChannelMixEntry[]
 ) => {
   if (workloadHours === 0) return 0;
   if (channelMix && channelMix.length > 0) {
-    const openHoursPerMonth = getOpenHoursPerMonth(assumptions);
-    const shrinkageFactor = 1 - assumptions.shrinkage / 100;
-    if (openHoursPerMonth <= 0 || assumptions.fteMonthlyHours <= 0 || shrinkageFactor <= 0) return 9999.9;
-    const poolOccupancy = Math.min(assumptions.occupancy / 100, getAchievableOccupancyCap(referenceVolume));
-    if (poolOccupancy <= 0) return 9999.9;
-    const averageBusyAgentsPerOpenHour = workloadHours / openHoursPerMonth;
-    const staffedConcurrentAgents = averageBusyAgentsPerOpenHour / (poolOccupancy * shrinkageFactor);
-    const weightedTargets = channelMix.reduce((acc, entry) => {
-      const weight = referenceVolume > 0 ? entry.volume / referenceVolume : 0;
-      const serviceTargets = getChannelServiceTargets(assumptions, entry.channel);
-      return {
-        slaTarget: acc.slaTarget + (serviceTargets.slaTarget * weight),
-        slaAnswerSeconds: acc.slaAnswerSeconds + (serviceTargets.slaAnswerSeconds * weight),
-        asaTargetSeconds: acc.asaTargetSeconds + (serviceTargets.asaTargetSeconds * weight),
-        ahtSeconds: acc.ahtSeconds + (entry.ahtSeconds * weight),
-      };
-    }, { slaTarget: 0, slaAnswerSeconds: 0, asaTargetSeconds: 0, ahtSeconds: 0 });
-    const serviceLevelBufferMultiplier = getServiceLevelBufferMultiplier(
-      weightedTargets.slaTarget,
-      weightedTargets.slaAnswerSeconds,
-      weightedTargets.asaTargetSeconds,
-      weightedTargets.ahtSeconds || assumptions.aht,
-    );
-    const concurrencyBuffer = serviceLevelBufferMultiplier * Math.sqrt(Math.max(staffedConcurrentAgents, 1));
-    let pooledFTE = ((staffedConcurrentAgents + concurrencyBuffer) * openHoursPerMonth) / assumptions.fteMonthlyHours;
-    pooledFTE = pooledFTE * (1 + assumptions.safetyMargin / 100);
-    return Number(pooledFTE.toFixed(1));
+    const voiceEntry = channelMix.find((entry) => entry.channel === "voice");
+    const chatEntry = channelMix.find((entry) => entry.channel === "chat");
+    const emailEntry = channelMix.find((entry) => entry.channel === "email");
+    const blendedRequirement = calculateBlendedTriChannelRequirement({
+      voiceVolume: voiceEntry?.volume ?? 0,
+      voiceAhtSeconds: assumptions.aht,
+      voiceTargetServiceLevelPct: assumptions.voiceSlaTarget,
+      voiceTargetAnswerTimeSeconds: assumptions.voiceSlaAnswerSeconds,
+      chatVolume: chatEntry?.volume ?? 0,
+      chatAhtSeconds: assumptions.chatAht,
+      chatConcurrency: CHAT_CONCURRENCY,
+      emailVolume: emailEntry?.volume ?? 0,
+      emailAhtSeconds: assumptions.emailAht,
+      intervalHours: getOpenHoursPerMonth(assumptions),
+      shrinkagePct: assumptions.shrinkage,
+      safetyMarginPct: assumptions.safetyMargin,
+    });
+    return getGrossRequiredFTE(blendedRequirement.totalBaseStaff, assumptions);
   }
-  const pooledAhtSeconds = referenceVolume > 0 ? (workloadHours * 3600) / referenceVolume : assumptions.aht;
-  return getChannelStaffingMetrics("voice", referenceVolume, workloadHours, assumptions, pooledAhtSeconds).requiredFTE;
+  return getChannelStaffingMetrics("voice", referenceVolume, assumptions).requiredFTE;
 };
 const getCalculatedVolumes = (data: number[], forecastMethod: string, assumptions: Assumptions, hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number }, arimaParams: { p: number; d: number; q: number }, decompParams: { trendStrength: number; seasonalityStrength: number }) => {
   if (data.length === 0) return Array(12).fill(0);
@@ -413,11 +671,11 @@ const buildDemandForecastData = (data: number[], assumptions: Assumptions, forec
       year: time.year,
       isFuture,
       volume,
-      workloadHours: Number(((volume * assumptions.aht) / 3600).toFixed(1)),
+      workloadHours: getChannelWorkloadHours("voice", volume, assumptions),
       aht: assumptions.aht,
-      occupancy: assumptions.occupancy,
+      occupancy: getChannelStaffingMetrics("voice", volume, assumptions).requiredOccupancy,
       shrinkage: assumptions.shrinkage,
-      requiredFTE: calculateFTE(volume, assumptions.aht, assumptions, "voice"),
+      requiredFTE: calculateFTE(volume, assumptions, "voice"),
       actualVolume: historicalVolume,
       forecastVolume,
       historicalVolume: historicalVolume ?? 0,
@@ -814,10 +1072,10 @@ export default function LongTermForecastingDemand() {
   const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row, futureIdx) => {
     const emailForecastVol = forecastVolumesByChannel.email[futureIdx] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email);
     const chatForecastVol = forecastVolumesByChannel.chat[futureIdx] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat);
-    const channelMetrics: Record<ChannelKey, { volume: number; workloadHours: number }> = {
-      voice: { volume: row.volume, workloadHours: row.workloadHours },
-      email: { volume: emailForecastVol, workloadHours: Number(((emailForecastVol * assumptions.emailAht) / 3600).toFixed(1)) },
-      chat: { volume: chatForecastVol, workloadHours: Number((((chatForecastVol * assumptions.chatAht) / 3600) / CHAT_CONCURRENCY).toFixed(1)) },
+    const channelMetrics: Record<ChannelKey, ChannelStaffingMetrics> = {
+      voice: getChannelStaffingMetrics("voice", row.volume, assumptions),
+      email: getChannelStaffingMetrics("email", emailForecastVol, assumptions),
+      chat: getChannelStaffingMetrics("chat", chatForecastVol, assumptions),
     };
     const pools = selectedBlendPreset.pools.map((channels, index) => {
       const workloadHours = Number(channels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
@@ -826,30 +1084,39 @@ export default function LongTermForecastingDemand() {
         channel,
         volume: channelMetrics[channel].volume,
         workloadHours: channelMetrics[channel].workloadHours,
-        ahtSeconds: channel === "voice" ? assumptions.aht : channel === "email" ? assumptions.emailAht : assumptions.chatAht / CHAT_CONCURRENCY,
+        ahtSeconds: getChannelEffectiveAhtSeconds(assumptions, channel),
       }));
       return { poolName: `Pool ${String.fromCharCode(65 + index)}`, channels, workloadHours, fte: calculatePooledFTE(workloadHours, referenceVolume, assumptions, channelMix), isShared: channels.length > 1 };
     });
     const sharedPools = pools.filter((pool) => pool.isShared);
     const standalonePools = pools.filter((pool) => !pool.isShared);
+    const includedVolume = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].volume, 0);
+    const includedWorkloadHours = Number(includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
+    const totalIntensity = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].intensity, 0);
+    const totalRawAgents = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].rawAgents, 0);
+    const weightedAht = includedVolume > 0
+      ? roundTo(includedChannels.reduce((sum, channel) => sum + (channelMetrics[channel].volume * getChannelAhtSeconds(assumptions, channel)), 0) / includedVolume, 1)
+      : 0;
     return {
       ...row,
+      volume: includedVolume,
+      workloadHours: includedWorkloadHours,
+      aht: weightedAht,
+      occupancy: totalRawAgents > 0 ? roundTo((totalIntensity / totalRawAgents) * 100, 1) : 0,
       activeBlendPreset: selectedBlendPreset.label,
       sharedPoolWorkload: Number(sharedPools.reduce((sum, pool) => sum + pool.workloadHours, 0).toFixed(1)),
       sharedPoolFTE: Number(sharedPools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
       standalonePoolFTE: Number(standalonePools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
       totalRequiredFTE: Number(pools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
       pools,
+      channelMetrics,
     };
   }), [forecastData, forecastVolumesByChannel, selectedBlendPreset, assumptions]);
   const kpis = useMemo(() => futureData.length === 0 ? { avgVolume: 0, avgWorkloadHours: 0, avgRequiredFTE: 0 } : ({
-    avgVolume: Math.round(futureData.reduce((sum, row, index) => sum + includedChannels.reduce((channelSum, channel) => {
-      if (channel === "voice") return channelSum + row.volume;
-      return channelSum + (forecastVolumesByChannel[channel][index] ?? 0);
-    }, 0), 0) / futureData.length),
+    avgVolume: Math.round(futureData.reduce((sum, row) => sum + row.volume, 0) / futureData.length),
     avgWorkloadHours: Number((futureData.reduce((sum, row) => sum + row.pools.reduce((poolSum, pool) => poolSum + pool.workloadHours, 0), 0) / futureData.length).toFixed(1)),
     avgRequiredFTE: Number((futureData.reduce((sum, row) => sum + row.totalRequiredFTE, 0) / futureData.length).toFixed(2)),
-  }), [futureData, includedChannels, forecastVolumesByChannel]);
+  }), [futureData]);
   const requiredStaffingTrendData = useMemo(() => futureData.map((row) => ({
     label: `${row.month} '${row.year.slice(2)}`,
     totalRequiredFTE: row.totalRequiredFTE,
@@ -916,10 +1183,10 @@ export default function LongTermForecastingDemand() {
         .map((row, fi) => {
           const emailVol = emailForecast[fi] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email);
           const chatVol = chatForecast[fi] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat);
-          const channelMetrics: Record<ChannelKey, { volume: number; workloadHours: number }> = {
-            voice: { volume: row.volume, workloadHours: row.workloadHours },
-            email: { volume: emailVol, workloadHours: Number(((emailVol * snapEmailAht) / 3600).toFixed(1)) },
-            chat: { volume: chatVol, workloadHours: Number((((chatVol * snapChatAht) / 3600) / CHAT_CONCURRENCY).toFixed(1)) },
+          const channelMetrics: Record<ChannelKey, ChannelStaffingMetrics> = {
+            voice: getChannelStaffingMetrics("voice", row.volume, activeAssumptions),
+            email: getChannelStaffingMetrics("email", emailVol, activeAssumptions),
+            chat: getChannelStaffingMetrics("chat", chatVol, activeAssumptions),
           };
           const totalRequiredFTE = snapBlendPreset.pools.reduce((sum, channels) => {
             const workloadHours = channels.reduce((poolSum, ch) => poolSum + channelMetrics[ch].workloadHours, 0);
@@ -928,7 +1195,7 @@ export default function LongTermForecastingDemand() {
               channel: ch,
               volume: channelMetrics[ch].volume,
               workloadHours: channelMetrics[ch].workloadHours,
-              ahtSeconds: ch === "voice" ? activeAssumptions.aht : ch === "email" ? snapEmailAht : snapChatAht / CHAT_CONCURRENCY,
+              ahtSeconds: getChannelEffectiveAhtSeconds(activeAssumptions, ch),
             }));
             return sum + calculatePooledFTE(workloadHours, referenceVolume, activeAssumptions, channelMix);
           }, 0);
@@ -950,32 +1217,61 @@ export default function LongTermForecastingDemand() {
     averageFTE: futureData.length > 0 ? Number((futureData.reduce((sum, row) => sum + (row.pools[index]?.fte ?? 0), 0) / futureData.length).toFixed(1)) : 0,
     isShared: channels.length > 1,
   })), [futureData, selectedBlendPreset]);
+  const averageChannelMetrics = useMemo<Record<ChannelKey, { model: string; averageFTE: number; averageOccupancy: number }>>(() => ({
+    voice: {
+      model: getChannelModelLabel("voice"),
+      averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.voice.requiredFTE, 0) / futureData.length, 1) : 0,
+      averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.voice.requiredOccupancy, 0) / futureData.length, 1) : 0,
+    },
+    email: {
+      model: getChannelModelLabel("email"),
+      averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.email.requiredFTE, 0) / futureData.length, 1) : 0,
+      averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.email.requiredOccupancy, 0) / futureData.length, 1) : 0,
+    },
+    chat: {
+      model: getChannelModelLabel("chat"),
+      averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.chat.requiredFTE, 0) / futureData.length, 1) : 0,
+      averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.chat.requiredOccupancy, 0) / futureData.length, 1) : 0,
+    },
+  }), [futureData]);
   const channelAssumptionSummary = useMemo(() => [
     {
       key: "voice" as const,
       label: CHANNEL_ASSUMPTION_META.voice.label,
+      modelRule: averageChannelMetrics.voice.model,
       volumeRule: "100% of omni forecast volume",
       ahtRule: `${assumptions.aht}s AHT`,
       serviceRule: `${assumptions.voiceSlaTarget}% in ${assumptions.voiceSlaAnswerSeconds}s, ASA ${assumptions.voiceAsaTargetSeconds}s`,
       workloadRule: "Volume x AHT / 3600",
+      staffingRule: "Erlang C finds the minimum staffed seats that satisfy the voice SLA target.",
+      occupancyRule: `${averageChannelMetrics.voice.averageOccupancy}% required occupancy`,
+      fteRule: `${averageChannelMetrics.voice.averageFTE} average FTE`,
     },
     {
       key: "email" as const,
       label: CHANNEL_ASSUMPTION_META.email.label,
+      modelRule: averageChannelMetrics.email.model,
       volumeRule: hasExplicitHistoryByChannel.email ? "Uses channel historical series and forecast method" : "20% of voice forecast volume fallback",
       ahtRule: `${assumptions.emailAht}s AHT`,
       serviceRule: `${assumptions.emailSlaTarget}% in ${assumptions.emailSlaAnswerSeconds}s, ASA ${assumptions.emailAsaTargetSeconds}s`,
-      workloadRule: "Volume x AHT / 3600",
+      workloadRule: "Average daily backlog cleared within the response window",
+      staffingRule: "Agents = max(base workload seats, SLA backlog seats) before shrinkage and safety margin.",
+      occupancyRule: `${averageChannelMetrics.email.averageOccupancy}% required occupancy`,
+      fteRule: `${averageChannelMetrics.email.averageFTE} average FTE`,
     },
     {
       key: "chat" as const,
       label: CHANNEL_ASSUMPTION_META.chat.label,
+      modelRule: averageChannelMetrics.chat.model,
       volumeRule: hasExplicitHistoryByChannel.chat ? "Uses channel historical series and forecast method" : "30% of voice forecast volume fallback",
       ahtRule: `${assumptions.chatAht}s AHT`,
       serviceRule: `${assumptions.chatSlaTarget}% in ${assumptions.chatSlaAnswerSeconds}s, ASA ${assumptions.chatAsaTargetSeconds}s`,
       workloadRule: `Volume x AHT / 3600 / ${CHAT_CONCURRENCY} concurrency`,
+      staffingRule: `Modified Erlang C uses effective AHT = AHT / ${CHAT_CONCURRENCY} concurrent chats.`,
+      occupancyRule: `${averageChannelMetrics.chat.averageOccupancy}% required occupancy`,
+      fteRule: `${averageChannelMetrics.chat.averageFTE} average FTE`,
     },
-  ], [assumptions.aht, assumptions.emailAht, assumptions.chatAht, assumptions.voiceSlaTarget, assumptions.voiceSlaAnswerSeconds, assumptions.voiceAsaTargetSeconds, assumptions.emailSlaTarget, assumptions.emailSlaAnswerSeconds, assumptions.emailAsaTargetSeconds, assumptions.chatSlaTarget, assumptions.chatSlaAnswerSeconds, assumptions.chatAsaTargetSeconds, hasExplicitHistoryByChannel]);
+  ], [assumptions.aht, assumptions.emailAht, assumptions.chatAht, assumptions.voiceSlaTarget, assumptions.voiceSlaAnswerSeconds, assumptions.voiceAsaTargetSeconds, assumptions.emailSlaTarget, assumptions.emailSlaAnswerSeconds, assumptions.emailAsaTargetSeconds, assumptions.chatSlaTarget, assumptions.chatSlaAnswerSeconds, assumptions.chatAsaTargetSeconds, hasExplicitHistoryByChannel, averageChannelMetrics]);
   const openHoursPerMonth = useMemo(() => Number(getOpenHoursPerMonth(assumptions).toFixed(1)), [assumptions]);
 
   if (loading) return <PageLayout title="Long Term Forecasting  Demand"><div className="h-[60vh] flex flex-col items-center justify-center gap-4"><Loader2 className="size-12 text-primary animate-spin" /><p className="text-muted-foreground font-medium">Loading demand forecast data...</p></div></PageLayout>;
@@ -1244,10 +1540,14 @@ export default function LongTermForecastingDemand() {
                         <Badge variant="outline">{selectedBlendPreset.pools.some((pool) => pool.includes(channel.key)) ? "Included" : "Excluded"}</Badge>
                       </div>
                       <div className="mt-3 space-y-2 text-sm">
+                        <p><span className="font-semibold">Model:</span> {channel.modelRule}</p>
                         <p><span className="font-semibold">Volume:</span> {channel.volumeRule}</p>
                         <p><span className="font-semibold">AHT:</span> {channel.ahtRule}</p>
                         <p><span className="font-semibold">SLA / ASA:</span> {channel.serviceRule}</p>
                         <p><span className="font-semibold">Workload:</span> {channel.workloadRule}</p>
+                        <p><span className="font-semibold">Staffing:</span> {channel.staffingRule}</p>
+                        <p><span className="font-semibold">Occupancy:</span> {channel.occupancyRule}</p>
+                        <p><span className="font-semibold">FTE:</span> {channel.fteRule}</p>
                       </div>
                     </div>
                   ))}
@@ -1278,7 +1578,29 @@ export default function LongTermForecastingDemand() {
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Email AHT</Label><span className="text-xs font-black bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded text-emerald-700 dark:text-emerald-300">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Chat AHT</Label><span className="text-xs font-black bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded text-amber-700 dark:text-amber-300">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label htmlFor="shrinkage" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Shrinkage</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing shrinkage assumption</p></TooltipContent></UITooltip></div><span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span></div><Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(event) => setAssumptions({ ...assumptions, shrinkage: validateInput(Number(event.target.value), 0, 100) })} className="h-10 font-bold" /></div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="occupancy" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Occupancy</Label><span className="text-xs font-black bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded text-indigo-600">{assumptions.occupancy}%</span></div><Input id="occupancy" type="number" value={assumptions.occupancy} onChange={(event) => setAssumptions({ ...assumptions, occupancy: validateInput(Number(event.target.value), 0, 100) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Occupancy</Label>
+                      <Badge variant="outline" className="font-black text-xs border-indigo-200 text-indigo-700">Derived From SLA</Badge>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      {(["voice", "email", "chat"] as ChannelKey[]).map((channelKey) => (
+                        <div key={channelKey} className={`rounded-xl border border-border/60 p-3 ${CHANNEL_ASSUMPTION_META[channelKey].bgClass}`}>
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className={`text-xs font-black uppercase tracking-widest ${CHANNEL_ASSUMPTION_META[channelKey].colorClass}`}>{CHANNEL_ASSUMPTION_META[channelKey].label}</p>
+                              <p className="text-[11px] text-muted-foreground">{averageChannelMetrics[channelKey].model}</p>
+                            </div>
+                            <Badge variant="outline" className="font-black">{averageChannelMetrics[channelKey].averageFTE} FTE</Badge>
+                          </div>
+                          <div className="mt-3 flex items-center justify-between text-sm">
+                            <span className="text-muted-foreground">Required Occupancy</span>
+                            <span className="font-black text-foreground">{averageChannelMetrics[channelKey].averageOccupancy}%</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                   <div className="space-y-4 rounded-xl border border-border/60 p-4">
                     <div>
                       <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Voice SLA / ASA</p>
@@ -1326,7 +1648,7 @@ export default function LongTermForecastingDemand() {
                   <Button className="w-full h-11 font-black uppercase tracking-widest text-xs mt-4 shadow-lg shadow-primary/20" onClick={() => toast.info("Demand forecast recalculated", { duration: 1500 })}><LayoutDashboard className="size-4 mr-2" />Recalculate</Button>
                 </CardContent>}
               </Card>
-              <Card className="bg-gradient-to-br from-slate-900 to-slate-800 text-white border-none shadow-2xl mt-6"><CardHeader className="pb-2"><CardTitle className="text-[10px] font-black flex items-center gap-2 uppercase tracking-[0.2em] text-blue-400"><LineChartIcon className="size-4" />Demand Notes</CardTitle></CardHeader><CardContent className="space-y-4 pt-2"><div className="space-y-2"><p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Staffing Logic</p><p className="text-xs font-medium leading-relaxed">Required Agents / FTE uses forecast volume, AHT, occupancy, shrinkage, operating hours, safety margin, and channel-specific SLA and ASA targets for voice, email, and chat.</p></div><div className="space-y-2"><p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Blended Pools</p><p className="text-xs font-medium leading-relaxed">When channels are blended, the model recalculates staffing at the shared-pool level using pooled workload, weighted service targets, and a higher volume-driven occupancy cap where justified.</p></div><div className="space-y-2"><p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Open-Hours Effect</p><p className="text-xs font-medium leading-relaxed">Narrower or broader opening windows change the average concurrent load per open hour and the total staffed coverage hours required each month.</p></div><div className="space-y-2"><p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Seasonality View</p><p className="text-xs font-medium leading-relaxed">The seasonality chart indexes each forecast month against the average monthly forecast volume.</p></div></CardContent></Card>
+              <Card className="bg-gradient-to-br from-slate-900 to-slate-800 text-white border-none shadow-2xl mt-6"><CardHeader className="pb-2"><CardTitle className="text-[10px] font-black flex items-center gap-2 uppercase tracking-[0.2em] text-blue-400"><LineChartIcon className="size-4" />Demand Notes</CardTitle></CardHeader><CardContent className="space-y-4 pt-2"><div className="space-y-2"><p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Staffing Logic</p><p className="text-xs font-medium leading-relaxed">Voice uses Erlang C, chat uses modified Erlang C with concurrency, and email uses a backlog-clearing workload model. Occupancy is derived from the minimum staffed seats needed to hit each channel SLA.</p></div><div className="space-y-2"><p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Blended Pools</p><p className="text-xs font-medium leading-relaxed">Voice establishes the staffed base. Any remaining idle voice hours are consumed by chat first and then email before extra blended staffing is added.</p></div><div className="space-y-2"><p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Open-Hours Effect</p><p className="text-xs font-medium leading-relaxed">Monthly open hours determine both concurrent load intensity and how many staffed-seat hours must be converted into gross FTE after shrinkage.</p></div><div className="space-y-2"><p className="text-[9px] text-slate-400 uppercase font-black tracking-[0.15em]">Seasonality View</p><p className="text-xs font-medium leading-relaxed">The seasonality chart indexes each forecast month against the average monthly forecast volume.</p></div></CardContent></Card>
             </div>
           </div>
         </div>
