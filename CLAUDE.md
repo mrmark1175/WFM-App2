@@ -81,9 +81,35 @@ GENESYS_REGION=mypurecloud.com
 
 Frontend API base is controlled by `src/app/lib/api.ts` — uses relative `/api` paths by default (works with Vite proxy in dev and Express static serving in prod).
 
+## Recent Changes & Fixes
+
+### Multi-Channel BPO Staffing Math (Commit: 0dce6ff)
+
+**Problem:** `LongTermForecasting_Demand.tsx` had two staffing calculation bugs affecting multi-channel blended BPO scenarios.
+
+**Bug 1 — Seasonality index double-counting volumes:**
+- The `seasonalityTrend` memo was iterating through included channels and summing their volumes on top of `row.volume`, which already contained the sum of all included channels.
+- Result: With Voice+Email+Chat selected, non-voice channels were counted twice (e.g., Email and Chat volumes appeared in both the row.volume sum AND as explicit additions).
+- **Fix:** Directly use `row.volume` which is already the correct total.
+
+**Bug 2 — Dedicated chat/email pool FTE under-counting:**
+- `calculatePooledFTE` routed single-channel pools through `calculateBlendedTriChannelRequirement` with other volumes = 0.
+- With no voice base, chat and email collapsed to pure traffic-intensity models (workload ÷ interval hours), skipping SLA queuing for chat and the backlog formula for email.
+- Could under-count dedicated chat FTE by ~40–50% at typical occupancy.
+- **Fix:** For single-channel pools, delegate directly to the per-channel staffing model (`getChannelStaffingMetrics`) which uses Erlang C (voice/chat) or backlog logic (email).
+
+**Growth Rate Enhancement:**
+- Growth rate parameter was only visible when `forecastMethod === "yoy"`.
+- **Improvement:** Now always visible in Demand Assumptions. Applied as a post-multiplier (× multiplier) for all non-YoY methods so planners can overlay growth/decline on any statistical forecast.
+- Badge dynamically shows green for positive growth, red for negative; input accepts −100% to +500%.
+
+### UI/UX Fixes
+- KPI value headings in the dark hero section now have explicit `text-white` to prevent Card component defaults from dimming the text.
+
 ## Important Notes
 
 - **`dist/` is committed** — rebuild (`npm run build`) before committing frontend changes.
 - **`@` path alias** maps to `src/` — use `@/app/...` for imports.
 - Backend has a hardcoded fallback DB password in `server/db.cjs` — always prefer env vars.
 - The `CallVolumeSimulator` class in `server/server.cjs` generates deterministic synthetic call volume data with channel profiles, seasonality, and intraday shapes — used for demo/testing when no live Genesys data is available.
+- **Staffing Models:** Voice uses Erlang C; chat uses modified Erlang C with concurrency factor; email uses a daily backlog-clearing model. In blended pools, voice establishes the base and remaining idle capacity absorbs chat (concurrency-adjusted) first, then email.
