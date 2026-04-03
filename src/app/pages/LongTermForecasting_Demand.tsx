@@ -19,6 +19,15 @@ import { toast } from "sonner";
 import { calculateYoY, calculateMovingAverage, calculateLinearRegression, calculateHoltWinters, calculateDecomposition, calculateARIMA } from "./forecasting-logic";
 import { buildDemandHelpPrintHtml, demandForecastHelpSections } from "./LongTermForecasting_Demand.help";
 
+type ShrinkageFrequency = "per_day" | "per_week" | "per_month" | "per_year";
+interface ShrinkageItem {
+  id: string;
+  label: string;
+  enabled: boolean;
+  durationMinutes: number;
+  occurrences: number;
+  frequency: ShrinkageFrequency;
+}
 interface Assumptions {
   startDate: string;
   aht: number;
@@ -46,6 +55,8 @@ interface Assumptions {
   operatingDaysPerWeek: number;
   useManualVolume: boolean;
   manualHistoricalData: number[];
+  useShrinkageModeler: boolean;
+  shrinkageItems: ShrinkageItem[];
 }
 interface DemandForecastData { month: string; year: string; isFuture: boolean; volume: number; workloadHours: number; aht: number; occupancy: number; shrinkage: number; requiredFTE: number; actualVolume: number | null; forecastVolume: number | null; historicalVolume: number; }
 interface PlannerSnapshot {
@@ -154,6 +165,34 @@ interface FutureStaffingRow extends DemandForecastData {
 }
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DEFAULT_SHRINKAGE_ITEMS: ShrinkageItem[] = [
+  { id: "breaks", label: "Breaks", enabled: true, durationMinutes: 15, occurrences: 2, frequency: "per_day" },
+  { id: "lunch", label: "Lunch", enabled: true, durationMinutes: 30, occurrences: 1, frequency: "per_day" },
+  { id: "training", label: "Training", enabled: true, durationMinutes: 120, occurrences: 1, frequency: "per_month" },
+  { id: "coaching", label: "Coaching / 1:1", enabled: true, durationMinutes: 30, occurrences: 1, frequency: "per_month" },
+  { id: "meetings", label: "Meetings", enabled: true, durationMinutes: 60, occurrences: 1, frequency: "per_week" },
+  { id: "annual_leave", label: "Annual Leave", enabled: true, durationMinutes: 480, occurrences: 15, frequency: "per_year" },
+  { id: "sick_leave", label: "Sick Leave", enabled: true, durationMinutes: 480, occurrences: 5, frequency: "per_year" },
+];
+const SHRINKAGE_FREQUENCY_OPTIONS: { value: ShrinkageFrequency; label: string }[] = [
+  { value: "per_day", label: "/ Day" },
+  { value: "per_week", label: "/ Week" },
+  { value: "per_month", label: "/ Month" },
+  { value: "per_year", label: "/ Year" },
+];
+const computeShrinkageFromItems = (items: ShrinkageItem[], operatingHoursPerDay: number, operatingDaysPerWeek: number): number => {
+  const daysPerYear = operatingDaysPerWeek * 52;
+  const minutesPerYear = operatingHoursPerDay * 60 * daysPerYear;
+  if (minutesPerYear <= 0) return 0;
+  const totalLostMinutes = items.filter((item) => item.enabled).reduce((sum, item) => {
+    const annualOccurrences = item.frequency === "per_day" ? item.occurrences * daysPerYear
+      : item.frequency === "per_week" ? item.occurrences * 52
+      : item.frequency === "per_month" ? item.occurrences * 12
+      : item.occurrences;
+    return sum + annualOccurrences * item.durationMinutes;
+  }, 0);
+  return Math.min(99, Number(((totalLostMinutes / minutesPerYear) * 100).toFixed(1)));
+};
 const FORECAST_METHODS = [{ key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" }, { key: "arima", label: "ARIMA (simplified version)" }, { key: "decomposition", label: "Decomposition (Trend + Seasonality)" }, { key: "ma", label: "Moving Average (baseline fallback)" }, { key: "genesys", label: "Direct Genesys Sync" }, { key: "yoy", label: "Year-over-Year Growth" }, { key: "regression", label: "Linear Regression" }];
 const DEFAULT_ASSUMPTIONS: Assumptions = {
   startDate: "2026-01-01",
@@ -182,6 +221,8 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   operatingDaysPerWeek: 5,
   useManualVolume: false,
   manualHistoricalData: new Array(12).fill(10000),
+  useShrinkageModeler: false,
+  shrinkageItems: DEFAULT_SHRINKAGE_ITEMS,
 };
 const EMPTY_CHANNEL_DATA: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [] };
 const EMPTY_CHANNEL_OVERRIDES: Record<ChannelKey, Record<number, string>> = { voice: {}, email: {}, chat: {} };
@@ -575,7 +616,13 @@ function normalizeHistoricalOverrides(value: unknown): Record<number, string> {
   }, {});
 }
 function normalizeBlendPreset(value: unknown): BlendPresetId { return BLEND_PRESETS.some((preset) => preset.id === value) ? value as BlendPresetId : "all-blended"; }
-function cloneAssumptions(assumptions: Assumptions): Assumptions { return { ...assumptions, manualHistoricalData: [...assumptions.manualHistoricalData] }; }
+function cloneAssumptions(assumptions: Assumptions): Assumptions {
+  return {
+    ...assumptions,
+    manualHistoricalData: [...assumptions.manualHistoricalData],
+    shrinkageItems: (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => ({ ...item })),
+  };
+}
 function getChannelHistoryLength(apiData: number[], overrides: Record<number, string>): number {
   const overrideIndexes = Object.keys(overrides).map((key) => Number(key)).filter(Number.isInteger);
   const highestOverrideIndex = overrideIndexes.length > 0 ? Math.max(...overrideIndexes) + 1 : 0;
@@ -661,13 +708,13 @@ function createScenario(id: string, name: string, snapshot: PlannerSnapshot): Sc
 function normalizeScenario(value: unknown, fallbackId: string): Scenario | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<Scenario> & { snapshot?: Partial<PlannerSnapshot> };
-  const baseAssumptions = raw.assumptions ? { ...DEFAULT_ASSUMPTIONS, ...raw.assumptions, manualHistoricalData: Array.isArray(raw.assumptions.manualHistoricalData) ? [...raw.assumptions.manualHistoricalData] : [...DEFAULT_ASSUMPTIONS.manualHistoricalData] } : cloneAssumptions(DEFAULT_ASSUMPTIONS);
+  const baseAssumptions = raw.assumptions ? { ...DEFAULT_ASSUMPTIONS, ...raw.assumptions, manualHistoricalData: Array.isArray(raw.assumptions.manualHistoricalData) ? [...raw.assumptions.manualHistoricalData] : [...DEFAULT_ASSUMPTIONS.manualHistoricalData], shrinkageItems: Array.isArray(raw.assumptions.shrinkageItems) ? raw.assumptions.shrinkageItems.map((item: ShrinkageItem) => ({ ...item })) : DEFAULT_SHRINKAGE_ITEMS.map((item) => ({ ...item })) } : cloneAssumptions(DEFAULT_ASSUMPTIONS);
   const snapshot = raw.snapshot;
   const legacyBlendState = getBlendStateFromLegacyPreset(normalizeBlendPreset(snapshot?.activeBlendPreset));
   const selectedChannels = normalizeSelectedChannels(snapshot?.selectedChannels || legacyBlendState.selectedChannels);
   const poolingMode = snapshot?.poolingMode === "dedicated" ? "dedicated" : legacyBlendState.poolingMode;
   return createScenario(raw.id || fallbackId, raw.name || "Scenario", {
-    assumptions: snapshot?.assumptions ? { ...baseAssumptions, ...snapshot.assumptions, manualHistoricalData: Array.isArray(snapshot.assumptions.manualHistoricalData) ? [...snapshot.assumptions.manualHistoricalData] : [...baseAssumptions.manualHistoricalData] } : baseAssumptions,
+    assumptions: snapshot?.assumptions ? { ...baseAssumptions, ...snapshot.assumptions, manualHistoricalData: Array.isArray(snapshot.assumptions.manualHistoricalData) ? [...snapshot.assumptions.manualHistoricalData] : [...baseAssumptions.manualHistoricalData], shrinkageItems: Array.isArray(snapshot.assumptions.shrinkageItems) ? snapshot.assumptions.shrinkageItems.map((item: ShrinkageItem) => ({ ...item })) : baseAssumptions.shrinkageItems.map((item) => ({ ...item })) } : baseAssumptions,
     forecastMethod: typeof snapshot?.forecastMethod === "string" ? snapshot.forecastMethod : "holtwinters",
     hwParams: { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12, ...(snapshot?.hwParams || {}) },
     arimaParams: { p: 1, d: 1, q: 1, ...(snapshot?.arimaParams || {}) },
@@ -1087,6 +1134,23 @@ export default function LongTermForecastingDemand() {
       delete nextChannelOverrides[index];
       return { ...current, [historicalChannelView]: nextChannelOverrides };
     });
+  };
+  const handleShrinkageItemChange = (id: string, changes: Partial<ShrinkageItem>) => {
+    const nextItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => item.id === id ? { ...item, ...changes } : item);
+    const computed = computeShrinkageFromItems(nextItems, assumptions.operatingHoursPerDay, assumptions.operatingDaysPerWeek);
+    setAssumptions((prev) => ({ ...prev, shrinkageItems: nextItems, shrinkage: computed }));
+  };
+  const handleShrinkageModelerToggle = (enabled: boolean) => {
+    if (enabled) {
+      const computed = computeShrinkageFromItems(
+        assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS,
+        assumptions.operatingHoursPerDay,
+        assumptions.operatingDaysPerWeek,
+      );
+      setAssumptions((prev) => ({ ...prev, useShrinkageModeler: true, shrinkage: computed }));
+    } else {
+      setAssumptions((prev) => ({ ...prev, useShrinkageModeler: false }));
+    }
   };
   const handleResetAllOverrides = () => {
     setHistoricalOverridesByChannel((current) => ({ ...current, [historicalChannelView]: {} }));
@@ -1819,7 +1883,66 @@ export default function LongTermForecastingDemand() {
                     <Input id="chatConcurrency" type="number" min="1" max="10" step="1" value={assumptions.chatConcurrency} onChange={(event) => setAssumptions({ ...assumptions, chatConcurrency: validateInput(Math.round(Number(event.target.value)), 1, 10) })} className="h-10 font-bold" />
                     <p className="text-[11px] text-muted-foreground">Effective Chat AHT = {assumptions.chatAht}s ÷ {assumptions.chatConcurrency} = <span className="font-bold text-foreground">{Math.round(assumptions.chatAht / Math.max(1, assumptions.chatConcurrency))}s</span></p>
                   </div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label htmlFor="shrinkage" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Shrinkage</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing shrinkage assumption</p></TooltipContent></UITooltip></div><span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span></div><Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(event) => setAssumptions({ ...assumptions, shrinkage: validateInput(Number(event.target.value), 0, 100) })} className="h-10 font-bold" /></div>
+                  {/* ── Shrinkage ── */}
+                  <div className="space-y-3 border-t border-border pt-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Shrinkage</Label>
+                        <UITooltip>
+                          <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
+                          <TooltipContent><p className="text-xs">{assumptions.useShrinkageModeler ? "Computed from individual shrinkage components below." : "Enter shrinkage % manually, or switch to Modeler to build it from components."}</p></TooltipContent>
+                        </UITooltip>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-muted-foreground font-medium">Model</span>
+                          <Switch checked={assumptions.useShrinkageModeler} onCheckedChange={handleShrinkageModelerToggle} className="scale-75 origin-right" />
+                        </div>
+                      </div>
+                    </div>
+                    {!assumptions.useShrinkageModeler ? (
+                      <Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(event) => setAssumptions({ ...assumptions, shrinkage: validateInput(Number(event.target.value), 0, 99) })} className="h-10 font-bold" />
+                    ) : (
+                      <div className="rounded-xl border border-border/60 overflow-hidden">
+                        {/* header row */}
+                        <div className="grid grid-cols-[1.5rem_1fr_3rem_5.5rem_3.5rem_2.5rem] gap-x-1.5 items-center px-2 py-1.5 bg-slate-100 dark:bg-slate-800 text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                          <span />
+                          <span>Component</span>
+                          <span className="text-center">Occ.</span>
+                          <span>Freq.</span>
+                          <span className="text-center">Min.</span>
+                          <span className="text-right">%</span>
+                        </div>
+                        {(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => {
+                          const daysPerYear = assumptions.operatingDaysPerWeek * 52;
+                          const minutesPerYear = assumptions.operatingHoursPerDay * 60 * daysPerYear;
+                          const annualOccurrences = item.frequency === "per_day" ? item.occurrences * daysPerYear
+                            : item.frequency === "per_week" ? item.occurrences * 52
+                            : item.frequency === "per_month" ? item.occurrences * 12
+                            : item.occurrences;
+                          const contribution = minutesPerYear > 0 ? Number(((annualOccurrences * item.durationMinutes / minutesPerYear) * 100).toFixed(1)) : 0;
+                          return (
+                            <div key={item.id} className={`grid grid-cols-[1.5rem_1fr_3rem_5.5rem_3.5rem_2.5rem] gap-x-1.5 items-center px-2 py-1.5 border-t border-border/40 text-xs transition-colors ${item.enabled ? "" : "opacity-40"}`}>
+                              <Checkbox checked={item.enabled} onCheckedChange={(checked) => handleShrinkageItemChange(item.id, { enabled: checked === true })} className="size-3.5" />
+                              <span className="font-medium truncate text-[11px]">{item.label}</span>
+                              <Input type="number" min="1" max="999" value={item.occurrences} disabled={!item.enabled} onChange={(e) => handleShrinkageItemChange(item.id, { occurrences: Math.max(1, Number(e.target.value)) })} className="h-6 text-[11px] px-1 text-center font-bold" />
+                              <Select value={item.frequency} disabled={!item.enabled} onValueChange={(value) => handleShrinkageItemChange(item.id, { frequency: value as ShrinkageFrequency })}>
+                                <SelectTrigger className="h-6 text-[11px] px-1.5"><SelectValue /></SelectTrigger>
+                                <SelectContent>{SHRINKAGE_FREQUENCY_OPTIONS.map((opt) => <SelectItem key={opt.value} value={opt.value} className="text-xs">{opt.label}</SelectItem>)}</SelectContent>
+                              </Select>
+                              <Input type="number" min="1" max="9999" value={item.durationMinutes} disabled={!item.enabled} onChange={(e) => handleShrinkageItemChange(item.id, { durationMinutes: Math.max(1, Number(e.target.value)) })} className="h-6 text-[11px] px-1 text-center font-bold" />
+                              <span className={`text-right text-[11px] font-black ${item.enabled ? "text-rose-500" : "text-muted-foreground"}`}>{item.enabled ? `${contribution}%` : "—"}</span>
+                            </div>
+                          );
+                        })}
+                        <div className="flex items-center justify-between px-2 py-2 bg-rose-50/60 dark:bg-rose-950/20 border-t border-rose-200/50">
+                          <span className="text-[11px] font-black uppercase tracking-widest text-rose-700 dark:text-rose-400">Total Shrinkage</span>
+                          <span className="text-sm font-black text-rose-600">{assumptions.shrinkage}%</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Occupancy</Label>
