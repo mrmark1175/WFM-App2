@@ -13,6 +13,13 @@ export function WFM() {
       path: "/wfm/long-term-forecasting-demand",
     },
     {
+      title: "Shrinkage Planning",
+      description: "Model absence and in-work off-phone shrinkage to compute FTE gross-up",
+      icon: Layers,
+      stats: "FTE Modeler",
+      path: "/wfm/shrinkage",
+    },
+    {
       title: "Workforce Planning",
       description: "Forecast staffing needs and optimize resource allocation",
       icon: Users,

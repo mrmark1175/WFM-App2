@@ -11,6 +11,7 @@ import { ArrivalAnalysis } from "./pages/ArrivalAnalysis";
 import { TelephonyRawData } from "./pages/TelephonyRawData";
 import { PerformanceAnalytics } from "./pages/PerformanceAnalytics";
 import LongTermForecastingDemand from "./pages/LongTermForecasting_Demand";
+import { ShrinkagePlanning } from "./pages/ShrinkagePlanning";
 
 export const router = createBrowserRouter([
   { path: "/",                            Component: Home },
@@ -19,6 +20,7 @@ export const router = createBrowserRouter([
   { path: "/wfm/roster",                 Component: EmployeeRoster },
   { path: "/wfm/long-term-forecasting-demand", Component: LongTermForecastingDemand },
   { path: "/wfm/capacity",               Component: CapacityPlanning },
+  { path: "/wfm/shrinkage",              Component: ShrinkagePlanning },
   { path: "/wfm/intraday",               Component: IntradayForecast },
   { path: "/wfm/interaction-arrival",    Component: InteractionArrival },
   { path: "/wfm/arrival-analysis",       Component: ArrivalAnalysis },

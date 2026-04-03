@@ -21,6 +21,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
     roster: "Employee Roster",
     forecasting: "Forecasting",
     capacity: "Workforce Planning",
+    shrinkage: "Shrinkage Planning",
     intraday: "Intraday Forecast",
     "my-account": "My Account",
     configuration: "Configuration",
