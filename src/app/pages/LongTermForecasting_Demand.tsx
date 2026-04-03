@@ -24,6 +24,7 @@ interface Assumptions {
   aht: number;
   emailAht: number;
   chatAht: number;
+  chatConcurrency: number;
   shrinkage: number;
   voiceSlaTarget: number;
   voiceSlaAnswerSeconds: number;
@@ -159,6 +160,7 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   aht: 300,
   emailAht: 600,
   chatAht: 450,
+  chatConcurrency: 2,
   shrinkage: 25,
   voiceSlaTarget: 80,
   voiceSlaAnswerSeconds: 20,
@@ -219,8 +221,8 @@ const getOpenHoursPerMonth = (assumptions: Assumptions) => assumptions.operating
 const getOpenSecondsPerMonth = (assumptions: Assumptions) => getOpenHoursPerMonth(assumptions) * 3600;
 const getOpenSecondsPerDay = (assumptions: Assumptions) => assumptions.operatingHoursPerDay * 3600;
 const getBusinessDaysPerMonth = (assumptions: Assumptions) => assumptions.operatingDaysPerWeek * WEEKS_PER_MONTH;
-const getChannelModelLabel = (channel: ChannelKey) => {
-  if (channel === "chat") return `Modified Erlang C (${CHAT_CONCURRENCY} concurrent chats)`;
+const getChannelModelLabel = (channel: ChannelKey, chatConcurrency = CHAT_CONCURRENCY) => {
+  if (channel === "chat") return `Modified Erlang C (${chatConcurrency} concurrent chats)`;
   if (channel === "email") return "Deferred backlog model";
   return "Erlang C";
 };
@@ -348,7 +350,7 @@ const getChannelAhtSeconds = (assumptions: Assumptions, channel: ChannelKey) => 
   return assumptions.aht;
 };
 const getChannelEffectiveAhtSeconds = (assumptions: Assumptions, channel: ChannelKey) => (
-  channel === "chat" ? assumptions.chatAht / CHAT_CONCURRENCY : getChannelAhtSeconds(assumptions, channel)
+  channel === "chat" ? assumptions.chatAht / Math.max(1, assumptions.chatConcurrency) : getChannelAhtSeconds(assumptions, channel)
 );
 const getChannelWorkloadHours = (channel: ChannelKey, volume: number, assumptions: Assumptions) => (
   volume <= 0 ? 0 : roundTo((volume * getChannelEffectiveAhtSeconds(assumptions, channel)) / 3600, 1)
@@ -492,9 +494,9 @@ const getGrossRequiredFTE = (rawAgents: number, assumptions: Assumptions) => {
   if (rawAgents <= 0 || staffedHoursPerSeat <= 0 || productiveHoursPerFte <= 0) return 9999.9;
   return roundTo(((rawAgents * staffedHoursPerSeat) / productiveHoursPerFte) * (1 + assumptions.safetyMargin / 100), 1);
 };
-const getZeroChannelStaffingMetrics = (channel: ChannelKey, volume = 0, workloadHours = 0): ChannelStaffingMetrics => ({
+const getZeroChannelStaffingMetrics = (channel: ChannelKey, volume = 0, workloadHours = 0, chatConcurrency = CHAT_CONCURRENCY): ChannelStaffingMetrics => ({
   channel,
-  model: getChannelModelLabel(channel),
+  model: getChannelModelLabel(channel, chatConcurrency),
   volume,
   workloadHours,
   intensity: 0,
@@ -508,12 +510,13 @@ const getChannelStaffingMetrics = (
   volume: number,
   assumptions: Assumptions,
 ): ChannelStaffingMetrics => {
+  const chatConcurrency = Math.max(1, assumptions.chatConcurrency);
   const workloadHours = getChannelWorkloadHours(channel, volume, assumptions);
-  if (workloadHours <= 0 || volume <= 0) return getZeroChannelStaffingMetrics(channel, volume, workloadHours);
+  if (workloadHours <= 0 || volume <= 0) return getZeroChannelStaffingMetrics(channel, volume, workloadHours, chatConcurrency);
   const openSecondsPerMonth = getOpenSecondsPerMonth(assumptions);
   if (openSecondsPerMonth <= 0 || assumptions.fteMonthlyHours <= 0) {
     return {
-      ...getZeroChannelStaffingMetrics(channel, volume, workloadHours),
+      ...getZeroChannelStaffingMetrics(channel, volume, workloadHours, chatConcurrency),
       rawAgents: 9999.9,
       requiredFTE: 9999.9,
     };
@@ -533,7 +536,7 @@ const getChannelStaffingMetrics = (
     const achievableServiceLevel = dailyWorkloadSeconds <= 0 ? 0 : Math.min(100, ((rawAgents * sameDayWindowSeconds) / dailyWorkloadSeconds) * 100);
     return {
       channel,
-      model: getChannelModelLabel(channel),
+      model: getChannelModelLabel(channel, chatConcurrency),
       volume,
       workloadHours,
       intensity: roundTo(intensity, 2),
@@ -553,7 +556,7 @@ const getChannelStaffingMetrics = (
   });
   return {
     channel,
-    model: getChannelModelLabel(channel),
+    model: getChannelModelLabel(channel, chatConcurrency),
     volume,
     workloadHours,
     intensity: roundTo(erlangStaffing.intensity, 2),
@@ -737,7 +740,7 @@ const calculatePooledFTE = (
       voiceTargetAnswerTimeSeconds: assumptions.voiceSlaAnswerSeconds,
       chatVolume: chatEntry?.volume ?? 0,
       chatAhtSeconds: assumptions.chatAht,
-      chatConcurrency: CHAT_CONCURRENCY,
+      chatConcurrency: Math.max(1, assumptions.chatConcurrency),
       emailVolume: emailEntry?.volume ?? 0,
       emailAhtSeconds: assumptions.emailAht,
       intervalHours: getOpenHoursPerMonth(assumptions),
@@ -1438,11 +1441,11 @@ export default function LongTermForecastingDemand() {
       modelRule: averageChannelMetrics.chat.model,
       volumeRule: hasExplicitHistoryByChannel.chat ? "Uses channel historical series and forecast method" : "30% of voice forecast volume fallback",
       ahtRule: `${assumptions.chatAht}s AHT`,
-      serviceRule: `Staffing uses SLA ${assumptions.chatSlaTarget}% in ${assumptions.chatSlaAnswerSeconds}s with ${CHAT_CONCURRENCY} concurrent chats. ASA ${assumptions.chatAsaTargetSeconds}s is stored on the page but not applied in this calculation.`,
-      workloadRule: `Volume x AHT / 3600 / ${CHAT_CONCURRENCY} concurrency`,
+      serviceRule: `Staffing uses SLA ${assumptions.chatSlaTarget}% in ${assumptions.chatSlaAnswerSeconds}s with ${assumptions.chatConcurrency} concurrent chats. ASA ${assumptions.chatAsaTargetSeconds}s is stored on the page but not applied in this calculation.`,
+      workloadRule: `Volume x AHT / 3600 / ${assumptions.chatConcurrency} concurrency`,
       staffingRule: isChannelIncludedInBlend("chat")
         ? "In shared pools, chat workload is reduced by concurrency and then offset by available voice idle capacity before extra staff is added."
-        : `Modified Erlang C uses effective AHT = AHT / ${CHAT_CONCURRENCY} concurrent chats.`,
+        : `Modified Erlang C uses effective AHT = AHT / ${assumptions.chatConcurrency} concurrent chats.`,
       occupancyRule: isChannelIncludedInBlend("chat")
         ? `${averageChannelMetrics.chat.averageOccupancy}% required occupancy when chat still needs staffed coverage`
         : `${averageChannelMetrics.chat.averageOccupancy}% standalone required occupancy`,
@@ -1654,7 +1657,7 @@ export default function LongTermForecastingDemand() {
                         <div className="space-y-1">
                       <p className={`text-sm font-black uppercase tracking-widest ${CHANNEL_ASSUMPTION_META[channel].colorClass}`}>{CHANNEL_ASSUMPTION_META[channel].label}</p>
                           <p className="text-sm text-muted-foreground">
-                            {channel === "voice" ? "Priority queue and base staffing channel." : channel === "chat" ? `Concurrent channel with ${CHAT_CONCURRENCY} chats per staffed seat.` : "Deferred workload channel."}
+                            {channel === "voice" ? "Priority queue and base staffing channel." : channel === "chat" ? `Concurrent channel with ${assumptions.chatConcurrency} chats per staffed seat.` : "Deferred workload channel."}
                           </p>
                         </div>
                       </label>
@@ -1802,6 +1805,20 @@ export default function LongTermForecastingDemand() {
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">AHT Assumption</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-primary">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Email AHT</Label><span className="text-xs font-black bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded text-emerald-700 dark:text-emerald-300">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Chat AHT</Label><span className="text-xs font-black bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded text-amber-700 dark:text-amber-300">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="chatConcurrency" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Chat Concurrency</Label>
+                        <UITooltip>
+                          <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
+                          <TooltipContent><p className="text-xs">Simultaneous chats handled per agent. Reduces effective AHT (AHT ÷ concurrency) for Erlang C and workload calculations. Higher concurrency lowers FTE but raises agent cognitive load.</p></TooltipContent>
+                        </UITooltip>
+                      </div>
+                      <span className="text-xs font-black bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded text-amber-700 dark:text-amber-300">{assumptions.chatConcurrency}×</span>
+                    </div>
+                    <Input id="chatConcurrency" type="number" min="1" max="10" step="1" value={assumptions.chatConcurrency} onChange={(event) => setAssumptions({ ...assumptions, chatConcurrency: validateInput(Math.round(Number(event.target.value)), 1, 10) })} className="h-10 font-bold" />
+                    <p className="text-[11px] text-muted-foreground">Effective Chat AHT = {assumptions.chatAht}s ÷ {assumptions.chatConcurrency} = <span className="font-bold text-foreground">{Math.round(assumptions.chatAht / Math.max(1, assumptions.chatConcurrency))}s</span></p>
+                  </div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label htmlFor="shrinkage" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Shrinkage</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing shrinkage assumption</p></TooltipContent></UITooltip></div><span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">{assumptions.shrinkage}%</span></div><Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(event) => setAssumptions({ ...assumptions, shrinkage: validateInput(Number(event.target.value), 0, 100) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
