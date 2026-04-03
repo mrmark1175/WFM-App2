@@ -949,20 +949,22 @@ export default function LongTermForecastingDemand() {
       }
       setScenarios(nextScenarios);
       try {
-        // Prefer DB active state over localStorage so settings sync across computers
+        // localStorage first (dev environment is source of truth), then DB active state (for syncing to other devices)
         let savedInputs: { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null = null;
-        try {
-          const activeStateResponse = await fetch(apiUrl("/api/demand-planner-active-state"));
-          if (activeStateResponse.ok) {
-            const dbState = await activeStateResponse.json() as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null;
-            if (dbState && typeof dbState === "object") savedInputs = dbState;
-          }
-        } catch {
-          // fall through to localStorage
+        const localRaw = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
+        if (localRaw) {
+          savedInputs = JSON.parse(localRaw) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
         }
         if (!savedInputs) {
-          const localRaw = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
-          if (localRaw) savedInputs = JSON.parse(localRaw) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
+          try {
+            const activeStateResponse = await fetch(apiUrl("/api/demand-planner-active-state"));
+            if (activeStateResponse.ok) {
+              const dbState = await activeStateResponse.json() as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null;
+              if (dbState && typeof dbState === "object") savedInputs = dbState;
+            }
+          } catch {
+            // fall through to scenario snapshot
+          }
         }
         if (savedInputs) {
           const nextSelectedScenarioId = savedInputs.selectedScenarioId && nextScenarios[savedInputs.selectedScenarioId] ? savedInputs.selectedScenarioId : Object.keys(nextScenarios)[0] || "base";
