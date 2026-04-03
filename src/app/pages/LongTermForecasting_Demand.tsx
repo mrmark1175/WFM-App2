@@ -1142,12 +1142,16 @@ export default function LongTermForecastingDemand() {
   };
   const handleShrinkageModelerToggle = (enabled: boolean) => {
     if (enabled) {
-      const computed = computeShrinkageFromItems(
-        assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS,
-        assumptions.operatingHoursPerDay,
-        assumptions.operatingDaysPerWeek,
+      // Scale leave-type items to match the actual shift length so shrinkage
+      // reflects a full day off (operatingHoursPerDay × 60 min) rather than
+      // a hardcoded 8-hour assumption.
+      const shiftMinutes = Math.round(assumptions.operatingHoursPerDay * 60);
+      const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]);
+      const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) =>
+        LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMinutes } : item,
       );
-      setAssumptions((prev) => ({ ...prev, useShrinkageModeler: true, shrinkage: computed }));
+      const computed = computeShrinkageFromItems(scaledItems, assumptions.operatingHoursPerDay, assumptions.operatingDaysPerWeek);
+      setAssumptions((prev) => ({ ...prev, useShrinkageModeler: true, shrinkageItems: scaledItems, shrinkage: computed }));
     } else {
       setAssumptions((prev) => ({ ...prev, useShrinkageModeler: false }));
     }
@@ -1997,8 +2001,8 @@ export default function LongTermForecastingDemand() {
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="operatingHoursPerDay" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Hours Per Day</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.operatingHoursPerDay}</span></div><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => setAssumptions({ ...assumptions, operatingHoursPerDay: validateInput(Number(event.target.value), 0.5, 24) })} className="h-10 font-bold" /></div>
-                    <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Days Per Week</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.operatingDaysPerWeek}</span></div><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => setAssumptions({ ...assumptions, operatingDaysPerWeek: validateInput(Number(event.target.value), 0.5, 7) })} className="h-10 font-bold" /></div>
+                    <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="operatingHoursPerDay" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Hours Per Day</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.operatingHoursPerDay}</span></div><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-bold" /></div>
+                    <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Days Per Week</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.operatingDaysPerWeek}</span></div><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-bold" /></div>
                   </div>
                   <div className="rounded-lg border border-border/60 bg-slate-50/70 px-3 py-2 text-xs text-muted-foreground">
                     Operating window: <span className="font-bold text-foreground">{assumptions.operatingHoursPerDay}h/day x {assumptions.operatingDaysPerWeek}d/week</span> = <span className="font-bold text-foreground">{openHoursPerMonth}</span> open hours/month
