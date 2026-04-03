@@ -905,6 +905,19 @@ export default function LongTermForecastingDemand() {
     setHistoricalChannelView(snapshot.selectedHistoricalChannel || "voice");
   };
 
+  const persistActiveStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const persistActiveState = (state: { selectedScenarioId: string; plannerSnapshot: PlannerSnapshot }) => {
+    localStorage.setItem(USER_INPUTS_STORAGE_KEY, JSON.stringify(state));
+    if (persistActiveStateTimerRef.current) clearTimeout(persistActiveStateTimerRef.current);
+    persistActiveStateTimerRef.current = setTimeout(() => {
+      fetch(apiUrl("/api/demand-planner-active-state"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state_value: state }),
+      }).catch(() => { /* non-critical */ });
+    }, 2000);
+  };
+
   useEffect(() => {
     const hydratePlanner = async () => {
       let nextScenarios = DEFAULT_SCENARIOS;
@@ -936,14 +949,27 @@ export default function LongTermForecastingDemand() {
       }
       setScenarios(nextScenarios);
       try {
-        const savedInputs = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
+        // Prefer DB active state over localStorage so settings sync across computers
+        let savedInputs: { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null = null;
+        try {
+          const activeStateResponse = await fetch(apiUrl("/api/demand-planner-active-state"));
+          if (activeStateResponse.ok) {
+            const dbState = await activeStateResponse.json() as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null;
+            if (dbState && typeof dbState === "object") savedInputs = dbState;
+          }
+        } catch {
+          // fall through to localStorage
+        }
+        if (!savedInputs) {
+          const localRaw = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
+          if (localRaw) savedInputs = JSON.parse(localRaw) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
+        }
         if (savedInputs) {
-          const parsed = JSON.parse(savedInputs) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
-          const nextSelectedScenarioId = parsed.selectedScenarioId && nextScenarios[parsed.selectedScenarioId] ? parsed.selectedScenarioId : Object.keys(nextScenarios)[0] || "base";
+          const nextSelectedScenarioId = savedInputs.selectedScenarioId && nextScenarios[savedInputs.selectedScenarioId] ? savedInputs.selectedScenarioId : Object.keys(nextScenarios)[0] || "base";
           setSelectedScenarioId(nextSelectedScenarioId);
           const fallbackSnapshot = nextScenarios[nextSelectedScenarioId]?.snapshot;
-          if (parsed.plannerSnapshot) {
-            applyPlannerSnapshot(normalizeScenario({ id: nextSelectedScenarioId, name: nextScenarios[nextSelectedScenarioId]?.name || "Scenario", assumptions: fallbackSnapshot?.assumptions || DEFAULT_ASSUMPTIONS, snapshot: parsed.plannerSnapshot }, nextSelectedScenarioId)?.snapshot || fallbackSnapshot || getCurrentPlannerSnapshot());
+          if (savedInputs.plannerSnapshot) {
+            applyPlannerSnapshot(normalizeScenario({ id: nextSelectedScenarioId, name: nextScenarios[nextSelectedScenarioId]?.name || "Scenario", assumptions: fallbackSnapshot?.assumptions || DEFAULT_ASSUMPTIONS, snapshot: savedInputs.plannerSnapshot }, nextSelectedScenarioId)?.snapshot || fallbackSnapshot || getCurrentPlannerSnapshot());
           } else if (fallbackSnapshot) {
             applyPlannerSnapshot(fallbackSnapshot);
           }
@@ -963,10 +989,10 @@ export default function LongTermForecastingDemand() {
   }, []);
   useEffect(() => {
     if (!hasHydratedRef.current) return;
-    localStorage.setItem(USER_INPUTS_STORAGE_KEY, JSON.stringify({
+    persistActiveState({
       selectedScenarioId,
       plannerSnapshot: getCurrentPlannerSnapshot(),
-    }));
+    });
   }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, historicalOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, selectedScenarioId]);
 
   // Sync shrinkage from Shrinkage Planner when planner source is selected

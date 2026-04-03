@@ -21,6 +21,13 @@ async function ensureAppTables() {
       PRIMARY KEY (scenario_id, organization_id)
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS demand_planner_active_state (
+      organization_id integer NOT NULL PRIMARY KEY,
+      state_value jsonb NOT NULL,
+      updated_at timestamp with time zone NOT NULL DEFAULT now()
+    )
+  `);
 }
 
 // --- CALL VOLUME SIMULATION ENGINE ---
@@ -548,6 +555,41 @@ app.delete('/api/demand-planner-scenarios/:id', async (req, res) => {
   } catch (err) {
     console.error('Demand Planner Scenario Delete Error:', err.message);
     res.status(500).json({ error: 'Failed to delete demand planner scenario' });
+  }
+});
+
+app.get('/api/demand-planner-active-state', async (req, res) => {
+  const user = getCurrentUser(req);
+  try {
+    const result = await pool.query(
+      'SELECT state_value FROM demand_planner_active_state WHERE organization_id = $1',
+      [user.organization_id]
+    );
+    if (result.rows.length === 0) return res.json(null);
+    res.json(result.rows[0].state_value);
+  } catch (err) {
+    console.error('Demand Planner Active State Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch active state' });
+  }
+});
+
+app.put('/api/demand-planner-active-state', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { state_value } = req.body;
+  if (!state_value || typeof state_value !== 'object') {
+    return res.status(400).json({ error: 'state_value is required' });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO demand_planner_active_state (organization_id, state_value, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (organization_id) DO UPDATE SET state_value = EXCLUDED.state_value, updated_at = NOW()`,
+      [user.organization_id, JSON.stringify(state_value)]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Demand Planner Active State Save Error:', err.message);
+    res.status(500).json({ error: 'Failed to save active state' });
   }
 });
 
