@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
-import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon } from "lucide-react";
+import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -1070,14 +1070,21 @@ export default function LongTermForecastingDemand() {
       toast.error("Scenario deleted locally, but cloud delete failed");
     }
   };
-  const handleNewScenario = () => {
+  const handleNewScenario = async () => {
     const id = `scenario-${Date.now()}`;
     const snapshot = getCurrentPlannerSnapshot();
-    const updated = { ...scenarios, [id]: createScenario(id, `New Scenario ${Object.keys(scenarios).length + 1}`, snapshot) };
+    const newScenario = createScenario(id, `New Scenario ${Object.keys(scenarios).length + 1}`, snapshot);
+    const updated = { ...scenarios, [id]: newScenario };
     setScenarios(updated);
     saveScenariosToStorage(updated);
     setSelectedScenarioId(id);
-    toast.success("New scenario created");
+    try {
+      await persistScenario(newScenario);
+      toast.success("New scenario created");
+    } catch (error) {
+      console.error("Failed to persist new scenario", error);
+      toast.success("New scenario created locally");
+    }
   };
   const handleRenameScenario = async () => {
     if (!activeScenario) return;
@@ -1560,6 +1567,50 @@ export default function LongTermForecastingDemand() {
               </Card>
             </div>
           </section>
+
+          {/* ── Scenario Manager ── */}
+          <Card className="border border-border/50 shadow-sm">
+            <CardContent className="px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-[11px] font-black uppercase tracking-widest text-muted-foreground shrink-0">Scenarios</span>
+                <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+                  {Object.values(scenarios).map((scenario) => (
+                    <button
+                      key={scenario.id}
+                      type="button"
+                      onClick={() => handleScenarioChange(scenario.id)}
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-semibold transition-colors ${
+                        scenario.id === selectedScenarioId
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "border-border bg-background text-foreground hover:border-primary/50 hover:bg-accent"
+                      }`}
+                    >
+                      <span className="max-w-[160px] truncate">{scenario.name}</span>
+                      <X
+                        className="size-3 shrink-0 opacity-50 hover:opacity-100"
+                        onClick={(e) => handleDeleteScenario(e, scenario.id)}
+                      />
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={handleNewScenario}>
+                    <Plus className="size-3.5" />
+                    New
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={handleRenameScenario}>
+                    <Pencil className="size-3.5" />
+                    Rename
+                  </Button>
+                  <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={handleSaveScenario}>
+                    <Save className="size-3.5" />
+                    Save
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card className="border border-primary/15 shadow-md overflow-hidden">
             <CardHeader className="bg-slate-50/60 border-b border-border/50">
               <button type="button" className="w-full flex items-start justify-between gap-4 text-left" onClick={() => setIsHistoricalSourceOpen((current) => !current)}>
@@ -1608,6 +1659,22 @@ export default function LongTermForecastingDemand() {
                               <SelectItem value="chat">Chat</SelectItem>
                             </SelectContent>
                           </Select>
+                        </div>
+                        <div className="w-full sm:w-[120px]">
+                          <Label className="text-[11px] font-black uppercase tracking-widest text-muted-foreground">Data Year</Label>
+                          <Input
+                            type="number"
+                            min={2000}
+                            max={2100}
+                            className="mt-2 h-10 font-bold"
+                            value={new Date(assumptions.startDate).getFullYear() - 1}
+                            onChange={(e) => {
+                              const yr = Math.max(2000, Math.min(2100, Number(e.target.value)));
+                              if (Number.isFinite(yr)) {
+                                setAssumptions((prev) => ({ ...prev, startDate: `${yr + 1}-01-01` }));
+                              }
+                            }}
+                          />
                         </div>
                         <div className="text-sm font-semibold text-foreground">
                           Currently Viewing: <span className={CHANNEL_ASSUMPTION_META[historicalChannelView].colorClass}>{CHANNEL_ASSUMPTION_META[historicalChannelView].label}</span>
@@ -1971,44 +2038,38 @@ export default function LongTermForecastingDemand() {
                     </div>
                   </div>
                   <div className="space-y-4 rounded-xl border border-border/60 p-4">
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Voice SLA / ASA</p>
-                    </div>
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Voice SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="voiceSlaTarget" className="text-xs font-black uppercase tracking-widest text-muted-foreground">SLA %</Label><Badge variant="outline" className="font-black text-xs text-primary border-primary/20">{assumptions.voiceSlaTarget}%</Badge></div><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Within Sec</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.voiceSlaAnswerSeconds}s</span></div><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs font-black uppercase tracking-widest text-muted-foreground">ASA Sec</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.voiceAsaTargetSeconds}s</span></div><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceSlaTarget" className="text-xs font-medium text-muted-foreground">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs font-medium text-muted-foreground">Within Sec</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs font-medium text-muted-foreground">ASA Sec</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
                     </div>
                   </div>
                   <div className="space-y-4 rounded-xl border border-border/60 p-4">
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Email SLA / ASA</p>
-                    </div>
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Email SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailSlaTarget" className="text-xs font-black uppercase tracking-widest text-muted-foreground">SLA %</Label><Badge variant="outline" className="font-black text-xs text-primary border-primary/20">{assumptions.emailSlaTarget}%</Badge></div><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Within Sec</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.emailSlaAnswerSeconds}s</span></div><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailAsaTargetSeconds" className="text-xs font-black uppercase tracking-widest text-muted-foreground">ASA Sec</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.emailAsaTargetSeconds}s</span></div><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailSlaTarget" className="text-xs font-medium text-muted-foreground">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs font-medium text-muted-foreground">Within Sec</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailAsaTargetSeconds" className="text-xs font-medium text-muted-foreground">ASA Sec</Label><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
                     </div>
                   </div>
                   <div className="space-y-4 rounded-xl border border-border/60 p-4">
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Chat SLA / ASA</p>
-                    </div>
+                    <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Chat SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatSlaTarget" className="text-xs font-black uppercase tracking-widest text-muted-foreground">SLA %</Label><Badge variant="outline" className="font-black text-xs text-primary border-primary/20">{assumptions.chatSlaTarget}%</Badge></div><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Within Sec</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.chatSlaAnswerSeconds}s</span></div><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatAsaTargetSeconds" className="text-xs font-black uppercase tracking-widest text-muted-foreground">ASA Sec</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.chatAsaTargetSeconds}s</span></div><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatSlaTarget" className="text-xs font-medium text-muted-foreground">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs font-medium text-muted-foreground">Within Sec</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatAsaTargetSeconds" className="text-xs font-medium text-muted-foreground">ASA Sec</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="operatingHoursPerDay" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Hours Per Day</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.operatingHoursPerDay}</span></div><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-bold" /></div>
-                    <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Days Per Week</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.operatingDaysPerWeek}</span></div><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-bold" /></div>
+                    <div className="space-y-2"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-muted-foreground">Hours Per Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-bold" /></div>
+                    <div className="space-y-2"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-muted-foreground">Days Per Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-bold" /></div>
                   </div>
                   <div className="rounded-lg border border-border/60 bg-slate-50/70 px-3 py-2 text-xs text-muted-foreground">
                     Operating window: <span className="font-bold text-foreground">{assumptions.operatingHoursPerDay}h/day x {assumptions.operatingDaysPerWeek}d/week</span> = <span className="font-bold text-foreground">{openHoursPerMonth}</span> open hours/month
                   </div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Badge variant="outline" className="font-black text-xs text-primary border-primary/20">{assumptions.safetyMargin}%</Badge></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-bold" /></div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="fteMonthlyHours" className="text-xs font-black uppercase tracking-widest text-muted-foreground">FTE Monthly Hours</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-200">{assumptions.fteMonthlyHours}</span></div><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-2"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-muted-foreground">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-2"><Label htmlFor="fteMonthlyHours" className="text-xs font-medium text-muted-foreground">FTE Monthly Hours</Label><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3 border-t border-border pt-6 mt-6">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1">
