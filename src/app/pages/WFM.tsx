@@ -6,32 +6,11 @@ import React from "react";
 export function WFM() {
   const wfmModules = [
     {
-      title: "Forecasting",
-      description: "Predict workload patterns and staffing requirements",
-      icon: TrendingUp,
-      stats: "Next 30 Days",
-      path: "/wfm/forecasting",
-    },
-    {
-      title: "Long-Term Forecasting",
-      description: "Advanced scenario modeling for long-term capacity and resource planning",
-      icon: LineChart,
-      stats: "12 Month View",
-      path: "/wfm/long-term-forecasting",
-    },
-    {
       title: "Long Term Forecasting (Demand)",
       description: "Forecast monthly contact demand and required staffing needs",
       icon: LineChart,
       stats: "Demand Only",
       path: "/wfm/long-term-forecasting-demand",
-    },
-    {
-      title: "Long-Term Forecasting (Blended)",
-      description: "Multi-channel capacity planning with FTE blending (Voice, Email, Chat)",
-      icon: Layers,
-      stats: "Advanced Blending",
-      path: "/wfm/long-term-forecasting-blended",
     },
     {
       title: "Workforce Planning",

@@ -1910,7 +1910,7 @@ export default function LongTermForecastingDemand() {
                     ) : (
                       <div className="rounded-xl border border-border/60 overflow-hidden">
                         {/* header row */}
-                        <div className="grid grid-cols-[1.5rem_1fr_3rem_5.5rem_3.5rem_2.5rem] gap-x-1.5 items-center px-2 py-1.5 bg-slate-100 dark:bg-slate-800 text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                        <div className="grid grid-cols-[1.5rem_1fr_2.5rem_4.5rem_3rem_2.5rem] gap-x-1 items-center px-2 py-1.5 bg-slate-100 dark:bg-slate-800 text-[10px] font-black uppercase tracking-widest text-muted-foreground">
                           <span />
                           <span>Component</span>
                           <span className="text-center">Occ.</span>
@@ -1927,15 +1927,15 @@ export default function LongTermForecastingDemand() {
                             : item.occurrences;
                           const contribution = minutesPerYear > 0 ? Number(((annualOccurrences * item.durationMinutes / minutesPerYear) * 100).toFixed(1)) : 0;
                           return (
-                            <div key={item.id} className={`grid grid-cols-[1.5rem_1fr_3rem_5.5rem_3.5rem_2.5rem] gap-x-1.5 items-center px-2 py-1.5 border-t border-border/40 text-xs transition-colors ${item.enabled ? "" : "opacity-40"}`}>
+                            <div key={item.id} className={`grid grid-cols-[1.5rem_1fr_2.5rem_4.5rem_3rem_2.5rem] gap-x-1 items-center px-2 py-1.5 border-t border-border/40 text-xs transition-colors ${item.enabled ? "" : "opacity-40"}`}>
                               <Checkbox checked={item.enabled} onCheckedChange={(checked) => handleShrinkageItemChange(item.id, { enabled: checked === true })} className="size-3.5" />
-                              <span className="font-medium truncate text-[11px]">{item.label}</span>
-                              <Input type="number" min="1" max="999" value={item.occurrences} disabled={!item.enabled} onChange={(e) => handleShrinkageItemChange(item.id, { occurrences: Math.max(1, Number(e.target.value)) })} className="h-6 text-[11px] px-1 text-center font-bold" />
+                              <span className="font-medium leading-tight text-[11px]">{item.label}</span>
+                              <Input type="number" min="1" max="999" value={item.occurrences} disabled={!item.enabled} onChange={(e) => handleShrinkageItemChange(item.id, { occurrences: Math.max(1, Number(e.target.value)) })} className="h-6 text-[10px] px-0.5 text-center font-bold" />
                               <Select value={item.frequency} disabled={!item.enabled} onValueChange={(value) => handleShrinkageItemChange(item.id, { frequency: value as ShrinkageFrequency })}>
-                                <SelectTrigger className="h-6 text-[11px] px-1.5"><SelectValue /></SelectTrigger>
+                                <SelectTrigger className="h-6 text-[10px] px-1"><SelectValue /></SelectTrigger>
                                 <SelectContent>{SHRINKAGE_FREQUENCY_OPTIONS.map((opt) => <SelectItem key={opt.value} value={opt.value} className="text-xs">{opt.label}</SelectItem>)}</SelectContent>
                               </Select>
-                              <Input type="number" min="1" max="9999" value={item.durationMinutes} disabled={!item.enabled} onChange={(e) => handleShrinkageItemChange(item.id, { durationMinutes: Math.max(1, Number(e.target.value)) })} className="h-6 text-[11px] px-1 text-center font-bold" />
+                              <Input type="number" min="1" max="9999" value={item.durationMinutes} disabled={!item.enabled} onChange={(e) => handleShrinkageItemChange(item.id, { durationMinutes: Math.max(1, Number(e.target.value)) })} className="h-6 text-[10px] px-0.5 text-center font-bold" />
                               <span className={`text-right text-[11px] font-black ${item.enabled ? "text-rose-500" : "text-muted-foreground"}`}>{item.enabled ? `${contribution}%` : "—"}</span>
                             </div>
                           );
