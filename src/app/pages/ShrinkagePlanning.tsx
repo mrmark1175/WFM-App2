@@ -448,7 +448,7 @@ function ShrinkageTable({
         <div className="min-w-max space-y-0.5">
           {/* Header */}
           <div className="grid gap-2 px-2 py-1.5 bg-slate-100 dark:bg-slate-800 rounded text-[11px] font-black uppercase tracking-widest text-muted-foreground"
-            style={{ gridTemplateColumns: "2rem 1fr 3.5rem 4.5rem 4rem 3rem 2rem" }}>
+            style={{ gridTemplateColumns: "2rem 1fr 5rem 5.5rem 5.5rem 3.5rem 2rem" }}>
             <div></div>
             <div>Item</div>
             <div className="text-right">Occurrences</div>
@@ -465,7 +465,7 @@ function ShrinkageTable({
               className={`grid gap-2 px-2 py-2 border rounded items-center ${
                 item.enabled ? "opacity-100" : "opacity-40"
               }`}
-              style={{ gridTemplateColumns: "2rem 1fr 3.5rem 4.5rem 4rem 3rem 2rem" }}>
+              style={{ gridTemplateColumns: "2rem 1fr 5rem 5.5rem 5.5rem 3.5rem 2rem" }}>
               <Checkbox
                 checked={item.enabled}
                 onCheckedChange={(checked) =>

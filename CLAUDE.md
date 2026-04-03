@@ -103,6 +103,23 @@ Frontend API base is controlled by `src/app/lib/api.ts` — uses relative `/api`
 - **Improvement:** Now always visible in Demand Assumptions. Applied as a post-multiplier (× multiplier) for all non-YoY methods so planners can overlay growth/decline on any statistical forecast.
 - Badge dynamically shows green for positive growth, red for negative; input accepts −100% to +500%.
 
+### Cross-Device State Sync (Commit: 1c1fa17)
+
+**Problem:** `LongTermForecasting_Demand.tsx` stored the active working state (`poolingMode`, `selectedChannels`, scenario selection, etc.) only in `localStorage`. Since `localStorage` is per-domain and per-browser, the deployed Render app showed different (wrong) chart data than the local dev server — specifically, `poolingMode: "dedicated"` from the DB scenario snapshot instead of the user's `poolingMode: "blended"` from localStorage.
+
+**Root cause:** The DB scenario snapshots preserved whatever `poolingMode` was active when the scenario was last explicitly saved. If the user later changed `poolingMode` without re-saving the scenario, only `localStorage` got updated. Other computers (or the Render deployment) had no way to access that state.
+
+**Fix — DB-backed active state with correct hydration priority:**
+- **New table:** `demand_planner_active_state` (auto-created by `ensureAppTables()`) stores the current working state per organization.
+- **New endpoints:** `GET/PUT /api/demand-planner-active-state` in `server/server.cjs`.
+- **Hydration priority** (in `LongTermForecasting_Demand.tsx`):
+  1. `localStorage` first — dev environment is the source of truth
+  2. DB active state second — used on other devices where localStorage is empty
+  3. Scenario snapshot third — fallback when neither exists
+- **Persistence:** On every state change, writes to both `localStorage` (instant) and DB (debounced 2s, fire-and-forget).
+
+**Important — when deploying new state-sync changes:** After pushing, restart the local Express server (`npm run start`) so the new table is created, then visit the page on `localhost:5173` to seed the DB with the correct state from localStorage. The Render deployment will then read that state from the DB.
+
 ### UI/UX Fixes
 - KPI value headings in the dark hero section now have explicit `text-white` to prevent Card component defaults from dimming the text.
 
