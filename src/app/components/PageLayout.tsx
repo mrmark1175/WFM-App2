@@ -3,7 +3,6 @@ import { Home, ChevronRight } from "lucide-react";
 import logo from "../../assets/logo.png";
 import React from "react";
 import { Toaster } from "./ui/sonner";
-import { ModeToggle } from "./ModeToggle";
 import { LOBSelector } from "./LOBSelector";
 
 interface PageLayoutProps {
@@ -48,7 +47,6 @@ export function PageLayout({ children, title }: PageLayoutProps) {
                 <Home className="size-4" />
                 <span className="text-sm">Home</span>
               </Link>
-              <ModeToggle />
             </div>
           </div>
         </div>

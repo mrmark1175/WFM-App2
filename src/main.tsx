@@ -7,7 +7,7 @@ import { LOBProvider } from "./app/lib/lobContext.tsx";
 import "./styles/index.css";
 
 createRoot(document.getElementById("root")!).render(
-  <ThemeProvider attribute="class" defaultTheme="system" enableSystem={true} storageKey="vite-ui-theme">
+  <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} storageKey="vite-ui-theme">
     <LOBProvider>
       <RouterProvider router={router} />
     </LOBProvider>
