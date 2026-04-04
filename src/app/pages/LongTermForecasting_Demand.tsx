@@ -953,11 +953,15 @@ export default function LongTermForecastingDemand() {
       }
       setScenarios(nextScenarios);
       try {
-        // localStorage first (dev environment is source of truth), then DB active state (for syncing to other devices)
+        // On production (non-localhost): DB is source of truth so changes sync across devices.
+        // On localhost: localStorage first so local dev state isn't clobbered by production DB.
+        const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
         let savedInputs: { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null = null;
-        const localRaw = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
-        if (localRaw) {
-          savedInputs = JSON.parse(localRaw) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
+        if (isLocalDev) {
+          const localRaw = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
+          if (localRaw) {
+            savedInputs = JSON.parse(localRaw) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
+          }
         }
         if (!savedInputs) {
           try {
@@ -968,6 +972,13 @@ export default function LongTermForecastingDemand() {
             }
           } catch {
             // fall through to scenario snapshot
+          }
+        }
+        if (!savedInputs && !isLocalDev) {
+          // Last resort on production: try localStorage
+          const localRaw = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
+          if (localRaw) {
+            try { savedInputs = JSON.parse(localRaw) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> }; } catch { /* ignore */ }
           }
         }
         if (savedInputs) {
