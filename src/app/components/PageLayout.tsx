@@ -1,9 +1,10 @@
 import { Link, useLocation } from "react-router-dom";
-import { Home, ChevronRight } from "lucide-react"; // Added ChevronRight
+import { Home, ChevronRight } from "lucide-react";
 import logo from "../../assets/logo.png";
 import React from "react";
 import { Toaster } from "./ui/sonner";
 import { ModeToggle } from "./ModeToggle";
+import { LOBSelector } from "./LOBSelector";
 
 interface PageLayoutProps {
   children: React.ReactNode;
@@ -38,7 +39,8 @@ export function PageLayout({ children, title }: PageLayoutProps) {
             <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
               <img src={logo} alt="Exordium WFM" className="h-14 w-auto" />
             </Link>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
+              <LOBSelector />
               <Link
                 to="/"
                 className="flex items-center gap-2 px-4 py-2 rounded-lg hover:bg-accent transition-colors"

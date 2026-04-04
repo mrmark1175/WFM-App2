@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
+import { useLOB } from "../lib/lobContext";
 import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -848,6 +849,7 @@ const buildDemandForecastData = (data: number[], assumptions: Assumptions, forec
 };
 
 export default function LongTermForecastingDemand() {
+  const { activeLob } = useLOB();
   const [isAssumptionsOpen, setIsAssumptionsOpen] = useState(true);
   const [isHistoricalSourceOpen, setIsHistoricalSourceOpen] = useState(false);
   const [isBlendedStaffingOpen, setIsBlendedStaffingOpen] = useState(true);
@@ -913,16 +915,18 @@ export default function LongTermForecastingDemand() {
       fetch(apiUrl("/api/demand-planner-active-state"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state_value: state }),
+        body: JSON.stringify({ state_value: state, lob_id: activeLob?.id }),
       }).catch(() => { /* non-critical */ });
     }, 2000);
   };
 
   useEffect(() => {
+    if (!activeLob) { setLoading(false); return; }
+    hasHydratedRef.current = false;
     const hydratePlanner = async () => {
       let nextScenarios = DEFAULT_SCENARIOS;
       try {
-        const response = await fetch(apiUrl("/api/demand-planner-scenarios"));
+        const response = await fetch(apiUrl(`/api/demand-planner-scenarios?lob_id=${activeLob.id}`));
         if (response.ok) {
           const records = await response.json() as DemandPlannerScenarioRecord[];
           const normalized = Array.isArray(records) ? normalizePersistedScenarios(records) : {};
@@ -957,7 +961,7 @@ export default function LongTermForecastingDemand() {
         }
         if (!savedInputs) {
           try {
-            const activeStateResponse = await fetch(apiUrl("/api/demand-planner-active-state"));
+            const activeStateResponse = await fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`));
             if (activeStateResponse.ok) {
               const dbState = await activeStateResponse.json() as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null;
               if (dbState && typeof dbState === "object") savedInputs = dbState;
@@ -988,7 +992,7 @@ export default function LongTermForecastingDemand() {
     };
 
     hydratePlanner();
-  }, []);
+  }, [activeLob?.id]);
   useEffect(() => {
     if (!hasHydratedRef.current) return;
     persistActiveState({
@@ -1017,13 +1021,14 @@ export default function LongTermForecastingDemand() {
   }, [assumptions.shrinkageSource]);
 
   useEffect(() => {
+    if (!activeLob) { setLoading(false); return; }
     const fetchHistoricalData = async () => {
       setLoading(true);
       try {
         const channels: ChannelKey[] = ["voice", "email", "chat"];
         const results = await Promise.all(channels.map(async (channel) => {
           try {
-            const actualsResponse = await fetch(apiUrl(`/api/long-term-actuals?channel=${channel}`));
+            const actualsResponse = await fetch(apiUrl(`/api/long-term-actuals?channel=${channel}&lob_id=${activeLob.id}`));
             if (actualsResponse.ok) {
               const actuals = await actualsResponse.json() as LongTermActualRecord[];
               if (Array.isArray(actuals) && actuals.length > 0) {
@@ -1057,7 +1062,7 @@ export default function LongTermForecastingDemand() {
       finally { setLoading(false); }
     };
     fetchHistoricalData();
-  }, [assumptions.startDate]);
+  }, [assumptions.startDate, activeLob?.id]);
 
   const saveScenariosToStorage = (updated: Record<string, Scenario>) => localStorage.setItem(SCENARIOS_STORAGE_KEY, JSON.stringify(updated));
   const handleSelectedChannelChange = (channel: ChannelKey, checked: boolean | "indeterminate") => {
@@ -1075,6 +1080,7 @@ export default function LongTermForecastingDemand() {
       body: JSON.stringify({
         scenario_name: scenario.name,
         planner_snapshot: scenario.snapshot,
+        lob_id: activeLob?.id,
       }),
     });
     if (!response.ok) throw new Error("Failed to persist scenario");

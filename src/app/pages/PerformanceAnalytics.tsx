@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
+import { usePagePreferences } from "../lib/usePagePreferences";
 import { 
   BarChart3, 
   Download, 
@@ -40,16 +41,23 @@ interface PerformanceData {
 type RollupLevel = "Day" | "Week" | "Month" | "Month by Week" | "Interval";
 
 export function PerformanceAnalytics() {
+  const today = new Date().toISOString().split('T')[0];
+
+  // Persisted filters — global (not LOB-scoped)
+  const [prefs, setPrefs] = usePagePreferences(
+    "performance_analytics",
+    { startDate: today, endDate: today, startTime: "00:00", endTime: "23:59", rollupLevel: "Interval" as RollupLevel },
+    false  // lobScoped = false
+  );
+
+  const startDate  = prefs.startDate;
+  const endDate    = prefs.endDate;
+  const startTime  = prefs.startTime;
+  const endTime    = prefs.endTime;
+  const rollupLevel = prefs.rollupLevel;
+
   const [rawData, setRawData] = useState<PerformanceData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  
-  // Date & Time States
-  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
-  const [startTime, setStartTime] = useState("00:00");
-  const [endTime, setEndTime] = useState("23:59");
-  
-  const [rollupLevel, setRollupLevel] = useState<RollupLevel>("Interval");
   const [searchTerm, setSearchTerm] = useState("");
 
   const fetchPerformance = async () => {
@@ -182,60 +190,60 @@ export function PerformanceAnalytics() {
   const presets = [
     { label: "Today", action: () => {
       const d = new Date();
-      setStartDate(formatDateLocal(d)); setEndDate(formatDateLocal(d));
+      setPrefs({ startDate: formatDateLocal(d), endDate: formatDateLocal(d) });
     }},
     { label: "Yesterday", action: () => {
       const d = new Date(); d.setDate(d.getDate() - 1);
-      setStartDate(formatDateLocal(d)); setEndDate(formatDateLocal(d));
+      setPrefs({ startDate: formatDateLocal(d), endDate: formatDateLocal(d) });
     }},
     { label: "This week", action: () => {
       const d = new Date(); const day = d.getDay();
       const start = new Date(d); start.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
-      setStartDate(formatDateLocal(start));
-      setEndDate(formatDateLocal(new Date()));
+      setPrefs({ startDate: formatDateLocal(start) });
+      setPrefs({ endDate: formatDateLocal(new Date()) });
     }},
     { label: "Last week", action: () => {
       const d = new Date(); const day = d.getDay();
       const start = new Date(d); start.setDate(d.getDate() - (day === 0 ? 6 : day - 1) - 7);
       const end = new Date(start); end.setDate(start.getDate() + 6);
-      setStartDate(formatDateLocal(start));
-      setEndDate(formatDateLocal(end));
+      setPrefs({ startDate: formatDateLocal(start) });
+      setPrefs({ endDate: formatDateLocal(end) });
     }},
     { label: "Previous 7 days", action: () => {
       const end = new Date(); const start = new Date();
       start.setDate(end.getDate() - 7);
-      setStartDate(formatDateLocal(start));
-      setEndDate(formatDateLocal(end));
+      setPrefs({ startDate: formatDateLocal(start) });
+      setPrefs({ endDate: formatDateLocal(end) });
     }},
     { label: "This month", action: () => {
       const start = new Date(); start.setDate(1);
-      setStartDate(formatDateLocal(start));
-      setEndDate(formatDateLocal(new Date()));
+      setPrefs({ startDate: formatDateLocal(start) });
+      setPrefs({ endDate: formatDateLocal(new Date()) });
     }},
     { label: "This month by week", action: () => {
       const start = new Date(); start.setDate(1);
-      setStartDate(formatDateLocal(start));
-      setEndDate(formatDateLocal(new Date()));
-      setRollupLevel("Month by Week");
+      setPrefs({ startDate: formatDateLocal(start) });
+      setPrefs({ endDate: formatDateLocal(new Date()) });
+      setPrefs({ rollupLevel: "Month by Week" });
     }},
     { label: "Last month", action: () => {
       const d = new Date(); d.setMonth(d.getMonth() - 1);
       const start = new Date(d.getFullYear(), d.getMonth(), 1);
       const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-      setStartDate(formatDateLocal(start));
-      setEndDate(formatDateLocal(end));
+      setPrefs({ startDate: formatDateLocal(start) });
+      setPrefs({ endDate: formatDateLocal(end) });
     }},
     { label: "Previous 30 days", action: () => {
       const end = new Date(); const start = new Date();
       start.setDate(end.getDate() - 30);
-      setStartDate(formatDateLocal(start));
-      setEndDate(formatDateLocal(end));
+      setPrefs({ startDate: formatDateLocal(start) });
+      setPrefs({ endDate: formatDateLocal(end) });
     }},
     { label: "Previous 3 months", action: () => {
       const end = new Date(); const start = new Date();
       start.setMonth(end.getMonth() - 3);
-      setStartDate(formatDateLocal(start));
-      setEndDate(formatDateLocal(end));
+      setPrefs({ startDate: formatDateLocal(start) });
+      setPrefs({ endDate: formatDateLocal(end) });
     }},
   ];
 
@@ -265,7 +273,7 @@ export function PerformanceAnalytics() {
               {(["Day", "Week", "Month", "Month by Week", "Interval"] as RollupLevel[]).map(level => (
                 <button 
                   key={level}
-                  onClick={() => setRollupLevel(level)}
+                  onClick={() => setPrefs({ rollupLevel: level })}
                   className={`w-full text-left px-3 py-1.5 text-sm font-medium rounded-md transition-all
                     ${rollupLevel === level ? "text-blue-600 bg-blue-50" : "text-slate-600 hover:text-blue-600 hover:bg-blue-50"}`}
                 >
@@ -317,10 +325,10 @@ export function PerformanceAnalytics() {
                     <CalendarIcon className="size-3.5" />
                     <span className="text-[10px] font-bold uppercase tracking-widest">Start</span>
                   </div>
-                  <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="text-sm font-bold bg-muted/50 rounded-lg px-3 py-1.5 border-none focus:ring-2 focus:ring-blue-500/20" />
+                  <input type="date" value={startDate} onChange={e => setPrefs({ startDate: e.target.value })} className="text-sm font-bold bg-muted/50 rounded-lg px-3 py-1.5 border-none focus:ring-2 focus:ring-blue-500/20" />
                   <div className="flex items-center gap-2 mt-1">
                     <Clock className="size-3.5 text-muted-foreground" />
-                    <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} className="text-xs font-bold bg-transparent border-none p-0 focus:ring-0" />
+                    <input type="time" value={startTime} onChange={e => setPrefs({ startTime: e.target.value })} className="text-xs font-bold bg-transparent border-none p-0 focus:ring-0" />
                   </div>
                 </div>
 
@@ -331,10 +339,10 @@ export function PerformanceAnalytics() {
                     <CalendarIcon className="size-3.5" />
                     <span className="text-[10px] font-bold uppercase tracking-widest">End</span>
                   </div>
-                  <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="text-sm font-bold bg-muted/50 rounded-lg px-3 py-1.5 border-none focus:ring-2 focus:ring-blue-500/20" />
+                  <input type="date" value={endDate} onChange={e => setPrefs({ endDate: e.target.value })} className="text-sm font-bold bg-muted/50 rounded-lg px-3 py-1.5 border-none focus:ring-2 focus:ring-blue-500/20" />
                   <div className="flex items-center gap-2 mt-1">
                     <Clock className="size-3.5 text-muted-foreground" />
-                    <input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} className="text-xs font-bold bg-transparent border-none p-0 focus:ring-0" />
+                    <input type="time" value={endTime} onChange={e => setPrefs({ endTime: e.target.value })} className="text-xs font-bold bg-transparent border-none p-0 focus:ring-0" />
                   </div>
                 </div>
               </div>

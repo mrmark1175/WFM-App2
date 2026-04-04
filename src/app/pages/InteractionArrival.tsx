@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { apiUrl } from "../lib/api";
+import { useLOB } from "../lib/lobContext";
+import { usePagePreferences } from "../lib/usePagePreferences";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface CellData { volume: number; aht: number; }
@@ -460,13 +462,26 @@ function DistributionTab({ data, intervalSize }: DistProps) {
 // ── Main Component ────────────────────────────────────────────────────────────
 export function InteractionArrival() {
   const navigate = useNavigate();
+  const { activeLob } = useLOB();
+
+  // ── Persisted preferences (per LOB) ─────────────────────────────────────────
+  const [prefs, setPrefs] = usePagePreferences("interaction_arrival", {
+    selectedChannel: "voice" as ChannelKey,
+    startDate: lastMonday(),
+    endDate: addDays(lastMonday(), 6),
+    activeTab: "volume" as "volume" | "aht" | "distribution",
+    intervalSize: 15 as 15 | 30 | 60,
+    telephonySystem: "genesys",
+  });
 
   // ── Core state ───────────────────────────────────────────────────────────────
-  const [activeTab,    setActiveTab]    = useState<"volume" | "aht" | "distribution">("volume");
-  const [intervalSize, setIntervalSize] = useState<15 | 30 | 60>(15);
-  const [selectedChannel, setSelectedChannel] = useState<ChannelKey>("voice");
-  const [startDate,    setStartDate]    = useState<string>(lastMonday());
-  const [endDate,      setEndDate]      = useState<string>(addDays(lastMonday(), 6));
+  const selectedChannel = prefs.selectedChannel;
+  const activeTab       = prefs.activeTab;
+  const intervalSize    = prefs.intervalSize;
+  const startDate       = prefs.startDate;
+  const endDate         = prefs.endDate;
+  const telephonySystem = prefs.telephonySystem;
+
   const [data,         setData]         = useState<GridData>({});
   const [anchorCell,   setAnchorCell]   = useState<{ row: number; col: number } | null>(null);
 
@@ -474,7 +489,6 @@ export function InteractionArrival() {
   const [isLoading,  setIsLoading]  = useState(false);
 
   const [showModal,       setShowModal]       = useState(false);
-  const [telephonySystem, setTelephonySystem] = useState("genesys");
   const [pullDate,        setPullDate]        = useState(todayStr());
   const [pullQueue,       setPullQueue]       = useState("");
   const [isPulling,       setIsPulling]       = useState(false);
@@ -511,16 +525,20 @@ export function InteractionArrival() {
     setScrollTop(el.scrollTop); setScrollLeft(el.scrollLeft);
   }, []);
 
-  const handleStartDateChange = (val: string) => { setStartDate(val); if (val > endDate) setEndDate(addDays(val, 6)); };
-  const handleEndDateChange   = (val: string) => { setEndDate(val);   if (val < startDate) setStartDate(val); };
+  const handleStartDateChange = (val: string) => {
+    setPrefs({ startDate: val, ...(val > endDate ? { endDate: addDays(val, 6) } : {}) });
+  };
+  const handleEndDateChange = (val: string) => {
+    setPrefs({ endDate: val, ...(val < startDate ? { startDate: val } : {}) });
+  };
 
   const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!dates.length) return;
+    if (!dates.length || !activeLob) return;
     if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current);
     fetchDebounceRef.current = setTimeout(() => {
       setIsLoading(true);
-      fetch(apiUrl(`/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}&channel=${selectedChannel}`))
+      fetch(apiUrl(`/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}&channel=${selectedChannel}&lob_id=${activeLob.id}`))
         .then(r => r.json())
         .then((records: any[]) => {
           if (!Array.isArray(records)) return;
@@ -536,7 +554,7 @@ export function InteractionArrival() {
         .finally(() => setIsLoading(false));
     }, 400);
     return () => { if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current); };
-  }, [startDate, endDate, selectedChannel]);
+  }, [startDate, endDate, selectedChannel, activeLob?.id]);
 
   const handleGridPaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
     if (!anchorCell) return;
@@ -608,7 +626,7 @@ export function InteractionArrival() {
         const chunk = records.slice(i, i + CHUNK_SIZE);
         const res = await fetch(apiUrl("/api/interaction-arrival"), {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel: selectedChannel, records: chunk }),
+          body: JSON.stringify({ channel: selectedChannel, lob_id: activeLob?.id, records: chunk }),
         });
         if (!res.ok) { setSaveStatus("error"); return; }
       }
@@ -724,9 +742,9 @@ export function InteractionArrival() {
 
           {/* ── Tabs: Volume / AHT / Distribution ── */}
           <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
-            <button style={S.tab(activeTab === "volume")}       onClick={() => setActiveTab("volume")}>📞 Interaction Volume</button>
-            <button style={S.tab(activeTab === "aht")}          onClick={() => setActiveTab("aht")}>⏱ AHT</button>
-            <button style={S.tab(activeTab === "distribution")} onClick={() => setActiveTab("distribution")}>📊 Distribution</button>
+            <button style={S.tab(activeTab === "volume")}       onClick={() => setPrefs({ activeTab: "volume" })}>📞 Interaction Volume</button>
+            <button style={S.tab(activeTab === "aht")}          onClick={() => setPrefs({ activeTab: "aht" })}>⏱ AHT</button>
+            <button style={S.tab(activeTab === "distribution")} onClick={() => setPrefs({ activeTab: "distribution" })}>📊 Distribution</button>
           </div>
 
           <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />
@@ -736,7 +754,7 @@ export function InteractionArrival() {
             <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>Interval:</span>
             <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
               {([15, 30, 60] as const).map(s => (
-                <button key={s} style={S.intBtn(intervalSize === s)} onClick={() => setIntervalSize(s)}>
+                <button key={s} style={S.intBtn(intervalSize === s)} onClick={() => setPrefs({ intervalSize: s })}>
                   {s === 60 ? "1 hr" : `${s} min`}
                 </button>
               ))}
@@ -749,7 +767,7 @@ export function InteractionArrival() {
             <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>Channel:</span>
             <select
               value={selectedChannel}
-              onChange={e => setSelectedChannel(e.target.value as ChannelKey)}
+              onChange={e => setPrefs({ selectedChannel: e.target.value as ChannelKey })}
               style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }}
             >
               {CHANNEL_OPTIONS.map(option => (
@@ -911,7 +929,7 @@ export function InteractionArrival() {
               <label style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".05em" }}>SYSTEM</label>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {TELEPHONY_SYSTEMS.map(sys => (
-                  <button key={sys.id} onClick={() => setTelephonySystem(sys.id)} style={S.sysBtn(telephonySystem === sys.id)}>
+                  <button key={sys.id} onClick={() => setPrefs({ telephonySystem: sys.id })} style={S.sysBtn(telephonySystem === sys.id)}>
                     {sys.icon} {sys.label}
                   </button>
                 ))}

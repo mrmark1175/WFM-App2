@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { apiUrl } from "../lib/api";
+import { useLOB } from "../lib/lobContext";
+import { usePagePreferences } from "../lib/usePagePreferences";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -149,35 +151,46 @@ const PivotCell = ({ vol, pctStr, maxVol, isHdr, isTotal }: PivotCellProps) => (
 // ─────────────────────────────────────────────────────────────────────────────
 export function ArrivalAnalysis() {
   const navigate = useNavigate();
+  const { activeLob } = useLOB();
+
+  // ── Persisted view preferences (per LOB) ────────────────────────────────────
+  const [prefs, setPrefs] = usePagePreferences("arrival_analysis", {
+    selectedChannel: "voice" as ChannelKey,
+    view: "yoy" as ViewLevel,
+    layout: "periods-as-rows" as LayoutMode,
+    weekStart: 1 as WeekStart,
+    selYear: null as number | null,
+    selMonth: null as number | null,
+    selWeek: null as number | null,
+    selDay: null as string | null,
+    intervalSize: 15 as 15 | 30 | 60,
+  });
 
   // ── Data state ──────────────────────────────────────────────────────────────
   const [data,      setData]      = useState<GridData>({});
   const [isLoading, setIsLoading] = useState(false);
   const [loaded,    setLoaded]    = useState(false);
-  const [selectedChannel, setSelectedChannel] = useState<ChannelKey>("voice");
+  const [copyDone,  setCopyDone]  = useState(false);
 
-  // ── View controls ───────────────────────────────────────────────────────────
-  const [view,       setView]       = useState<ViewLevel>("yoy");
-  const [layout,     setLayout]     = useState<LayoutMode>("periods-as-rows");
-  const [weekStart,  setWeekStart]  = useState<WeekStart>(1);
-  const [copyDone,   setCopyDone]   = useState(false);
-
-  // ── Drill selectors ─────────────────────────────────────────────────────────
-  const [selYear,  setSelYear]  = useState<number | null>(null);
-  const [selMonth, setSelMonth] = useState<number | null>(null); // 0-based
-  const [selWeek,  setSelWeek]  = useState<number | null>(null);
-  const [selDay,   setSelDay]   = useState<string | null>(null);
-
-  // ── Interval size ───────────────────────────────────────────────────────────
-  const [intervalSize, setIntervalSize] = useState<15 | 30 | 60>(15);
+  // Derive state from prefs (single source of truth)
+  const selectedChannel = prefs.selectedChannel;
+  const view            = prefs.view;
+  const layout          = prefs.layout;
+  const weekStart       = prefs.weekStart;
+  const selYear         = prefs.selYear;
+  const selMonth        = prefs.selMonth;
+  const selWeek         = prefs.selWeek;
+  const selDay          = prefs.selDay;
+  const intervalSize    = prefs.intervalSize;
   const intervalStep = intervalSize / 15;
 
-  // ── Fetch ALL data on mount ─────────────────────────────────────────────────
+  // ── Fetch ALL data on channel or LOB change ─────────────────────────────────
   useEffect(() => {
+    if (!activeLob) return;
     setIsLoading(true);
     const start = "2020-01-01";
     const end   = new Date().toISOString().split("T")[0];
-    fetch(apiUrl(`/api/interaction-arrival?startDate=${start}&endDate=${end}&channel=${selectedChannel}`))
+    fetch(apiUrl(`/api/interaction-arrival?startDate=${start}&endDate=${end}&channel=${selectedChannel}&lob_id=${activeLob.id}`))
       .then(r => r.json())
       .then((records: any[]) => {
         if (!Array.isArray(records)) return;
@@ -192,7 +205,7 @@ export function ArrivalAnalysis() {
       })
       .catch(() => {})
       .finally(() => setIsLoading(false));
-  }, [selectedChannel]);
+  }, [selectedChannel, activeLob?.id]);
 
   // ── Derived: years / months / weeks / days present in data ─────────────────
   const allDates = useMemo(() => Object.keys(data).sort(), [data]);
@@ -237,7 +250,7 @@ export function ArrivalAnalysis() {
 
   // ── Auto-select first year when data loads ──────────────────────────────────
   useEffect(() => {
-    if (years.length > 0 && selYear === null) setSelYear(years[years.length - 1]);
+    if (years.length > 0 && selYear === null) setPrefs({ selYear: years[years.length - 1] });
   }, [years]);
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1021,7 +1034,7 @@ export function ArrivalAnalysis() {
             <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Channel</div>
             <select
               value={selectedChannel}
-              onChange={e => setSelectedChannel(e.target.value as ChannelKey)}
+              onChange={e => setPrefs({ selectedChannel: e.target.value as ChannelKey })}
               style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#111827", fontSize: 12, fontWeight: 600 }}
             >
               {CHANNEL_OPTIONS.map(option => (
@@ -1034,7 +1047,7 @@ export function ArrivalAnalysis() {
           <div style={{ padding: "0 12px 12px", borderBottom: "1px solid #f3f4f6" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", padding: "0 4px 6px" }}>View</div>
             {(Object.keys(VIEW_META) as ViewLevel[]).map(v => (
-              <button key={v} style={S.navBtn(view === v)} onClick={() => setView(v)}>
+              <button key={v} style={S.navBtn(view === v)} onClick={() => setPrefs({ view: v })}>
                 <span>{VIEW_META[v].icon}</span>
                 <span>{VIEW_META[v].label}</span>
               </button>
@@ -1048,8 +1061,8 @@ export function ArrivalAnalysis() {
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Week Starts</div>
               <div style={{ display: "flex", gap: 4 }}>
-                <button style={S.selBtn(weekStart === 1)} onClick={() => setWeekStart(1)}>Mon</button>
-                <button style={S.selBtn(weekStart === 0)} onClick={() => setWeekStart(0)}>Sun</button>
+                <button style={S.selBtn(weekStart === 1)} onClick={() => setPrefs({ weekStart: 1 })}>Mon</button>
+                <button style={S.selBtn(weekStart === 0)} onClick={() => setPrefs({ weekStart: 0 })}>Sun</button>
               </div>
             </div>
 
@@ -1058,7 +1071,7 @@ export function ArrivalAnalysis() {
               <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Interval</div>
               <div style={{ display: "flex", gap: 4 }}>
                 {([15, 30, 60] as const).map(s => (
-                  <button key={s} style={S.selBtn(intervalSize === s)} onClick={() => setIntervalSize(s)}>
+                  <button key={s} style={S.selBtn(intervalSize === s)} onClick={() => setPrefs({ intervalSize: s })}>
                     {s === 60 ? "1hr" : `${s}m`}
                   </button>
                 ))}
@@ -1071,7 +1084,7 @@ export function ArrivalAnalysis() {
                 <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Year</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                   {years.map(yr => (
-                    <button key={yr} style={S.selBtn(selYear === yr)} onClick={() => { setSelYear(yr); setSelMonth(null); setSelWeek(null); setSelDay(null); }}>
+                    <button key={yr} style={S.selBtn(selYear === yr)} onClick={() => setPrefs({ selYear: yr, selMonth: null, selWeek: null, selDay: null })}>
                       {yr}
                     </button>
                   ))}
@@ -1084,9 +1097,9 @@ export function ArrivalAnalysis() {
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Month</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                  <button style={S.selBtn(selMonth === null)} onClick={() => { setSelMonth(null); setSelWeek(null); setSelDay(null); }}>All</button>
+                  <button style={S.selBtn(selMonth === null)} onClick={() => setPrefs({ selMonth: null, selWeek: null, selDay: null })}>All</button>
                   {monthsForYear(selYear).map(mi => (
-                    <button key={mi} style={S.selBtn(selMonth === mi)} onClick={() => { setSelMonth(mi); setSelWeek(null); setSelDay(null); }}>
+                    <button key={mi} style={S.selBtn(selMonth === mi)} onClick={() => setPrefs({ selMonth: mi, selWeek: null, selDay: null })}>
                       {MONTHS[mi]}
                     </button>
                   ))}
@@ -1099,9 +1112,9 @@ export function ArrivalAnalysis() {
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Week</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 120, overflow: "auto" }}>
-                  <button style={S.selBtn(selWeek === null)} onClick={() => { setSelWeek(null); setSelDay(null); }}>All</button>
+                  <button style={S.selBtn(selWeek === null)} onClick={() => setPrefs({ selWeek: null, selDay: null })}>All</button>
                   {weeksForYear(selYear).map(wk => (
-                    <button key={wk} style={S.selBtn(selWeek === wk)} onClick={() => { setSelWeek(wk); setSelMonth(null); setSelDay(null); }}>
+                    <button key={wk} style={S.selBtn(selWeek === wk)} onClick={() => setPrefs({ selWeek: wk, selMonth: null, selDay: null })}>
                       W{String(wk).padStart(2,"0")}
                     </button>
                   ))}
@@ -1114,14 +1127,14 @@ export function ArrivalAnalysis() {
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Day</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 140, overflow: "auto" }}>
-                  <button style={S.selBtn(selDay === null)} onClick={() => setSelDay(null)}>All</button>
+                  <button style={S.selBtn(selDay === null)} onClick={() => setPrefs({ selDay: null })}>All</button>
                   {(selMonth !== null
                     ? daysForMonthYear(selYear, selMonth)
                     : selWeek !== null ? daysForWeekYear(selYear, selWeek) : []
                   ).map(ds => {
                     const d = new Date(ds + "T00:00:00");
                     return (
-                      <button key={ds} style={S.selBtn(selDay === ds)} onClick={() => setSelDay(ds)}>
+                      <button key={ds} style={S.selBtn(selDay === ds)} onClick={() => setPrefs({ selDay: ds })}>
                         {DOW_LABELS[d.getDay()]} {d.getDate()}
                       </button>
                     );
@@ -1151,12 +1164,12 @@ export function ArrivalAnalysis() {
               <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
                 <button
                   style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, border: "none", cursor: "pointer", background: layout === "periods-as-rows" ? "#fff" : "transparent", color: layout === "periods-as-rows" ? "#111827" : "#6b7280", boxShadow: layout === "periods-as-rows" ? "0 1px 3px rgba(0,0,0,.1)" : "none" }}
-                  onClick={() => setLayout("periods-as-rows")} title="Periods as rows">
+                  onClick={() => setPrefs({ layout: "periods-as-rows" })} title="Periods as rows">
                   ☰ Rows
                 </button>
                 <button
                   style={{ padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, border: "none", cursor: "pointer", background: layout === "periods-as-cols" ? "#fff" : "transparent", color: layout === "periods-as-cols" ? "#111827" : "#6b7280", boxShadow: layout === "periods-as-cols" ? "0 1px 3px rgba(0,0,0,.1)" : "none" }}
-                  onClick={() => setLayout("periods-as-cols")} title="Periods as columns">
+                  onClick={() => setPrefs({ layout: "periods-as-cols" })} title="Periods as columns">
                   ⊞ Cols
                 </button>
               </div>

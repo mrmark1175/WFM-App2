@@ -2,6 +2,8 @@ import React from "react";
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { apiUrl } from "../lib/api";
+import { useLOB } from "../lib/lobContext";
+import { usePagePreferences } from "../lib/usePagePreferences";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface FTEParams {
@@ -321,6 +323,15 @@ function SliderInput({ label, value, min, max, step = 1, unit, onChange }: {
 // ── Main component ────────────────────────────────────────────────────────────
 export function CapacityPlanning() {
   const navigate = useNavigate();
+  const { activeLob } = useLOB();
+
+  // Persist active scenario + channel cross-device
+  const [capPrefs, setCapPrefs] = usePagePreferences(
+    "capacity_planning",
+    { active_scenario_id: null as number | null, selected_channel: "voice" as ChannelKey },
+  );
+  const prefsLoaded = useRef(false);
+
   const [selectedChannel, setSelectedChannel] = useState<ChannelKey>("voice");
 
   // Planning parameters
@@ -393,6 +404,7 @@ export function CapacityPlanning() {
   // Build save payload including new workforce fields
   const buildPayload = useCallback((overrideName?: string) => ({
     channel: selectedChannel,
+    lob_id: activeLob?.id,
     scenario_name: overrideName ?? (scenarios.find(s => s.id === activeScenarioId)?.scenario_name ?? "Scenario 1"),
     forecast_year: selectedForecastYear,
     aht, hours_op: hoursOp, work_days: workDays, day_pcts: dayPcts,
@@ -441,23 +453,50 @@ export function CapacityPlanning() {
     setTimeout(() => { isLoadingScenario.current = false; }, 200);
   }, []);
 
+  // Restore channel from prefs once (first time prefs arrive for this LOB)
   useEffect(() => {
+    if (prefsLoaded.current) return;
+    if (capPrefs.selected_channel && capPrefs.selected_channel !== "voice") {
+      setSelectedChannel(capPrefs.selected_channel);
+    }
+    prefsLoaded.current = true;
+  }, [capPrefs]);
+
+  // Save channel + active scenario to prefs whenever they change
+  useEffect(() => {
+    if (!prefsLoaded.current) return;
+    setCapPrefs({ selected_channel: selectedChannel });
+  }, [selectedChannel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!prefsLoaded.current || activeScenarioId === null) return;
+    setCapPrefs({ active_scenario_id: activeScenarioId });
+  }, [activeScenarioId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!activeLob) { setIsLoading(false); return; }
     const fetchScenarios = async () => {
       try {
-        const res = await fetch(apiUrl(`/api/capacity-scenarios?channel=${selectedChannel}`));
+        const res = await fetch(apiUrl(`/api/capacity-scenarios?channel=${selectedChannel}&lob_id=${activeLob.id}`));
         const data: Scenario[] = await res.json();
-        if (Array.isArray(data) && data.length > 0) { setScenarios(data); loadScenario(data[0]); }
-        else await createNewScenario("Scenario 1", true);
+        if (Array.isArray(data) && data.length > 0) {
+          setScenarios(data);
+          // Restore last-active scenario if it exists in the fetched list
+          const savedId = capPrefs.active_scenario_id;
+          const saved = savedId ? data.find(s => s.id === savedId) : null;
+          loadScenario(saved ?? data[0]);
+        } else await createNewScenario("Scenario 1", true);
       } catch { }
     };
     fetchScenarios();
-  }, [selectedChannel, loadScenario]);
+  }, [selectedChannel, activeLob?.id, loadScenario]);
 
   useEffect(() => {
+    if (!activeLob) { setIsLoading(false); return; }
     const fetchYears = async () => {
       setIsLoading(true); setLoadError("");
       try {
-        const res = await fetch(apiUrl(`/api/forecasts?channel=${selectedChannel}`));
+        const res = await fetch(apiUrl(`/api/forecasts?channel=${selectedChannel}&lob_id=${activeLob.id}`));
         if (!res.ok) throw new Error();
         const data: ForecastRecord[] = await res.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -477,14 +516,14 @@ export function CapacityPlanning() {
       } finally { setIsLoading(false); }
     };
     fetchYears();
-  }, [selectedChannel]);
+  }, [selectedChannel, activeLob?.id]);
 
   useEffect(() => {
-    if (!selectedForecastYear || selectedForecastYear === "Sample") return;
+    if (!selectedForecastYear || selectedForecastYear === "Sample" || !activeLob) return;
     const fetchProjection = async () => {
       setIsLoading(true);
       try {
-        const res = await fetch(apiUrl(`/api/forecasts/${encodeURIComponent(selectedForecastYear)}?channel=${selectedChannel}`));
+        const res = await fetch(apiUrl(`/api/forecasts/${encodeURIComponent(selectedForecastYear)}?channel=${selectedChannel}&lob_id=${activeLob.id}`));
         if (!res.ok) throw new Error();
         const data: ForecastRecord = await res.json();
         if (data) {
@@ -497,7 +536,7 @@ export function CapacityPlanning() {
       finally { setIsLoading(false); }
     };
     fetchProjection();
-  }, [selectedForecastYear, availableYears, selectedChannel]);
+  }, [selectedForecastYear, availableYears, selectedChannel, activeLob?.id]);
 
   const createNewScenario = async (name?: string, isFirst = false) => {
     const newName = name ?? `Scenario ${scenarios.length + 1}`;
@@ -507,6 +546,7 @@ export function CapacityPlanning() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: selectedChannel,
+          lob_id: activeLob?.id,
           scenario_name: newName, forecast_year: selectedForecastYear,
           aht: isFirst ? defaults.aht : aht, hours_op: isFirst ? 50 : hoursOp,
           work_days: isFirst ? 5 : workDays, day_pcts: isFirst ? [20,20,20,20,20] : dayPcts,

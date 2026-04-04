@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -7,7 +7,9 @@ import { Label } from "../components/ui/label";
 import { Checkbox } from "../components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Badge } from "../components/ui/badge";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, Cloud, CloudOff, Loader2 } from "lucide-react";
+import { useLOB } from "../lib/lobContext";
+import { apiUrl } from "../lib/api";
 
 // Types
 type ShrinkageFrequency = "per_day" | "per_week" | "per_month" | "per_year";
@@ -168,12 +170,95 @@ function itemContribution(
 }
 
 export function ShrinkagePlanning() {
+  const { activeLob, isLoading: lobLoading } = useLOB();
+
   // State
   const [hoursPerDay, setHoursPerDay] = useState<number>(7.5);
   const [daysPerWeek, setDaysPerWeek] = useState<number>(5);
   const [absenceItems, setAbsenceItems] = useState<ShrinkageItem[]>(DEFAULT_ABSENCE_ITEMS);
   const [activityItems, setActivityItems] = useState<ShrinkageItem[]>(DEFAULT_ACTIVITY_ITEMS);
   const [netFteInput, setNetFteInput] = useState<string>("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  // Refs to prevent save-on-load and track the loaded LOB
+  const initialized = useRef(false);
+  const loadedForLob = useRef<number | null | undefined>(undefined);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Load from DB when LOB changes ──────────────────────────────────────────
+  useEffect(() => {
+    if (lobLoading || !activeLob) return;
+    if (loadedForLob.current === activeLob.id) return;
+
+    initialized.current = false;
+    loadedForLob.current = activeLob.id;
+    setIsLoading(true);
+
+    fetch(apiUrl(`/api/shrinkage-plan?lob_id=${activeLob.id}`))
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.id) {
+          setHoursPerDay(data.hours_per_day ?? 7.5);
+          setDaysPerWeek(data.days_per_week ?? 5);
+          setAbsenceItems(data.absence_items?.length ? data.absence_items : DEFAULT_ABSENCE_ITEMS);
+          setActivityItems(data.activity_items?.length ? data.activity_items : DEFAULT_ACTIVITY_ITEMS);
+          setNetFteInput(data.net_fte_input != null ? String(data.net_fte_input) : "");
+        } else {
+          // No saved plan yet — reset to defaults
+          setHoursPerDay(7.5);
+          setDaysPerWeek(5);
+          setAbsenceItems(DEFAULT_ABSENCE_ITEMS);
+          setActivityItems(DEFAULT_ACTIVITY_ITEMS);
+          setNetFteInput("");
+        }
+      })
+      .catch(() => { /* keep defaults */ })
+      .finally(() => {
+        setIsLoading(false);
+        // Small delay so React flushes the state updates before we enable saving
+        setTimeout(() => { initialized.current = true; }, 100);
+      });
+  }, [lobLoading, activeLob]);
+
+  // ── Debounced save to DB ────────────────────────────────────────────────────
+  const saveToDb = useCallback((
+    hpd: number,
+    dpw: number,
+    absence: ShrinkageItem[],
+    activity: ShrinkageItem[],
+    netFte: string,
+    lobId: number,
+  ) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    setSaveStatus("saving");
+    saveTimer.current = setTimeout(async () => {
+      try {
+        const r = await fetch(apiUrl(`/api/shrinkage-plan?lob_id=${lobId}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hours_per_day: hpd,
+            days_per_week: dpw,
+            absence_items: absence,
+            activity_items: activity,
+            net_fte_input: parseFloat(netFte) || null,
+          }),
+        });
+        setSaveStatus(r.ok ? "saved" : "error");
+        setTimeout(() => setSaveStatus("idle"), 2500);
+      } catch {
+        setSaveStatus("error");
+        setTimeout(() => setSaveStatus("idle"), 2500);
+      }
+    }, 1500);
+  }, []);
+
+  // Trigger save whenever any editable state changes (after initial load)
+  useEffect(() => {
+    if (!initialized.current || !activeLob) return;
+    saveToDb(hoursPerDay, daysPerWeek, absenceItems, activityItems, netFteInput, activeLob.id);
+  }, [hoursPerDay, daysPerWeek, absenceItems, activityItems, netFteInput, activeLob, saveToDb]);
 
   // Handlers
   const handleHoursPerDayChange = (next: number) => {
@@ -275,20 +360,37 @@ export function ShrinkagePlanning() {
   const shiftMinutes = Math.round(hoursPerDay * 60);
   const daysPerYear = daysPerWeek * 52;
 
-  // Persist to localStorage so LongTermForecasting_Demand can read it
-  React.useEffect(() => {
+  // Mirror computed totals to localStorage so LongTermForecasting_Demand can read them (keyed by LOB)
+  const lobKey = activeLob ? `_lob${activeLob.id}` : "";
+  useEffect(() => {
     localStorage.setItem(
-      "wfm_shrinkage_totals",
+      `wfm_shrinkage_totals${lobKey}`,
       JSON.stringify({
         totalExcl: totalExclHolidays,
         totalIncl: totalInclHolidays,
         lastUpdated: new Date().toISOString(),
       })
     );
-  }, [totalExclHolidays, totalInclHolidays]);
+  }, [totalExclHolidays, totalInclHolidays, lobKey]);
 
   return (
     <PageLayout title="Shrinkage Planning">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-2">
+          {activeLob && (
+            <>
+              <span className="text-sm text-muted-foreground">Line of Business:</span>
+              <Badge variant="outline" className="text-sm font-medium">{activeLob.lob_name}</Badge>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          {isLoading && <><Loader2 className="size-3 animate-spin" /><span>Loading…</span></>}
+          {!isLoading && saveStatus === "saving" && <><Loader2 className="size-3 animate-spin" /><span>Saving…</span></>}
+          {!isLoading && saveStatus === "saved" && <><Cloud className="size-3 text-green-500" /><span className="text-green-600 dark:text-green-400">Saved</span></>}
+          {!isLoading && saveStatus === "error" && <><CloudOff className="size-3 text-destructive" /><span className="text-destructive">Save failed</span></>}
+        </div>
+      </div>
       <div className="flex gap-6 items-start">
         {/* LEFT PANEL — FTE Definition */}
         <div className="w-72 shrink-0 space-y-4">

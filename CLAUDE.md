@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Working Style
+
+Do not make any changes until you have 95% confidence in what you need to build. Ask follow-up questions until you reach that confidence.
+
 ## Commands
 
 ```bash
@@ -122,6 +126,65 @@ Frontend API base is controlled by `src/app/lib/api.ts` — uses relative `/api`
 
 ### UI/UX Fixes
 - KPI value headings in the dark hero section now have explicit `text-white` to prevent Card component defaults from dimming the text.
+
+### LOB Hierarchy — Server Startup Crash (2026-04-04)
+
+**Problem:** After implementing the LOB (Line of Business) hierarchy feature across a session that hit the CLI limit, the server would crash immediately on startup with:
+```
+Startup schema initialization failed: relation "forecasts_year_lob_channel_key" already exists
+process.exit(1)
+```
+
+**Root cause:** `ensureAppTables()` in `server/server.cjs` adds unique constraints using `DO $$ BEGIN ... EXCEPTION WHEN duplicate_object THEN NULL; END; $$` PL/pgSQL blocks. In PostgreSQL, `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` creates a backing index whose name is treated as a *relation*. On a second startup, attempting to add an already-existing constraint throws error code `42P07` (`duplicate_table`), not `42710` (`duplicate_object`). The exception handler only caught `duplicate_object`, so the error propagated and killed the process.
+
+**Fix:** Added `WHEN duplicate_table THEN NULL` to every `ADD CONSTRAINT` DO block in `ensureAppTables()`:
+```sql
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN duplicate_table THEN NULL; WHEN undefined_table THEN NULL;
+```
+
+**Rule going forward:** Any `DO $$ BEGIN ALTER TABLE ... ADD CONSTRAINT ... END; $$` block in `ensureAppTables()` must catch **both** `duplicate_object` AND `duplicate_table` to be safe across repeated restarts.
+
+## Persistence Architecture
+
+### Principle
+All user-editable state must persist to the database (not browser/localStorage only) so data survives page refreshes and syncs across devices (local dev ↔ Render deployment).
+
+### DB Tables for Persistence
+
+| Table | Purpose | Key |
+|-------|---------|-----|
+| `shrinkage_plans` | One shrinkage plan per org+LOB — all items, hours/day, days/week, net FTE | `UNIQUE(organization_id, lob_id)` |
+| `user_preferences` | Generic per-page UI state (view mode, date ranges, selected channel, etc.) | `UNIQUE(organization_id, lob_id, page_key)` for LOB-scoped; partial index for global (`lob_id IS NULL`) |
+
+### API Endpoints
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `GET/PUT` | `/api/shrinkage-plan?lob_id=X` | Fetch / upsert shrinkage plan for a LOB |
+| `GET/PUT` | `/api/user-preferences?page_key=X&lob_id=X` | Fetch / upsert per-page preferences (omit `lob_id` for global) |
+| `GET` | `/api/lobs/metadata` | LOBs + capacity/demand scenario counts + last activity |
+
+### `usePagePreferences` Hook (`src/app/lib/usePagePreferences.ts`)
+Generic hook used by all pages to load and debounced-save preferences:
+```typescript
+const [prefs, setPrefs] = usePagePreferences("page_key", defaults, lobScoped?);
+// setPrefs({ field: value }) — partial update, auto-saves to DB after 1.5s debounce
+```
+
+**Page keys:**
+- `"capacity_planning"` — persists `active_scenario_id`, `selected_channel` (LOB-scoped)
+- `"arrival_analysis"` — persists channel, view, layout, weekStart, selYear/Month/Week/Day, intervalSize (LOB-scoped)
+- `"interaction_arrival"` — persists channel, dates, tab, intervalSize, telephonySystem (LOB-scoped)
+- `"performance_analytics"` — persists startDate, endDate, startTime, endTime, rollupLevel (**global**, lobScoped=false)
+
+### NULL lob_id in user_preferences
+PostgreSQL treats NULLs as distinct in UNIQUE constraints. The global (PerformanceAnalytics) upsert uses an explicit UPDATE-then-INSERT pattern rather than `ON CONFLICT` to avoid duplicate rows.
+
+### ShrinkagePlanning
+Uses a dedicated `shrinkage-plan` endpoint (not `user_preferences`) because its data is structured. Loads on mount and on LOB switch, auto-saves with 1.5s debounce. Also mirrors computed totals to localStorage under key `wfm_shrinkage_totals_lob{id}` for LongTermForecasting_Demand to read.
+
+### LOB Management Page
+Route: `/configuration/lob-management` — accessible from the Configuration page (Lines of Business card with chevron). Shows rich table: LOB name, created date, capacity scenario count, demand scenario count, last activity. Uses `/api/lobs/metadata`.
 
 ## Important Notes
 
