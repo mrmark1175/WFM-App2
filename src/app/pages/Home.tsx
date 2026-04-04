@@ -2,6 +2,7 @@ import React from "react";
 import { Link } from "react-router-dom";
 import { User, Users, Settings } from "lucide-react";
 import logo from "../../assets/logo.png";
+import { ModeToggle } from "../components/ModeToggle";
 
 export function Home() {
   const navigationCards = [
@@ -32,7 +33,10 @@ export function Home() {
   ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 dark:from-slate-900 dark:via-indigo-950 dark:to-purple-950">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 dark:from-slate-900 dark:via-indigo-950 dark:to-purple-950 relative">
+      <div className="absolute top-6 right-6 z-50">
+        <ModeToggle />
+      </div>
       <div className="container mx-auto px-6 py-16">
         {/* Header */}
         <div className="text-center mb-16">

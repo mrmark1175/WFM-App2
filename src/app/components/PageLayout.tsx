@@ -3,6 +3,7 @@ import { Home, ChevronRight } from "lucide-react"; // Added ChevronRight
 import logo from "../../assets/logo.png";
 import React from "react";
 import { Toaster } from "./ui/sonner";
+import { ModeToggle } from "./ModeToggle";
 
 interface PageLayoutProps {
   children: React.ReactNode;
@@ -31,19 +32,22 @@ export function PageLayout({ children, title }: PageLayoutProps) {
     <div className="min-h-screen bg-background">
       <Toaster richColors position="top-right" />
       {/* Header */}
-      <header className="bg-white dark:bg-slate-900 border-b border-border">
+      <header className="bg-card border-b border-border">
         <div className="container mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
               <img src={logo} alt="Exordium WFM" className="h-14 w-auto" />
             </Link>
-            <Link
-              to="/"
-              className="flex items-center gap-2 px-4 py-2 rounded-lg hover:bg-accent transition-colors"
-            >
-              <Home className="size-4" />
-              <span className="text-sm">Home</span>
-            </Link>
+            <div className="flex items-center gap-4">
+              <Link
+                to="/"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg hover:bg-accent transition-colors"
+              >
+                <Home className="size-4" />
+                <span className="text-sm">Home</span>
+              </Link>
+              <ModeToggle />
+            </div>
           </div>
         </div>
       </header>

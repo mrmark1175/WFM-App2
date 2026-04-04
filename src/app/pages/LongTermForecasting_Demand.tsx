@@ -1641,32 +1641,32 @@ export default function LongTermForecastingDemand() {
     <TooltipProvider>
       <PageLayout title="Long Term Forecasting  Demand">
         <div className="flex flex-col gap-8 pb-12">
-          <section className="rounded-3xl bg-gradient-to-br from-slate-900 to-slate-800 px-6 py-8 shadow-xl text-white">
-            <p className="text-xs uppercase tracking-[0.4em] text-indigo-300">Long Term Forecasting Demand</p>
-            <h1 className="mt-3 font-heading text-3xl md:text-4xl">Seasonal demand, refined staffing</h1>
-            <p className="mt-2 max-w-2xl text-sm text-white/80">
-              Forecast volumes and channel workloads now share a clearer story. Choose which channels stay dedicated versus blended, track required FTE, and see how idle voice capacity offsets chat and email before adding headcount.
+          <section className="rounded-3xl bg-gradient-to-br from-slate-400 to-slate-300 px-6 py-8 shadow-lg">
+            <p className="text-xs uppercase tracking-[0.4em] text-slate-700">Long Term Forecasting Demand</p>
+            <h1 className="mt-3 font-heading text-3xl md:text-4xl text-slate-900">Multi-Channel Demand & Capacity Planning</h1>
+            <p className="mt-2 max-w-2xl text-sm text-slate-800">
+              Forecast demand across voice, chat, and email channels. Configure dedicated or blended staffing pools, calculate required FTE based on volume forecasts and operational constraints, and optimize resource allocation.
             </p>
             <div className="mt-6 grid gap-4 md:grid-cols-3">
-              <Card className="bg-white/10 border border-white/15 shadow-lg shadow-slate-900/40">
+              <Card className="bg-white/20 border border-slate-300/40 shadow-lg shadow-slate-900/20">
                 <CardContent className="p-4">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-white/70">Forecasted Monthly Volume</p>
-                  <h3 className="mt-2 text-3xl font-black text-white">{kpis.avgVolume.toLocaleString()}</h3>
-                  <p className="text-xs text-white/60">Average across the active horizon</p>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-slate-700">Forecasted Monthly Volume</p>
+                  <h3 className="mt-2 text-3xl font-black text-slate-900">{kpis.avgVolume.toLocaleString()}</h3>
+                  <p className="text-xs text-slate-600">Average across the active horizon</p>
                 </CardContent>
               </Card>
-              <Card className="bg-white/10 border border-white/15 shadow-lg shadow-slate-900/40">
+              <Card className="bg-white/20 border border-slate-300/40 shadow-lg shadow-slate-900/20">
                 <CardContent className="p-4">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-white/70">Workload Hours</p>
-                  <h3 className="mt-2 text-3xl font-black text-white">{kpis.avgWorkloadHours.toLocaleString()}</h3>
-                  <p className="text-xs text-white/60">Converted from channel AHTs &amp; open hours</p>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-slate-700">Workload Hours</p>
+                  <h3 className="mt-2 text-3xl font-black text-slate-900">{kpis.avgWorkloadHours.toLocaleString()}</h3>
+                  <p className="text-xs text-slate-600">Converted from channel AHTs &amp; open hours</p>
                 </CardContent>
               </Card>
-              <Card className="bg-white/10 border border-white/15 shadow-lg shadow-slate-900/40">
+              <Card className="bg-white/20 border border-slate-300/40 shadow-lg shadow-slate-900/20">
                 <CardContent className="p-4">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-white/70">Required Agents / FTE</p>
-                  <h3 className="mt-2 text-3xl font-black text-white">{kpis.avgRequiredFTE}</h3>
-                  <p className="text-xs text-white/60">Average total FTE for {selectedBlendConfig.label}</p>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-slate-700">Required Agents / FTE</p>
+                  <h3 className="mt-2 text-3xl font-black text-slate-900">{kpis.avgRequiredFTE}</h3>
+                  <p className="text-xs text-slate-600">Average total FTE for {selectedBlendConfig.label}</p>
                 </CardContent>
               </Card>
             </div>
