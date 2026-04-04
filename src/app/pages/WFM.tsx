@@ -60,6 +60,13 @@ export function WFM() {
       path: "/wfm/performance-analytics",
     },
     {
+      title: "Intra-Day Distribution Engine",
+      description: "Distribute monthly forecasts into 15/30-min interval arrival patterns by day of week",
+      icon: TrendingUp,
+      stats: "Distribution",
+      path: "/wfm/intraday",
+    },
+    {
       title: "Interaction Arrival",
       description: "Intraday volume and AHT by 15-min intervals",
       icon: Grid,
