@@ -1,15 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { BarChart2, Download, Edit2, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp } from "lucide-react";
+import { BarChart2, Download, Edit2, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2 } from "lucide-react";
 import { toast } from "sonner";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
 import { usePagePreferences } from "../lib/usePagePreferences";
+import { PageLayout } from "../components/PageLayout";
 import { getCalculatedVolumes, Assumptions } from "./forecasting-logic";
 import {
   GridData, DOW_LABELS, SLOT_COUNT,
-  computeMedianPattern, computeDistributionWeights, distributeMonthlyVolumeToWeek,
-  aggregateTo30Min, buildChartData, generateMonthLabels, monthFromOffset, makeIntervals, fmtSlot,
+  computeMedianPattern, computeDistributionWeights,
+  distributeWeeklyVolumeToIntervals, distributeMonthlyToTargetWeek,
+  computeWeeklyBuckets,
+  aggregateTo30Min, aggregateTo60Min, buildChartData, generateMonthLabels, monthFromOffset,
+  makeIntervals, getWeeksInMonth, parseExcelPaste, parseIntervalGridPaste, GridPasteResult,
 } from "./intraday-distribution-logic";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -18,6 +22,7 @@ import { Badge } from "../components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { Textarea } from "../components/ui/textarea";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ChannelKey = "voice" | "email" | "chat";
@@ -49,18 +54,22 @@ interface DistributionProfile {
 interface IntradayPrefs {
   selectedChannel: ChannelKey;
   targetMonthOffset: number;
-  grain: 15 | 30;
+  targetWeekStart: string;
+  grain: 15 | 30 | 60;
   isBaselineOpen: boolean;
+  dataSource: "api" | "manual";
 }
 
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3 };
 const DEFAULT_PREFS: IntradayPrefs = {
   selectedChannel: "voice",
   targetMonthOffset: 0,
+  targetWeekStart: "",
   grain: 15,
   isBaselineOpen: true,
+  dataSource: "api",
 };
-const DOW_COLORS = ["#94a3b8", "#2563eb", "#0891b2", "#16a34a", "#d97706", "#9333ea", "#e11d48"];
+const DOW_COLORS = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#9333ea", "#e11d48", "#94a3b8"];
 
 // ── Helper: apply overrides to API data (mirrors demand planner logic) ────────
 function applyHistoricalOverrides(apiData: number[], overrides: Record<number, string>): number[] {
@@ -78,15 +87,17 @@ function applyHistoricalOverrides(apiData: number[], overrides: Record<number, s
 export const IntradayForecast = () => {
   const { activeLob } = useLOB();
   const [prefs, setPrefs] = usePagePreferences<IntradayPrefs>("intraday_forecast", DEFAULT_PREFS);
-  const { selectedChannel, targetMonthOffset, grain, isBaselineOpen } = prefs;
+  const { selectedChannel, targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource } = prefs;
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [plannerSnapshot, setPlannerSnapshot] = useState<PlannerSnapshot | null>(null);
   const [rawData, setRawData] = useState<GridData>({});
+  const [manualWeeklyVolumes, setManualWeeklyVolumes] = useState<number[]>([]);
   const [savedProfiles, setSavedProfiles] = useState<DistributionProfile[]>([]);
   const [editableWeights, setEditableWeights] = useState<number[][] | null>(null);
   const [isEditingWeights, setIsEditingWeights] = useState(false);
   const [csvModalOpen, setCsvModalOpen] = useState(false);
+  const [pasteModalOpen, setPasteModalOpen] = useState(false);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [profileName, setProfileName] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -94,6 +105,11 @@ export const IntradayForecast = () => {
   const [isLoadingBaseline, setIsLoadingBaseline] = useState(false);
   const [isLoadingProfiles, setIsLoadingProfiles] = useState(false);
   const [csvError, setCsvError] = useState<string | null>(null);
+  const [pasteText, setPasteText] = useState("");
+  const [gridPasteModalOpen, setGridPasteModalOpen] = useState(false);
+  const [gridPasteText, setGridPasteText] = useState("");
+  const [gridPastePreview, setGridPastePreview] = useState<GridPasteResult | null>(null);
+  const [showForecastTable, setShowForecastTable] = useState(true);
 
   // Virtual scroll for weight editor
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -129,7 +145,7 @@ export const IntradayForecast = () => {
 
   // ── Load baseline interaction data ─────────────────────────────────────────
   useEffect(() => {
-    if (!activeLob) return;
+    if (!activeLob || dataSource !== "api") return;
     setIsLoadingBaseline(true);
     fetch(apiUrl(`/api/interaction-arrival?startDate=${baselineStart}&endDate=${baselineEnd}&channel=${selectedChannel}&lob_id=${activeLob.id}`))
       .then((r) => r.json())
@@ -142,11 +158,11 @@ export const IntradayForecast = () => {
           newData[ds][r.interval_index] = { volume: r.volume || 0, aht: r.aht || 0 };
         });
         setRawData(newData);
-        setEditableWeights(null); // reset edits on channel/LOB change
+        setEditableWeights(null);
       })
       .catch(() => setRawData({}))
       .finally(() => setIsLoadingBaseline(false));
-  }, [activeLob?.id, selectedChannel, baselineStart, baselineEnd]);
+  }, [activeLob?.id, selectedChannel, baselineStart, baselineEnd, dataSource]);
 
   // ── Load saved profiles ────────────────────────────────────────────────────
   useEffect(() => {
@@ -194,7 +210,10 @@ export const IntradayForecast = () => {
     [plannerSnapshot?.assumptions?.startDate]
   );
 
-  const safeOffset = Math.min(targetMonthOffset, forecastVolumesByChannel[selectedChannel].length - 1);
+  const safeOffset = Math.min(
+    Math.max(0, targetMonthOffset),
+    Math.max(0, forecastVolumesByChannel[selectedChannel].length - 1)
+  );
   const targetMonthlyVolume = forecastVolumesByChannel[selectedChannel][safeOffset] ?? 0;
   const { year: targetYear, month: targetMonthIndex } = useMemo(
     () => plannerSnapshot?.assumptions?.startDate
@@ -203,6 +222,50 @@ export const IntradayForecast = () => {
     [plannerSnapshot?.assumptions?.startDate, safeOffset]
   );
 
+  // ── Weeks in target month ──────────────────────────────────────────────────
+  const weeksInMonth = useMemo(
+    () => getWeeksInMonth(targetYear, targetMonthIndex),
+    [targetYear, targetMonthIndex]
+  );
+
+  // Auto-select first week when month changes or when no week is selected
+  useEffect(() => {
+    if (weeksInMonth.length > 0 && (!targetWeekStart || !weeksInMonth.some((w) => w.start === targetWeekStart))) {
+      setPrefs({ targetWeekStart: weeksInMonth[0].start });
+    }
+  }, [weeksInMonth, targetWeekStart]);
+
+  // ── Weekly distribution from historical data ───────────────────────────────
+  const weekBuckets = useMemo(() => computeWeeklyBuckets(rawData), [rawData]);
+
+  const hasEnoughWeeklyData = weekBuckets.length >= 4;
+
+  // Compute the forecasted weekly volume
+  const forecastedWeekVolume = useMemo(() => {
+    if (targetMonthlyVolume === 0 || !targetWeekStart) return 0;
+
+    if (dataSource === "manual") {
+      // Use manual weekly volumes to compute distribution pattern
+      // Require at least 4 entries (index 0-3 filled with non-zero values)
+      const filledVolumes = manualWeeklyVolumes.slice(0, 4);
+      const filledCount = filledVolumes.filter((v) => v > 0).length;
+      if (filledCount < 4) return 0;
+      const total = filledVolumes.reduce((a, b) => a + b, 0);
+      if (total === 0) return 0;
+      const weekIdx = weeksInMonth.findIndex((w) => w.start === targetWeekStart);
+      const safeIdx = Math.min(weekIdx >= 0 ? weekIdx : 0, filledVolumes.length - 1);
+      const pct = filledVolumes[safeIdx] / total;
+      return targetMonthlyVolume * pct;
+    }
+
+    if (dataSource === "api" && weekBuckets.length > 0) {
+      return distributeMonthlyToTargetWeek(targetMonthlyVolume, weekBuckets, targetWeekStart);
+    }
+
+    // Fallback: simple division by weeks in month
+    return weeksInMonth.length > 0 ? targetMonthlyVolume / weeksInMonth.length : 0;
+  }, [targetMonthlyVolume, targetWeekStart, weekBuckets, manualWeeklyVolumes, dataSource, weeksInMonth]);
+
   // ── Distribution computation ───────────────────────────────────────────────
   const medianPattern = useMemo(() => computeMedianPattern(rawData), [rawData]);
   const distributionWeights = useMemo(
@@ -210,17 +273,23 @@ export const IntradayForecast = () => {
     [medianPattern]
   );
   const activeIntervalWeights = editableWeights ?? distributionWeights.intervalWeights;
+
+  // Distribute the forecasted week volume to interval-level
   const weekForecast = useMemo(
-    () => distributeMonthlyVolumeToWeek(
-      targetMonthlyVolume, targetYear, targetMonthIndex,
-      distributionWeights.dayWeights, activeIntervalWeights
+    () => distributeWeeklyVolumeToIntervals(
+      forecastedWeekVolume,
+      distributionWeights.dayWeights,
+      activeIntervalWeights
     ),
-    [targetMonthlyVolume, targetYear, targetMonthIndex, distributionWeights.dayWeights, activeIntervalWeights]
+    [forecastedWeekVolume, distributionWeights.dayWeights, activeIntervalWeights]
   );
-  const displayForecast = useMemo(
-    () => grain === 30 ? aggregateTo30Min(weekForecast) : weekForecast,
-    [weekForecast, grain]
-  );
+
+  const displayForecast = useMemo(() => {
+    if (grain === 60) return aggregateTo60Min(weekForecast);
+    if (grain === 30) return aggregateTo30Min(weekForecast);
+    return weekForecast;
+  }, [weekForecast, grain]);
+
   const chartData = useMemo(() => buildChartData(displayForecast, grain), [displayForecast, grain]);
 
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
@@ -228,6 +297,13 @@ export const IntradayForecast = () => {
     () => Object.values(rawData).reduce((s, slots) => s + Object.keys(slots).length, 0),
     [rawData]
   );
+
+  // Daily totals for the forecast table
+  const dailyTotals = useMemo(() =>
+    weekForecast.map((day) => day.reduce((sum, v) => sum + v, 0)),
+    [weekForecast]
+  );
+  const grandTotal = useMemo(() => dailyTotals.reduce((sum, v) => sum + v, 0), [dailyTotals]);
 
   // ── Virtual scroll handler ─────────────────────────────────────────────────
   const handleEditorScroll = useCallback(() => {
@@ -296,7 +372,6 @@ export const IntradayForecast = () => {
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
       const lines = text.trim().split(/\r?\n/);
-      // Expect header: date,interval_index,volume,aht
       if (lines.length < 2) { setCsvError("File is empty or has no data rows"); return; }
       const header = lines[0].toLowerCase().split(",").map((h) => h.trim());
       const dateIdx = header.indexOf("date");
@@ -329,6 +404,46 @@ export const IntradayForecast = () => {
     e.target.value = "";
   };
 
+  // ── Manual Weekly Volume Paste ─────────────────────────────────────────────
+  const handlePasteConfirm = () => {
+    const values = parseExcelPaste(pasteText);
+    if (values.length < 4) {
+      toast.error("Please paste at least 4 weekly volume values");
+      return;
+    }
+    setManualWeeklyVolumes(values.slice(0, 8)); // max 8 weeks
+    setPasteModalOpen(false);
+    setPasteText("");
+    toast.success(`Imported ${Math.min(values.length, 8)} weekly volumes`);
+  };
+
+  // ── Interval Grid Paste ────────────────────────────────────────────────────
+  const handleGridPasteChange = (text: string) => {
+    setGridPasteText(text);
+    if (text.trim()) {
+      const result = parseIntervalGridPaste(text);
+      setGridPastePreview(result.rowCount > 0 ? result : null);
+    } else {
+      setGridPastePreview(null);
+    }
+  };
+
+  const handleGridPasteConfirm = () => {
+    if (!gridPastePreview || gridPastePreview.rowCount === 0) {
+      toast.error("No valid interval data detected. Check the pasted format.");
+      return;
+    }
+    setRawData(gridPastePreview.data);
+    setEditableWeights(null);
+    setGridPasteModalOpen(false);
+    setGridPasteText("");
+    setGridPastePreview(null);
+    toast.success(
+      `Imported ${gridPastePreview.rowCount} time slots × ${gridPastePreview.colCount} days` +
+      (gridPastePreview.hasRealDates ? ` (with real dates)` : ` (Mon–Sun pattern)`)
+    );
+  };
+
   // ── Weight editor cell change ──────────────────────────────────────────────
   const handleWeightChange = (dow: number, slotIndex: number, value: string) => {
     const parsed = parseFloat(value);
@@ -337,7 +452,7 @@ export const IntradayForecast = () => {
       const next = prev
         ? prev.map((row) => [...row])
         : distributionWeights.intervalWeights.map((row) => [...row]);
-      next[dow][slotIndex] = Math.max(0, parsed / 100); // stored as fraction 0-1
+      next[dow][slotIndex] = Math.max(0, parsed / 100);
       return next;
     });
   };
@@ -345,63 +460,80 @@ export const IntradayForecast = () => {
   // ── Export CSV ─────────────────────────────────────────────────────────────
   const handleExportCsv = () => {
     const intervals = makeIntervals(grain);
-    const rows = ["Day,Time," + intervals.map((iv) => iv.label).join(",")];
-    DOW_LABELS.forEach((dow, d) => {
-      const vals = intervals.map((iv) =>
-        iv.indices.reduce((s, i) => s + (weekForecast[d]?.[i] ?? 0), 0).toFixed(1)
-      );
-      rows.push(`${dow},${new Date().getFullYear()},${vals.join(",")}`);
+    const header = ["Time", ...DOW_LABELS];
+    const rows = [header.join(",")];
+    intervals.forEach((iv, idx) => {
+      const vals = DOW_LABELS.map((_, d) => {
+        const val = displayForecast[d]?.[idx] ?? 0;
+        return val.toFixed(1);
+      });
+      rows.push(`${iv.label},${vals.join(",")}`);
     });
+    // Add totals row
+    rows.push(`Total,${dailyTotals.map((t) => t.toFixed(1)).join(",")}`);
     const blob = new Blob([rows.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `distribution_${selectedChannel}_${monthLabels[safeOffset]?.replace(" ", "_")}.csv`;
+    a.download = `intraday_forecast_${selectedChannel}_${monthLabels[safeOffset]?.replace(" ", "_")}_${targetWeekStart}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   const intervals = useMemo(() => makeIntervals(grain), [grain]);
-  const slotCount = grain === 15 ? SLOT_COUNT : SLOT_COUNT / 2;
+  const slotCount = grain === 15 ? SLOT_COUNT : grain === 30 ? SLOT_COUNT / 2 : SLOT_COUNT / 4;
   const visEnd = Math.min(slotCount, visStart + VIS_ROWS + 4);
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  if (!activeLob) {
-    return (
-      <div className="p-8 text-muted-foreground">Select a Line of Business to get started.</div>
-    );
-  }
-
   const forecastMethodLabel = plannerSnapshot?.forecastMethod
     ? { holtwinters: "Holt-Winters", arima: "ARIMA", decomposition: "Decomposition",
         ma: "Moving Average", yoy: "Year-over-Year", regression: "Linear Regression",
         genesys: "Genesys Sync" }[plannerSnapshot.forecastMethod] ?? plannerSnapshot.forecastMethod
     : null;
 
+  // Interval pattern data (for intraday shape) always requires baseline
+  const canGenerateForecast = targetMonthlyVolume > 0 && baselineDataCount > 0 && forecastedWeekVolume > 0;
+
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-[1400px] mx-auto">
+    <PageLayout title="Intraday Forecast">
+      <div className="flex flex-col gap-6 max-w-[1400px] mx-auto">
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Intra-Day Distribution Engine</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Intraday Forecast</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Distribute monthly forecasts into 15/30-min interval volumes
+            Distribute monthly forecasts into weekly, daily, and interval-level volumes
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className="text-xs">{activeLob.lob_name}</Badge>
-          <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={targetMonthlyVolume === 0}>
+          {!activeLob && (
+            <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
+              <AlertTriangle className="h-3 w-3 mr-1" />Select a LOB from the top-right menu
+            </Badge>
+          )}
+          <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={!canGenerateForecast}>
             <Download className="h-3.5 w-3.5 mr-1.5" />Export CSV
           </Button>
         </div>
       </div>
+
+      {/* ── No LOB selected ── */}
+      {!activeLob && (
+        <Card className="border-amber-200 bg-amber-50 dark:bg-amber-950/20">
+          <CardContent className="py-8 text-center text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-8 w-8 mx-auto mb-3 opacity-70" />
+            <p className="font-semibold">No Line of Business selected</p>
+            <p className="text-sm mt-1 opacity-80">Use the LOB selector in the top-right corner of the header to choose a LOB.</p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Forecast Source Panel ── */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
             <BarChart2 className="h-4 w-4 text-blue-500" />
-            Forecast Source
+            Forecast Source &amp; Target Selection
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -409,7 +541,7 @@ export const IntradayForecast = () => {
             {/* Channel */}
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-muted-foreground">Channel</span>
-              <Select value={selectedChannel} onValueChange={(v) => setPrefs({ selectedChannel: v as ChannelKey, targetMonthOffset: 0 })}>
+              <Select value={selectedChannel} onValueChange={(v) => setPrefs({ selectedChannel: v as ChannelKey, targetMonthOffset: 0, targetWeekStart: "" })}>
                 <SelectTrigger className="w-32 h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
@@ -426,7 +558,7 @@ export const IntradayForecast = () => {
               <span className="text-xs font-medium text-muted-foreground">Target Month</span>
               <Select
                 value={String(safeOffset)}
-                onValueChange={(v) => setPrefs({ targetMonthOffset: parseInt(v) })}
+                onValueChange={(v) => setPrefs({ targetMonthOffset: parseInt(v), targetWeekStart: "" })}
                 disabled={forecastVolumesByChannel[selectedChannel].length === 0}
               >
                 <SelectTrigger className="w-36 h-8 text-sm">
@@ -440,15 +572,46 @@ export const IntradayForecast = () => {
               </Select>
             </div>
 
+            {/* Target week */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Target Week</span>
+              <Select
+                value={targetWeekStart}
+                onValueChange={(v) => setPrefs({ targetWeekStart: v })}
+                disabled={weeksInMonth.length === 0}
+              >
+                <SelectTrigger className="w-52 h-8 text-sm">
+                  <SelectValue placeholder="Select week" />
+                </SelectTrigger>
+                <SelectContent>
+                  {weeksInMonth.map((w, i) => (
+                    <SelectItem key={w.start} value={w.start}>
+                      Wk {i + 1}: {w.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
             {/* Monthly volume display */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Forecasted Volume</span>
+              <span className="text-xs font-medium text-muted-foreground">Monthly Volume</span>
               <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold min-w-[100px]">
                 {isLoadingForecast
-                  ? <span className="text-muted-foreground animate-pulse">Loading…</span>
+                  ? <span className="text-muted-foreground animate-pulse">Loading...</span>
                   : targetMonthlyVolume > 0
                     ? targetMonthlyVolume.toLocaleString()
-                    : <span className="text-muted-foreground">—</span>}
+                    : <span className="text-muted-foreground">&mdash;</span>}
+              </div>
+            </div>
+
+            {/* Weekly volume display */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Week Volume</span>
+              <div className="h-8 flex items-center px-3 rounded-md border bg-blue-50 dark:bg-blue-950/30 text-sm font-bold text-blue-700 dark:text-blue-300 min-w-[100px]">
+                {forecastedWeekVolume > 0
+                  ? Math.round(forecastedWeekVolume).toLocaleString()
+                  : <span className="text-muted-foreground font-normal">&mdash;</span>}
               </div>
             </div>
 
@@ -456,60 +619,278 @@ export const IntradayForecast = () => {
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-muted-foreground">Source</span>
               {isLoadingForecast ? (
-                <Badge variant="secondary" className="h-8 px-3 text-xs">Loading…</Badge>
+                <Badge variant="secondary" className="h-8 px-3 text-xs">Loading...</Badge>
               ) : plannerSnapshot ? (
                 <Badge variant="default" className="h-8 px-3 text-xs bg-green-600 hover:bg-green-600">
-                  Demand Planner{forecastMethodLabel ? ` · ${forecastMethodLabel}` : ""}
+                  Demand Planner{forecastMethodLabel ? ` \u00b7 ${forecastMethodLabel}` : ""}
                 </Badge>
               ) : (
                 <Badge variant="destructive" className="h-8 px-3 text-xs">
-                  No forecast found — run Demand Planner first
+                  No forecast found &mdash; run Demand Planner first
                 </Badge>
               )}
             </div>
           </div>
+
+          {/* Weekly distribution summary */}
+          {weekBuckets.length > 0 && dataSource === "api" && targetMonthlyVolume > 0 && (
+            <div className="mt-4 p-3 rounded-lg border bg-muted/20">
+              <div className="flex items-center gap-2 mb-2">
+                <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Weekly Distribution ({weekBuckets.length} week{weekBuckets.length !== 1 ? "s" : ""} of history)
+                </span>
+                {!hasEnoughWeeklyData && (
+                  <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
+                    <AlertTriangle className="h-3 w-3 mr-1" />
+                    &lt;4 weeks — distribution may be inaccurate
+                  </Badge>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-3">
+                {weekBuckets.map((wb, i) => {
+                  const isSelected = wb.weekStart === targetWeekStart;
+                  return (
+                    <button
+                      key={wb.weekStart}
+                      className={`text-left p-2 rounded-md border text-xs transition-colors ${
+                        isSelected
+                          ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
+                          : "border-border hover:border-blue-300 bg-background"
+                      }`}
+                      onClick={() => setPrefs({ targetWeekStart: wb.weekStart })}
+                    >
+                      <div className="font-medium">Wk {i + 1}: {wb.weekStart}</div>
+                      <div className="text-muted-foreground">
+                        {wb.volume.toLocaleString()} vol &middot; {(wb.pct * 100).toFixed(1)}%
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── Manual Weekly Volume Entry (always visible in this panel) ── */}
+          <div className="mt-5 pt-4 border-t">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <ClipboardPaste className="h-4 w-4 text-orange-500" />
+                <span className="text-sm font-semibold">Last 4 Weeks — Actual Volume</span>
+                <Badge variant="outline" className="text-xs">
+                  {dataSource === "api" ? "Auto from API" : "Manual Entry"}
+                </Badge>
+              </div>
+              <div className="flex rounded-md border overflow-hidden">
+                {(["api", "manual"] as const).map((src) => (
+                  <button
+                    key={src}
+                    onClick={() => setPrefs({ dataSource: src })}
+                    className={`px-3 py-1 text-xs font-medium transition-colors ${
+                      dataSource === src
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    {src === "api" ? "Auto" : "Manual"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {dataSource === "manual" ? (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Enter the last 4 weeks of actual total weekly volumes. These percentages will be used
+                  to distribute the monthly forecast to the selected target week.
+                </p>
+                {/* Inline 4-week inputs */}
+                <div className="flex flex-wrap gap-3 items-end">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="flex flex-col gap-1">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        Week {i + 1} {i === 3 ? "(most recent)" : ""}
+                      </label>
+                      <Input
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={manualWeeklyVolumes[i] ?? ""}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value) || 0;
+                          setManualWeeklyVolumes((prev) => {
+                            const next = [...prev];
+                            next[i] = val;
+                            return next;
+                          });
+                        }}
+                        className="w-28 h-8 text-sm"
+                      />
+                    </div>
+                  ))}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium text-muted-foreground invisible">or</label>
+                    <Button variant="outline" size="sm" onClick={() => setPasteModalOpen(true)}>
+                      <ClipboardPaste className="h-3.5 w-3.5 mr-1.5" />Paste from Excel
+                    </Button>
+                  </div>
+                  {manualWeeklyVolumes.some((v) => v > 0) && (
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-medium text-muted-foreground invisible">clear</label>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => setManualWeeklyVolumes([])}
+                      >
+                        <X className="h-3.5 w-3.5 mr-1.5" />Clear
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Distribution preview */}
+                {manualWeeklyVolumes.filter((v) => v > 0).length >= 4 && (
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {manualWeeklyVolumes.slice(0, 4).map((vol, i) => {
+                      const total = manualWeeklyVolumes.slice(0, 4).reduce((a, b) => a + b, 0);
+                      const pct = total > 0 ? (vol / total * 100).toFixed(1) : "0.0";
+                      return (
+                        <div key={i} className="text-center px-3 py-1.5 rounded-md border bg-muted/30 text-xs">
+                          <div className="text-muted-foreground">Wk {i + 1}</div>
+                          <div className="font-bold">{vol.toLocaleString()}</div>
+                          <div className="text-blue-600 font-medium">{pct}%</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {manualWeeklyVolumes.filter((v) => v > 0).length > 0 && manualWeeklyVolumes.filter((v) => v > 0).length < 4 && (
+                  <div className="flex items-center gap-2 text-amber-600 text-xs">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Enter all 4 weeks to enable the weekly distribution calculation.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">
+                {isLoadingBaseline
+                  ? <span className="animate-pulse">Loading last 4 weeks from API...</span>
+                  : weekBuckets.length > 0
+                    ? <span><span className="text-foreground font-medium">{weekBuckets.length} week{weekBuckets.length !== 1 ? "s" : ""}</span> of actual data loaded automatically from the Interaction Arrival data ({baselineStart} &rarr; {baselineEnd}).</span>
+                    : <span className="text-amber-600">No interval data found for this LOB/channel in the last 28 days. Switch to <strong>Manual</strong> to enter weekly volumes, or upload data via the Historical Baseline section below.</span>
+                }
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 
-      {/* ── Baseline Panel ── */}
+      {/* ── Baseline Panel — Interval Pattern Data ── */}
       <Card>
         <CardHeader className="pb-3 cursor-pointer" onClick={() => setPrefs({ isBaselineOpen: !isBaselineOpen })}>
           <CardTitle className="text-base flex items-center justify-between">
             <span className="flex items-center gap-2">
-              <Upload className="h-4 w-4 text-orange-500" />
-              Historical Baseline
+              <Table2 className="h-4 w-4 text-orange-500" />
+              Interval Pattern Baseline
+              <span className="text-xs font-normal text-muted-foreground">(shapes the intraday curve)</span>
             </span>
-            {isBaselineOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              {baselineDataCount > 0 && (
+                <Badge variant="secondary" className="text-xs">
+                  {baselineDataCount} day{baselineDataCount !== 1 ? "s" : ""} · {totalIntervalCount.toLocaleString()} intervals
+                </Badge>
+              )}
+              {isBaselineOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </span>
           </CardTitle>
         </CardHeader>
         {isBaselineOpen && (
-          <CardContent>
-            <div className="flex flex-wrap items-center justify-between gap-4">
+          <CardContent className="space-y-4">
+            {/* Status row */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm text-muted-foreground">
                 {isLoadingBaseline ? (
-                  <span className="animate-pulse">Loading baseline data…</span>
+                  <span className="animate-pulse">Loading baseline data from API...</span>
                 ) : baselineDataCount > 0 ? (
                   <span>
-                    <span className="text-foreground font-medium">{baselineDataCount} days</span> of data loaded
-                    &nbsp;({baselineStart} → {baselineEnd}) ·{" "}
-                    <span className="text-foreground font-medium">{totalIntervalCount.toLocaleString()}</span> intervals
+                    Pattern computed from{" "}
+                    <span className="text-foreground font-medium">{baselineDataCount} days</span>
+                    {" "}({baselineStart} &rarr; {baselineEnd})
                   </span>
                 ) : (
                   <span className="text-amber-600 dark:text-amber-400">
-                    No interval data found for this LOB/channel in the last 28 days.
-                    Upload a CSV or enter data in Interaction Arrival.
+                    No interval data yet. Paste from Excel or upload a CSV to define the intraday shape.
                   </span>
                 )}
               </div>
               <div className="flex gap-2">
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => setGridPasteModalOpen(true)}
+                >
+                  <ClipboardPaste className="h-3.5 w-3.5 mr-1.5" />Paste from Excel
+                </Button>
                 <Button variant="outline" size="sm" onClick={() => setCsvModalOpen(true)}>
                   <Upload className="h-3.5 w-3.5 mr-1.5" />Upload CSV
                 </Button>
+                {baselineDataCount > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => { setRawData({}); setEditableWeights(null); toast.success("Baseline cleared"); }}
+                  >
+                    <X className="h-3.5 w-3.5 mr-1.5" />Clear
+                  </Button>
+                )}
               </div>
             </div>
 
+            {/* Format hint when no data */}
+            {baselineDataCount === 0 && (
+              <div className="rounded-lg border border-dashed p-4 bg-muted/20">
+                <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider">Expected Excel layout</p>
+                <div className="overflow-x-auto">
+                  <table className="text-xs border-collapse font-mono">
+                    <thead>
+                      <tr className="bg-muted/60">
+                        <td className="border px-2 py-1 font-bold">Date</td>
+                        {["05/12","05/13","05/14","05/15","05/16","05/17","05/18"].map((d) => (
+                          <td key={d} className="border px-2 py-1 text-center">{d}</td>
+                        ))}
+                      </tr>
+                      <tr className="bg-muted/40">
+                        <td className="border px-2 py-1 font-bold">Day</td>
+                        {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map((d) => (
+                          <td key={d} className="border px-2 py-1 text-center">{d}</td>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[["12:00 AM","3","0","2","0","1","0","2"],
+                        ["12:30 AM","0","1","0","0","1","0","3"],
+                        ["1:00 AM","0","0","0","0","1","3","2"],
+                        ["…","…","…","…","…","…","…","…"]].map((row, ri) => (
+                        <tr key={ri} className={ri % 2 === 0 ? "bg-white dark:bg-slate-950" : "bg-muted/20"}>
+                          {row.map((cell, ci) => (
+                            <td key={ci} className={`border px-2 py-1 ${ci === 0 ? "font-bold" : "text-center"}`}>{cell}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Copy this range from Excel (including headers) and click <strong>Paste from Excel</strong>. Works with 15-min, 30-min, or 60-min intervals. Real dates or day labels are both supported.
+                </p>
+              </div>
+            )}
+
+            {/* Day coverage badges */}
             {baselineDataCount > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2">
                 {DOW_LABELS.map((label, d) => {
                   const count = medianPattern.sampleCounts[d];
                   return (
@@ -528,11 +909,11 @@ export const IntradayForecast = () => {
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center justify-between">
-            <span>Arrival Pattern Preview</span>
+            <span>Intraday Arrival Pattern</span>
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">Grain:</span>
               <div className="flex rounded-md border overflow-hidden">
-                {([15, 30] as const).map((g) => (
+                {([15, 30, 60] as const).map((g) => (
                   <button
                     key={g}
                     onClick={() => setPrefs({ grain: g })}
@@ -550,13 +931,13 @@ export const IntradayForecast = () => {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {targetMonthlyVolume === 0 ? (
+          {!canGenerateForecast ? (
             <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
-              Select a month with forecast data to see the pattern
-            </div>
-          ) : baselineDataCount === 0 ? (
-            <div className="flex items-center justify-center h-48 text-sm text-amber-600 dark:text-amber-400">
-              Upload baseline data to generate the arrival pattern
+              {targetMonthlyVolume === 0
+                ? "Select a month with forecast data to see the pattern"
+                : baselineDataCount === 0
+                  ? "Upload baseline data or switch to Manual Entry to generate the arrival pattern"
+                  : "Select a target week to generate the forecast"}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={320}>
@@ -573,10 +954,10 @@ export const IntradayForecast = () => {
                 <XAxis
                   dataKey="time"
                   tick={{ fontSize: 10 }}
-                  interval={grain === 15 ? 7 : 3}
+                  interval={grain === 15 ? 7 : grain === 30 ? 3 : 1}
                   tickLine={false}
                 />
-                <YAxis tick={{ fontSize: 10 }} width={40} tickLine={false} />
+                <YAxis tick={{ fontSize: 10 }} width={50} tickLine={false} />
                 <Tooltip
                   contentStyle={{ fontSize: 11 }}
                   formatter={(v: number) => [v.toFixed(1), ""]}
@@ -599,6 +980,100 @@ export const IntradayForecast = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Forecast Results Table ── */}
+      {canGenerateForecast && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Table2 className="h-4 w-4 text-indigo-500" />
+                Interval Forecast &mdash; {targetWeekStart && weeksInMonth.find((w) => w.start === targetWeekStart)?.label}
+              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  Grand Total: <span className="font-bold text-foreground">{Math.round(grandTotal).toLocaleString()}</span>
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowForecastTable((v) => !v)}
+                >
+                  {showForecastTable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </Button>
+              </div>
+            </CardTitle>
+          </CardHeader>
+          {showForecastTable && (
+            <CardContent className="p-0">
+              <div className="overflow-auto border-t" style={{ maxHeight: 500 }}>
+                <Table>
+                  <TableHeader className="sticky top-0 z-10 bg-background">
+                    <TableRow>
+                      <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">Time</TableHead>
+                      {DOW_LABELS.map((label, d) => (
+                        <TableHead
+                          key={label}
+                          className="text-xs text-right min-w-[80px]"
+                          style={{ color: DOW_COLORS[d] }}
+                        >
+                          {label}
+                        </TableHead>
+                      ))}
+                      <TableHead className="text-xs text-right min-w-[80px] font-bold">Total</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {intervals.map((iv, idx) => {
+                      const rowTotal = DOW_LABELS.reduce((sum, _, d) => sum + (displayForecast[d]?.[idx] ?? 0), 0);
+                      const maxVal = Math.max(...DOW_LABELS.map((_, d) => displayForecast[d]?.[idx] ?? 0));
+                      return (
+                        <TableRow key={idx}>
+                          <TableCell className="text-xs text-muted-foreground py-1.5 sticky left-0 bg-background">
+                            {iv.label}
+                          </TableCell>
+                          {DOW_LABELS.map((_, d) => {
+                            const val = displayForecast[d]?.[idx] ?? 0;
+                            const intensity = maxVal > 0 ? val / maxVal : 0;
+                            return (
+                              <TableCell
+                                key={d}
+                                className="text-xs text-right py-1.5 font-mono"
+                                style={{
+                                  backgroundColor: val > 0
+                                    ? `rgba(34, 197, 94, ${intensity * 0.3})`
+                                    : undefined
+                                }}
+                              >
+                                {val > 0 ? Math.round(val).toLocaleString() : "0"}
+                              </TableCell>
+                            );
+                          })}
+                          <TableCell className="text-xs text-right py-1.5 font-mono font-bold">
+                            {Math.round(rowTotal).toLocaleString()}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {/* Totals row */}
+                    <TableRow className="bg-muted/40 border-t-2">
+                      <TableCell className="text-xs font-bold py-2 sticky left-0 bg-muted/40">Total</TableCell>
+                      {DOW_LABELS.map((_, d) => (
+                        <TableCell key={d} className="text-xs text-right py-2 font-mono font-bold">
+                          {Math.round(dailyTotals[d]).toLocaleString()}
+                        </TableCell>
+                      ))}
+                      <TableCell className="text-xs text-right py-2 font-mono font-black text-blue-600">
+                        {Math.round(grandTotal).toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          )}
+        </Card>
+      )}
 
       {/* ── Day Weights Summary ── */}
       {baselineDataCount > 0 && (
@@ -661,7 +1136,7 @@ export const IntradayForecast = () => {
         {isEditingWeights && baselineDataCount > 0 && (
           <CardContent className="p-0">
             <p className="text-xs text-muted-foreground px-6 pb-2">
-              Values are % of daily volume for each interval. Changes are applied immediately to the chart above.
+              Values are % of daily volume for each interval. Changes are applied immediately to the chart and table above.
             </p>
             <div
               ref={editorContainerRef}
@@ -682,7 +1157,6 @@ export const IntradayForecast = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {/* Spacer above visible rows */}
                     {visStart > 0 && (
                       <tr style={{ height: visStart * ROW_HEIGHT }}><td colSpan={8} /></tr>
                     )}
@@ -710,7 +1184,6 @@ export const IntradayForecast = () => {
                         </TableRow>
                       );
                     })}
-                    {/* Spacer below visible rows */}
                     {visEnd < slotCount && (
                       <tr style={{ height: (slotCount - visEnd) * ROW_HEIGHT }}><td colSpan={8} /></tr>
                     )}
@@ -734,7 +1207,7 @@ export const IntradayForecast = () => {
             <Button
               size="sm"
               onClick={() => setSaveModalOpen(true)}
-              disabled={baselineDataCount === 0 || targetMonthlyVolume === 0}
+              disabled={baselineDataCount === 0 || !canGenerateForecast}
             >
               <Save className="h-3.5 w-3.5 mr-1.5" />Save Current
             </Button>
@@ -742,7 +1215,7 @@ export const IntradayForecast = () => {
         </CardHeader>
         <CardContent>
           {isLoadingProfiles ? (
-            <p className="text-sm text-muted-foreground animate-pulse">Loading profiles…</p>
+            <p className="text-sm text-muted-foreground animate-pulse">Loading profiles...</p>
           ) : savedProfiles.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No saved profiles for this LOB + channel yet. Compute a pattern and save it.
@@ -758,9 +1231,9 @@ export const IntradayForecast = () => {
                     <p className="text-sm font-medium">{profile.profile_name}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {profile.baseline_start_date && profile.baseline_end_date
-                        ? `Baseline: ${profile.baseline_start_date} → ${profile.baseline_end_date}`
+                        ? `Baseline: ${profile.baseline_start_date} \u2192 ${profile.baseline_end_date}`
                         : "No baseline metadata"}
-                      {profile.sample_day_count ? ` · ${profile.sample_day_count} days` : ""}
+                      {profile.sample_day_count ? ` \u00b7 ${profile.sample_day_count} days` : ""}
                     </p>
                   </div>
                   <div className="flex gap-2">
@@ -801,14 +1274,15 @@ export const IntradayForecast = () => {
               />
             </div>
             <div className="text-xs text-muted-foreground">
-              Channel: <strong>{selectedChannel}</strong> ·
-              Month: <strong>{monthLabels[safeOffset]}</strong> ·
+              Channel: <strong>{selectedChannel}</strong> &middot;
+              Month: <strong>{monthLabels[safeOffset]}</strong> &middot;
+              Week: <strong>{targetWeekStart}</strong> &middot;
               Baseline: <strong>{baselineDataCount} days</strong>
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setSaveModalOpen(false)}>Cancel</Button>
               <Button onClick={handleSaveProfile} disabled={!profileName.trim() || isSaving}>
-                {isSaving ? "Saving…" : "Save Profile"}
+                {isSaving ? "Saving..." : "Save Profile"}
               </Button>
             </div>
           </div>
@@ -828,13 +1302,13 @@ export const IntradayForecast = () => {
                 date,interval_index,volume,aht<br />
                 2026-03-10,36,42,245<br />
                 2026-03-10,37,38,251<br />
-                …
+                ...
               </code>
               <ul className="mt-2 space-y-0.5 text-xs list-disc list-inside">
-                <li><code>date</code> — YYYY-MM-DD</li>
-                <li><code>interval_index</code> — 0–95 (15-min slot)</li>
-                <li><code>volume</code> — integer contact count</li>
-                <li><code>aht</code> — average handle time in seconds (optional)</li>
+                <li><code>date</code> &mdash; YYYY-MM-DD</li>
+                <li><code>interval_index</code> &mdash; 0-95 (15-min slot)</li>
+                <li><code>volume</code> &mdash; integer contact count</li>
+                <li><code>aht</code> &mdash; average handle time in seconds (optional)</li>
               </ul>
             </div>
             {csvError && (
@@ -854,6 +1328,217 @@ export const IntradayForecast = () => {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+
+      {/* ── Manual Paste Dialog ── */}
+      <Dialog open={pasteModalOpen} onOpenChange={setPasteModalOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Paste Weekly Volume Data</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 pt-2">
+            <div className="text-sm text-muted-foreground">
+              Paste at least 4 weekly total volumes from Excel. Values can be one per line,
+              tab-separated, or comma-separated. The system will compute the distribution pattern
+              from these values.
+            </div>
+            <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground mb-1">Example:</p>
+              <code className="block bg-muted px-2 py-1 rounded">
+                3260<br />
+                3180<br />
+                3420<br />
+                3050
+              </code>
+            </div>
+            <Textarea
+              value={pasteText}
+              onChange={(e) => setPasteText(e.target.value)}
+              onPaste={(e) => {
+                // Allow native paste to fill the textarea
+                setTimeout(() => {
+                  const val = (e.target as HTMLTextAreaElement).value;
+                  setPasteText(val);
+                }, 0);
+              }}
+              placeholder="Paste weekly volumes here (one per line, or tab/comma separated)..."
+              rows={6}
+              autoFocus
+            />
+            {pasteText && (
+              <div className="text-xs text-muted-foreground">
+                Detected {parseExcelPaste(pasteText).length} values:{" "}
+                {parseExcelPaste(pasteText).map((v) => v.toLocaleString()).join(", ")}
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => { setPasteModalOpen(false); setPasteText(""); }}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handlePasteConfirm}
+                disabled={parseExcelPaste(pasteText).length < 4}
+              >
+                <ClipboardPaste className="h-3.5 w-3.5 mr-1.5" />
+                Import {parseExcelPaste(pasteText).length} Values
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* ── Interval Grid Paste Dialog ── */}
+      <Dialog open={gridPasteModalOpen} onOpenChange={(open) => { setGridPasteModalOpen(open); if (!open) { setGridPasteText(""); setGridPastePreview(null); } }}>
+        <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ClipboardPaste className="h-4 w-4 text-orange-500" />
+              Paste Interval Data from Excel
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 pt-2">
+            <div className="text-sm text-muted-foreground">
+              Copy a range from Excel where <strong>rows = time slots</strong> (e.g. 12:00 AM, 12:30 AM…) and <strong>columns = days</strong> (Mon–Sun). Include the date/day header row — real dates like <code>05/12</code> will be used directly.
+            </div>
+
+            {/* Example format */}
+            <div className="rounded-lg border border-dashed bg-muted/20 p-3 overflow-x-auto">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Copy this layout from Excel:</p>
+              <table className="text-xs border-collapse font-mono">
+                <tbody>
+                  {[
+                    ["Date","05/12","05/13","05/14","05/15","05/16","05/17","05/18"],
+                    ["Day","Mon","Tue","Wed","Thu","Fri","Sat","Sun"],
+                    ["12:00 AM","3","0","2","0","1","0","2"],
+                    ["12:30 AM","0","1","0","0","1","0","3"],
+                    ["1:00 AM","0","0","0","0","1","3","2"],
+                    ["…","…","…","…","…","…","…","…"],
+                  ].map((row, ri) => (
+                    <tr key={ri} className={ri < 2 ? "bg-slate-200 dark:bg-slate-700 font-bold" : ri % 2 === 0 ? "bg-white dark:bg-slate-950" : "bg-muted/30"}>
+                      {row.map((cell, ci) => (
+                        <td key={ci} className="border border-slate-300 dark:border-slate-600 px-2 py-0.5 text-center min-w-[52px]">{cell}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Paste area */}
+            <Textarea
+              value={gridPasteText}
+              onChange={(e) => handleGridPasteChange(e.target.value)}
+              onPaste={(e) => {
+                setTimeout(() => {
+                  handleGridPasteChange((e.target as HTMLTextAreaElement).value);
+                }, 0);
+              }}
+              placeholder="Paste your Excel data here (Ctrl+V / Cmd+V)..."
+              rows={10}
+              className="font-mono text-xs"
+              autoFocus
+            />
+
+            {/* Live parse preview */}
+            {gridPasteText && (
+              <div className={`rounded-lg border p-3 text-sm ${gridPastePreview && gridPastePreview.rowCount > 0 ? "border-green-300 bg-green-50 dark:bg-green-950/20" : "border-amber-300 bg-amber-50 dark:bg-amber-950/20"}`}>
+                {gridPastePreview && gridPastePreview.rowCount > 0 ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 font-semibold text-green-700 dark:text-green-400">
+                      <span>✓ Detected {gridPastePreview.rowCount} time slots × {gridPastePreview.colCount} days</span>
+                      <Badge variant="outline" className="text-xs border-green-400 text-green-700 dark:text-green-400">
+                        {gridPastePreview.grain}-min grain
+                      </Badge>
+                      {gridPastePreview.hasRealDates && (
+                        <Badge variant="outline" className="text-xs border-blue-400 text-blue-700 dark:text-blue-400">
+                          Real dates
+                        </Badge>
+                      )}
+                    </div>
+                    {/* Mini heatmap preview — first 8 rows, all days */}
+                    <div className="overflow-x-auto mt-1">
+                      <table className="text-xs border-collapse w-full">
+                        <thead>
+                          <tr className="bg-muted/60">
+                            <th className="border px-2 py-1 text-left font-medium text-muted-foreground w-20">Time</th>
+                            {gridPastePreview.dates.map((d, di) => (
+                              <th key={di} className="border px-1 py-1 text-center font-medium" style={{ color: DOW_COLORS[di % 7] }}>
+                                {d.slice(5)} {/* MM-DD */}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(() => {
+                            // Get first 8 non-empty slots for preview
+                            const previewSlots: Array<{ time: string; vols: number[] }> = [];
+                            const sortedSlots = Object.entries(gridPastePreview.data[gridPastePreview.dates[0]] ?? {})
+                              .sort(([a], [b]) => Number(a) - Number(b))
+                              .slice(0, 8);
+                            const maxVol = Math.max(...gridPastePreview.dates.flatMap((d) =>
+                              Object.values(gridPastePreview.data[d] ?? {}).map((s) => s.volume)
+                            ));
+                            return sortedSlots.map(([slotStr]) => {
+                              const slot = Number(slotStr);
+                              const mins = slot * 15;
+                              const h = Math.floor(mins / 60);
+                              const m = mins % 60;
+                              const period = h < 12 ? "AM" : "PM";
+                              const dh = h === 0 ? 12 : h > 12 ? h - 12 : h;
+                              const timeLabel = `${dh}:${m.toString().padStart(2,"0")} ${period}`;
+                              const vols = gridPastePreview.dates.map((d) => gridPastePreview.data[d]?.[slot]?.volume ?? 0);
+                              return (
+                                <tr key={slot}>
+                                  <td className="border px-2 py-0.5 text-muted-foreground font-mono">{timeLabel}</td>
+                                  {vols.map((v, vi) => {
+                                    const intensity = maxVol > 0 ? v / maxVol : 0;
+                                    return (
+                                      <td
+                                        key={vi}
+                                        className="border px-1 py-0.5 text-center font-mono"
+                                        style={{ backgroundColor: v > 0 ? `rgba(34,197,94,${intensity * 0.5})` : undefined }}
+                                      >
+                                        {Math.round(v)}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            });
+                          })()}
+                        </tbody>
+                      </table>
+                      {Object.keys(gridPastePreview.data[gridPastePreview.dates[0]] ?? {}).length > 8 && (
+                        <p className="text-xs text-muted-foreground mt-1 text-center">
+                          … and {Object.keys(gridPastePreview.data[gridPastePreview.dates[0]] ?? {}).length - 8} more rows
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-amber-700 dark:text-amber-400 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                    <span>Could not detect a valid interval grid. Make sure rows are time slots and columns are days, with a header row.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => { setGridPasteModalOpen(false); setGridPasteText(""); setGridPastePreview(null); }}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleGridPasteConfirm}
+                disabled={!gridPastePreview || gridPastePreview.rowCount === 0}
+              >
+                <ClipboardPaste className="h-3.5 w-3.5 mr-1.5" />
+                Import {gridPastePreview?.rowCount ?? 0} Slots × {gridPastePreview?.colCount ?? 0} Days
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      </div>
+    </PageLayout>
   );
 };
