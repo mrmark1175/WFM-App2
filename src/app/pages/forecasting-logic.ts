@@ -228,6 +228,66 @@ export const calculateARIMA = (
   return forecast;
 };
 
+// ── Shared Assumptions interface (used by Demand Planner + Distribution Engine) ─
+export interface Assumptions {
+  startDate: string;
+  aht: number;
+  emailAht: number;
+  chatAht: number;
+  chatConcurrency: number;
+  shrinkage: number;
+  shrinkageSource: "manual" | "planner_excl" | "planner_incl";
+  voiceSlaTarget: number;
+  voiceSlaAnswerSeconds: number;
+  voiceAsaTargetSeconds: number;
+  emailSlaTarget: number;
+  emailSlaAnswerSeconds: number;
+  emailAsaTargetSeconds: number;
+  chatSlaTarget: number;
+  chatSlaAnswerSeconds: number;
+  chatAsaTargetSeconds: number;
+  occupancy: number;
+  growthRate: number;
+  safetyMargin: number;
+  currency: string;
+  annualSalary: number;
+  onboardingCost: number;
+  fteMonthlyHours: number;
+  operatingHoursPerDay: number;
+  operatingDaysPerWeek: number;
+  useManualVolume: boolean;
+  manualHistoricalData: number[];
+  useShrinkageModeler?: boolean;
+  shrinkageItems?: unknown[];
+}
+
+// ── Shared forecast dispatcher (used by Demand Planner + Distribution Engine) ─
+export const getCalculatedVolumes = (
+  data: number[],
+  forecastMethod: string,
+  assumptions: Assumptions,
+  hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number },
+  arimaParams: { p: number; d: number; q: number },
+  decompParams: { trendStrength: number; seasonalityStrength: number }
+): number[] => {
+  if (data.length === 0) return Array(12).fill(0);
+  const applyGrowth = (volumes: number[]) => {
+    if (assumptions.growthRate === 0) return volumes;
+    const multiplier = 1 + assumptions.growthRate / 100;
+    return volumes.map((v) => Math.round(v * multiplier));
+  };
+  switch (forecastMethod) {
+    case "yoy": return calculateYoY(data.slice(-12), assumptions.growthRate);
+    case "ma": return applyGrowth(calculateMovingAverage(data, 3));
+    case "regression": return applyGrowth(calculateLinearRegression(data));
+    case "holtwinters": return applyGrowth(calculateHoltWinters(data, hwParams.alpha, hwParams.beta, hwParams.gamma, hwParams.seasonLength));
+    case "decomposition": return applyGrowth(calculateDecomposition(data, decompParams.trendStrength, decompParams.seasonalityStrength));
+    case "arima": return applyGrowth(calculateARIMA(data, arimaParams.p, arimaParams.d, arimaParams.q));
+    case "genesys":
+    default: return applyGrowth(data.slice(-12));
+  }
+};
+
 export interface BasicForecastData {
   month: string;
   year: string;

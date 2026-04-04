@@ -247,6 +247,32 @@ async function ensureAppTables() {
         WHERE lob_id IS NULL;
     EXCEPTION WHEN duplicate_table THEN NULL; WHEN duplicate_object THEN NULL; END; $$
   `);
+
+  // ── distribution_profiles — saved intraday arrival patterns per LOB+channel ─
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS distribution_profiles (
+      id              SERIAL PRIMARY KEY,
+      organization_id INTEGER NOT NULL DEFAULT 1,
+      lob_id          INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel         TEXT NOT NULL DEFAULT 'voice',
+      profile_name    TEXT NOT NULL,
+      interval_weights JSONB NOT NULL,
+      day_weights      JSONB NOT NULL,
+      baseline_start_date DATE,
+      baseline_end_date   DATE,
+      sample_day_count    SMALLINT,
+      notes           TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE distribution_profiles
+        ADD CONSTRAINT dist_profiles_org_lob_channel_name_key
+        UNIQUE (organization_id, lob_id, channel, profile_name);
+    EXCEPTION WHEN duplicate_object THEN NULL; WHEN duplicate_table THEN NULL; END; $$
+  `);
 }
 
 // ── LOB helper ────────────────────────────────────────────────────────────────
@@ -1039,6 +1065,93 @@ app.put('/api/demand-planner-active-state', async (req, res) => {
   } catch (err) {
     console.error('Demand Planner Active State Save Error:', err.message);
     res.status(500).json({ error: 'Failed to save active state' });
+  }
+});
+
+// ── Distribution Profiles ─────────────────────────────────────────────────────
+app.get('/api/distribution-profiles', async (req, res) => {
+  try {
+    const user = getCurrentUser(req);
+    const lobId = parseInt(req.query.lob_id) || await getDefaultLobId(user.organization_id);
+    const channel = req.query.channel || 'voice';
+    const result = await pool.query(
+      `SELECT * FROM distribution_profiles
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3
+       ORDER BY updated_at DESC`,
+      [user.organization_id, lobId, channel]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Distribution Profiles GET Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch distribution profiles' });
+  }
+});
+
+app.post('/api/distribution-profiles', async (req, res) => {
+  try {
+    const user = getCurrentUser(req);
+    const { lob_id, channel = 'voice', profile_name, interval_weights, day_weights,
+            baseline_start_date, baseline_end_date, sample_day_count, notes } = req.body;
+    if (!profile_name || !interval_weights || !day_weights) {
+      return res.status(400).json({ error: 'profile_name, interval_weights, and day_weights are required' });
+    }
+    const lobId = lob_id || await getDefaultLobId(user.organization_id);
+    const result = await pool.query(
+      `INSERT INTO distribution_profiles
+         (organization_id, lob_id, channel, profile_name, interval_weights, day_weights,
+          baseline_start_date, baseline_end_date, sample_day_count, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING *`,
+      [user.organization_id, lobId, channel, profile_name,
+       JSON.stringify(interval_weights), JSON.stringify(day_weights),
+       baseline_start_date || null, baseline_end_date || null,
+       sample_day_count || null, notes || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Distribution Profiles POST Error:', err.message);
+    res.status(500).json({ error: 'Failed to save distribution profile' });
+  }
+});
+
+app.put('/api/distribution-profiles/:id', async (req, res) => {
+  try {
+    const user = getCurrentUser(req);
+    const { profile_name, interval_weights, day_weights, notes } = req.body;
+    const result = await pool.query(
+      `UPDATE distribution_profiles
+       SET profile_name = COALESCE($1, profile_name),
+           interval_weights = COALESCE($2, interval_weights),
+           day_weights = COALESCE($3, day_weights),
+           notes = COALESCE($4, notes),
+           updated_at = NOW()
+       WHERE id = $5 AND organization_id = $6
+       RETURNING *`,
+      [profile_name || null,
+       interval_weights ? JSON.stringify(interval_weights) : null,
+       day_weights ? JSON.stringify(day_weights) : null,
+       notes !== undefined ? notes : null,
+       parseInt(req.params.id), user.organization_id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Profile not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Distribution Profiles PUT Error:', err.message);
+    res.status(500).json({ error: 'Failed to update distribution profile' });
+  }
+});
+
+app.delete('/api/distribution-profiles/:id', async (req, res) => {
+  try {
+    const user = getCurrentUser(req);
+    await pool.query(
+      'DELETE FROM distribution_profiles WHERE id = $1 AND organization_id = $2',
+      [parseInt(req.params.id), user.organization_id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Distribution Profiles DELETE Error:', err.message);
+    res.status(500).json({ error: 'Failed to delete distribution profile' });
   }
 });
 

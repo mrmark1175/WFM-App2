@@ -18,7 +18,7 @@ import { Switch } from "../components/ui/switch";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { toast } from "sonner";
-import { calculateYoY, calculateMovingAverage, calculateLinearRegression, calculateHoltWinters, calculateDecomposition, calculateARIMA } from "./forecasting-logic";
+import { calculateYoY, calculateMovingAverage, calculateLinearRegression, calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, getCalculatedVolumes as getCalculatedVolumesBase } from "./forecasting-logic";
 import { buildDemandHelpPrintHtml, demandForecastHelpSections } from "./LongTermForecasting_Demand.help";
 
 type ShrinkageFrequency = "per_day" | "per_week" | "per_month" | "per_year";
@@ -30,37 +30,7 @@ interface ShrinkageItem {
   occurrences: number;
   frequency: ShrinkageFrequency;
 }
-interface Assumptions {
-  startDate: string;
-  aht: number;
-  emailAht: number;
-  chatAht: number;
-  chatConcurrency: number;
-  shrinkage: number;
-  shrinkageSource: "manual" | "planner_excl" | "planner_incl";
-  voiceSlaTarget: number;
-  voiceSlaAnswerSeconds: number;
-  voiceAsaTargetSeconds: number;
-  emailSlaTarget: number;
-  emailSlaAnswerSeconds: number;
-  emailAsaTargetSeconds: number;
-  chatSlaTarget: number;
-  chatSlaAnswerSeconds: number;
-  chatAsaTargetSeconds: number;
-  occupancy: number;
-  growthRate: number;
-  safetyMargin: number;
-  currency: string;
-  annualSalary: number;
-  onboardingCost: number;
-  fteMonthlyHours: number;
-  operatingHoursPerDay: number;
-  operatingDaysPerWeek: number;
-  useManualVolume: boolean;
-  manualHistoricalData: number[];
-  useShrinkageModeler?: boolean;
-  shrinkageItems?: ShrinkageItem[];
-}
+type Assumptions = AssumptionsBase & { shrinkageItems?: ShrinkageItem[] };
 interface DemandForecastData { month: string; year: string; isFuture: boolean; volume: number; workloadHours: number; aht: number; occupancy: number; shrinkage: number; requiredFTE: number; actualVolume: number | null; forecastVolume: number | null; historicalVolume: number; }
 interface PlannerSnapshot {
   assumptions: Assumptions;
@@ -802,26 +772,7 @@ const calculatePooledFTE = (
   }
   return getChannelStaffingMetrics("voice", referenceVolume, assumptions).requiredFTE;
 };
-const getCalculatedVolumes = (data: number[], forecastMethod: string, assumptions: Assumptions, hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number }, arimaParams: { p: number; d: number; q: number }, decompParams: { trendStrength: number; seasonalityStrength: number }) => {
-  if (data.length === 0) return Array(12).fill(0);
-  // YoY already bakes growthRate in. All other methods get a post-multiplier so planners
-  // can overlay a growth/decline assumption on top of any statistical model.
-  const applyGrowth = (volumes: number[]) => {
-    if (assumptions.growthRate === 0) return volumes;
-    const multiplier = 1 + assumptions.growthRate / 100;
-    return volumes.map((v) => Math.round(v * multiplier));
-  };
-  switch (forecastMethod) {
-    case "yoy": return calculateYoY(data.slice(-12), assumptions.growthRate);
-    case "ma": return applyGrowth(calculateMovingAverage(data, 3));
-    case "regression": return applyGrowth(calculateLinearRegression(data));
-    case "holtwinters": return applyGrowth(calculateHoltWinters(data, hwParams.alpha, hwParams.beta, hwParams.gamma, hwParams.seasonLength));
-    case "decomposition": return applyGrowth(calculateDecomposition(data, decompParams.trendStrength, decompParams.seasonalityStrength));
-    case "arima": return applyGrowth(calculateARIMA(data, arimaParams.p, arimaParams.d, arimaParams.q));
-    case "genesys":
-    default: return applyGrowth(data.slice(-12));
-  }
-};
+const getCalculatedVolumes = getCalculatedVolumesBase;
 const buildDemandForecastData = (data: number[], assumptions: Assumptions, forecastMethod: string, hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number }, arimaParams: { p: number; d: number; q: number }, decompParams: { trendStrength: number; seasonalityStrength: number }): DemandForecastData[] => {
   const historyLength = data.length;
   const calculatedVolumes = getCalculatedVolumes(data, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
