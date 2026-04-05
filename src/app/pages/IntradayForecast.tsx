@@ -466,9 +466,11 @@ export const IntradayForecast = () => {
         newData[ds][slot] = { volume: vol, aht: ahtVal };
         rowsImported++;
       }
-      setPrefs({ manualRawData: newData, editableWeights: null });
+      const csvBuckets = computeWeeklyBuckets(newData);
+      const csvWeeklyVols = csvBuckets.map((b) => Math.round(b.volume));
+      setPrefs({ manualRawData: newData, editableWeights: null, manualWeeklyVolumes: csvWeeklyVols });
       setCsvModalOpen(false);
-      toast.success(`Imported ${rowsImported} rows from CSV`);
+      toast.success(`Imported ${rowsImported} rows from CSV · weekly volumes auto-filled (${csvBuckets.length} wk${csvBuckets.length !== 1 ? "s" : ""})`);
     };
     reader.readAsText(file);
     e.target.value = "";
@@ -507,11 +509,14 @@ export const IntradayForecast = () => {
     const merged = { ...(manualRawData ?? {}), ...mapped };
     const totalDays = Object.keys(merged).length;
     const totalWeeks = Math.ceil(totalDays / 7);
-    setPrefs({ manualRawData: merged, editableWeights: null });
+    // Auto-populate weekly volumes from the merged baseline so the two sections stay in sync.
+    const pasteBuckets = computeWeeklyBuckets(merged);
+    const pasteWeeklyVols = pasteBuckets.map((b) => Math.round(b.volume));
+    setPrefs({ manualRawData: merged, editableWeights: null, manualWeeklyVolumes: pasteWeeklyVols });
     toast.success(
       `Added Wk ${baselineStartWeek} ${baselineYear} · ${result.colCount} day${result.colCount !== 1 ? "s" : ""}` +
       (result.weekCount > 1 ? ` (${result.weekCount} wks)` : "") +
-      ` — ${totalDays} days total (${totalWeeks} wk${totalWeeks !== 1 ? "s" : ""})`
+      ` — ${totalDays} days total (${totalWeeks} wk${totalWeeks !== 1 ? "s" : ""}) · weekly volumes auto-filled`
     );
   }, [baselineYear, baselineStartWeek, manualRawData, setPrefs]);
 
@@ -797,6 +802,9 @@ export const IntradayForecast = () => {
                 <p className="text-xs text-muted-foreground">
                   Enter weekly actual volumes (oldest → most recent). Minimum 4 weeks required; more weeks
                   normalize the distribution across multiple cycles for a better forecast.
+                  {Object.keys(manualRawData ?? {}).length > 0 && manualWeeklyVolumes.some((v) => v > 0) && (
+                    <span className="ml-1 text-teal-600 font-medium">Auto-filled from baseline — edit any value to override.</span>
+                  )}
                 </p>
                 {/* Dynamic week inputs — grows as the user fills in data */}
                 {(() => {
