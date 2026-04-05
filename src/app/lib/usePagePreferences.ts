@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { apiUrl } from "@/app/lib/api";
 import { useLOB } from "@/app/lib/lobContext";
 
@@ -71,13 +72,16 @@ export function usePagePreferences<T extends Record<string, unknown>>(
           ? apiUrl(`/api/user-preferences?page_key=${pageKey}&lob_id=${lobId}`)
           : apiUrl(`/api/user-preferences?page_key=${pageKey}`);
         try {
-          await fetch(url, {
+          const res = await fetch(url, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ preferences: next }),
           });
+          if (!res.ok) {
+            toast.error("Your changes could not be saved. Please refresh and try again.");
+          }
         } catch {
-          // fire-and-forget; ignore network errors
+          toast.error("Could not reach the server to save your changes.");
         }
       }, 1500);
     },
