@@ -33,28 +33,31 @@ function minAgentsForSL(A: number, ahtSec: number, asaSec: number, targetSL: num
 export interface IntervalFTEResult {
   rawAgents: number;   // concurrent agents on the phones needed this interval
   fte: number;         // rawAgents grossed up for shrinkage (schedule this many)
-  achievedSL: number;  // % SL at rawAgents (0 for email)
-  erlangs: number;     // traffic intensity A
+  achievedSL: number;  // % SL at rawAgents (0 for email — no queue model)
+  erlangs: number;     // traffic intensity A = effectiveCalls × AHT / intervalSeconds
+  occupancy: number;   // Erlang C output: A / rawAgents × 100 (NOT an input constraint)
 }
 
 /**
  * Compute the minimum FTE required for a single interval slot.
  *
- * Voice/Chat: Erlang C queuing model.
- *   - Chat reduces effective volume by concurrency (agents handle N chats simultaneously).
- *   - Occupancy cap: if Erlang C alone would exceed the occupancy target, staff up to cap it.
+ * Voice/Chat: Pure Erlang C — staffing is driven solely by the SLA target.
+ *   Occupancy is an OUTPUT (A/N), never a staffing constraint here.
+ *   Chat divides effective demand by concurrency (one agent handles N sessions).
  *
- * Email: Async workload model (no queue; just workload ÷ available agent-seconds).
+ * Email: Async workload model (workload ÷ available agent-seconds per interval).
+ *   For email, occupancy IS used as the utilisation target since there is no
+ *   queue — it simply caps how much work each agent-second is filled.
  *
- * @param callsPerInterval  Forecast volume for this interval slot (already grain-aggregated)
+ * @param callsPerInterval  Forecast volume for this interval (grain-aggregated)
  * @param grainMinutes      Interval width: 15, 30, or 60
- * @param ahtSec            Average Handle Time in seconds (for this channel)
- * @param slaTarget         Service level target, 0–100 (e.g. 80 for 80%)
+ * @param ahtSec            Average Handle Time in seconds
+ * @param slaTarget         Service level target, 0–100 (e.g. 80)
  * @param slaSec            Speed-of-answer threshold in seconds (e.g. 20)
- * @param occupancy         Target occupancy, 0–100 (e.g. 85)
- * @param shrinkage         Shrinkage %, 0–100 (e.g. 25); used to gross up to schedulable FTE
+ * @param emailOccupancy    Used ONLY for email workload model (0–100); ignored for voice/chat
+ * @param shrinkage         Shrinkage %, 0–100; grosses rawAgents up to schedulable FTE
  * @param channel           "voice" | "chat" | "email"
- * @param concurrency       Chat: simultaneous sessions per agent (default 1)
+ * @param concurrency       Chat only: simultaneous sessions per agent (default 1)
  */
 export function computeIntervalFTE(
   callsPerInterval: number,
@@ -62,48 +65,50 @@ export function computeIntervalFTE(
   ahtSec: number,
   slaTarget: number,
   slaSec: number,
-  occupancy: number,
+  emailOccupancy: number,
   shrinkage: number,
   channel: "voice" | "chat" | "email",
   concurrency = 1,
 ): IntervalFTEResult {
-  const zero: IntervalFTEResult = { rawAgents: 0, fte: 0, achievedSL: 0, erlangs: 0 };
+  const zero: IntervalFTEResult = { rawAgents: 0, fte: 0, achievedSL: 0, erlangs: 0, occupancy: 0 };
   if (callsPerInterval <= 0 || ahtSec <= 0) return zero;
 
   const intervalSeconds = grainMinutes * 60;
   const shrinkFactor = Math.max(0.01, 1 - shrinkage / 100);
-  const occupancyFactor = Math.max(0.01, occupancy / 100);
 
   if (channel === "email") {
-    // Async workload — no queue, just fill agent time
+    // Async workload — no SLA queue; utilisation target fills agent time
+    const occupancyFactor = Math.max(0.01, emailOccupancy / 100);
     const workloadSec = callsPerInterval * ahtSec;
     const agentCapacitySec = intervalSeconds * occupancyFactor;
     const rawAgents = Math.max(0, Math.ceil(workloadSec / agentCapacitySec));
+    const occ = rawAgents > 0 ? (workloadSec / (rawAgents * intervalSeconds)) * 100 : 0;
     return {
       rawAgents,
       fte: +(rawAgents / shrinkFactor).toFixed(1),
       achievedSL: 0,
       erlangs: +(workloadSec / intervalSeconds).toFixed(3),
+      occupancy: +occ.toFixed(1),
     };
   }
 
-  // Voice / Chat — Erlang C
-  // For chat, concurrency lets one agent serve N simultaneous sessions →
-  // divide volume by concurrency to get the equivalent "voice-like" demand.
+  // Voice / Chat — pure Erlang C
+  // Occupancy is strictly an OUTPUT here; SLA alone drives the agent count.
+  // For chat, one agent handles `concurrency` simultaneous sessions, so the
+  // equivalent single-stream demand is volume / concurrency.
   const effectiveCalls = channel === "chat" ? callsPerInterval / Math.max(1, concurrency) : callsPerInterval;
   const A = (effectiveCalls * ahtSec) / intervalSeconds;
 
-  const nSL  = minAgentsForSL(A, ahtSec, slaSec, slaTarget / 100);
-  const nOcc = A > 0 ? Math.ceil(A / occupancyFactor) : 0;
-  const rawAgents = Math.max(nSL, nOcc);
-
+  const rawAgents = minAgentsForSL(A, ahtSec, slaSec, slaTarget / 100);
   const achievedSL = rawAgents > 0 ? erlangServiceLevel(A, rawAgents, ahtSec, slaSec) * 100 : 0;
+  const occupancy  = rawAgents > 0 ? (A / rawAgents) * 100 : 0;
 
   return {
     rawAgents,
     fte: +(rawAgents / shrinkFactor).toFixed(1),
     achievedSL: +achievedSL.toFixed(1),
     erlangs: +A.toFixed(3),
+    occupancy: +occupancy.toFixed(1),
   };
 }
 

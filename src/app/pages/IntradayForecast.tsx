@@ -350,12 +350,14 @@ export const IntradayForecast = () => {
     if (!a) return null;
     const ch = selectedChannel;
     return {
-      ahtSec:     ch === "voice" ? a.aht       : ch === "chat" ? a.chatAht    : a.emailAht,
-      slaTarget:  ch === "voice" ? a.voiceSlaTarget  : ch === "chat" ? a.chatSlaTarget  : a.emailSlaTarget,
-      slaSec:     ch === "voice" ? a.voiceSlaAnswerSeconds : ch === "chat" ? a.chatSlaAnswerSeconds : a.emailSlaAnswerSeconds,
-      occupancy:  a.occupancy,
-      shrinkage:  a.shrinkage,
-      concurrency: ch === "chat" ? Math.max(1, a.chatConcurrency ?? 1) : 1,
+      ahtSec:       ch === "voice" ? a.aht    : ch === "chat" ? a.chatAht  : a.emailAht,
+      slaTarget:    ch === "voice" ? a.voiceSlaTarget : ch === "chat" ? a.chatSlaTarget : a.emailSlaTarget,
+      slaSec:       ch === "voice" ? a.voiceSlaAnswerSeconds : ch === "chat" ? a.chatSlaAnswerSeconds : a.emailSlaAnswerSeconds,
+      // occupancy is NOT a staffing input for voice/chat Erlang C — it is an output.
+      // We pass it only for the email workload model which needs a utilisation target.
+      emailOccupancy: a.occupancy,
+      shrinkage:    a.shrinkage,
+      concurrency:  ch === "chat" ? Math.max(1, a.chatConcurrency ?? 1) : 1,
     };
   }, [plannerSnapshot, selectedChannel]);
 
@@ -369,7 +371,7 @@ export const IntradayForecast = () => {
           fteParams.ahtSec,
           fteParams.slaTarget,
           fteParams.slaSec,
-          fteParams.occupancy,
+          fteParams.emailOccupancy,
           fteParams.shrinkage,
           selectedChannel,
           fteParams.concurrency,
@@ -1368,10 +1370,7 @@ export const IntradayForecast = () => {
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-6 py-2 border-b text-xs text-muted-foreground bg-muted/20">
                   <span><span className="font-semibold text-foreground">AHT</span> {fteParams.ahtSec}s</span>
                   {selectedChannel !== "email" && (
-                    <>
-                      <span><span className="font-semibold text-foreground">SLA</span> {fteParams.slaTarget}% in {fteParams.slaSec}s</span>
-                      <span><span className="font-semibold text-foreground">Occupancy</span> {fteParams.occupancy}%</span>
-                    </>
+                    <span><span className="font-semibold text-foreground">SLA</span> {fteParams.slaTarget}% in {fteParams.slaSec}s</span>
                   )}
                   <span><span className="font-semibold text-foreground">Shrinkage</span> {fteParams.shrinkage}%</span>
                   {selectedChannel === "chat" && (
@@ -1435,7 +1434,7 @@ export const IntradayForecast = () => {
                                 key={d}
                                 className="text-xs text-right py-1.5 font-mono"
                                 title={result && result.rawAgents > 0
-                                  ? `${result.rawAgents} on-phone agents | Erlang: ${result.erlangs}${selectedChannel !== "email" ? ` | SL: ${result.achievedSL}%` : ""}`
+                                  ? `${result.rawAgents} on-phone agents | A=${result.erlangs} Erl${selectedChannel !== "email" ? ` | SL: ${result.achievedSL}% | Occ: ${result.occupancy}%` : ` | Occ: ${result.occupancy}%`}`
                                   : undefined}
                                 style={{
                                   backgroundColor: fte > 0
