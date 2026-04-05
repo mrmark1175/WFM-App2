@@ -256,16 +256,28 @@ export const IntradayForecast = () => {
     if (targetMonthlyVolume === 0 || !targetWeekStart) return 0;
 
     if (dataSource === "manual") {
-      // Use manual weekly volumes to compute distribution pattern
-      // Require at least 4 entries (index 0-3 filled with non-zero values)
-      const filledVolumes = manualWeeklyVolumes.slice(0, 4);
-      const filledCount = filledVolumes.filter((v) => v > 0).length;
-      if (filledCount < 4) return 0;
-      const total = filledVolumes.reduce((a, b) => a + b, 0);
-      if (total === 0) return 0;
+      // Use all entered weekly volumes. Require at least 4.
+      const allVolumes = manualWeeklyVolumes.filter((v) => v > 0);
+      if (allVolumes.length < 4) return 0;
+
       const weekIdx = weeksInMonth.findIndex((w) => w.start === targetWeekStart);
-      const safeIdx = Math.min(weekIdx >= 0 ? weekIdx : 0, filledVolumes.length - 1);
-      const pct = filledVolumes[safeIdx] / total;
+      if (weekIdx < 0) return 0;
+
+      // Average each week-of-month position across historical cycles so that
+      // more entered weeks genuinely normalize the distribution.
+      // e.g. 8 weeks for a 4-week month: pos 0 → avg(wks[0], wks[4]), pos 1 → avg(wks[1], wks[5]), …
+      const cycleLength = weeksInMonth.length || 4;
+      const cycleAvgs = Array.from({ length: cycleLength }, (_, pos) => {
+        const vals: number[] = [];
+        for (let c = 0; c * cycleLength + pos < allVolumes.length; c++) {
+          vals.push(allVolumes[c * cycleLength + pos]);
+        }
+        return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+      });
+
+      const totalAvg = cycleAvgs.reduce((a, b) => a + b, 0);
+      if (totalAvg === 0) return 0;
+      const pct = cycleAvgs[weekIdx] / totalAvg;
       return targetMonthlyVolume * pct;
     }
 
@@ -469,10 +481,10 @@ export const IntradayForecast = () => {
       toast.error("Please paste at least 4 weekly volume values");
       return;
     }
-    setPrefs({ manualWeeklyVolumes: values.slice(0, 8) }); // max 8 weeks
+    setPrefs({ manualWeeklyVolumes: values.slice(0, 52) }); // up to 52 weeks (1 year)
     setPasteModalOpen(false);
     setPasteText("");
-    toast.success(`Imported ${Math.min(values.length, 8)} weekly volumes`);
+    toast.success(`Imported ${Math.min(values.length, 52)} weekly volumes`);
   };
 
   // ── Inline grid paste ─────────────────────────────────────────────────────
@@ -783,57 +795,65 @@ export const IntradayForecast = () => {
             {dataSource === "manual" ? (
               <div className="space-y-3">
                 <p className="text-xs text-muted-foreground">
-                  Enter the last 4 weeks of actual total weekly volumes. These percentages will be used
-                  to distribute the monthly forecast to the selected target week.
+                  Enter weekly actual volumes (oldest → most recent). Minimum 4 weeks required; more weeks
+                  normalize the distribution across multiple cycles for a better forecast.
                 </p>
-                {/* Inline 4-week inputs */}
-                <div className="flex flex-wrap gap-3 items-end">
-                  {[0, 1, 2, 3].map((i) => (
-                    <div key={i} className="flex flex-col gap-1">
-                      <label className="text-xs font-medium text-muted-foreground">
-                        Week {i + 1} {i === 3 ? "(most recent)" : ""}
-                      </label>
-                      <Input
-                        type="number"
-                        min="0"
-                        placeholder="0"
-                        value={manualWeeklyVolumes[i] ?? ""}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value) || 0;
-                          const next = [...(manualWeeklyVolumes ?? [])];
-                          next[i] = val;
-                          setPrefs({ manualWeeklyVolumes: next });
-                        }}
-                        className="w-28 h-8 text-sm"
-                      />
+                {/* Dynamic week inputs — grows as the user fills in data */}
+                {(() => {
+                  const filledCount = manualWeeklyVolumes.filter((v) => v > 0).length;
+                  const inputCount = Math.min(Math.max(4, filledCount + 1), 52);
+                  return (
+                    <div className="flex flex-wrap gap-3 items-end">
+                      {Array.from({ length: inputCount }, (_, i) => (
+                        <div key={i} className="flex flex-col gap-1">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            Week {i + 1}{i === inputCount - 1 && filledCount >= inputCount - 1 ? " (most recent)" : ""}
+                          </label>
+                          <Input
+                            type="number"
+                            min="0"
+                            placeholder="0"
+                            value={manualWeeklyVolumes[i] ?? ""}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value) || 0;
+                              const next = [...(manualWeeklyVolumes ?? [])];
+                              next[i] = val;
+                              setPrefs({ manualWeeklyVolumes: next });
+                            }}
+                            className="w-28 h-8 text-sm"
+                          />
+                        </div>
+                      ))}
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-muted-foreground invisible">or</label>
+                        <Button variant="outline" size="sm" onClick={() => setPasteModalOpen(true)}>
+                          <ClipboardPaste className="h-3.5 w-3.5 mr-1.5" />Paste from Excel
+                        </Button>
+                      </div>
+                      {manualWeeklyVolumes.some((v) => v > 0) && (
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs font-medium text-muted-foreground invisible">clear</label>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => setPrefs({ manualWeeklyVolumes: [] })}
+                          >
+                            <X className="h-3.5 w-3.5 mr-1.5" />Clear
+                          </Button>
+                        </div>
+                      )}
                     </div>
-                  ))}
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs font-medium text-muted-foreground invisible">or</label>
-                    <Button variant="outline" size="sm" onClick={() => setPasteModalOpen(true)}>
-                      <ClipboardPaste className="h-3.5 w-3.5 mr-1.5" />Paste from Excel
-                    </Button>
-                  </div>
-                  {manualWeeklyVolumes.some((v) => v > 0) && (
-                    <div className="flex flex-col gap-1">
-                      <label className="text-xs font-medium text-muted-foreground invisible">clear</label>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setPrefs({ manualWeeklyVolumes: [] })}
-                      >
-                        <X className="h-3.5 w-3.5 mr-1.5" />Clear
-                      </Button>
-                    </div>
-                  )}
-                </div>
+                  );
+                })()}
 
-                {/* Distribution preview */}
-                {manualWeeklyVolumes.filter((v) => v > 0).length >= 4 && (
+                {/* Distribution preview — all entered weeks */}
+                {manualWeeklyVolumes.filter((v) => v > 0).length >= 1 && (
                   <div className="flex flex-wrap gap-2 mt-1">
-                    {manualWeeklyVolumes.slice(0, 4).map((vol, i) => {
-                      const total = manualWeeklyVolumes.slice(0, 4).reduce((a, b) => a + b, 0);
+                    {manualWeeklyVolumes.map((vol, i) => {
+                      if (!vol || vol <= 0) return null;
+                      const allFilled = manualWeeklyVolumes.filter((v) => v > 0);
+                      const total = allFilled.reduce((a, b) => a + b, 0);
                       const pct = total > 0 ? (vol / total * 100).toFixed(1) : "0.0";
                       return (
                         <div key={i} className="text-center px-3 py-1.5 rounded-md border bg-muted/30 text-xs">
@@ -848,7 +868,7 @@ export const IntradayForecast = () => {
                 {manualWeeklyVolumes.filter((v) => v > 0).length > 0 && manualWeeklyVolumes.filter((v) => v > 0).length < 4 && (
                   <div className="flex items-center gap-2 text-amber-600 text-xs">
                     <AlertTriangle className="h-3.5 w-3.5" />
-                    Enter all 4 weeks to enable the weekly distribution calculation.
+                    Enter at least 4 weeks to enable the weekly distribution calculation.
                   </div>
                 )}
               </div>
