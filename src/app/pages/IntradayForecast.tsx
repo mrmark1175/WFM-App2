@@ -127,6 +127,7 @@ export const IntradayForecast = () => {
   const [showFTETable, setShowFTETable] = useState(true);
   const [showMedianTable, setShowMedianTable] = useState(false);
   const [showDistributionTable, setShowDistributionTable] = useState(false);
+  const [shrinkageHoursPerDay, setShrinkageHoursPerDay] = useState<number>(7.5);
 
   // Virtual scroll for weight editor
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -192,6 +193,19 @@ export const IntradayForecast = () => {
       .catch(() => setSavedProfiles([]))
       .finally(() => setIsLoadingProfiles(false));
   }, [activeLob?.id, selectedChannel]);
+
+  // ── Fetch shrinkage plan hours_per_day (FTE daily hour definition) ──────────
+  useEffect(() => {
+    if (!activeLob) return;
+    fetch(apiUrl(`/api/shrinkage-plan?lob_id=${activeLob.id}`))
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && typeof data.hours_per_day === "number" && data.hours_per_day > 0) {
+          setShrinkageHoursPerDay(data.hours_per_day);
+        }
+      })
+      .catch(() => {}); // fire-and-forget; default stays at 7.5
+  }, [activeLob?.id]);
 
   // ── Forecast computation ───────────────────────────────────────────────────
   const forecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
@@ -1363,6 +1377,7 @@ export const IntradayForecast = () => {
                   {selectedChannel === "chat" && (
                     <span><span className="font-semibold text-foreground">Concurrency</span> {fteParams.concurrency}</span>
                   )}
+                  <span><span className="font-semibold text-foreground">FTE hrs/day</span> {shrinkageHoursPerDay}h</span>
                   <span className="ml-auto text-[10px] italic">
                     {selectedChannel === "email"
                       ? "Email: workload ÷ available agent-seconds per interval"
@@ -1435,18 +1450,31 @@ export const IntradayForecast = () => {
                         </TableRow>
                       );
                     })}
-                    {/* Peak FTE row */}
+                    {/* Required FTE per Day row
+                        Formula: sum(FTE_interval × grainHours) / hoursPerDay
+                        e.g. 60-min grain: sum(all FTE) / 7.5
+                             15-min grain: sum(all FTE) × 0.25 / 7.5            */}
                     <TableRow className="bg-orange-50 dark:bg-orange-950/20 border-t-2">
-                      <TableCell className="text-xs font-bold py-2 sticky left-0 bg-orange-50 dark:bg-orange-950/20 text-orange-700">
-                        Peak FTE
+                      <TableCell
+                        className="text-xs font-bold py-2 sticky left-0 bg-orange-50 dark:bg-orange-950/20 text-orange-700 whitespace-nowrap"
+                        title={`Sum of all interval FTE × ${(grain / 60).toFixed(2)}h ÷ ${shrinkageHoursPerDay}h/day`}
+                      >
+                        Daily FTE
                       </TableCell>
                       {DOW_LABELS.map((_, d) => {
-                        const peakFTE = Math.max(0, ...intervals
-                          .filter((_, idx) => !(hideBlankRows && blankIntervalSet.has(idx)))
-                          .map((_, idx) => fteTable[d]?.[idx]?.fte ?? 0));
+                        const grainHours = grain / 60;
+                        const sumFTE = intervals.reduce((sum, _, idx) => {
+                          if (hideBlankRows && blankIntervalSet.has(idx)) return sum;
+                          return sum + (fteTable[d]?.[idx]?.fte ?? 0);
+                        }, 0);
+                        const dailyFTE = sumFTE * grainHours / shrinkageHoursPerDay;
                         return (
-                          <TableCell key={d} className="text-xs text-right py-2 font-mono font-bold text-orange-700">
-                            {peakFTE > 0 ? peakFTE.toFixed(1) : "—"}
+                          <TableCell
+                            key={d}
+                            className="text-xs text-right py-2 font-mono font-bold text-orange-700"
+                            title={`${sumFTE.toFixed(1)} interval-FTE × ${grainHours}h ÷ ${shrinkageHoursPerDay}h`}
+                          >
+                            {dailyFTE > 0 ? dailyFTE.toFixed(2) : "—"}
                           </TableCell>
                         );
                       })}
