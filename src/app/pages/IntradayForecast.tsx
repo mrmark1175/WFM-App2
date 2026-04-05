@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { BarChart2, Download, Edit2, Eye, EyeOff, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2 } from "lucide-react";
+import { BarChart2, Download, Edit2, Eye, EyeOff, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
@@ -15,7 +15,7 @@ import {
   aggregateTo30Min, aggregateTo60Min, buildChartData, generateMonthLabels, monthFromOffset,
   makeIntervals, getWeeksInMonth, parseExcelPaste, parseIntervalGridPaste,
   getISOWeekNumber, getISOWeeksInYear, getWeekDateStrings, remapGridToWeek,
-  computeIntervalFTE, IntervalFTEResult,
+  computeIntervalFTE, IntervalFTEResult, smoothFTEValues,
 } from "./intraday-distribution-logic";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -66,6 +66,8 @@ interface IntradayPrefs {
   manualWeeklyVolumes: number[];
   editableWeights: number[][] | null;
   hideBlankRows: boolean;
+  smoothFTE: boolean;
+  smoothWindow: number;
 }
 
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3 };
@@ -82,6 +84,8 @@ const DEFAULT_PREFS: IntradayPrefs = {
   manualWeeklyVolumes: [],
   editableWeights: null,
   hideBlankRows: false,
+  smoothFTE: false,
+  smoothWindow: 2,
 };
 const DOW_COLORS = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#9333ea", "#e11d48", "#94a3b8"];
 
@@ -103,7 +107,7 @@ export const IntradayForecast = () => {
   const [prefs, setPrefs] = usePagePreferences<IntradayPrefs>("intraday_forecast", DEFAULT_PREFS);
   const { selectedChannel, targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource,
           baselineYear, baselineStartWeek, manualRawData, manualWeeklyVolumes, editableWeights,
-          hideBlankRows } = prefs;
+          hideBlankRows, smoothFTE, smoothWindow } = prefs;
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [plannerSnapshot, setPlannerSnapshot] = useState<PlannerSnapshot | null>(null);
@@ -379,6 +383,17 @@ export const IntradayForecast = () => {
       )
     );
   }, [displayForecast, grain, fteParams, selectedChannel]);
+
+  // Apply rolling-average smoothing to FTE values, preserving the daily total.
+  const smoothedFteTable = useMemo((): IntervalFTEResult[][] | null => {
+    if (!fteTable) return null;
+    if (!smoothFTE) return fteTable;
+    return fteTable.map((dayData) => {
+      const rawFTEs = dayData.map((r) => r.fte);
+      const smoothed = smoothFTEValues(rawFTEs, smoothWindow);
+      return dayData.map((result, idx) => ({ ...result, fte: smoothed[idx] }));
+    });
+  }, [fteTable, smoothFTE, smoothWindow]);
 
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
   // Sorted date keys for the inline grid columns
@@ -1377,13 +1392,43 @@ export const IntradayForecast = () => {
                     <span><span className="font-semibold text-foreground">Concurrency</span> {fteParams.concurrency}</span>
                   )}
                   <span><span className="font-semibold text-foreground">FTE hrs/day</span> {shrinkageHoursPerDay}h</span>
-                  <span className="ml-auto text-[10px] italic">
+                  <span className="text-[10px] italic">
                     {selectedChannel === "email"
                       ? "Email: workload ÷ available agent-seconds per interval"
                       : selectedChannel === "chat"
                       ? "Chat: Erlang C with concurrency-adjusted demand"
                       : "Voice: Erlang C queuing model"}
                   </span>
+                  {/* Smooth toggle + window slider */}
+                  <div className="ml-auto flex items-center gap-2">
+                    <button
+                      onClick={() => setPrefs({ smoothFTE: !smoothFTE })}
+                      className={`flex items-center gap-1 px-2 py-0.5 rounded border text-xs transition-colors ${
+                        smoothFTE
+                          ? "bg-orange-100 border-orange-300 text-orange-700"
+                          : "border-border text-muted-foreground hover:text-foreground"
+                      }`}
+                      title="Smooth FTE with a rolling average that preserves the daily total"
+                    >
+                      <SlidersHorizontal className="h-3 w-3" />
+                      Smooth
+                    </button>
+                    {smoothFTE && (
+                      <div className="flex items-center gap-1 text-xs">
+                        <span className="text-muted-foreground">Window</span>
+                        <input
+                          type="range"
+                          min={1} max={5} step={1}
+                          value={smoothWindow}
+                          onChange={(e) => setPrefs({ smoothWindow: Number(e.target.value) })}
+                          className="w-20 accent-orange-500"
+                        />
+                        <span className="font-semibold text-foreground w-10">
+                          {smoothWindow * 2 + 1} int
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="flex items-center gap-2 px-6 py-3 border-b text-xs text-amber-700 bg-amber-50">
@@ -1391,7 +1436,7 @@ export const IntradayForecast = () => {
                   No demand assumptions found for this LOB. Open the <strong className="mx-1">Long-Term Forecast → Demand</strong> page, configure a scenario, and return here.
                 </div>
               )}
-              {fteTable && (
+              {smoothedFteTable && (
                 <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 500 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
@@ -1419,7 +1464,7 @@ export const IntradayForecast = () => {
                   <TableBody>
                     {intervals.map((iv, idx) => {
                       if (hideBlankRows && blankIntervalSet.has(idx)) return null;
-                      const rowVals = DOW_LABELS.map((_, d) => fteTable[d]?.[idx]);
+                      const rowVals = DOW_LABELS.map((_, d) => smoothedFteTable[d]?.[idx]);
                       const maxFTE = Math.max(...rowVals.map((r) => r?.fte ?? 0));
                       return (
                         <TableRow key={idx}>
@@ -1464,7 +1509,7 @@ export const IntradayForecast = () => {
                         const grainHours = grain / 60;
                         const sumFTE = intervals.reduce((sum, _, idx) => {
                           if (hideBlankRows && blankIntervalSet.has(idx)) return sum;
-                          return sum + (fteTable[d]?.[idx]?.fte ?? 0);
+                          return sum + (smoothedFteTable[d]?.[idx]?.fte ?? 0);
                         }, 0);
                         const dailyFTE = sumFTE * grainHours / shrinkageHoursPerDay;
                         return (
@@ -1494,7 +1539,7 @@ export const IntradayForecast = () => {
                         intervals.forEach((_, idx) => {
                           if (hideBlankRows && blankIntervalSet.has(idx)) return;
                           const calls = displayForecast[d]?.[idx] ?? 0;
-                          const sl = fteTable[d]?.[idx]?.achievedSL ?? 0;
+                          const sl = smoothedFteTable[d]?.[idx]?.achievedSL ?? 0;
                           weightedSL += sl * calls;
                           totalCalls += calls;
                         });

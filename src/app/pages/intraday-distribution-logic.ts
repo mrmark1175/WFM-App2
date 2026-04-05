@@ -112,6 +112,34 @@ export function computeIntervalFTE(
   };
 }
 
+/**
+ * Smooth FTE values across intervals for one day using a centered rolling average,
+ * then renormalize so the daily total (Σ FTE) is preserved exactly.
+ *
+ * This eliminates zero-gaps caused by sparse call volumes while keeping the
+ * headcount plan valid — the same total FTE-hours are distributed more evenly.
+ *
+ * @param fteValues  FTE per interval for one day (length = number of intervals)
+ * @param halfWindow Intervals to look left AND right of each slot (total window = 2×halfWindow+1)
+ */
+export function smoothFTEValues(fteValues: number[], halfWindow: number): number[] {
+  if (halfWindow <= 0) return [...fteValues];
+  const n = fteValues.length;
+  const smoothed = fteValues.map((_, i) => {
+    const start = Math.max(0, i - halfWindow);
+    const end   = Math.min(n - 1, i + halfWindow);
+    let sum = 0, count = 0;
+    for (let j = start; j <= end; j++) { sum += fteValues[j]; count++; }
+    return count > 0 ? sum / count : 0;
+  });
+  // Renormalize: scale so Σ smoothed === Σ original (preserves daily total exactly)
+  const rawSum      = fteValues.reduce((s, v) => s + v, 0);
+  const smoothedSum = smoothed.reduce((s, v) => s + v, 0);
+  if (smoothedSum <= 0 || rawSum <= 0) return smoothed;
+  const scale = rawSum / smoothedSum;
+  return smoothed.map((v) => +(v * scale).toFixed(2));
+}
+
 export const SLOT_COUNT = 96; // 15-min slots per day (00:00 → 23:45)
 export const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 // Map DOW_LABELS index to JS getDay() value: Mon=1, Tue=2, …, Sun=0
