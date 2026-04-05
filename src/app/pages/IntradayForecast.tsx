@@ -1303,6 +1303,24 @@ export const IntradayForecast = () => {
                 <Badge variant="secondary" className="text-xs">
                   Grand total: {medianGrandTotal.toFixed(1)}
                 </Badge>
+                <div
+                  className="flex rounded-md border overflow-hidden"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {([15, 30, 60] as const).map((g) => (
+                    <button
+                      key={g}
+                      onClick={() => setPrefs({ grain: g })}
+                      className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                        grain === g
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-background text-muted-foreground hover:bg-muted"
+                      }`}
+                    >
+                      {g === 60 ? "1 hr" : `${g} min`}
+                    </button>
+                  ))}
+                </div>
                 {showMedianTable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
               </span>
             </CardTitle>
