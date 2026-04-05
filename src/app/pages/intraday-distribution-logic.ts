@@ -1,6 +1,112 @@
 // ── Intraday Distribution Engine — pure math utilities ────────────────────────
 // No React dependencies. All functions are deterministic and unit-testable.
 
+// ── Erlang C staffing — per-interval FTE calculation ─────────────────────────
+
+/** Erlang C: probability that an arriving call must wait (exact formula). */
+function erlangC(A: number, N: number): number {
+  const nInt = Math.floor(N);
+  if (nInt <= A) return 1; // under-staffed: everyone waits
+  let sumFact = 1, term = 1;
+  for (let i = 1; i < nInt; i++) { term *= A / i; sumFact += term; }
+  const lastTerm = term * A / nInt;
+  const X = lastTerm * nInt / (nInt - A);
+  return Math.min(1, Math.max(0, X / (sumFact + X)));
+}
+
+/** Service level: fraction of calls answered within `asaSec` seconds. */
+function erlangServiceLevel(A: number, N: number, ahtSec: number, asaSec: number): number {
+  if (N <= A) return 0;
+  return 1 - erlangC(A, N) * Math.exp(-((N - A) * asaSec) / ahtSec);
+}
+
+/** Minimum integer agents such that SL ≥ targetSL (0–1 fraction). */
+function minAgentsForSL(A: number, ahtSec: number, asaSec: number, targetSL: number): number {
+  let N = Math.max(1, Math.ceil(A) + 1);
+  for (let i = 0; i < 300; i++) {
+    if (erlangServiceLevel(A, N, ahtSec, asaSec) >= targetSL) return N;
+    N++;
+  }
+  return N;
+}
+
+export interface IntervalFTEResult {
+  rawAgents: number;   // concurrent agents on the phones needed this interval
+  fte: number;         // rawAgents grossed up for shrinkage (schedule this many)
+  achievedSL: number;  // % SL at rawAgents (0 for email)
+  erlangs: number;     // traffic intensity A
+}
+
+/**
+ * Compute the minimum FTE required for a single interval slot.
+ *
+ * Voice/Chat: Erlang C queuing model.
+ *   - Chat reduces effective volume by concurrency (agents handle N chats simultaneously).
+ *   - Occupancy cap: if Erlang C alone would exceed the occupancy target, staff up to cap it.
+ *
+ * Email: Async workload model (no queue; just workload ÷ available agent-seconds).
+ *
+ * @param callsPerInterval  Forecast volume for this interval slot (already grain-aggregated)
+ * @param grainMinutes      Interval width: 15, 30, or 60
+ * @param ahtSec            Average Handle Time in seconds (for this channel)
+ * @param slaTarget         Service level target, 0–100 (e.g. 80 for 80%)
+ * @param slaSec            Speed-of-answer threshold in seconds (e.g. 20)
+ * @param occupancy         Target occupancy, 0–100 (e.g. 85)
+ * @param shrinkage         Shrinkage %, 0–100 (e.g. 25); used to gross up to schedulable FTE
+ * @param channel           "voice" | "chat" | "email"
+ * @param concurrency       Chat: simultaneous sessions per agent (default 1)
+ */
+export function computeIntervalFTE(
+  callsPerInterval: number,
+  grainMinutes: 15 | 30 | 60,
+  ahtSec: number,
+  slaTarget: number,
+  slaSec: number,
+  occupancy: number,
+  shrinkage: number,
+  channel: "voice" | "chat" | "email",
+  concurrency = 1,
+): IntervalFTEResult {
+  const zero: IntervalFTEResult = { rawAgents: 0, fte: 0, achievedSL: 0, erlangs: 0 };
+  if (callsPerInterval <= 0 || ahtSec <= 0) return zero;
+
+  const intervalSeconds = grainMinutes * 60;
+  const shrinkFactor = Math.max(0.01, 1 - shrinkage / 100);
+  const occupancyFactor = Math.max(0.01, occupancy / 100);
+
+  if (channel === "email") {
+    // Async workload — no queue, just fill agent time
+    const workloadSec = callsPerInterval * ahtSec;
+    const agentCapacitySec = intervalSeconds * occupancyFactor;
+    const rawAgents = Math.max(0, Math.ceil(workloadSec / agentCapacitySec));
+    return {
+      rawAgents,
+      fte: +(rawAgents / shrinkFactor).toFixed(1),
+      achievedSL: 0,
+      erlangs: +(workloadSec / intervalSeconds).toFixed(3),
+    };
+  }
+
+  // Voice / Chat — Erlang C
+  // For chat, concurrency lets one agent serve N simultaneous sessions →
+  // divide volume by concurrency to get the equivalent "voice-like" demand.
+  const effectiveCalls = channel === "chat" ? callsPerInterval / Math.max(1, concurrency) : callsPerInterval;
+  const A = (effectiveCalls * ahtSec) / intervalSeconds;
+
+  const nSL  = minAgentsForSL(A, ahtSec, slaSec, slaTarget / 100);
+  const nOcc = A > 0 ? Math.ceil(A / occupancyFactor) : 0;
+  const rawAgents = Math.max(nSL, nOcc);
+
+  const achievedSL = rawAgents > 0 ? erlangServiceLevel(A, rawAgents, ahtSec, slaSec) * 100 : 0;
+
+  return {
+    rawAgents,
+    fte: +(rawAgents / shrinkFactor).toFixed(1),
+    achievedSL: +achievedSL.toFixed(1),
+    erlangs: +A.toFixed(3),
+  };
+}
+
 export const SLOT_COUNT = 96; // 15-min slots per day (00:00 → 23:45)
 export const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 // Map DOW_LABELS index to JS getDay() value: Mon=1, Tue=2, …, Sun=0

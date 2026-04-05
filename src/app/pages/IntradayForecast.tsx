@@ -15,6 +15,7 @@ import {
   aggregateTo30Min, aggregateTo60Min, buildChartData, generateMonthLabels, monthFromOffset,
   makeIntervals, getWeeksInMonth, parseExcelPaste, parseIntervalGridPaste,
   getISOWeekNumber, getISOWeeksInYear, getWeekDateStrings, remapGridToWeek,
+  computeIntervalFTE, IntervalFTEResult,
 } from "./intraday-distribution-logic";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -123,6 +124,7 @@ export const IntradayForecast = () => {
   const [pasteText, setPasteText] = useState("");
   const [gridFocused, setGridFocused] = useState(false);
   const [showForecastTable, setShowForecastTable] = useState(true);
+  const [showFTETable, setShowFTETable] = useState(true);
   const [showMedianTable, setShowMedianTable] = useState(false);
   const [showDistributionTable, setShowDistributionTable] = useState(false);
 
@@ -327,6 +329,40 @@ export const IntradayForecast = () => {
     }
     return set;
   }, [displayForecast]);
+
+  // ── FTE per Interval — pull staffing params from demand assumptions ───────────
+  const fteParams = useMemo(() => {
+    const a = plannerSnapshot?.assumptions;
+    if (!a) return null;
+    const ch = selectedChannel;
+    return {
+      ahtSec:     ch === "voice" ? a.aht       : ch === "chat" ? a.chatAht    : a.emailAht,
+      slaTarget:  ch === "voice" ? a.voiceSlaTarget  : ch === "chat" ? a.chatSlaTarget  : a.emailSlaTarget,
+      slaSec:     ch === "voice" ? a.voiceSlaAnswerSeconds : ch === "chat" ? a.chatSlaAnswerSeconds : a.emailSlaAnswerSeconds,
+      occupancy:  a.occupancy,
+      shrinkage:  a.shrinkage,
+      concurrency: ch === "chat" ? Math.max(1, a.chatConcurrency ?? 1) : 1,
+    };
+  }, [plannerSnapshot, selectedChannel]);
+
+  const fteTable = useMemo((): IntervalFTEResult[][] | null => {
+    if (!fteParams) return null;
+    return displayForecast.map((dayData) =>
+      dayData.map((calls) =>
+        computeIntervalFTE(
+          calls,
+          grain,
+          fteParams.ahtSec,
+          fteParams.slaTarget,
+          fteParams.slaSec,
+          fteParams.occupancy,
+          fteParams.shrinkage,
+          selectedChannel,
+          fteParams.concurrency,
+        )
+      )
+    );
+  }, [displayForecast, grain, fteParams, selectedChannel]);
 
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
   // Sorted date keys for the inline grid columns
@@ -1288,6 +1324,136 @@ export const IntradayForecast = () => {
                     </TableRow>
                   </TableBody>
               </Table>
+            </CardContent>
+          )}
+        </Card>
+      )}
+
+      {/* ── Required FTE per Interval ── */}
+      {canGenerateForecast && (
+        <Card>
+          <CardHeader
+            className="pb-3 cursor-pointer"
+            onClick={() => setShowFTETable((v) => !v)}
+          >
+            <CardTitle className="text-base flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Table2 className="h-4 w-4 text-orange-500" />
+                Required FTE per Interval
+                <span className="text-xs font-normal text-muted-foreground">
+                  (Erlang C — min. agents to meet SLA, grossed up for shrinkage)
+                </span>
+              </span>
+              {showFTETable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </CardTitle>
+          </CardHeader>
+          {showFTETable && (
+            <CardContent className="p-0">
+              {/* Assumptions banner */}
+              {fteParams ? (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-6 py-2 border-b text-xs text-muted-foreground bg-muted/20">
+                  <span><span className="font-semibold text-foreground">AHT</span> {fteParams.ahtSec}s</span>
+                  {selectedChannel !== "email" && (
+                    <>
+                      <span><span className="font-semibold text-foreground">SLA</span> {fteParams.slaTarget}% in {fteParams.slaSec}s</span>
+                      <span><span className="font-semibold text-foreground">Occupancy</span> {fteParams.occupancy}%</span>
+                    </>
+                  )}
+                  <span><span className="font-semibold text-foreground">Shrinkage</span> {fteParams.shrinkage}%</span>
+                  {selectedChannel === "chat" && (
+                    <span><span className="font-semibold text-foreground">Concurrency</span> {fteParams.concurrency}</span>
+                  )}
+                  <span className="ml-auto text-[10px] italic">
+                    {selectedChannel === "email"
+                      ? "Email: workload ÷ available agent-seconds per interval"
+                      : selectedChannel === "chat"
+                      ? "Chat: Erlang C with concurrency-adjusted demand"
+                      : "Voice: Erlang C queuing model"}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-6 py-3 border-b text-xs text-amber-700 bg-amber-50">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  No demand assumptions found for this LOB. Open the <strong className="mx-1">Long-Term Forecast → Demand</strong> page, configure a scenario, and return here.
+                </div>
+              )}
+              {fteTable && (
+                <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 500 }}>
+                  <TableHeader className="sticky top-0 z-10 bg-background">
+                    <TableRow>
+                      <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setPrefs({ hideBlankRows: !hideBlankRows }); }}
+                          className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                          title={hideBlankRows ? "Show all rows" : "Hide blank rows"}
+                        >
+                          {hideBlankRows ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                          Time
+                        </button>
+                      </TableHead>
+                      {DOW_LABELS.map((label, d) => (
+                        <TableHead
+                          key={label}
+                          className="text-xs text-right min-w-[72px]"
+                          style={{ color: DOW_COLORS[d] }}
+                        >
+                          {label}
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {intervals.map((iv, idx) => {
+                      if (hideBlankRows && blankIntervalSet.has(idx)) return null;
+                      const rowVals = DOW_LABELS.map((_, d) => fteTable[d]?.[idx]);
+                      const maxFTE = Math.max(...rowVals.map((r) => r?.fte ?? 0));
+                      return (
+                        <TableRow key={idx}>
+                          <TableCell className="text-xs text-muted-foreground py-1.5 sticky left-0 bg-background font-mono">
+                            {iv.label}
+                          </TableCell>
+                          {rowVals.map((result, d) => {
+                            const fte = result?.fte ?? 0;
+                            const intensity = maxFTE > 0 ? fte / maxFTE : 0;
+                            return (
+                              <TableCell
+                                key={d}
+                                className="text-xs text-right py-1.5 font-mono"
+                                title={result && result.rawAgents > 0
+                                  ? `${result.rawAgents} on-phone agents | Erlang: ${result.erlangs}${selectedChannel !== "email" ? ` | SL: ${result.achievedSL}%` : ""}`
+                                  : undefined}
+                                style={{
+                                  backgroundColor: fte > 0
+                                    ? `rgba(249, 115, 22, ${0.1 + intensity * 0.45})`
+                                    : undefined,
+                                }}
+                              >
+                                {fte > 0 ? fte.toFixed(1) : ""}
+                              </TableCell>
+                            );
+                          })}
+                        </TableRow>
+                      );
+                    })}
+                    {/* Peak FTE row */}
+                    <TableRow className="bg-orange-50 dark:bg-orange-950/20 border-t-2">
+                      <TableCell className="text-xs font-bold py-2 sticky left-0 bg-orange-50 dark:bg-orange-950/20 text-orange-700">
+                        Peak FTE
+                      </TableCell>
+                      {DOW_LABELS.map((_, d) => {
+                        const peakFTE = Math.max(0, ...intervals
+                          .filter((_, idx) => !(hideBlankRows && blankIntervalSet.has(idx)))
+                          .map((_, idx) => fteTable[d]?.[idx]?.fte ?? 0));
+                        return (
+                          <TableCell key={d} className="text-xs text-right py-2 font-mono font-bold text-orange-700">
+                            {peakFTE > 0 ? peakFTE.toFixed(1) : "—"}
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              )}
             </CardContent>
           )}
         </Card>
