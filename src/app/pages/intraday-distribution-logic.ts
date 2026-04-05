@@ -102,15 +102,18 @@ export interface WeekBucket {
 // Get the Monday of the ISO week for a given date
 export function getISOMonday(date: Date): Date {
   const d = new Date(date);
+  d.setHours(12, 0, 0, 0); // noon avoids DST/UTC-rollback issues
   const day = d.getDay(); // 0=Sun, 1=Mon, …, 6=Sat
   const diff = day === 0 ? -6 : 1 - day; // shift to Monday
   d.setDate(d.getDate() + diff);
-  d.setHours(0, 0, 0, 0);
   return d;
 }
 
 function formatDate(d: Date): string {
-  return d.toISOString().split("T")[0];
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function addDays(d: Date, n: number): Date {
@@ -359,6 +362,7 @@ export interface GridPasteResult {
   data: GridData;
   rowCount: number;      // number of time-slot rows parsed
   colCount: number;      // number of day columns parsed
+  weekCount: number;     // number of weeks inferred from colCount
   dates: string[];       // actual date strings used as keys
   hasRealDates: boolean; // true if real calendar dates were detected in header
   grain: 15 | 30 | 60;  // inferred from time labels or row count
@@ -426,9 +430,66 @@ function getSyntheticWeekDates(referenceDate?: Date): string[] {
   return Array.from({ length: 7 }, (_, i) => formatDate(addDays(monday, i)));
 }
 
+// ── ISO week helpers ──────────────────────────────────────────────────────────
+
+// Get the ISO 8601 week number of a date (1-based)
+export function getISOWeekNumber(date: Date): number {
+  const d = new Date(date);
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7)); // shift to Thursday of the week
+  const yearStart = new Date(d.getFullYear(), 0, 1);
+  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+}
+
+// Get total ISO weeks in a year (52 or 53)
+export function getISOWeeksInYear(year: number): number {
+  return getISOWeekNumber(new Date(year, 11, 28, 12, 0, 0));
+}
+
+// Get the Monday of ISO week N in a given year
+export function getISOWeekMonday(year: number, weekNumber: number): Date {
+  // Jan 4 is always in ISO week 1
+  const jan4 = new Date(year, 0, 4, 12, 0, 0);
+  const monday = getISOMonday(jan4);
+  return addDays(monday, (weekNumber - 1) * 7);
+}
+
+// Get all 7 ISO date strings (Mon–Sun) for a given year + ISO week number
+export function getWeekDateStrings(year: number, weekNumber: number): string[] {
+  const monday = getISOWeekMonday(year, weekNumber);
+  return Array.from({ length: 7 }, (_, i) => formatDate(addDays(monday, i)));
+}
+
+// Remap GridData to start at a specific year + ISO week.
+// originalDates: the ordered date keys from the paste result (may span multiple weeks).
+// Returns new GridData with dates shifted to begin at the given week's Monday.
+export function remapGridToWeek(
+  data: GridData,
+  originalDates: string[],
+  year: number,
+  weekNumber: number,
+): GridData {
+  const monday = getISOWeekMonday(year, weekNumber);
+  const newData: GridData = {};
+  originalDates.forEach((oldDate, i) => {
+    const newDate = formatDate(addDays(monday, i));
+    if (data[oldDate]) newData[newDate] = data[oldDate];
+  });
+  return newData;
+}
+
+// Generate synthetic dates for N consecutive days (spanning multiple weeks if needed).
+// The last week is the most recent Mon-Sun week, earlier weeks go back in time.
+function getSyntheticMultiWeekDates(numDays: number): string[] {
+  const numWeeks = Math.ceil(numDays / 7);
+  const monday = getISOMonday(new Date());
+  const startDate = addDays(monday, -(numWeeks - 1) * 7);
+  return Array.from({ length: numDays }, (_, i) => formatDate(addDays(startDate, i)));
+}
+
 export function parseIntervalGridPaste(text: string): GridPasteResult {
   const empty: GridPasteResult = {
-    data: {}, rowCount: 0, colCount: 0, dates: [], hasRealDates: false, grain: 15,
+    data: {}, rowCount: 0, colCount: 0, weekCount: 0, dates: [], hasRealDates: false, grain: 15,
   };
 
   if (!text.trim()) return empty;
@@ -501,8 +562,8 @@ export function parseIntervalGridPaste(text: string): GridPasteResult {
       return d ?? getSyntheticWeekDates()[i % 7];
     });
   } else {
-    // Use synthetic Mon-Sun dates for this week
-    datesToUse = getSyntheticWeekDates().slice(0, maxCols);
+    // Use synthetic dates spanning as many weeks as needed (supports multi-week paste)
+    datesToUse = getSyntheticMultiWeekDates(maxCols);
   }
 
   // Parse slot volumes
@@ -577,6 +638,7 @@ export function parseIntervalGridPaste(text: string): GridPasteResult {
     data: gridData,
     rowCount: parsedRowCount,
     colCount: maxCols,
+    weekCount: Math.ceil(maxCols / 7),
     dates: datesToUse,
     hasRealDates,
     grain: inferredGrain,
