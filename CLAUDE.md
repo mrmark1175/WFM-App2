@@ -186,6 +186,81 @@ Uses a dedicated `shrinkage-plan` endpoint (not `user_preferences`) because its 
 ### LOB Management Page
 Route: `/configuration/lob-management` — accessible from the Configuration page (Lines of Business card with chevron). Shows rich table: LOB name, created date, capacity scenario count, demand scenario count, last activity. Uses `/api/lobs/metadata`.
 
+### Intraday Forecast — Required FTE per Interval (Commit: e18f69c → b8ff803)
+
+#### What we built
+A **Required FTE per Interval** table on the Intraday Forecast page, placed below the Interval Forecast table. It uses Erlang C to compute the minimum scheduled FTE for every interval-day cell, pulls all staffing parameters from the active Demand Assumptions snapshot (`plannerSnapshot.assumptions`), and summarizes each day with a **Daily FTE** row and an **Expected SLA** row.
+
+#### Key WFM rules encoded here
+
+**Erlang C occupancy is an OUTPUT, not an input.**
+- `occupancy = A / N × 100` is computed after the fact.
+- The only driver of `rawAgents` is the SLA target. Never add an occupancy floor to the Erlang staffing loop — that would over-staff every interval.
+- Email is the sole exception: it uses an async workload model (`workload ÷ available agent-seconds`) where an occupancy/utilisation target IS the input because there is no queue.
+
+**Daily FTE formula:**
+```
+Daily FTE = Σ(FTE_interval × grainHours) / hoursPerDay
+```
+- `grainHours` = 0.25 / 0.5 / 1.0 for 15 / 30 / 60-min grain.
+- `hoursPerDay` comes from `shrinkage_plans.hours_per_day` (default 7.5) — the FTE daily hour definition configured on the Shrinkage page.
+- Example: 14 hourly intervals summing to 126.6 FTE-hours ÷ 7.5 h/day = 16.88 Daily FTE.
+
+**Expected SLA:**
+```
+Exp. SLA = Σ(achievedSL[i] × calls[i]) / Σ(calls[i])
+```
+Volume-weighted average of Erlang C achieved SL% across all displayed intervals. Green if ≥ SLA target, red if below. N/A for email (no queue model).
+
+#### Interval gap smoothing (Commit: b8ff803)
+
+**Problem:** Sparse call volume data produces jagged Erlang C outputs — many zero-FTE intervals sandwiched between high-demand ones. Schedulers cannot build shifts around a staffing plan with isolated zeros.
+
+**Solution — Rolling average with renormalization:**
+1. Apply a centered rolling average to the FTE values for each day.
+2. Renormalize so `Σ(smoothed FTE) === Σ(raw FTE)` — the daily total is preserved exactly.
+3. This eliminates zero gaps while keeping the headcount plan valid.
+
+**Implementation:**
+- `smoothFTEValues(fteValues, halfWindow)` in `intraday-distribution-logic.ts` — pure function, unit-testable.
+- `halfWindow` = number of intervals on each side; total window = `2 × halfWindow + 1`.
+- Default half-window: 2 (5-interval window = 75 min at 15-min grain).
+- `smoothedFteTable` useMemo in `IntradayForecast.tsx` wraps `fteTable`, replacing only `.fte`; all other Erlang fields (`rawAgents`, `achievedSL`, `occupancy`, `erlangs`) remain unsmoothed for accurate tooltips.
+
+**UI:** "Smooth" toggle button + range slider (window 1–5) in the assumptions banner. Both settings persist via `usePagePreferences`.
+
+**Rule going forward:** When building any interval-level staffing display that feeds scheduling, always offer smoothing as a toggleable option. The daily total must be preserved after smoothing.
+
+#### Parameter sources
+All Erlang C inputs come from `plannerSnapshot.assumptions` (loaded from `/api/demand-planner-active-state`). Channel-specific mapping:
+
+| Param | Voice | Chat | Email |
+|-------|-------|------|-------|
+| AHT | `a.aht` | `a.chatAht` | `a.emailAht` |
+| SLA target | `a.voiceSlaTarget` | `a.chatSlaTarget` | `a.emailSlaTarget` |
+| SLA seconds | `a.voiceSlaAnswerSeconds` | `a.chatSlaAnswerSeconds` | `a.emailSlaAnswerSeconds` |
+| Shrinkage | `a.shrinkage` | `a.shrinkage` | `a.shrinkage` |
+| Concurrency | — | `a.chatConcurrency` | — |
+| Email occupancy | — | — | `a.occupancy` (utilisation target) |
+
+`hours_per_day` is fetched separately from `/api/shrinkage-plan?lob_id=X`.
+
+---
+
+### Intraday Forecast — Sticky Headers & Single Scroll Container
+
+**Problem:** CSS `position: sticky` on `<thead>` requires that the nearest scroll ancestor be the same element as the one with `overflow-auto` and `maxHeight`. Nested `overflow-x-auto` divs (the default Table wrapper) create an inner scroll container that breaks sticky.
+
+**Fix:** Extended the `Table` component (`src/app/components/ui/table.tsx`) with optional container props (`containerClassName`, `containerStyle`, `containerRef`, `onContainerScroll`) so the Table's own wrapper div becomes the single scroll container. All Intraday Forecast tables use:
+```tsx
+<Table containerClassName="overflow-auto" containerStyle={{ maxHeight: 500 }}>
+```
+The weight editor uses `containerClassName="overflow-x-clip"` to prevent creating a scroll context while preserving the virtual-scroll ref.
+
+**Rule going forward:** Whenever a table needs sticky headers, make the `Table` component's container div the scroll boundary by passing `containerClassName="overflow-auto"` and `containerStyle={{ maxHeight: N }}`. Never wrap a `<Table>` in a separate `overflow-auto` div and expect sticky to work.
+
+---
+
 ## Important Notes
 
 - **`dist/` is committed** — rebuild (`npm run build`) before committing frontend changes.
