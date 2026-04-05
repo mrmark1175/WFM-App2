@@ -1479,6 +1479,41 @@ export const IntradayForecast = () => {
                         );
                       })}
                     </TableRow>
+                    {/* Expected SLA row — volume-weighted average of achieved SL per interval */}
+                    <TableRow className="bg-orange-50 dark:bg-orange-950/20">
+                      <TableCell
+                        className="text-xs font-semibold py-2 sticky left-0 bg-orange-50 dark:bg-orange-950/20 text-orange-700 whitespace-nowrap"
+                        title="Volume-weighted average of achieved SL% across all displayed intervals"
+                      >
+                        Exp. SLA
+                      </TableCell>
+                      {DOW_LABELS.map((_, d) => {
+                        if (selectedChannel === "email") {
+                          return <TableCell key={d} className="text-xs text-right py-2 text-muted-foreground">N/A</TableCell>;
+                        }
+                        let weightedSL = 0, totalCalls = 0;
+                        intervals.forEach((_, idx) => {
+                          if (hideBlankRows && blankIntervalSet.has(idx)) return;
+                          const calls = displayForecast[d]?.[idx] ?? 0;
+                          const sl = fteTable[d]?.[idx]?.achievedSL ?? 0;
+                          weightedSL += sl * calls;
+                          totalCalls += calls;
+                        });
+                        const expSLA = totalCalls > 0 ? weightedSL / totalCalls : 0;
+                        const target = fteParams?.slaTarget ?? 0;
+                        const meetsTarget = expSLA >= target;
+                        return (
+                          <TableCell
+                            key={d}
+                            className="text-xs text-right py-2 font-mono font-semibold"
+                            style={{ color: expSLA > 0 ? (meetsTarget ? "#16a34a" : "#dc2626") : undefined }}
+                            title={`Target: ${target}%`}
+                          >
+                            {expSLA > 0 ? `${expSLA.toFixed(1)}%` : "—"}
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
                   </TableBody>
                 </Table>
               )}
