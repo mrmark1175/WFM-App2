@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { BarChart2, Download, Edit2, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2 } from "lucide-react";
+import { BarChart2, Download, Edit2, Eye, EyeOff, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2 } from "lucide-react";
 import { toast } from "sonner";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
@@ -64,6 +64,7 @@ interface IntradayPrefs {
   manualRawData: GridData;
   manualWeeklyVolumes: number[];
   editableWeights: number[][] | null;
+  hideBlankRows: boolean;
 }
 
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3 };
@@ -79,6 +80,7 @@ const DEFAULT_PREFS: IntradayPrefs = {
   manualRawData: {},
   manualWeeklyVolumes: [],
   editableWeights: null,
+  hideBlankRows: false,
 };
 const DOW_COLORS = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#9333ea", "#e11d48", "#94a3b8"];
 
@@ -99,7 +101,8 @@ export const IntradayForecast = () => {
   const { activeLob } = useLOB();
   const [prefs, setPrefs] = usePagePreferences<IntradayPrefs>("intraday_forecast", DEFAULT_PREFS);
   const { selectedChannel, targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource,
-          baselineYear, baselineStartWeek, manualRawData, manualWeeklyVolumes, editableWeights } = prefs;
+          baselineYear, baselineStartWeek, manualRawData, manualWeeklyVolumes, editableWeights,
+          hideBlankRows } = prefs;
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [plannerSnapshot, setPlannerSnapshot] = useState<PlannerSnapshot | null>(null);
@@ -314,6 +317,16 @@ export const IntradayForecast = () => {
   }, [weekForecast, grain]);
 
   const chartData = useMemo(() => buildChartData(displayForecast, grain), [displayForecast, grain]);
+
+  // Intervals where every day in the forecast is 0 — used to filter blank rows
+  const blankIntervalSet = useMemo(() => {
+    const set = new Set<number>();
+    const len = displayForecast[0]?.length ?? 0;
+    for (let i = 0; i < len; i++) {
+      if (DOW_LABELS.every((_, d) => (displayForecast[d]?.[i] ?? 0) === 0)) set.add(i);
+    }
+    return set;
+  }, [displayForecast]);
 
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
   // Sorted date keys for the inline grid columns
@@ -1034,7 +1047,14 @@ export const IntradayForecast = () => {
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
                       <TableHead className="sticky left-0 bg-background z-20 w-20 text-xs py-1.5">
-                        Time
+                        <button
+                          onClick={() => setPrefs({ hideBlankRows: !hideBlankRows })}
+                          className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                          title={hideBlankRows ? "Show all rows" : "Hide blank rows"}
+                        >
+                          {hideBlankRows ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                          Time
+                        </button>
                       </TableHead>
                       {gridColumns.map(({ headerDate }, ci) => {
                         const jsDay = new Date(headerDate + "T12:00:00").getDay();
@@ -1060,6 +1080,7 @@ export const IntradayForecast = () => {
                       const rowVals = gridColumns.map(({ dataDate }) => rawData[dataDate]?.[idx]?.volume ?? 0);
                       const maxVal = Math.max(...rowVals);
                       const hasAny = rowVals.some((v) => v > 0);
+                      if (hideBlankRows && baselineDataCount > 0 && !hasAny) return null;
                       return (
                         <TableRow
                           key={idx}
@@ -1198,7 +1219,16 @@ export const IntradayForecast = () => {
               <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 500 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
-                      <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">Time</TableHead>
+                      <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">
+                        <button
+                          onClick={() => setPrefs({ hideBlankRows: !hideBlankRows })}
+                          className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                          title={hideBlankRows ? "Show all rows" : "Hide blank rows"}
+                        >
+                          {hideBlankRows ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                          Time
+                        </button>
+                      </TableHead>
                       {DOW_LABELS.map((label, d) => (
                         <TableHead
                           key={label}
@@ -1213,6 +1243,7 @@ export const IntradayForecast = () => {
                   </TableHeader>
                   <TableBody>
                     {intervals.map((iv, idx) => {
+                      if (hideBlankRows && blankIntervalSet.has(idx)) return null;
                       const rowTotal = DOW_LABELS.reduce((sum, _, d) => sum + (displayForecast[d]?.[idx] ?? 0), 0);
                       const maxVal = Math.max(...DOW_LABELS.map((_, d) => displayForecast[d]?.[idx] ?? 0));
                       return (
@@ -1334,7 +1365,16 @@ export const IntradayForecast = () => {
               <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 480 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
-                      <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">Time</TableHead>
+                      <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">
+                        <button
+                          onClick={() => setPrefs({ hideBlankRows: !hideBlankRows })}
+                          className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                          title={hideBlankRows ? "Show all rows" : "Hide blank rows"}
+                        >
+                          {hideBlankRows ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                          Time
+                        </button>
+                      </TableHead>
                       {DOW_LABELS.map((label, d) => (
                         <TableHead
                           key={label}
@@ -1349,6 +1389,7 @@ export const IntradayForecast = () => {
                   </TableHeader>
                   <TableBody>
                     {intervals.map((iv, idx) => {
+                      if (hideBlankRows && blankIntervalSet.has(idx)) return null;
                       const rowVals = DOW_LABELS.map((_, d) => displayMedians[d]?.[idx] ?? 0);
                       const rowSum = rowVals.reduce((s, v) => s + v, 0);
                       const maxVal = Math.max(...rowVals);
@@ -1425,7 +1466,16 @@ export const IntradayForecast = () => {
               <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 480 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
-                      <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">Time</TableHead>
+                      <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">
+                        <button
+                          onClick={() => setPrefs({ hideBlankRows: !hideBlankRows })}
+                          className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                          title={hideBlankRows ? "Show all rows" : "Hide blank rows"}
+                        >
+                          {hideBlankRows ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                          Time
+                        </button>
+                      </TableHead>
                       {DOW_LABELS.map((label, d) => (
                         <TableHead
                           key={label}
@@ -1453,6 +1503,7 @@ export const IntradayForecast = () => {
                       ))}
                     </TableRow>
                     {intervals.map((iv, idx) => {
+                      if (hideBlankRows && blankIntervalSet.has(idx)) return null;
                       const rowVals = DOW_LABELS.map((_, d) => displayIntervalWeights[d]?.[idx] ?? 0);
                       const maxVal = Math.max(...rowVals);
                       return (
