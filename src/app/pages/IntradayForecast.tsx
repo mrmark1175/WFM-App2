@@ -1030,8 +1030,7 @@ export const IntradayForecast = () => {
               </div>
 
               {/* Grid — always rendered */}
-              <div className="overflow-auto" style={{ maxHeight: 400 }}>
-                <Table>
+                <Table containerClassName="overflow-auto" containerStyle={{ maxHeight: 400 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
                       <TableHead className="sticky left-0 bg-background z-20 w-20 text-xs py-1.5">
@@ -1090,7 +1089,6 @@ export const IntradayForecast = () => {
                     })}
                   </TableBody>
                 </Table>
-              </div>
             </div>
           </CardContent>
         )}
@@ -1197,8 +1195,7 @@ export const IntradayForecast = () => {
           </CardHeader>
           {showForecastTable && (
             <CardContent className="p-0">
-              <div className="overflow-auto border-t" style={{ maxHeight: 500 }}>
-                <Table>
+              <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 500 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
                       <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">Time</TableHead>
@@ -1259,8 +1256,7 @@ export const IntradayForecast = () => {
                       </TableCell>
                     </TableRow>
                   </TableBody>
-                </Table>
-              </div>
+              </Table>
             </CardContent>
           )}
         </Card>
@@ -1335,8 +1331,7 @@ export const IntradayForecast = () => {
           </CardHeader>
           {showMedianTable && (
             <CardContent className="p-0">
-              <div className="overflow-auto border-t" style={{ maxHeight: 480 }}>
-                <Table>
+              <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 480 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
                       <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">Time</TableHead>
@@ -1396,8 +1391,7 @@ export const IntradayForecast = () => {
                       </TableCell>
                     </TableRow>
                   </TableBody>
-                </Table>
-              </div>
+              </Table>
             </CardContent>
           )}
         </Card>
@@ -1428,8 +1422,7 @@ export const IntradayForecast = () => {
           </CardHeader>
           {showDistributionTable && (
             <CardContent className="p-0">
-              <div className="overflow-auto border-t" style={{ maxHeight: 480 }}>
-                <Table>
+              <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 480 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
                       <TableHead className="w-24 text-xs sticky left-0 bg-background z-20">Time</TableHead>
@@ -1487,8 +1480,7 @@ export const IntradayForecast = () => {
                       );
                     })}
                   </TableBody>
-                </Table>
-              </div>
+              </Table>
             </CardContent>
           )}
         </Card>
@@ -1538,7 +1530,7 @@ export const IntradayForecast = () => {
               onScroll={handleEditorScroll}
             >
               <div style={{ height: slotCount * ROW_HEIGHT }}>
-                <Table>
+                <Table containerClassName="overflow-x-clip">
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
                       <TableHead className="w-24 text-xs">Time</TableHead>
