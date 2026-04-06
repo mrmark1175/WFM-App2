@@ -200,8 +200,12 @@ export function computeMedianPattern(data: GridData): {
     }
   }
 
+  // Exclude zero observations before computing the median so that missing-data
+  // gaps and closed-day zeros don't suppress the pattern for active intervals.
+  // Genuinely zero-volume slots (all observations are 0) produce an empty array
+  // which median() maps to 0 — the correct output for those intervals.
   const medians: number[][] = buckets.map((dowBuckets) =>
-    dowBuckets.map((vals) => median(vals))
+    dowBuckets.map((vals) => median(vals.filter((v) => v > 0)))
   );
   const sampleCounts: number[] = buckets.map((dowBuckets) => dowBuckets[0]?.length ?? 0);
 
