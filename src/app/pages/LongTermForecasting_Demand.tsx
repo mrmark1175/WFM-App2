@@ -18,7 +18,7 @@ import { Switch } from "../components/ui/switch";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { toast } from "sonner";
-import { calculateYoY, calculateMovingAverage, calculateLinearRegression, calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, getCalculatedVolumes as getCalculatedVolumesBase } from "./forecasting-logic";
+import { calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, getCalculatedVolumes as getCalculatedVolumesBase } from "./forecasting-logic";
 import { buildDemandHelpPrintHtml, demandForecastHelpSections } from "./LongTermForecasting_Demand.help";
 
 type ShrinkageFrequency = "per_day" | "per_week" | "per_month" | "per_year";
@@ -183,7 +183,7 @@ const computeShrinkageFromItems = (items: ShrinkageItem[], operatingHoursPerDay:
   }, 0);
   return Math.min(99, Number(((totalLostMinutes / minutesPerYear) * 100).toFixed(1)));
 };
-const FORECAST_METHODS = [{ key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" }, { key: "arima", label: "ARIMA (simplified version)" }, { key: "decomposition", label: "Decomposition (Trend + Seasonality)" }, { key: "ma", label: "Moving Average (baseline fallback)" }, { key: "genesys", label: "Direct Genesys Sync" }, { key: "yoy", label: "Year-over-Year Growth" }, { key: "regression", label: "Linear Regression" }];
+const FORECAST_METHODS = [{ key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" }, { key: "arima", label: "ARIMA (Autoregressive Integrated Moving Average)" }, { key: "decomposition", label: "Decomposition (Trend + Seasonality)" }];
 // ── LOB Settings → Assumptions helpers ───────────────────────────────────────
 function deriveOperatingDaysPerWeek(schedule?: Record<string, { enabled: boolean }>): number {
   if (!schedule) return 5;
@@ -2109,7 +2109,113 @@ export default function LongTermForecastingDemand() {
                 </CardHeader>
                 {isAssumptionsOpen && <CardContent className="pt-6 space-y-6 bg-card">
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="startDate" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Planning Start Date</Label><Calendar className="size-3.5 text-primary" /></div><Input id="startDate" type="date" value={assumptions.startDate} onChange={(event) => setAssumptions({ ...assumptions, startDate: event.target.value })} className="h-10 font-bold" /></div>
-                  <div className="space-y-3 border-t border-border pt-4"><Select value={forecastMethod} onValueChange={setForecastMethod}><SelectTrigger className="h-10 font-bold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger><SelectContent>{FORECAST_METHODS.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}</SelectContent></Select></div>
+                  <div className="space-y-3 border-t border-border pt-4">
+                    <Select value={forecastMethod} onValueChange={setForecastMethod}>
+                      <SelectTrigger className="h-10 font-bold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger>
+                      <SelectContent>{FORECAST_METHODS.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                    {/* ── Model parameters — shown immediately below the selector ── */}
+                    {forecastMethod === "holtwinters" && (
+                      <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">HW Smoothing Parameters</Label>
+                          <Badge className="bg-amber-500 font-black tracking-tight">Triple Exp</Badge>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1">
+                              <Label className="text-xs font-bold">Alpha (α) — Level</Label>
+                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the model adapts to new observed levels. Higher α = more weight on recent data, faster response to sudden shifts. Lower α = smoother, more stable level estimate. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
+                            </div>
+                            <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.alpha} onChange={(e) => setHwParams({ ...hwParams, alpha: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1">
+                              <Label className="text-xs font-bold">Beta (β) — Trend</Label>
+                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the trend component adapts to new slope observations. Lower β = stable, persistent trend. Higher β = trend reacts faster to recent direction changes. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
+                            </div>
+                            <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.beta} onChange={(e) => setHwParams({ ...hwParams, beta: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1">
+                              <Label className="text-xs font-bold">Gamma (γ) — Seasonality</Label>
+                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the seasonal indices update each cycle. Higher γ = seasonal pattern adapts quickly to the most recent year. Lower γ = stable, averaged seasonal shape across all history. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
+                            </div>
+                            <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.gamma} onChange={(e) => setHwParams({ ...hwParams, gamma: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1">
+                              <Label className="text-xs font-bold">Season Length</Label>
+                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Number of periods per seasonal cycle. Set to 12 for monthly data with annual seasonality. Requires at least 2 full seasons of history to fit properly.</p></TooltipContent></UITooltip>
+                            </div>
+                            <Input type="number" min="2" max="24" value={hwParams.seasonLength} onChange={(e) => setHwParams({ ...hwParams, seasonLength: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {forecastMethod === "arima" && (
+                      <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">ARIMA Parameters</Label>
+                          <Badge className="bg-emerald-500 font-black tracking-tight">p · d · q</Badge>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1">
+                              <Label className="text-xs font-bold">p — AR Order</Label>
+                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Autoregressive order.</span> How many past periods the model uses to predict the next value. AR coefficients are estimated via OLS, so the model learns the actual momentum pattern from your data. Higher p captures longer-range persistence but needs more history. Typical range: 1–3.</p></TooltipContent></UITooltip>
+                            </div>
+                            <Input type="number" min="0" max="6" value={arimaParams.p} onChange={(e) => setArimaParams({ ...arimaParams, p: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1">
+                              <Label className="text-xs font-bold">d — Differencing</Label>
+                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Integration order (trend removal).</span> 0 = model raw volumes (already stationary). 1 = model month-over-month changes — removes a linear trend and is correct for most call-volume series. 2 = model changes-in-changes — removes a quadratic (accelerating) trend. Start with d=1.</p></TooltipContent></UITooltip>
+                            </div>
+                            <Input type="number" min="0" max="2" value={arimaParams.d} onChange={(e) => setArimaParams({ ...arimaParams, d: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1">
+                              <Label className="text-xs font-bold">q — MA Order</Label>
+                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Moving average order.</span> Uses the last q in-sample forecast errors to correct each next prediction, dampening the effect of random shocks. q=1 corrects for the most recent shock; q=2 smooths over two periods. Higher q reduces responsiveness to outliers. Typical range: 1–2.</p></TooltipContent></UITooltip>
+                            </div>
+                            <Input type="number" min="0" max="6" value={arimaParams.q} onChange={(e) => setArimaParams({ ...arimaParams, q: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">AR coefficients are OLS-estimated from your historical data. MA term corrects for recent forecast error. Recommended starting point: p=1, d=1, q=1.</p>
+                      </div>
+                    )}
+                    {forecastMethod === "decomposition" && (
+                      <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Decomposition Parameters</Label>
+                          <Badge className="bg-blue-500 font-black tracking-tight">Trend · Season</Badge>
+                        </div>
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-1">
+                                <Label className="text-xs font-bold">Trend Strength</Label>
+                                <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Scales the extracted trend slope.</span> 1.0 = project the observed historical trend as-is. &lt;1.0 = dampen the trend (conservative / mean-reverting). &gt;1.0 = amplify the trend (optimistic growth assumption). Does not affect the seasonal pattern.</p></TooltipContent></UITooltip>
+                              </div>
+                              <span className="text-xs font-bold">{decompParams.trendStrength}×</span>
+                            </div>
+                            <Input type="number" step="0.1" min="0" max="3" value={decompParams.trendStrength} onChange={(e) => setDecompParams({ ...decompParams, trendStrength: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-1">
+                                <Label className="text-xs font-bold">Seasonality Strength</Label>
+                                <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Scales the seasonal indices around 1.0.</span> 1.0 = apply the observed seasonal pattern in full. &lt;1.0 = flatten seasonality (peaks and troughs are reduced toward the trend line). &gt;1.0 = amplify seasonal swings. Seasonal indices are normalized to average 1.0 before this multiplier is applied.</p></TooltipContent></UITooltip>
+                              </div>
+                              <span className="text-xs font-bold">{decompParams.seasonalityStrength}×</span>
+                            </div>
+                            <Input type="number" step="0.1" min="0" max="3" value={decompParams.seasonalityStrength} onChange={(e) => setDecompParams({ ...decompParams, seasonalityStrength: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">AHT Assumption</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-primary">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Email AHT</Label><span className="text-xs font-black bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded text-emerald-700 dark:text-emerald-300">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Chat AHT</Label><span className="text-xs font-black bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded text-amber-700 dark:text-amber-300">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
@@ -2244,14 +2350,10 @@ export default function LongTermForecastingDemand() {
                       </Badge>
                     </div>
                     <Input id="growthRate" type="number" value={assumptions.growthRate} onChange={(event) => setAssumptions({ ...assumptions, growthRate: validateInput(Number(event.target.value), -100, 500) })} className={`h-10 font-bold ${assumptions.growthRate >= 0 ? "border-emerald-200" : "border-rose-200"}`} />
-                    {forecastMethod !== "yoy" && assumptions.growthRate !== 0 && (
+                    {assumptions.growthRate !== 0 && (
                       <p className="text-[11px] text-muted-foreground">Applied as a ×{(1 + assumptions.growthRate / 100).toFixed(3)} multiplier after {FORECAST_METHODS.find((m) => m.key === forecastMethod)?.label ?? forecastMethod}.</p>
                     )}
                   </div>
-                  {forecastMethod === "holtwinters" && <div className="space-y-4 border-t border-border pt-6 mt-6"><div className="flex items-center justify-between"><Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">HW Smoothing</Label><Badge className="bg-amber-500 font-black tracking-tight">Triple Exp</Badge></div><div className="grid grid-cols-2 gap-4"><div className="space-y-1"><Label className="text-xs font-bold">Alpha (Level)</Label><Input type="number" step="0.1" min="0" max="1" value={hwParams.alpha} onChange={(event) => setHwParams({ ...hwParams, alpha: Number(event.target.value) })} className="h-8 text-xs" /></div><div className="space-y-1"><Label className="text-xs font-bold">Beta (Trend)</Label><Input type="number" step="0.1" min="0" max="1" value={hwParams.beta} onChange={(event) => setHwParams({ ...hwParams, beta: Number(event.target.value) })} className="h-8 text-xs" /></div><div className="space-y-1"><Label className="text-xs font-bold">Gamma (Season)</Label><Input type="number" step="0.1" min="0" max="1" value={hwParams.gamma} onChange={(event) => setHwParams({ ...hwParams, gamma: Number(event.target.value) })} className="h-8 text-xs" /></div><div className="space-y-1"><Label className="text-xs font-bold">Season (Len)</Label><Input type="number" min="1" max="24" value={hwParams.seasonLength} onChange={(event) => setHwParams({ ...hwParams, seasonLength: Number(event.target.value) })} className="h-8 text-xs" /></div></div></div>}
-                  {forecastMethod === "arima" && <div className="space-y-4 border-t border-border pt-6 mt-6"><div className="flex items-center justify-between"><Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">ARIMA (Simplified)</Label><Badge className="bg-emerald-500 font-black tracking-tight">p d q</Badge></div><div className="grid grid-cols-3 gap-2"><div className="space-y-1"><Label className="text-xs font-bold">p (AR)</Label><Input type="number" min="0" max="12" value={arimaParams.p} onChange={(event) => setArimaParams({ ...arimaParams, p: Number(event.target.value) })} className="h-8 text-xs" /></div><div className="space-y-1"><Label className="text-xs font-bold">d (Diff)</Label><Input type="number" min="0" max="2" value={arimaParams.d} onChange={(event) => setArimaParams({ ...arimaParams, d: Number(event.target.value) })} className="h-8 text-xs" /></div><div className="space-y-1"><Label className="text-xs font-bold">q (MA)</Label><Input type="number" min="1" max="10" value={arimaParams.q} onChange={(event) => setArimaParams({ ...arimaParams, q: Number(event.target.value) })} className="h-8 text-xs" /></div></div></div>}
-                  {forecastMethod === "decomposition" && <div className="space-y-4 border-t border-border pt-6 mt-6"><div className="flex items-center justify-between"><Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">Decomposition</Label><Badge className="bg-blue-500 font-black tracking-tight">Strengths</Badge></div><div className="space-y-3"><div className="space-y-1"><div className="flex justify-between"><Label className="text-xs font-bold">Trend Strength</Label><span className="text-xs font-bold">{decompParams.trendStrength}x</span></div><Input type="number" step="0.1" min="0" max="3" value={decompParams.trendStrength} onChange={(event) => setDecompParams({ ...decompParams, trendStrength: Number(event.target.value) })} className="h-8 text-xs" /></div><div className="space-y-1"><div className="flex justify-between"><Label className="text-xs font-bold">Seasonality Strength</Label><span className="text-xs font-bold">{decompParams.seasonalityStrength}x</span></div><Input type="number" step="0.1" min="0" max="3" value={decompParams.seasonalityStrength} onChange={(event) => setDecompParams({ ...decompParams, seasonalityStrength: Number(event.target.value) })} className="h-8 text-xs" /></div></div></div>}
-                  {forecastMethod === "ma" && <div className="space-y-3 border-t border-border pt-6 mt-6"><div className="flex items-center justify-between"><Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">MA Periods</Label><Badge className="bg-indigo-500 font-black tracking-tight">Last 3 Months</Badge></div><p className="text-xs text-muted-foreground italic">Moving average uses the most recent historical periods to project a baseline.</p></div>}
                   <Button className="w-full h-11 font-black uppercase tracking-widest text-xs mt-4 shadow-lg shadow-primary/20" onClick={() => toast.info("Demand forecast recalculated", { duration: 1500 })}><LayoutDashboard className="size-4 mr-2" />Recalculate</Button>
                 </CardContent>}
               </Card>

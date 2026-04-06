@@ -58,16 +58,8 @@ export const calculateHoltWinters = (
   seasonLength: number = 12
 ): number[] => {
   if (data.length < seasonLength * 2) {
-    // Fallback to YoY if not enough data for real HW
-    const last12 = data.slice(-12);
-    const results = calculateYoY(last12, 3);
-    
-    if (results.length === 12) return results;
-    
-    // If input was even shorter than 12, pad it to 12
-    const baseValue = results[results.length - 1] || (data[data.length - 1] * 1.03) || 0;
-    const padding = Array(12 - results.length).fill(Math.round(baseValue));
-    return [...results, ...padding];
+    // Not enough data for full HW — fall back to linear regression on available data
+    return calculateLinearRegression(data);
   }
 
   const forecastLength = 12;
@@ -147,14 +139,17 @@ export const calculateDecomposition = (
     }
   }
 
+  // Average the raw seasonal ratios per month
   for (let i = 0; i < 12; i++) {
-    if (counts[i] > 0) {
-      let baseIndex = seasonalIndices[i] / counts[i];
-      seasonalIndices[i] = 1.0 + (baseIndex - 1.0) * seasonalityStrength;
-    } else {
-      // Fallback for missing data
-      seasonalIndices[i] = 1.0;
-    }
+    seasonalIndices[i] = counts[i] > 0 ? seasonalIndices[i] / counts[i] : 1.0;
+  }
+  // Normalize so indices average to 1.0 — classical decomposition requirement.
+  // Without this, a systematic bias in the raw ratios would inflate or deflate every
+  // forecast month equally, which is not a seasonal effect.
+  const meanSI = seasonalIndices.reduce((a, b) => a + b, 0) / 12;
+  for (let i = 0; i < 12; i++) {
+    const normalized = meanSI > 0 ? seasonalIndices[i] / meanSI : 1.0;
+    seasonalIndices[i] = 1.0 + (normalized - 1.0) * seasonalityStrength;
   }
 
   // 3. Project Trend using simple linear regression on the extracted trend points
@@ -184,48 +179,122 @@ export const calculateDecomposition = (
 };
 
 /**
- * ARIMA (SIMPLIFIED): Basic differencing + autoregression.
- * Focuses on momentum and persistence without complex noise modeling.
+ * Gaussian elimination with partial pivoting — solves A·x = b.
+ * Used internally by calculateARIMA for OLS AR-coefficient estimation.
+ */
+function solveLinearSystem(A: number[][], b: number[]): number[] {
+  const n = A.length;
+  const aug = A.map((row, i) => [...row, b[i]]);
+  for (let col = 0; col < n; col++) {
+    let maxRow = col;
+    for (let row = col + 1; row < n; row++) {
+      if (Math.abs(aug[row][col]) > Math.abs(aug[maxRow][col])) maxRow = row;
+    }
+    [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
+    if (Math.abs(aug[col][col]) < 1e-12) continue;
+    for (let row = 0; row < n; row++) {
+      if (row === col) continue;
+      const factor = aug[row][col] / aug[col][col];
+      for (let c = col; c <= n; c++) aug[row][c] -= factor * aug[col][c];
+    }
+  }
+  return aug.map((row, i) => (Math.abs(row[i]) < 1e-12 ? 0 : row[n] / row[i]));
+}
+
+/**
+ * ARIMA(p, d, q) — proper implementation.
+ *
+ * p (AR order):  AR coefficients are estimated via OLS on the differenced series.
+ *                Captures how strongly past values predict the next value.
+ * d (Differencing): Applied d times before fitting to remove trend non-stationarity.
+ *                   d=1 models month-over-month changes; d=2 models changes-in-changes.
+ * q (MA order):  Moving average of the last q in-sample residuals is added to each
+ *                one-step-ahead forecast, dampening the impact of recent shocks.
+ *
+ * Forecasts are produced one step at a time and then un-differenced back to the
+ * original scale by cumulative summation from the last observed values.
  */
 export const calculateARIMA = (
   historicalData: number[],
-  p: number = 1, // Autoregressive terms (momentum)
-  d: number = 1, // Differencing (1 = look at growth, 2 = look at acceleration)
-  q: number = 1  // MA window (smoothing)
+  p: number = 1,
+  d: number = 1,
+  q: number = 1
 ): number[] => {
-  if (historicalData.length < 2) return Array(12).fill(0);
-  
-  // Apply differencing (d)
+  if (historicalData.length < 2) return Array(12).fill(historicalData[0] ?? 0);
+
+  // Step 1: d-order differencing; save each level for undifferencing
+  const diffStack: number[][] = [historicalData];
   let diffSeries = [...historicalData];
   for (let i = 0; i < d; i++) {
-    const nextDiff = [];
-    for (let j = 1; j < diffSeries.length; j++) {
-      nextDiff.push(diffSeries[j] - diffSeries[j-1]);
+    const next: number[] = [];
+    for (let j = 1; j < diffSeries.length; j++) next.push(diffSeries[j] - diffSeries[j - 1]);
+    diffSeries = next;
+    diffStack.push([...diffSeries]);
+  }
+
+  // Step 2: Fit AR(p) coefficients via OLS on the differenced series
+  // Model: y[t] = c + φ₁·y[t-1] + ... + φₚ·y[t-p]
+  const clampedP = Math.min(p, Math.max(0, diffSeries.length - 2));
+  let arCoeffs: number[] = Array(clampedP + 1).fill(0); // [intercept, φ₁ … φₚ]
+
+  if (clampedP > 0 && diffSeries.length > clampedP + 1) {
+    const X: number[][] = [];
+    const Y: number[] = [];
+    for (let t = clampedP; t < diffSeries.length; t++) {
+      X.push([1, ...Array.from({ length: clampedP }, (_, lag) => diffSeries[t - lag - 1])]);
+      Y.push(diffSeries[t]);
     }
-    diffSeries = nextDiff;
+    const cols = clampedP + 1;
+    const XtX = Array.from({ length: cols }, () => Array(cols).fill(0));
+    const XtY = Array(cols).fill(0);
+    for (let i = 0; i < X.length; i++) {
+      for (let r = 0; r < cols; r++) {
+        XtY[r] += X[i][r] * Y[i];
+        for (let c = 0; c < cols; c++) XtX[r][c] += X[i][r] * X[i][c];
+      }
+    }
+    arCoeffs = solveLinearSystem(XtX, XtY);
+  } else {
+    // Not enough data for OLS — intercept = mean of differenced series
+    arCoeffs = [diffSeries.length > 0 ? diffSeries.reduce((a, b) => a + b, 0) / diffSeries.length : 0];
   }
 
-  // Basic Autoregression (p): Predict next difference based on average of last 'p' differences
-  const lastPDiffs = diffSeries.slice(-p);
-  const avgDiff = lastPDiffs.reduce((a, b) => a + b, 0) / lastPDiffs.length;
-
-  // Moving Average Smoothing (q): Scale the difference projection
-  const qFactor = Math.min(1, 1 / q);
-
-  const forecast: number[] = [];
-  let currentLastValue = historicalData[historicalData.length - 1];
-  let currentLastDiff = avgDiff;
-
-  for (let i = 0; i < 12; i++) {
-    // Project the difference forward, applying q-based smoothing to the growth
-    const nextValue = currentLastValue + (currentLastDiff * qFactor);
-    forecast.push(Math.max(0, Math.round(nextValue)));
-    
-    // Update for next iteration (simplified persistence)
-    currentLastValue = nextValue;
+  // Step 3: Compute in-sample residuals for the MA(q) component
+  const residuals: number[] = Array(clampedP).fill(0);
+  for (let t = clampedP; t < diffSeries.length; t++) {
+    let fitted = arCoeffs[0] ?? 0;
+    for (let lag = 0; lag < clampedP; lag++) fitted += (arCoeffs[lag + 1] ?? 0) * diffSeries[t - lag - 1];
+    residuals.push(diffSeries[t] - fitted);
   }
 
-  return forecast;
+  // Step 4: Forecast 12 steps ahead on the differenced scale
+  const extDiff = [...diffSeries];
+  const extResid = [...residuals];
+  const forecastDiff: number[] = [];
+
+  for (let h = 0; h < 12; h++) {
+    let yHat = arCoeffs[0] ?? 0;
+    for (let lag = 0; lag < clampedP; lag++) yHat += (arCoeffs[lag + 1] ?? 0) * extDiff[extDiff.length - lag - 1];
+    // MA(q): average of last q residuals corrects for recent forecast bias
+    const clampedQ = Math.min(q, extResid.length);
+    if (clampedQ > 0) {
+      const maResids = extResid.slice(-clampedQ);
+      yHat += maResids.reduce((a, b) => a + b, 0) / maResids.length;
+    }
+    forecastDiff.push(yHat);
+    extDiff.push(yHat);
+    extResid.push(0); // future residuals unknown → 0
+  }
+
+  // Step 5: Invert differencing (cumulative sum from last observed value at each level)
+  let result = forecastDiff;
+  for (let i = d - 1; i >= 0; i--) {
+    const base = diffStack[i];
+    let prev = base[base.length - 1];
+    result = result.map((diff) => { prev = prev + diff; return prev; });
+  }
+
+  return result.map((v) => Math.max(0, Math.round(v)));
 };
 
 // ── Shared Assumptions interface (used by Demand Planner + Distribution Engine) ─
