@@ -1024,9 +1024,15 @@ export default function LongTermForecastingDemand() {
           // No saved session state — apply LOB defaults as the starting assumptions
           if (fetchedLobDefaults) {
             setAssumptions((prev) => ({ ...prev, ...lobSettingsToAssumptionDefaults(fetchedLobDefaults!) }));
-            setSelectedChannels(normalizeSelectedChannels(fetchedLobDefaults.channels_enabled));
-            setPoolingMode(fetchedLobDefaults.pooling_mode === "dedicated" ? "dedicated" : "blended");
           }
+        }
+        // Always apply LOB Settings channel config — it is the authoritative source
+        // for which channels are active and how they are pooled. Saved session state
+        // restores forecast parameters but must not override what was configured in
+        // LOB Settings, otherwise changes there are silently ignored.
+        if (fetchedLobDefaults) {
+          setSelectedChannels(normalizeSelectedChannels(fetchedLobDefaults.channels_enabled));
+          setPoolingMode(fetchedLobDefaults.pooling_mode === "dedicated" ? "dedicated" : "blended");
         }
       } catch (error) {
         console.error("Failed to load demand user inputs", error);
