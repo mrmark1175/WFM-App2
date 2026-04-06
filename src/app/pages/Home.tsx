@@ -31,11 +31,8 @@ export function Home() {
         {/* Header */}
         <div className="text-center mb-16">
           <div className="inline-block mb-4">
-            <img src={logo} alt="Exordium WFM" className="h-32 w-auto" />
+            <img src={logo} alt="Exordium WFM" className="h-48 w-auto" />
           </div>
-          <p className="text-lg text-muted-foreground max-w-2xl mx-auto mt-4">
-            Enterprise Workforce Management Platform
-          </p>
         </div>
 
         {/* Navigation Cards */}
