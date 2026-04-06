@@ -310,9 +310,17 @@ export function getWeekOfMonth(dateStr: string): number {
 }
 
 // Distribute monthly volume to a specific target week using historical weekly pattern.
-// weekBuckets: historical weekly volumes (typically 4 weeks)
-// targetWeekStart: YYYY-MM-DD Monday of the target forecast week
-// monthlyVolume: the forecasted monthly volume
+//
+// The key correctness requirement: the share applied to monthlyVolume must be
+// "this week-position's fraction of a typical month", NOT "this week's fraction
+// of all loaded history".  The latter shrinks proportionally to how many months
+// of history are loaded (e.g. 20 weeks → each pct ≈ 5 % → result is 5 % of the
+// monthly forecast instead of ~25 %) — the root cause of the low totals.
+//
+// Fix: group historical weeks by week-of-month position (0 = first week of the
+// month, 1 = second, …), average their raw volumes per position, normalise those
+// averages so they sum to 1, then multiply by monthlyVolume.  This mirrors the
+// correct logic already used in the manual-entry path.
 export function distributeMonthlyToTargetWeek(
   monthlyVolume: number,
   weekBuckets: WeekBucket[],
@@ -322,22 +330,34 @@ export function distributeMonthlyToTargetWeek(
 
   const targetWeekIdx = getWeekOfMonth(targetWeekStart);
 
-  // Map historical weeks to their week-of-month index
-  const indexedBuckets = weekBuckets.map((b) => ({
-    ...b,
-    weekIdx: getWeekOfMonth(b.weekStart),
-  }));
-
-  // Find the historical week that matches the target week's position
-  const matchingWeek = indexedBuckets.find((b) => b.weekIdx === targetWeekIdx);
-
-  if (matchingWeek) {
-    return monthlyVolume * matchingWeek.pct;
+  // 1. Accumulate volumes per week-of-month position across all history
+  const volumesByPosition = new Map<number, number[]>();
+  for (const bucket of weekBuckets) {
+    const pos = getWeekOfMonth(bucket.weekStart);
+    if (!volumesByPosition.has(pos)) volumesByPosition.set(pos, []);
+    volumesByPosition.get(pos)!.push(bucket.volume);
   }
 
-  // Fallback: use the average weekly percentage
-  const avgPct = 1 / weekBuckets.length;
-  return monthlyVolume * avgPct;
+  // 2. Average volume per position (handles multiple historical cycles correctly)
+  const avgByPosition = new Map<number, number>();
+  for (const [pos, vols] of volumesByPosition) {
+    avgByPosition.set(pos, vols.reduce((a, b) => a + b, 0) / vols.length);
+  }
+
+  // 3. Normalise so all position averages sum to 1 → gives "share of a typical month"
+  const totalAvg = Array.from(avgByPosition.values()).reduce((a, b) => a + b, 0);
+  if (totalAvg === 0) {
+    // No usable history — equal split across known positions
+    return monthlyVolume / Math.max(1, avgByPosition.size);
+  }
+
+  const posAvg = avgByPosition.get(targetWeekIdx);
+  if (posAvg !== undefined) {
+    return monthlyVolume * (posAvg / totalAvg);
+  }
+
+  // Target position not present in history — equal split across known positions
+  return monthlyVolume / Math.max(1, avgByPosition.size);
 }
 
 // ── Step C (Updated) ─────────────────────────────────────────────────────────
