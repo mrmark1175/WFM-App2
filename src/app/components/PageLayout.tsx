@@ -1,6 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
 import { Home, ChevronRight } from "lucide-react";
-import logo from "../../assets/logo.png";
+import logo from "../../assets/logo.svg";
 import React from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
