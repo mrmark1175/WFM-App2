@@ -139,7 +139,6 @@ interface LobSettingsDefaults {
   email_sla_target: number;
   email_sla_seconds: number;
   email_occupancy: number;
-  voice_shrinkage: number;
   channels_enabled: Record<ChannelKey, boolean>;
   pooling_mode: PoolingMode;
   hours_of_operation?: Record<string, Record<string, { enabled: boolean; open: string; close: string }>>;
@@ -214,7 +213,7 @@ function lobSettingsToAssumptionDefaults(s: LobSettingsDefaults): Partial<Assump
     emailSlaTarget:         s.email_sla_target,
     emailSlaAnswerSeconds:  s.email_sla_seconds,
     occupancy:              s.email_occupancy,
-    shrinkage:              s.voice_shrinkage,
+    // shrinkage is owned by Shrinkage Planning, not LOB Settings
     operatingDaysPerWeek:   deriveOperatingDaysPerWeek(s.hours_of_operation?.voice),
     operatingHoursPerDay:   deriveOperatingHoursPerDay(s.hours_of_operation?.voice),
   };
