@@ -148,21 +148,77 @@ export const IntradayForecast = () => {
     return { baselineStart: fmt(start), baselineEnd: fmt(end) };
   }, []);
 
-  // ── Load forecast state ────────────────────────────────────────────────────
+  // ── Load forecast state (falls back to LOB settings if no Demand Planner state) ──
   useEffect(() => {
     if (!activeLob) return;
     setIsLoadingForecast(true);
-    fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`))
-      .then((r) => r.json())
-      .then((data: { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null) => {
-        if (data?.plannerSnapshot) {
-          setPlannerSnapshot(data.plannerSnapshot as PlannerSnapshot);
-        } else {
-          setPlannerSnapshot(null);
-        }
-      })
-      .catch(() => setPlannerSnapshot(null))
-      .finally(() => setIsLoadingForecast(false));
+    Promise.all([
+      fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
+      fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([activeState, lobSettings]) => {
+      if (activeState?.plannerSnapshot) {
+        setPlannerSnapshot(activeState.plannerSnapshot as PlannerSnapshot);
+      } else if (lobSettings) {
+        // No Demand Planner session yet — build a minimal snapshot from LOB settings
+        const a = lobSettings as Record<string, number | Record<string, boolean> | string>;
+        const voiceSched = (lobSettings.hours_of_operation as Record<string, Record<string, { enabled: boolean; open: string; close: string }>> | undefined)?.voice;
+        const enabledDays = voiceSched ? Object.values(voiceSched).filter((d) => d.enabled).length : 5;
+        const avgHrs = voiceSched ? (() => {
+          const enabled = Object.values(voiceSched).filter((d) => d.enabled);
+          if (!enabled.length) return 8;
+          const tot = enabled.reduce((s, d) => {
+            const [oh, om] = d.open.split(":").map(Number);
+            const [ch, cm] = d.close.split(":").map(Number);
+            return s + Math.max(0, (ch + cm / 60) - (oh + om / 60));
+          }, 0);
+          return Math.round((tot / enabled.length) * 10) / 10;
+        })() : 8;
+        setPlannerSnapshot({
+          assumptions: {
+            startDate: new Date().getFullYear() + "-01-01",
+            aht: Number(a.voice_aht) || 300,
+            emailAht: Number(a.email_aht) || 600,
+            chatAht: Number(a.chat_aht) || 450,
+            chatConcurrency: Number(a.chat_concurrency) || 2,
+            shrinkage: Number(a.voice_shrinkage) || 25,
+            shrinkageSource: "manual",
+            voiceSlaTarget: Number(a.voice_sla_target) || 80,
+            voiceSlaAnswerSeconds: Number(a.voice_sla_seconds) || 20,
+            voiceAsaTargetSeconds: 15,
+            emailSlaTarget: Number(a.email_sla_target) || 90,
+            emailSlaAnswerSeconds: Number(a.email_sla_seconds) || 14400,
+            emailAsaTargetSeconds: 3600,
+            chatSlaTarget: Number(a.chat_sla_target) || 80,
+            chatSlaAnswerSeconds: Number(a.chat_sla_seconds) || 30,
+            chatAsaTargetSeconds: 20,
+            occupancy: Number(a.email_occupancy) || 85,
+            growthRate: 0,
+            safetyMargin: 5,
+            currency: "USD",
+            annualSalary: 45000,
+            onboardingCost: 5000,
+            fteMonthlyHours: 166.67,
+            operatingHoursPerDay: avgHrs,
+            operatingDaysPerWeek: enabledDays,
+            useManualVolume: false,
+            manualHistoricalData: new Array(12).fill(10000),
+          },
+          forecastMethod: "holtwinters",
+          hwParams: { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 },
+          arimaParams: { p: 1, d: 1, q: 1 },
+          decompParams: { trendStrength: 1, seasonalityStrength: 1 },
+          channelHistoricalApiData: { voice: [], email: [], chat: [] },
+          channelHistoricalOverrides: { voice: {}, email: {}, chat: {} },
+          selectedChannels: (lobSettings.channels_enabled as Record<string, boolean> | undefined) ?? { voice: true, email: false, chat: false },
+          poolingMode: (a.pooling_mode as string) === "blended" ? "blended" : "dedicated",
+          isHistoricalSourceOpen: false,
+          isBlendedStaffingOpen: true,
+          selectedHistoricalChannel: "voice",
+        } as PlannerSnapshot);
+      } else {
+        setPlannerSnapshot(null);
+      }
+    }).finally(() => setIsLoadingForecast(false));
   }, [activeLob?.id]);
 
   // ── Load baseline interaction data ─────────────────────────────────────────

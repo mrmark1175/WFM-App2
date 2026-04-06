@@ -13,6 +13,7 @@ import { PerformanceAnalytics } from "./pages/PerformanceAnalytics";
 import LongTermForecastingDemand from "./pages/LongTermForecasting_Demand";
 import { ShrinkagePlanning } from "./pages/ShrinkagePlanning";
 import { LOBManagement } from "./pages/LOBManagement";
+import { LOBSettings } from "./pages/LOBSettings";
 
 export const router = createBrowserRouter([
   { path: "/",                            Component: Home },
@@ -29,5 +30,6 @@ export const router = createBrowserRouter([
   { path: "/wfm/performance-analytics",  Component: PerformanceAnalytics },
   { path: "/configuration",              Component: Configuration },
   { path: "/configuration/lob-management", Component: LOBManagement },
+  { path: "/configuration/lob-settings",  Component: LOBSettings },
   { path: "*",                            Component: Home },
 ]);

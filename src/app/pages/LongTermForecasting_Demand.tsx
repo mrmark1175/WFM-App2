@@ -127,6 +127,24 @@ interface VolumeTrendSeriesMeta {
   stroke: string;
   isForecast: boolean;
 }
+interface LobSettingsDefaults {
+  voice_aht: number;
+  chat_aht: number;
+  email_aht: number;
+  chat_concurrency: number;
+  voice_sla_target: number;
+  voice_sla_seconds: number;
+  chat_sla_target: number;
+  chat_sla_seconds: number;
+  email_sla_target: number;
+  email_sla_seconds: number;
+  email_occupancy: number;
+  voice_shrinkage: number;
+  channels_enabled: Record<ChannelKey, boolean>;
+  pooling_mode: PoolingMode;
+  hours_of_operation?: Record<string, Record<string, { enabled: boolean; open: string; close: string }>>;
+}
+
 interface FutureStaffingRow extends DemandForecastData {
   activeBlendPreset: string;
   sharedPoolWorkload: number;
@@ -167,6 +185,41 @@ const computeShrinkageFromItems = (items: ShrinkageItem[], operatingHoursPerDay:
   return Math.min(99, Number(((totalLostMinutes / minutesPerYear) * 100).toFixed(1)));
 };
 const FORECAST_METHODS = [{ key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" }, { key: "arima", label: "ARIMA (simplified version)" }, { key: "decomposition", label: "Decomposition (Trend + Seasonality)" }, { key: "ma", label: "Moving Average (baseline fallback)" }, { key: "genesys", label: "Direct Genesys Sync" }, { key: "yoy", label: "Year-over-Year Growth" }, { key: "regression", label: "Linear Regression" }];
+// ── LOB Settings → Assumptions helpers ───────────────────────────────────────
+function deriveOperatingDaysPerWeek(schedule?: Record<string, { enabled: boolean }>): number {
+  if (!schedule) return 5;
+  return Object.values(schedule).filter((d) => d.enabled).length;
+}
+function deriveOperatingHoursPerDay(schedule?: Record<string, { enabled: boolean; open: string; close: string }>): number {
+  if (!schedule) return 8;
+  const enabled = Object.values(schedule).filter((d) => d.enabled);
+  if (enabled.length === 0) return 8;
+  const total = enabled.reduce((sum, d) => {
+    const [oh, om] = d.open.split(":").map(Number);
+    const [ch, cm] = d.close.split(":").map(Number);
+    return sum + Math.max(0, (ch + cm / 60) - (oh + om / 60));
+  }, 0);
+  return Math.round((total / enabled.length) * 10) / 10;
+}
+function lobSettingsToAssumptionDefaults(s: LobSettingsDefaults): Partial<Assumptions> {
+  return {
+    aht:                    s.voice_aht,
+    chatAht:                s.chat_aht,
+    emailAht:               s.email_aht,
+    chatConcurrency:        s.chat_concurrency,
+    voiceSlaTarget:         s.voice_sla_target,
+    voiceSlaAnswerSeconds:  s.voice_sla_seconds,
+    chatSlaTarget:          s.chat_sla_target,
+    chatSlaAnswerSeconds:   s.chat_sla_seconds,
+    emailSlaTarget:         s.email_sla_target,
+    emailSlaAnswerSeconds:  s.email_sla_seconds,
+    occupancy:              s.email_occupancy,
+    shrinkage:              s.voice_shrinkage,
+    operatingDaysPerWeek:   deriveOperatingDaysPerWeek(s.hours_of_operation?.voice),
+    operatingHoursPerDay:   deriveOperatingHoursPerDay(s.hours_of_operation?.voice),
+  };
+}
+
 const DEFAULT_ASSUMPTIONS: Assumptions = {
   startDate: "2026-01-01",
   aht: 300,
@@ -814,6 +867,7 @@ export default function LongTermForecastingDemand() {
   const [decompParams, setDecompParams] = useState({ trendStrength: 1, seasonalityStrength: 1 });
   const [scenarios, setScenarios] = useState<Record<string, Scenario>>(DEFAULT_SCENARIOS);
   const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);
+  const [lobDefaults, setLobDefaults] = useState<LobSettingsDefaults | null>(null);
   const [historicalChannelView, setHistoricalChannelView] = useState<ChannelKey>("voice");
   const [historicalApiDataByChannel, setHistoricalApiDataByChannel] = useState<Record<ChannelKey, number[]>>(EMPTY_CHANNEL_DATA);
   const [syncedHistoricalApiDataByChannel, setSyncedHistoricalApiDataByChannel] = useState<Record<ChannelKey, number[]>>(EMPTY_CHANNEL_DATA);
@@ -871,6 +925,21 @@ export default function LongTermForecastingDemand() {
     }, 2000);
   };
 
+  const isOverridingLobDefaults = useMemo(() => {
+    if (!lobDefaults) return false;
+    const defaults = lobSettingsToAssumptionDefaults(lobDefaults);
+    return (Object.entries(defaults) as Array<[keyof Assumptions, unknown]>).some(
+      ([key, value]) => (assumptions as Record<string, unknown>)[key] !== value
+    );
+  }, [assumptions, lobDefaults]);
+
+  const resetToLobDefaults = () => {
+    if (!lobDefaults) return;
+    setAssumptions((prev) => ({ ...prev, ...lobSettingsToAssumptionDefaults(lobDefaults) }));
+    setSelectedChannels(normalizeSelectedChannels(lobDefaults.channels_enabled));
+    setPoolingMode(lobDefaults.pooling_mode === "dedicated" ? "dedicated" : "blended");
+  };
+
   useEffect(() => {
     if (!activeLob) { setLoading(false); return; }
     hasHydratedRef.current = false;
@@ -904,6 +973,14 @@ export default function LongTermForecastingDemand() {
       }
       setScenarios(nextScenarios);
       try {
+        // Fetch LOB defaults in parallel — used as fallback and for override indicator
+        let fetchedLobDefaults: LobSettingsDefaults | null = null;
+        try {
+          const lobRes = await fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`));
+          if (lobRes.ok) fetchedLobDefaults = await lobRes.json() as LobSettingsDefaults;
+        } catch { /* non-critical */ }
+        if (fetchedLobDefaults) setLobDefaults(fetchedLobDefaults);
+
         // On production (non-localhost): DB is source of truth so changes sync across devices.
         // On localhost: localStorage first so local dev state isn't clobbered by production DB.
         const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
@@ -945,6 +1022,12 @@ export default function LongTermForecastingDemand() {
           const initialScenarioId = Object.keys(nextScenarios)[0] || "base";
           setSelectedScenarioId(initialScenarioId);
           if (nextScenarios[initialScenarioId]?.snapshot) applyPlannerSnapshot(nextScenarios[initialScenarioId].snapshot);
+          // No saved session state — apply LOB defaults as the starting assumptions
+          if (fetchedLobDefaults) {
+            setAssumptions((prev) => ({ ...prev, ...lobSettingsToAssumptionDefaults(fetchedLobDefaults!) }));
+            setSelectedChannels(normalizeSelectedChannels(fetchedLobDefaults.channels_enabled));
+            setPoolingMode(fetchedLobDefaults.pooling_mode === "dedicated" ? "dedicated" : "blended");
+          }
         }
       } catch (error) {
         console.error("Failed to load demand user inputs", error);
@@ -1684,7 +1767,7 @@ export default function LongTermForecastingDemand() {
           </Card>
 
           <Card className="border border-primary/15 shadow-md overflow-hidden">
-            <CardHeader className="bg-slate-50/60 border-b border-border/50">
+            <CardHeader className="bg-muted/40 border-b border-border/50">
               <button type="button" className="w-full flex items-start justify-between gap-4 text-left" onClick={() => setIsHistoricalSourceOpen((current) => !current)}>
                 <div className="space-y-2">
                   <div className="flex items-center gap-3 flex-wrap">
@@ -1770,7 +1853,7 @@ export default function LongTermForecastingDemand() {
                   </div>
                   <div className="overflow-x-auto rounded-xl border border-border/60">
                     <Table>
-                      <TableHeader className="bg-slate-50/80 dark:bg-slate-900/80">
+                      <TableHeader className="bg-muted/50">
                         <TableRow className="hover:bg-transparent">
                           <TableHead className="pl-6 text-xs font-black uppercase tracking-widest">Month</TableHead>
                           <TableHead className="text-right text-xs font-black uppercase tracking-widest">API Volume</TableHead>
@@ -1833,7 +1916,7 @@ export default function LongTermForecastingDemand() {
             <p className="text-sm font-semibold text-foreground">Forecasted Demand Output</p>
           </div>
           <Card className="border border-border/60 shadow-sm overflow-hidden">
-            <CardHeader className="border-b border-border/50 bg-slate-50/50">
+            <CardHeader className="border-b border-border/50 bg-muted/40">
               <button type="button" className="w-full flex items-start justify-between gap-4 text-left" onClick={() => setIsBlendedStaffingOpen((current) => !current)}>
                 <div className="space-y-2">
                   <CardTitle className="text-base font-black uppercase tracking-widest">Channel Staffing Setup</CardTitle>
@@ -1848,7 +1931,7 @@ export default function LongTermForecastingDemand() {
               <div className="overflow-hidden">
                 <CardContent className={`pt-6 space-y-6 transition-opacity duration-200 ${isBlendedStaffingOpen ? "opacity-100" : "opacity-0"}`}>
               <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-4">
-                <Card className="border border-border/60 shadow-none rounded-3xl bg-white/90 dark:bg-slate-900/80">
+                <Card className="border border-border/60 shadow-none rounded-3xl bg-card">
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm font-black uppercase tracking-widest">Channel Selection</CardTitle>
                   <p className="text-sm text-muted-foreground">Tick the channels you want included in the staffing view. You can also isolate email-only or chat-only scenarios.</p>
@@ -1871,7 +1954,7 @@ export default function LongTermForecastingDemand() {
                     ))}
                   </CardContent>
                 </Card>
-                <Card className="border border-border/60 shadow-none rounded-3xl bg-white/90 dark:bg-slate-900/80">
+                <Card className="border border-border/60 shadow-none rounded-3xl bg-card">
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm font-black uppercase tracking-widest">Pooling Mode</CardTitle>
                     <p className="text-sm text-muted-foreground">Choose whether selected channels share one pool or remain dedicated.</p>
@@ -1893,7 +1976,7 @@ export default function LongTermForecastingDemand() {
                         </div>
                       </label>
                     </RadioGroup>
-                    <div className="rounded-lg border border-border/60 bg-slate-50/70 p-3 text-sm text-muted-foreground">
+                    <div className="rounded-lg border border-border/60 bg-muted/50 p-3 text-sm text-muted-foreground">
                       <span className="font-semibold text-foreground">Active setup:</span> {selectedBlendConfig.label}. {selectedBlendConfig.description}.
                     </div>
                   </CardContent>
@@ -1905,7 +1988,7 @@ export default function LongTermForecastingDemand() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {poolExplainability.map((pool) => (
-                    <div key={pool.poolName} className="rounded-lg border border-border/50 p-4 bg-slate-50/40">
+                    <div key={pool.poolName} className="rounded-lg border border-border/50 p-4 bg-muted/30">
                       <div className="flex items-center justify-between gap-3 flex-wrap">
                         <div>
                           <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">{pool.poolName}</p>
@@ -1921,7 +2004,7 @@ export default function LongTermForecastingDemand() {
                   ))}
                 </CardContent>
               </Card>
-                <Card className="border border-border/60 shadow-none rounded-3xl bg-white/95 dark:bg-slate-900/70">
+                <Card className="border border-border/60 shadow-none rounded-3xl bg-card">
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm font-black uppercase tracking-widest">Channel Workload Assumptions</CardTitle>
                   <p className="text-sm text-muted-foreground">These notes now reflect the live calculation logic for each channel and the current channel-selection setup.</p>
@@ -1954,20 +2037,20 @@ export default function LongTermForecastingDemand() {
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-6 items-start">
             <div className="space-y-6">
               <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6">
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-slate-50/30"><CardTitle className="text-base font-black uppercase tracking-widest">Monthly Volume Trend</CardTitle><p className="text-sm text-muted-foreground">Month-by-month year-over-year view so planners can compare seasonal patterns across actual years and the forecast year.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-slate-50/30"><CardTitle className="text-base font-black uppercase tracking-widest">Workload Trend</CardTitle><p className="text-sm text-muted-foreground">Pool workloads update with the current channel selection and pooling mode.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={pooledWorkloadChartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{selectedBlendConfig.pools.map((_, index) => <Line key={`pool${index + 1}`} type="monotone" dataKey={`pool${index + 1}`} name={`Pool ${String.fromCharCode(65 + index)} Workload`} stroke={["#4f46e5", "#0f766e", "#dc2626"][index % 3]} strokeWidth={3} />)}<Line type="monotone" dataKey="totalWorkloadHours" name="Total Workload" stroke="#94a3b8" strokeDasharray="6 4" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-slate-50/30"><CardTitle className="text-base font-black uppercase tracking-widest">Required Staffing Trend</CardTitle><p className="text-sm text-muted-foreground">Shared pools recalculate FTE from pooled workload, weighted service targets, and the current staffing setup.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={requiredStaffingTrendData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Line type="monotone" dataKey="sharedPoolFTE" name="Shared Pool FTE" stroke="#0f766e" strokeWidth={3} /><Line type="monotone" dataKey="standalonePoolFTE" name="Standalone Pool FTE" stroke="#2563eb" strokeWidth={3} /><Line type="monotone" dataKey="totalRequiredFTE" name="Total Required FTE" stroke="#f59e0b" strokeWidth={3} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-slate-50/30"><CardTitle className="text-base font-black uppercase tracking-widest">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-base font-black uppercase tracking-widest">Monthly Volume Trend</CardTitle><p className="text-sm text-muted-foreground">Month-by-month year-over-year view so planners can compare seasonal patterns across actual years and the forecast year.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-base font-black uppercase tracking-widest">Workload Trend</CardTitle><p className="text-sm text-muted-foreground">Pool workloads update with the current channel selection and pooling mode.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={pooledWorkloadChartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{selectedBlendConfig.pools.map((_, index) => <Line key={`pool${index + 1}`} type="monotone" dataKey={`pool${index + 1}`} name={`Pool ${String.fromCharCode(65 + index)} Workload`} stroke={["#4f46e5", "#0f766e", "#dc2626"][index % 3]} strokeWidth={3} />)}<Line type="monotone" dataKey="totalWorkloadHours" name="Total Workload" stroke="#94a3b8" strokeDasharray="6 4" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-base font-black uppercase tracking-widest">Required Staffing Trend</CardTitle><p className="text-sm text-muted-foreground">Shared pools recalculate FTE from pooled workload, weighted service targets, and the current staffing setup.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={requiredStaffingTrendData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Line type="monotone" dataKey="sharedPoolFTE" name="Shared Pool FTE" stroke="#0f766e" strokeWidth={3} /><Line type="monotone" dataKey="standalonePoolFTE" name="Standalone Pool FTE" stroke="#2563eb" strokeWidth={3} /><Line type="monotone" dataKey="totalRequiredFTE" name="Total Required FTE" stroke="#f59e0b" strokeWidth={3} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-base font-black uppercase tracking-widest">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
               </div>
-              <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-slate-50/30"><CardTitle className="text-base font-black uppercase tracking-widest">Scenario Comparison For Required FTE</CardTitle></CardHeader><CardContent className="p-6 h-[360px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={scenarioComparisonData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{Object.values(scenarios).map((scenario, index) => <Line key={scenario.id} type="monotone" dataKey={scenario.id} name={scenario.name} stroke={scenarioColors[index % scenarioColors.length]} strokeWidth={scenario.id === selectedScenarioId ? 3.5 : 2} dot={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
-              <Card className="border border-border/50 shadow-lg bg-white/70 dark:bg-slate-900/70">
-                <CardHeader className="border-b border-border/50 bg-slate-50/70">
+              <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-base font-black uppercase tracking-widest">Scenario Comparison For Required FTE</CardTitle></CardHeader><CardContent className="p-6 h-[360px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={scenarioComparisonData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{Object.values(scenarios).map((scenario, index) => <Line key={scenario.id} type="monotone" dataKey={scenario.id} name={scenario.name} stroke={scenarioColors[index % scenarioColors.length]} strokeWidth={scenario.id === selectedScenarioId ? 3.5 : 2} dot={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
+              <Card className="border border-border/50 shadow-lg bg-card">
+                <CardHeader className="border-b border-border/50 bg-muted/50">
                   <CardTitle className="text-base font-black uppercase tracking-widest">Demand Forecast Detail</CardTitle>
                   <p className="text-xs text-muted-foreground">Details are tied to the ${selectedBlendConfig.label} setup.</p>
                 </CardHeader>
                 <CardContent className="p-0 overflow-x-auto">
                   <Table>
-                    <TableHeader className="bg-slate-50/80 dark:bg-slate-900/80">
+                    <TableHeader className="bg-muted/50">
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="pl-6 text-sm font-black uppercase tracking-widest">Month</TableHead>
                         <TableHead className="text-right text-sm font-black uppercase tracking-widest">Forecast Volume</TableHead>
@@ -1984,7 +2067,7 @@ export default function LongTermForecastingDemand() {
                     </TableHeader>
                     <TableBody>
                       {futureData.map((row) => (
-                        <TableRow key={`${row.year}-${row.month}`} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/50">
+                        <TableRow key={`${row.year}-${row.month}`} className="hover:bg-muted/30">
                           <TableCell className="pl-6 font-bold text-sm">{row.month} {row.year}</TableCell>
                           <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
                           <TableCell className="text-right font-mono text-sm text-indigo-600">{row.workloadHours.toLocaleString()}</TableCell>
@@ -2005,8 +2088,21 @@ export default function LongTermForecastingDemand() {
             </div>
             <div className="xl:sticky xl:top-[180px]">
               <Card className="border border-border/80 shadow-xl overflow-hidden">
-                <CardHeader className="border-b border-border/50 bg-slate-900 text-white py-4"><div className="flex items-center justify-between"><CardTitle className="text-sm font-black flex items-center gap-2 uppercase tracking-[0.2em]"><Settings2 className="size-4 text-blue-400" />Demand Assumptions</CardTitle><Button variant="ghost" size="icon" className="size-6 text-white hover:bg-white/10" onClick={() => setIsAssumptionsOpen(!isAssumptionsOpen)}>{isAssumptionsOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}</Button></div></CardHeader>
-                {isAssumptionsOpen && <CardContent className="pt-6 space-y-6 bg-white dark:bg-slate-950">
+                <CardHeader className="border-b border-border/50 bg-slate-900 text-white py-4">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm font-black flex items-center gap-2 uppercase tracking-[0.2em]"><Settings2 className="size-4 text-blue-400" />Demand Assumptions</CardTitle>
+                    <Button variant="ghost" size="icon" className="size-6 text-white hover:bg-white/10" onClick={() => setIsAssumptionsOpen(!isAssumptionsOpen)}>{isAssumptionsOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}</Button>
+                  </div>
+                  {isOverridingLobDefaults && (
+                    <div className="flex items-center gap-2 mt-2 flex-wrap">
+                      <Badge className="bg-amber-500 hover:bg-amber-500 text-black text-xs">Overriding LOB Defaults</Badge>
+                      <Button variant="ghost" size="sm" className="text-xs text-white hover:bg-white/10 h-6 px-2 gap-1" onClick={resetToLobDefaults}>
+                        <RotateCcw className="size-3" />Reset to defaults
+                      </Button>
+                    </div>
+                  )}
+                </CardHeader>
+                {isAssumptionsOpen && <CardContent className="pt-6 space-y-6 bg-card">
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="startDate" className="text-xs font-black uppercase tracking-widest text-muted-foreground">Planning Start Date</Label><Calendar className="size-3.5 text-primary" /></div><Input id="startDate" type="date" value={assumptions.startDate} onChange={(event) => setAssumptions({ ...assumptions, startDate: event.target.value })} className="h-10 font-bold" /></div>
                   <div className="space-y-3 border-t border-border pt-4"><Select value={forecastMethod} onValueChange={setForecastMethod}><SelectTrigger className="h-10 font-bold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger><SelectContent>{FORECAST_METHODS.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}</SelectContent></Select></div>
                   <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-black uppercase tracking-widest text-muted-foreground">AHT Assumption</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-primary">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
@@ -2124,7 +2220,7 @@ export default function LongTermForecastingDemand() {
                     <div className="space-y-2"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-muted-foreground">Hours Per Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-bold" /></div>
                     <div className="space-y-2"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-muted-foreground">Days Per Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-bold" /></div>
                   </div>
-                  <div className="rounded-lg border border-border/60 bg-slate-50/70 px-3 py-2 text-xs text-muted-foreground">
+                  <div className="rounded-lg border border-border/60 bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
                     Operating window: <span className="font-bold text-foreground">{assumptions.operatingHoursPerDay}h/day x {assumptions.operatingDaysPerWeek}d/week</span> = <span className="font-bold text-foreground">{openHoursPerMonth}</span> open hours/month
                   </div>
                   <div className="space-y-2"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-muted-foreground">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-bold" /></div>

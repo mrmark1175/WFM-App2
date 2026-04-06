@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { PageLayout } from "../components/PageLayout";
-import { Settings, Database, Plug, Users2, Building2, Lock, ChevronRight } from "lucide-react";
+import { Settings, Database, Plug, Users2, Building2, Lock, ChevronRight, SlidersHorizontal } from "lucide-react";
 
 interface ConfigSection {
   title: string;
@@ -18,6 +18,13 @@ export function Configuration() {
       icon: Building2,
       category: "Organization",
       href: "/configuration/lob-management",
+    },
+    {
+      title: "LOB Settings",
+      description: "Define active channels, pooling mode, staffing parameters (AHT, SLA, ASA, concurrency), and operating hours per LOB per channel.",
+      icon: SlidersHorizontal,
+      category: "Workforce",
+      href: "/configuration/lob-settings",
     },
     {
       title: "System Settings",
