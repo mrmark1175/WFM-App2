@@ -2358,20 +2358,29 @@ export default function LongTermForecastingDemand() {
                   </Table>
                 </CardContent>
               </Card>
-              {/* ── Original detailed FTE table (future months only) ─────────── */}
+              {/* ── Staffing detail — future months ──────────────────────────── */}
               <Card className="border border-border/50 shadow-lg bg-card">
                 <CardHeader className="border-b border-border/50 bg-muted/50">
-                  <CardTitle className="text-sm font-bold">Staffing Detail — Future Months</CardTitle>
-                  <p className="text-xs text-foreground/60">Details tied to the {selectedBlendConfig.label} setup.</p>
+                  <div className="flex items-start justify-between gap-4 flex-wrap">
+                    <div>
+                      <CardTitle className="text-sm font-bold">Staffing Detail — Future Months</CardTitle>
+                      <p className="text-xs text-foreground/60 mt-0.5">
+                        Volume column mirrors the <span className={`font-semibold ${CHANNEL_ASSUMPTION_META[detailChannel].colorClass}`}>{CHANNEL_ASSUMPTION_META[detailChannel].label}</span> selection above.
+                        Workload &amp; FTE are blended totals across all included channels ({selectedBlendConfig.label}).
+                      </p>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-0 overflow-x-auto">
                   <Table>
                     <TableHeader className="bg-muted/50">
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Month</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Forecast Volume</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Forecast Workload Hours</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">AHT</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          {CHANNEL_ASSUMPTION_META[detailChannel].label} Volume
+                        </TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Blended Workload Hrs</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Wtd. AHT</TableHead>
                         <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Occupancy</TableHead>
                         <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Shrinkage</TableHead>
                         <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Active Setup</TableHead>
@@ -2382,21 +2391,25 @@ export default function LongTermForecastingDemand() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {futureData.map((row) => (
-                        <TableRow key={`${row.year}-${row.month}`} className="hover:bg-muted/30">
-                          <TableCell className="pl-6 font-bold text-sm">{row.month} {row.year}</TableCell>
-                          <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.volume.toLocaleString()}</TableCell>
-                          <TableCell className="text-right font-mono text-sm text-indigo-600">{row.workloadHours.toLocaleString()}</TableCell>
-                          <TableCell className="text-right font-mono text-sm">{row.aht}s</TableCell>
-                          <TableCell className="text-right font-mono text-sm">{row.occupancy}%</TableCell>
-                          <TableCell className="text-right font-mono text-sm">{row.shrinkage}%</TableCell>
-                          <TableCell className="text-right text-sm">{row.activeBlendPreset}</TableCell>
-                          <TableCell className="text-right font-mono text-sm">{row.sharedPoolWorkload > 0 ? row.sharedPoolWorkload.toLocaleString() : "-"}</TableCell>
-                          <TableCell className="text-right font-mono text-sm">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "-"}</TableCell>
-                          <TableCell className="text-right font-mono text-sm">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "-"}</TableCell>
-                          <TableCell className="pr-6 text-right font-mono text-sm font-bold text-amber-600">{row.totalRequiredFTE}</TableCell>
-                        </TableRow>
-                      ))}
+                      {futureData.map((row) => {
+                        // Show channel volume consistent with the Demand Forecast Detail tab selection
+                        const channelVol = row.channelMetrics[detailChannel].volume;
+                        return (
+                          <TableRow key={`${row.year}-${row.month}`} className="hover:bg-muted/30">
+                            <TableCell className="pl-6 font-bold text-sm">{row.month} {row.year}</TableCell>
+                            <TableCell className="text-right font-mono text-sm font-bold text-primary">{channelVol.toLocaleString()}</TableCell>
+                            <TableCell className="text-right font-mono text-sm text-indigo-600">{row.workloadHours.toLocaleString()}</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{row.aht}s</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{row.occupancy}%</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{row.shrinkage}%</TableCell>
+                            <TableCell className="text-right text-sm">{row.activeBlendPreset}</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{row.sharedPoolWorkload > 0 ? row.sharedPoolWorkload.toLocaleString() : "-"}</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "-"}</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "-"}</TableCell>
+                            <TableCell className="pr-6 text-right font-mono text-sm font-bold text-amber-600">{row.totalRequiredFTE}</TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </CardContent>
