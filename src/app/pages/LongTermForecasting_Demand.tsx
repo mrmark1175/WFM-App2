@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
-import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X, BrainCircuit, AlertTriangle, ShieldCheck, CheckCircle2 } from "lucide-react";
+import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X, BrainCircuit, AlertTriangle, ShieldCheck, CheckCircle2, Sparkles } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -1685,6 +1685,55 @@ export default function LongTermForecastingDemand() {
     avgWorkloadHours: Number((futureData.reduce((sum, row) => sum + row.pools.reduce((poolSum, pool) => poolSum + pool.workloadHours, 0), 0) / futureData.length).toFixed(1)),
     avgRequiredFTE: Number((futureData.reduce((sum, row) => sum + row.totalRequiredFTE, 0) / futureData.length).toFixed(2)),
   }), [futureData]);
+
+  const insightNarrative = useMemo(() => {
+    if (futureData.length === 0) return null;
+    const n = futureData.length;
+    // Trend: compare avg FTE of first 3 vs last 3 months
+    const first3 = futureData.slice(0, Math.min(3, n));
+    const last3 = futureData.slice(Math.max(0, n - 3));
+    const first3Avg = first3.reduce((s, r) => s + r.totalRequiredFTE, 0) / first3.length;
+    const last3Avg = last3.reduce((s, r) => s + r.totalRequiredFTE, 0) / last3.length;
+    const trendPct = first3Avg > 0 ? ((last3Avg - first3Avg) / first3Avg) * 100 : 0;
+    const trendDir: "growing" | "stable" | "declining" = Math.abs(trendPct) < 3 ? "stable" : trendPct > 0 ? "growing" : "declining";
+    // Peak / trough
+    const peakRow = futureData.reduce((a, b) => a.totalRequiredFTE >= b.totalRequiredFTE ? a : b);
+    const troughRow = futureData.reduce((a, b) => a.totalRequiredFTE <= b.totalRequiredFTE ? a : b);
+    const fteSpread = peakRow.totalRequiredFTE > 0 ? Math.round(((peakRow.totalRequiredFTE - troughRow.totalRequiredFTE) / peakRow.totalRequiredFTE) * 100) : 0;
+    // Channel mix
+    const activeKeys = (Object.keys(selectedChannels) as ChannelKey[]).filter((k) => selectedChannels[k]);
+    const chanVols = activeKeys.map((ch) => ({
+      label: ch === "voice" ? "Voice" : ch === "chat" ? "Chat" : "Email",
+      avg: futureData.reduce((s, r) => s + r.channelMetrics[ch].volume, 0) / n,
+    }));
+    const totalVol = chanVols.reduce((s, c) => s + c.avg, 0);
+    const channelMix = chanVols.map((c) => ({ ...c, pct: totalVol > 0 ? Math.round((c.avg / totalVol) * 100) : 0 })).sort((a, b) => b.pct - a.pct);
+    // Method label
+    const methodLabels: Record<string, string> = { holtwinters: "Holt-Winters", arima: "ARIMA", decomposition: "Seasonal Decomposition" };
+    const methodLabel = methodLabels[forecastMethod] ?? forecastMethod;
+    // Growth
+    const growthRate = assumptions.growthRate ?? 0;
+    const lastRow = futureData[n - 1];
+    const lastPeriod = `${lastRow.month} ${lastRow.year}`;
+    const avgFTE = Number((futureData.reduce((s, r) => s + r.totalRequiredFTE, 0) / n).toFixed(1));
+    // Build sentences
+    const headline =
+      trendDir === "growing" ? "Demand is Rising — Plan for Sustained Headcount Growth" :
+      trendDir === "declining" ? "Demand is Easing — Opportunity to Optimize Staffing Levels" :
+      "Stable Demand Outlook — A Predictable Staffing Horizon Ahead";
+    const trendSentence = trendDir === "stable"
+      ? `The ${methodLabel} model projects a stable staffing trend across the planning horizon, with required FTE holding near ${avgFTE} agents on average.`
+      : `The ${methodLabel} model projects a ${trendDir} trend — required FTE is ${trendDir === "growing" ? "increasing" : "declining"} ${Math.abs(trendPct).toFixed(1)}% from the opening months to close of the planning period.`;
+    const peakSentence = `Staffing pressure is highest in ${peakRow.month} ${peakRow.year} at ${peakRow.totalRequiredFTE.toFixed(1)} FTE, and lowest in ${troughRow.month} ${troughRow.year} at ${troughRow.totalRequiredFTE.toFixed(1)} FTE — a ${fteSpread}% headcount swing across the horizon.`;
+    const channelSentence = channelMix.length === 0 ? "" : channelMix.length === 1
+      ? `All demand routes through ${channelMix[0].label}, carrying 100% of the blended workload.`
+      : `Channel mix: ${channelMix.map((c) => `${c.label} ${c.pct}%`).join(" · ")}. Align training pipelines and scheduling capacity to reflect this distribution.`;
+    const growthSentence = growthRate !== 0
+      ? `At the current ${Math.abs(growthRate).toFixed(1)}% ${growthRate > 0 ? "growth" : "decline"} rate applied to the model output, projected FTE by ${lastPeriod} is ${lastRow.totalRequiredFTE.toFixed(1)}. ${growthRate > 0 ? "Build your recruiting pipeline now to avoid coverage shortfalls." : "Manage attrition carefully to maintain service levels during the contraction."}`
+      : `No growth rate adjustment is applied — the forecast reflects the model's base projection, reaching ${lastRow.totalRequiredFTE.toFixed(1)} FTE by ${lastPeriod}.`;
+    const gapPlaceholder = "Headcount gap analysis not yet connected. Link your active headcount module to unlock coverage risk scoring, over/under-staffing alerts, and hiring timeline recommendations.";
+    return { headline, trendSentence, peakSentence, channelSentence, growthSentence, gapPlaceholder, trendDir };
+  }, [futureData, selectedChannels, assumptions.growthRate, forecastMethod]);
   const requiredStaffingTrendData = useMemo(() => futureData.map((row) => ({
     label: `${row.month} '${row.year.slice(2)}`,
     totalRequiredFTE: row.totalRequiredFTE,
@@ -1926,35 +1975,56 @@ export default function LongTermForecastingDemand() {
     <TooltipProvider>
       <PageLayout title="Long Term Forecasting  Demand">
         <div className="flex flex-col gap-8 pb-12">
-          <section className="rounded-2xl bg-gradient-to-br from-slate-800 to-slate-700 px-8 py-10 shadow-lg">
-            <p className="text-[11px] uppercase tracking-[0.4em] text-slate-200 font-semibold">Long Term Forecasting</p>
-            <h1 className="mt-2 font-bold text-2xl md:text-3xl text-white">Multi-Channel Demand & Capacity Planning</h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-200">
-              Forecast demand across voice, chat, and email channels. Configure dedicated or blended staffing pools, calculate required FTE, and optimize resource allocation.
-            </p>
-            <div className="mt-6 grid gap-4 md:grid-cols-3">
+          <section className="rounded-2xl bg-gradient-to-br from-slate-800 to-slate-700 px-6 py-5 shadow-lg">
+            {/* Header row — compact */}
+            <div className="flex items-baseline gap-3 flex-wrap">
+              <p className="text-[10px] uppercase tracking-[0.4em] text-slate-300 font-semibold shrink-0">Long Term Forecasting</p>
+              <h1 className="font-bold text-xl md:text-2xl text-white leading-tight">Multi-Channel Demand & Capacity Planning</h1>
+            </div>
+            {/* KPI cards — compact */}
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
               <Card className="bg-white/10 border border-white/10 shadow-none">
-                <CardContent className="p-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-200">Forecasted Monthly Volume</p>
-                  <h3 className="mt-2 text-2xl font-bold text-white">{kpis.avgVolume.toLocaleString()}</h3>
-                  <p className="text-xs text-slate-300 mt-1">Average across the active horizon</p>
+                <CardContent className="p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-200">Forecasted Monthly Volume</p>
+                  <h3 className="mt-1 text-xl font-bold text-white">{kpis.avgVolume.toLocaleString()}</h3>
+                  <p className="text-[11px] text-slate-300 mt-0.5">Avg across the active horizon</p>
                 </CardContent>
               </Card>
               <Card className="bg-white/10 border border-white/10 shadow-none">
-                <CardContent className="p-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-200">Workload Hours</p>
-                  <h3 className="mt-2 text-2xl font-bold text-white">{kpis.avgWorkloadHours.toLocaleString()}</h3>
-                  <p className="text-xs text-slate-300 mt-1">Converted from channel AHTs &amp; open hours</p>
+                <CardContent className="p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-200">Workload Hours</p>
+                  <h3 className="mt-1 text-xl font-bold text-white">{kpis.avgWorkloadHours.toLocaleString()}</h3>
+                  <p className="text-[11px] text-slate-300 mt-0.5">From channel AHTs &amp; open hours</p>
                 </CardContent>
               </Card>
               <Card className="bg-white/10 border border-white/10 shadow-none">
-                <CardContent className="p-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-200">Required Agents / FTE</p>
-                  <h3 className="mt-2 text-2xl font-bold text-white">{kpis.avgRequiredFTE}</h3>
-                  <p className="text-xs text-slate-300 mt-1">Average total FTE for {selectedBlendConfig.label}</p>
+                <CardContent className="p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-200">Required Agents / FTE</p>
+                  <h3 className="mt-1 text-xl font-bold text-white">{kpis.avgRequiredFTE}</h3>
+                  <p className="text-[11px] text-slate-300 mt-0.5">{selectedBlendConfig.label}</p>
                 </CardContent>
               </Card>
             </div>
+            {/* ── Insight Narrative ── */}
+            {insightNarrative && (
+              <div className="mt-4 pt-4 border-t border-white/10">
+                <div className="flex items-center gap-2 mb-2">
+                  <Sparkles className="size-3.5 text-violet-300 shrink-0" />
+                  <span className="text-[10px] uppercase tracking-widest text-slate-200 font-bold">Insight Narrative</span>
+                  <span className="text-[10px] text-slate-400">· Exordium Private AI Engine · runs on your isolated server</span>
+                </div>
+                <p className={`text-sm font-bold mb-2 ${insightNarrative.trendDir === "growing" ? "text-emerald-300" : insightNarrative.trendDir === "declining" ? "text-rose-300" : "text-sky-200"}`}>
+                  {insightNarrative.headline}
+                </p>
+                <div className="text-xs text-slate-200 space-y-1.5 leading-relaxed">
+                  <p>{insightNarrative.trendSentence}</p>
+                  <p>{insightNarrative.peakSentence}</p>
+                  {insightNarrative.channelSentence && <p>{insightNarrative.channelSentence}</p>}
+                  <p>{insightNarrative.growthSentence}</p>
+                  <p className="text-slate-400 italic text-[11px]">⚠ {insightNarrative.gapPlaceholder}</p>
+                </div>
+              </div>
+            )}
           </section>
 
           {/* ── Scenario Manager ── */}
