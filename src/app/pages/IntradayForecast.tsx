@@ -850,7 +850,7 @@ export const IntradayForecast = () => {
             {/* Weekly volume display */}
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-muted-foreground">Week Volume</span>
-              <div className="h-8 flex items-center px-3 rounded-md border bg-blue-50 dark:bg-blue-950/30 text-sm font-bold text-blue-700 dark:text-blue-300 min-w-[100px]">
+              <div className="h-8 flex items-center px-3 rounded-md border bg-blue-50 dark:bg-blue-950/30 text-sm font-bold text-blue-900 dark:text-blue-100 min-w-[100px]">
                 {forecastedWeekVolume > 0
                   ? Math.round(forecastedWeekVolume).toLocaleString()
                   : <span className="text-muted-foreground font-normal">&mdash;</span>}

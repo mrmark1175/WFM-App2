@@ -301,12 +301,28 @@ export function computeWeeklyBuckets(data: GridData): WeekBucket[] {
 }
 
 // Determine which week index (0-based within the target month) a given
-// target week start falls into, and return the matching historical week's pct.
-// If the target week is week N of its month, we use historical week N's percentage.
+// target week start falls into.
+//
+// Uses the Thursday of the week (ISO convention) to determine which month the
+// week "belongs to". This correctly handles weeks whose Monday falls in the
+// previous month (e.g. the first week of April 2026 starts on March 30 — the
+// old floor(dayOfMonth/7) approach returned position 4 instead of 0).
 export function getWeekOfMonth(dateStr: string): number {
-  const d = new Date(dateStr + "T12:00:00");
-  const dayOfMonth = d.getDate();
-  return Math.floor((dayOfMonth - 1) / 7); // 0-based week index
+  // dateStr is always a Monday; Thursday = +3 days
+  const monday = new Date(dateStr + "T12:00:00");
+  const thursday = addDays(monday, 3);
+  const year = thursday.getFullYear();
+  const month = thursday.getMonth();
+
+  // Find the first Thursday of that month
+  const firstOfMonth = new Date(year, month, 1, 12, 0, 0);
+  const dow = firstOfMonth.getDay(); // 0=Sun … 6=Sat
+  const daysToThursday = dow <= 4 ? 4 - dow : 11 - dow;
+  const firstThursday = addDays(firstOfMonth, daysToThursday);
+
+  // 0-based position = how many full weeks after the first Thursday
+  const diffDays = Math.round((thursday.getTime() - firstThursday.getTime()) / 86400000);
+  return Math.floor(diffDays / 7);
 }
 
 // Distribute monthly volume to a specific target week using historical weekly pattern.
