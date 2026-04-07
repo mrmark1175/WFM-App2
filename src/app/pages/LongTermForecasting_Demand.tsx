@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
-import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X } from "lucide-react";
+import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X, BrainCircuit, AlertTriangle, ShieldCheck, CheckCircle2 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -52,6 +52,7 @@ interface PlannerSnapshot {
 interface DemandActualRow { year: number; month: number; channel: ChannelKey; actual_volume: number; }
 interface Scenario { id: string; name: string; assumptions: Assumptions; snapshot: PlannerSnapshot; }
 interface HistoricalSourceRow { index: number; monthLabel: string; apiVolume: number; overrideVolume: string; finalVolume: number; variancePct: number | null; isOverridden: boolean; canEdit: boolean; stateLabel: "API" | "Editing" | "Manual"; }
+interface OutlierResult { index: number; monthLabel: string; finalVolume: number; suggestedValue: number; direction: "high" | "low"; severity: "mild" | "extreme"; modZScore: number; reason: string; applied?: boolean; }
 interface DemandPlannerScenarioRecord { scenario_id: string; scenario_name: string; planner_snapshot: Partial<PlannerSnapshot>; }
 interface LongTermActualRecord { year_index: number; month_index: number; volume: number; }
 type ChannelKey = "voice" | "email" | "chat";
@@ -860,6 +861,9 @@ export default function LongTermForecastingDemand() {
   const [isAssumptionsOpen, setIsAssumptionsOpen] = useState(true);
   const [isHistoricalSourceOpen, setIsHistoricalSourceOpen] = useState(false);
   const [isBlendedStaffingOpen, setIsBlendedStaffingOpen] = useState(true);
+  const [outlierResults, setOutlierResults] = useState<OutlierResult[] | null>(null);
+  const [isOutlierPanelOpen, setIsOutlierPanelOpen] = useState(true);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedChannels, setSelectedChannels] = useState<Record<ChannelKey, boolean>>(DEFAULT_SELECTED_CHANNELS);
   const [poolingMode, setPoolingMode] = useState<PoolingMode>("blended");
   const [selectedScenarioId, setSelectedScenarioId] = useState("base");
@@ -1235,6 +1239,63 @@ export default function LongTermForecastingDemand() {
       console.error("Failed to persist renamed demand scenario", error);
       toast.error("Scenario renamed locally, but cloud save failed");
     }
+  };
+  const runOutlierAnalysis = () => {
+    setIsAnalyzing(true);
+    setTimeout(() => {
+      const rows = historicalSourceRows;
+      const volumes = rows.map((r) => r.finalVolume);
+      if (volumes.length < 4) {
+        setOutlierResults([]);
+        setIsOutlierPanelOpen(true);
+        setIsAnalyzing(false);
+        toast.info("Need at least 4 months of data to run outlier analysis.");
+        return;
+      }
+      const sorted = [...volumes].sort((a, b) => a - b);
+      const n = sorted.length;
+      const lerp = (p: number) => {
+        const idx = (p / 100) * (n - 1);
+        const lo = Math.floor(idx);
+        const hi = Math.min(lo + 1, n - 1);
+        return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+      };
+      const q1 = lerp(25);
+      const q3 = lerp(75);
+      const iqr = q3 - q1;
+      const lowerFence = q1 - 1.5 * iqr;
+      const upperFence = q3 + 1.5 * iqr;
+      const medianVal = n % 2 === 1 ? sorted[Math.floor(n / 2)] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+      const deviations = volumes.map((v) => Math.abs(v - medianVal));
+      const sortedDev = [...deviations].sort((a, b) => a - b);
+      const mad = n % 2 === 1 ? sortedDev[Math.floor(n / 2)] : (sortedDev[n / 2 - 1] + sortedDev[n / 2]) / 2;
+      const results: OutlierResult[] = [];
+      for (const row of rows) {
+        const v = row.finalVolume;
+        const isHigh = v > upperFence;
+        const isLow = lowerFence > 0 && v < lowerFence;
+        if (!isHigh && !isLow) continue;
+        const modZ = mad > 0 ? Math.abs((0.6745 * (v - medianVal)) / mad) : 0;
+        const direction = isHigh ? "high" : "low";
+        const suggested = Math.round(isHigh ? upperFence : Math.max(lowerFence, q1));
+        const fence = isHigh ? upperFence : lowerFence;
+        const pctDiff = fence > 0 ? Math.round(Math.abs((v - fence) / fence) * 100) : 0;
+        const reason = isHigh
+          ? `Volume of ${v.toLocaleString()} is ${pctDiff}% above the upper statistical fence (${Math.round(upperFence).toLocaleString()}). This spike may skew the forecast upward — possible seasonal anomaly, campaign, or entry error.`
+          : `Volume of ${v.toLocaleString()} is ${pctDiff}% below the lower statistical fence (${Math.round(Math.max(lowerFence, 0)).toLocaleString()}). Unusually low — possible data gap, system outage, or unplanned downtime.`;
+        results.push({ index: row.index, monthLabel: row.monthLabel, finalVolume: v, suggestedValue: suggested, direction, severity: modZ > 3.5 ? "extreme" : "mild", modZScore: Math.round(modZ * 10) / 10, reason });
+      }
+      setOutlierResults(results);
+      setIsOutlierPanelOpen(true);
+      setIsAnalyzing(false);
+      if (results.length === 0) toast.success("No outliers detected — the data distribution looks clean.");
+      else toast.warning(`${results.length} outlier${results.length > 1 ? "s" : ""} detected. Review the analysis panel below.`);
+    }, 600);
+  };
+  const applyOutlierSuggestion = (index: number, suggestedValue: number) => {
+    handleOverrideChange(index, String(suggestedValue));
+    setOutlierResults((prev) => prev ? prev.map((r) => r.index === index ? { ...r, applied: true } : r) : null);
+    toast.success("Suggested normalization applied as override.");
   };
   const handleOverrideToggle = (index: number, checked: boolean) => {
     setHistoricalOverridesByChannel((current) => {
@@ -1866,31 +1927,31 @@ export default function LongTermForecastingDemand() {
       <PageLayout title="Long Term Forecasting  Demand">
         <div className="flex flex-col gap-8 pb-12">
           <section className="rounded-2xl bg-gradient-to-br from-slate-800 to-slate-700 px-8 py-10 shadow-lg">
-            <p className="text-[11px] uppercase tracking-[0.4em] text-slate-400 font-semibold">Long Term Forecasting</p>
+            <p className="text-[11px] uppercase tracking-[0.4em] text-slate-200 font-semibold">Long Term Forecasting</p>
             <h1 className="mt-2 font-bold text-2xl md:text-3xl text-white">Multi-Channel Demand & Capacity Planning</h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-300">
+            <p className="mt-2 max-w-2xl text-sm text-slate-200">
               Forecast demand across voice, chat, and email channels. Configure dedicated or blended staffing pools, calculate required FTE, and optimize resource allocation.
             </p>
             <div className="mt-6 grid gap-4 md:grid-cols-3">
               <Card className="bg-white/10 border border-white/10 shadow-none">
                 <CardContent className="p-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">Forecasted Monthly Volume</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-200">Forecasted Monthly Volume</p>
                   <h3 className="mt-2 text-2xl font-bold text-white">{kpis.avgVolume.toLocaleString()}</h3>
-                  <p className="text-xs text-slate-400 mt-1">Average across the active horizon</p>
+                  <p className="text-xs text-slate-300 mt-1">Average across the active horizon</p>
                 </CardContent>
               </Card>
               <Card className="bg-white/10 border border-white/10 shadow-none">
                 <CardContent className="p-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">Workload Hours</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-200">Workload Hours</p>
                   <h3 className="mt-2 text-2xl font-bold text-white">{kpis.avgWorkloadHours.toLocaleString()}</h3>
-                  <p className="text-xs text-slate-400 mt-1">Converted from channel AHTs &amp; open hours</p>
+                  <p className="text-xs text-slate-300 mt-1">Converted from channel AHTs &amp; open hours</p>
                 </CardContent>
               </Card>
               <Card className="bg-white/10 border border-white/10 shadow-none">
                 <CardContent className="p-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">Required Agents / FTE</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-200">Required Agents / FTE</p>
                   <h3 className="mt-2 text-2xl font-bold text-white">{kpis.avgRequiredFTE}</h3>
-                  <p className="text-xs text-slate-400 mt-1">Average total FTE for {selectedBlendConfig.label}</p>
+                  <p className="text-xs text-slate-300 mt-1">Average total FTE for {selectedBlendConfig.label}</p>
                 </CardContent>
               </Card>
             </div>
@@ -1900,7 +1961,7 @@ export default function LongTermForecastingDemand() {
           <Card className="border border-border/50 shadow-sm">
             <CardContent className="px-4 py-3">
               <div className="flex flex-wrap items-center gap-3">
-                <span className="text-[11px] font-black uppercase tracking-widest text-muted-foreground shrink-0">Scenarios</span>
+                <span className="text-[11px] font-black uppercase tracking-widest text-foreground/60 shrink-0">Scenarios</span>
                 <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
                   {Object.values(scenarios).map((scenario) => (
                     <button
@@ -1976,7 +2037,7 @@ export default function LongTermForecastingDemand() {
                       </div>
                       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                         <div className="w-full sm:w-[220px]">
-                          <Label className="text-[11px] font-black uppercase tracking-widest text-muted-foreground">Channel View</Label>
+                          <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Channel View</Label>
                           <Select value={historicalChannelView} onValueChange={(value) => setHistoricalChannelView(value as ChannelKey)}>
                             <SelectTrigger className="mt-2 h-10 font-semibold">
                               <SelectValue placeholder="Select channel" />
@@ -1989,7 +2050,7 @@ export default function LongTermForecastingDemand() {
                           </Select>
                         </div>
                         <div className="w-full sm:w-[120px]">
-                          <Label className="text-[11px] font-black uppercase tracking-widest text-muted-foreground">Data Year</Label>
+                          <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Data Year</Label>
                           <Input
                             type="number"
                             min={2000}
@@ -2022,8 +2083,97 @@ export default function LongTermForecastingDemand() {
                         <RotateCcw className="size-4" />
                         Reset All Overrides
                       </Button>
+                      <Button
+                        size="sm"
+                        className="gap-2 bg-violet-600 hover:bg-violet-700 text-white border-0"
+                        onClick={runOutlierAnalysis}
+                        disabled={isAnalyzing || historicalSourceRows.length < 4}
+                      >
+                        {isAnalyzing ? <Loader2 className="size-4 animate-spin" /> : <BrainCircuit className="size-4" />}
+                        {isAnalyzing ? "Analyzing…" : "Detect Outliers"}
+                      </Button>
                     </div>
                   </div>
+                  {outlierResults !== null && (
+                    <div className="rounded-xl border border-violet-200/70 dark:border-violet-800/40 bg-violet-50/60 dark:bg-violet-950/20 overflow-hidden">
+                      <button
+                        type="button"
+                        className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-violet-100/40 dark:hover:bg-violet-900/20 transition-colors"
+                        onClick={() => setIsOutlierPanelOpen((v) => !v)}
+                      >
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <BrainCircuit className="size-4 text-violet-600 shrink-0" />
+                          <span className="text-sm font-bold text-violet-900 dark:text-violet-200">
+                            AI Outlier Analysis
+                          </span>
+                          {outlierResults.length === 0
+                            ? <Badge className="bg-emerald-500 text-white text-[10px] gap-1"><CheckCircle2 className="size-3" />Clean</Badge>
+                            : <Badge className="bg-violet-600 text-white text-[10px]">{outlierResults.length} flagged</Badge>
+                          }
+                          <div className="flex items-center gap-1 text-[10px] text-violet-600/80 dark:text-violet-400/70 font-medium">
+                            <ShieldCheck className="size-3" />
+                            Exordium Private AI Engine — runs entirely on your isolated server. No data leaves your environment.
+                          </div>
+                        </div>
+                        <ChevronDown className={`size-4 text-violet-500 shrink-0 transition-transform ${isOutlierPanelOpen ? "" : "-rotate-90"}`} />
+                      </button>
+                      {isOutlierPanelOpen && (
+                        <div className="px-4 pb-4 space-y-3">
+                          {outlierResults.length === 0 ? (
+                            <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-400 font-medium py-1">
+                              <CheckCircle2 className="size-4 shrink-0" />
+                              All {historicalSourceRows.length} months are within normal statistical range. No normalization needed.
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-xs text-violet-700/80 dark:text-violet-300/70">
+                                Outliers detected using IQR fences (Q1 − 1.5×IQR, Q3 + 1.5×IQR) and Modified Z-score. Click <strong>Apply</strong> to set the suggested value as an override.
+                              </p>
+                              <div className="space-y-2">
+                                {outlierResults.map((result) => (
+                                  <div
+                                    key={result.index}
+                                    className={`rounded-lg border px-4 py-3 flex flex-col sm:flex-row sm:items-start gap-3 ${
+                                      result.applied
+                                        ? "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/40"
+                                        : result.severity === "extreme"
+                                          ? "border-rose-200/80 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-800/40"
+                                          : "border-amber-200/80 bg-amber-50/60 dark:bg-amber-950/20 dark:border-amber-800/40"
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <AlertTriangle className={`size-4 ${result.applied ? "text-emerald-500" : result.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
+                                      <span className="font-bold text-sm">{result.monthLabel}</span>
+                                      <Badge variant="outline" className={`text-[10px] ${result.direction === "high" ? "border-rose-300 text-rose-700" : "border-blue-300 text-blue-700"}`}>
+                                        {result.direction === "high" ? "↑ High" : "↓ Low"}
+                                      </Badge>
+                                      <Badge variant="outline" className="text-[10px] border-violet-300 text-violet-700">
+                                        Z {result.modZScore}
+                                      </Badge>
+                                    </div>
+                                    <p className="text-xs text-foreground/70 flex-1">{result.reason}</p>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      {result.applied ? (
+                                        <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1"><CheckCircle2 className="size-3" /> Applied</span>
+                                      ) : (
+                                        <Button
+                                          size="sm"
+                                          className="h-7 text-xs gap-1 bg-violet-600 hover:bg-violet-700 text-white"
+                                          onClick={() => applyOutlierSuggestion(result.index, result.suggestedValue)}
+                                        >
+                                          Apply {result.suggestedValue.toLocaleString()}
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="overflow-x-auto rounded-xl border border-border/60">
                     <Table>
                       <TableHeader className="bg-muted/50">
@@ -2037,11 +2187,28 @@ export default function LongTermForecastingDemand() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {historicalSourceRows.map((row) => (
-                          <TableRow key={row.index} className={row.canEdit ? "bg-amber-50/60 dark:bg-amber-950/10" : ""}>
+                        {historicalSourceRows.map((row) => {
+                          const outlier = outlierResults?.find((r) => r.index === row.index);
+                          return (
+                          <TableRow key={row.index} className={outlier && !outlier.applied ? (outlier.severity === "extreme" ? "bg-rose-50/40 dark:bg-rose-950/10" : "bg-amber-50/40 dark:bg-amber-950/10") : row.canEdit ? "bg-amber-50/60 dark:bg-amber-950/10" : ""}>
                             <TableCell className="pl-6">
-                              <div className="flex flex-col">
-                                <span className="font-bold text-sm">{row.monthLabel}</span>
+                              <div className="flex flex-col gap-0.5">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-sm">{row.monthLabel}</span>
+                                  {outlier && !outlier.applied && (
+                                    <UITooltip>
+                                      <TooltipTrigger asChild>
+                                        <AlertTriangle className={`size-3.5 shrink-0 cursor-help ${outlier.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
+                                      </TooltipTrigger>
+                                      <TooltipContent className="max-w-[280px]">
+                                        <p className="text-xs font-semibold mb-1">{outlier.severity === "extreme" ? "Extreme Outlier" : "Mild Outlier"} — {outlier.direction === "high" ? "↑ Above upper fence" : "↓ Below lower fence"}</p>
+                                        <p className="text-xs">{outlier.reason}</p>
+                                        <p className="text-xs mt-1 font-semibold text-violet-300">Suggested: {outlier.suggestedValue.toLocaleString()}</p>
+                                      </TooltipContent>
+                                    </UITooltip>
+                                  )}
+                                  {outlier?.applied && <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" />}
+                                </div>
                                 {row.canEdit && <span className="text-[11px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-400">{row.stateLabel}</span>}
                               </div>
                             </TableCell>
@@ -2076,7 +2243,8 @@ export default function LongTermForecastingDemand() {
                               </div>
                             </TableCell>
                           </TableRow>
-                        ))}
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   </div>
@@ -2186,7 +2354,7 @@ export default function LongTermForecastingDemand() {
                   {channelAssumptionSummary.map((channel) => (
                     <div key={channel.key} className={`rounded-lg border border-border/50 p-4 ${CHANNEL_ASSUMPTION_META[channel.key].bgClass}`}>
                       <div className="flex items-center justify-between gap-3">
-                        <p className={`text-xs font-semibold uppercase tracking-wide text-muted-foreground ${CHANNEL_ASSUMPTION_META[channel.key].colorClass}`}>{channel.label}</p>
+                        <p className={`text-xs font-semibold uppercase tracking-wide text-foreground/70 ${CHANNEL_ASSUMPTION_META[channel.key].colorClass}`}>{channel.label}</p>
                         <Badge variant="outline">{channel.isIncluded ? "Included" : "Excluded"}</Badge>
                       </div>
                       <div className="mt-3 space-y-1.5 text-xs">
@@ -2277,14 +2445,14 @@ export default function LongTermForecastingDemand() {
                   <Table>
                     <TableHeader className="bg-muted/50">
                       <TableRow className="hover:bg-transparent">
-                        <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Month</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Forecast Volume</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Actual Volume</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Variance</TableHead>
+                        <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-foreground/70">Month</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Forecast Volume</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Actual Volume</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Variance</TableHead>
                         {activeRecutFactor != null && (
                           <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-emerald-700">Re-cut Forecast</TableHead>
                         )}
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Status</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2375,19 +2543,19 @@ export default function LongTermForecastingDemand() {
                   <Table>
                     <TableHeader className="bg-muted/50">
                       <TableRow className="hover:bg-transparent">
-                        <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Month</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-foreground/70">Month</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">
                           {CHANNEL_ASSUMPTION_META[detailChannel].label} Volume
                         </TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Blended Workload Hrs</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Wtd. AHT</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Occupancy</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Shrinkage</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Active Setup</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Shared Pool Workload</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Shared Pool FTE</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Standalone Pool FTE</TableHead>
-                        <TableHead className="pr-6 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Total Required FTE</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Blended Workload Hrs</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Wtd. AHT</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Occupancy</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Shrinkage</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Active Setup</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Shared Pool Workload</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Shared Pool FTE</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Standalone Pool FTE</TableHead>
+                        <TableHead className="pr-6 text-right text-xs font-semibold uppercase tracking-wide text-foreground/70">Total Required FTE</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2630,36 +2798,36 @@ export default function LongTermForecastingDemand() {
                   <div className="space-y-4 rounded-xl border border-border/60 p-4">
                     <p className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Voice SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="voiceSlaTarget" className="text-xs font-medium text-muted-foreground">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs font-medium text-muted-foreground">Within Sec</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs font-medium text-muted-foreground">ASA Sec</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceSlaTarget" className="text-xs font-medium text-foreground/70">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs font-medium text-foreground/70">Within Sec</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs font-medium text-foreground/70">ASA Sec</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
                     </div>
                   </div>
                   <div className="space-y-4 rounded-xl border border-border/60 p-4">
                     <p className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Email SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="emailSlaTarget" className="text-xs font-medium text-muted-foreground">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs font-medium text-muted-foreground">Within Sec</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="emailAsaTargetSeconds" className="text-xs font-medium text-muted-foreground">ASA Sec</Label><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailSlaTarget" className="text-xs font-medium text-foreground/70">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs font-medium text-foreground/70">Within Sec</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailAsaTargetSeconds" className="text-xs font-medium text-foreground/70">ASA Sec</Label><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
                     </div>
                   </div>
                   <div className="space-y-4 rounded-xl border border-border/60 p-4">
                     <p className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Chat SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="chatSlaTarget" className="text-xs font-medium text-muted-foreground">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs font-medium text-muted-foreground">Within Sec</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="chatAsaTargetSeconds" className="text-xs font-medium text-muted-foreground">ASA Sec</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatSlaTarget" className="text-xs font-medium text-foreground/70">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs font-medium text-foreground/70">Within Sec</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatAsaTargetSeconds" className="text-xs font-medium text-foreground/70">ASA Sec</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-muted-foreground">Hours Per Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-bold" /></div>
-                    <div className="space-y-2"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-muted-foreground">Days Per Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-bold" /></div>
+                    <div className="space-y-2"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-foreground/70">Hours Per Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-bold" /></div>
+                    <div className="space-y-2"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-foreground/70">Days Per Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-bold" /></div>
                   </div>
                   <div className="rounded-lg border border-border/60 bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
                     Operating window: <span className="font-bold text-foreground">{assumptions.operatingHoursPerDay}h/day x {assumptions.operatingDaysPerWeek}d/week</span> = <span className="font-bold text-foreground">{openHoursPerMonth}</span> open hours/month
                   </div>
-                  <div className="space-y-2"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-muted-foreground">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-bold" /></div>
-                  <div className="space-y-2"><Label htmlFor="fteMonthlyHours" className="text-xs font-medium text-muted-foreground">FTE Monthly Hours</Label><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-2"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-foreground/70">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-2"><Label htmlFor="fteMonthlyHours" className="text-xs font-medium text-foreground/70">FTE Monthly Hours</Label><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-10 font-bold" /></div>
                   <div className="space-y-3 border-t border-border pt-6 mt-6">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1">
