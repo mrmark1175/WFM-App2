@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { User, Users, Settings, ChevronRight } from "lucide-react";
+import { User, Users, Settings, ChevronRight, CalendarDays } from "lucide-react";
 import logo from "../../assets/logo.svg";
 
 export function Home() {
@@ -16,6 +16,12 @@ export function Home() {
       description: "Workforce management, scheduling, and forecasting tools",
       icon: Users,
       path: "/wfm",
+    },
+    {
+      title: "Scheduling",
+      description: "Agent roster, shift templates, labor law rules, and AI schedule generation",
+      icon: CalendarDays,
+      path: "/scheduling",
     },
     {
       title: "Configuration",

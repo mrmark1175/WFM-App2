@@ -26,6 +26,10 @@ export function PageLayout({ children, title }: PageLayoutProps) {
     intraday: "Intraday Forecast",
     "my-account": "My Account",
     configuration: "Configuration",
+    scheduling: "Scheduling",
+    agents: "Agent Roster",
+    shifts: "Shift Templates",
+    "labor-laws": "Labor Law Rules",
   };
 
   return (

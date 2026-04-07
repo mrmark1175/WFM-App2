@@ -14,6 +14,10 @@ import LongTermForecastingDemand from "./pages/LongTermForecasting_Demand";
 import { ShrinkagePlanning } from "./pages/ShrinkagePlanning";
 import { LOBManagement } from "./pages/LOBManagement";
 import { LOBSettings } from "./pages/LOBSettings";
+import { SchedulingHub } from "./pages/SchedulingHub";
+import { AgentRoster } from "./pages/AgentRoster";
+import { ShiftTemplates } from "./pages/ShiftTemplates";
+import { LaborLawRules } from "./pages/LaborLawRules";
 
 export const router = createBrowserRouter([
   { path: "/",                            Component: Home },
@@ -31,5 +35,9 @@ export const router = createBrowserRouter([
   { path: "/configuration",              Component: Configuration },
   { path: "/configuration/lob-management", Component: LOBManagement },
   { path: "/configuration/lob-settings",  Component: LOBSettings },
+  { path: "/scheduling",                  Component: SchedulingHub },
+  { path: "/scheduling/agents",           Component: AgentRoster },
+  { path: "/scheduling/shifts",           Component: ShiftTemplates },
+  { path: "/scheduling/labor-laws",       Component: LaborLawRules },
   { path: "*",                            Component: Home },
 ]);

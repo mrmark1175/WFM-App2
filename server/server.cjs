@@ -313,6 +313,95 @@ async function ensureAppTables() {
       UNIQUE (organization_id, lob_id, year, month, channel)
     )
   `);
+
+  // ── Scheduling Prerequisites ──────────────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduling_agents (
+      id                  SERIAL PRIMARY KEY,
+      organization_id     INTEGER NOT NULL DEFAULT 1,
+      employee_id         VARCHAR(100),
+      full_name           VARCHAR(255) NOT NULL,
+      email               VARCHAR(255),
+      contract_type       VARCHAR(50) NOT NULL DEFAULT 'full_time',
+      skill_voice         BOOLEAN NOT NULL DEFAULT TRUE,
+      skill_chat          BOOLEAN NOT NULL DEFAULT FALSE,
+      skill_email         BOOLEAN NOT NULL DEFAULT FALSE,
+      lob_assignments     INTEGER[] NOT NULL DEFAULT '{}',
+      accommodation_flags TEXT[] NOT NULL DEFAULT '{}',
+      availability        JSONB NOT NULL DEFAULT '{}',
+      status              VARCHAR(50) NOT NULL DEFAULT 'active',
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduling_shift_templates (
+      id               SERIAL PRIMARY KEY,
+      organization_id  INTEGER NOT NULL DEFAULT 1,
+      name             VARCHAR(255) NOT NULL,
+      start_time       VARCHAR(10) NOT NULL,
+      end_time         VARCHAR(10) NOT NULL,
+      duration_hours   NUMERIC(4,2),
+      break_rules      JSONB NOT NULL DEFAULT '[]',
+      channel_coverage TEXT[] NOT NULL DEFAULT '{}',
+      color            VARCHAR(20) NOT NULL DEFAULT '#6366f1',
+      is_overnight     BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduling_labor_laws (
+      id                        SERIAL PRIMARY KEY,
+      organization_id           INTEGER NOT NULL DEFAULT 1,
+      jurisdiction_name         VARCHAR(255) NOT NULL,
+      jurisdiction_code         VARCHAR(50),
+      is_preset                 BOOLEAN NOT NULL DEFAULT FALSE,
+      max_hours_per_day         NUMERIC(4,1) NOT NULL DEFAULT 8,
+      max_hours_per_week        NUMERIC(5,1) NOT NULL DEFAULT 40,
+      max_consecutive_days      INTEGER NOT NULL DEFAULT 5,
+      overtime_threshold_daily  NUMERIC(4,1),
+      overtime_threshold_weekly NUMERIC(5,1) DEFAULT 40,
+      rest_hours_between_shifts NUMERIC(4,1) NOT NULL DEFAULT 8,
+      rest_days_per_week        INTEGER NOT NULL DEFAULT 1,
+      meal_break_minutes        INTEGER NOT NULL DEFAULT 60,
+      meal_break_after_hours    NUMERIC(3,1) NOT NULL DEFAULT 5,
+      short_breaks_count        INTEGER NOT NULL DEFAULT 2,
+      short_break_minutes       INTEGER NOT NULL DEFAULT 15,
+      night_differential_pct    NUMERIC(5,2) NOT NULL DEFAULT 0,
+      overtime_rate_multiplier  NUMERIC(4,2) NOT NULL DEFAULT 1.25,
+      custom_rules              JSONB NOT NULL DEFAULT '{}',
+      notes                     TEXT,
+      created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, jurisdiction_code)
+    )
+  `);
+
+  // Seed preset labor law jurisdictions (idempotent)
+  await pool.query(`
+    INSERT INTO scheduling_labor_laws
+      (organization_id, jurisdiction_name, jurisdiction_code, is_preset,
+       max_hours_per_day, max_hours_per_week, max_consecutive_days,
+       overtime_threshold_daily, overtime_threshold_weekly,
+       rest_hours_between_shifts, rest_days_per_week,
+       meal_break_minutes, meal_break_after_hours,
+       short_breaks_count, short_break_minutes,
+       night_differential_pct, overtime_rate_multiplier, notes)
+    VALUES
+      (1, 'Philippines (DOLE)', 'PH', true,
+       8, 48, 6, 8, 48, 8, 1, 60, 5, 2, 15, 10.00, 1.25,
+       'DOLE Labor Code. Night differential 10% for work 10PM–6AM. OT at 25% above regular rate. Max 6 consecutive days; 1 mandatory rest day per week. Holiday pay and 13th month pay rules apply separately.'),
+      (1, 'United States (FLSA)', 'US', true,
+       8, 40, 6, NULL, 40, 8, 1, 30, 5, 2, 10, 0.00, 1.50,
+       'Fair Labor Standards Act. Federal OT after 40 hrs/week at 1.5x. No federal daily OT threshold — check state law (CA and NV require daily OT after 8 hrs). No federal meal break mandate; verify applicable state regulations.'),
+      (1, 'India (Shops & Establishments Act)', 'IN', true,
+       9, 48, 6, 9, 48, 12, 1, 60, 5, 2, 15, 0.00, 2.00,
+       'Shops and Commercial Establishments Act. Max 9 hrs/day, 48 hrs/week. Minimum 12 hrs rest between shifts. OT at 2x rate. 1 paid weekly off mandatory. State-specific variations apply — verify with local HR compliance counsel.')
+    ON CONFLICT (organization_id, jurisdiction_code) DO NOTHING
+  `);
 }
 
 // ── LOB helper ────────────────────────────────────────────────────────────────
@@ -1332,6 +1421,171 @@ app.put('/api/lob-settings', async (req, res) => {
     console.error('LOB Settings PUT Error:', err.message);
     res.status(500).json({ error: 'Failed to save LOB settings' });
   }
+});
+
+// ── Scheduling: Agents ───────────────────────────────────────────────────────
+app.get('/api/scheduling/agents', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM scheduling_agents WHERE organization_id = 1 ORDER BY full_name ASC'
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/scheduling/agents', async (req, res) => {
+  const { employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO scheduling_agents
+         (organization_id, employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status)
+       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [employee_id||null, full_name, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active']
+    );
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/scheduling/agents/:id', async (req, res) => {
+  const { employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE scheduling_agents SET
+         employee_id=$1, full_name=$2, email=$3, contract_type=$4,
+         skill_voice=$5, skill_chat=$6, skill_email=$7,
+         lob_assignments=$8, accommodation_flags=$9, availability=$10,
+         status=$11, updated_at=NOW()
+       WHERE id=$12 AND organization_id=1 RETURNING *`,
+      [employee_id||null, full_name, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Agent not found' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/scheduling/agents/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM scheduling_agents WHERE id=$1 AND organization_id=1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Scheduling: Shift Templates ───────────────────────────────────────────────
+app.get('/api/scheduling/shift-templates', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM scheduling_shift_templates WHERE organization_id = 1 ORDER BY start_time ASC, name ASC'
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/scheduling/shift-templates', async (req, res) => {
+  const { name, start_time, end_time, duration_hours, break_rules, channel_coverage, color, is_overnight } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO scheduling_shift_templates
+         (organization_id, name, start_time, end_time, duration_hours, break_rules, channel_coverage, color, is_overnight)
+       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [name, start_time, end_time, duration_hours||null, JSON.stringify(break_rules||[]), channel_coverage||[], color||'#6366f1', is_overnight??false]
+    );
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/scheduling/shift-templates/:id', async (req, res) => {
+  const { name, start_time, end_time, duration_hours, break_rules, channel_coverage, color, is_overnight } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE scheduling_shift_templates SET
+         name=$1, start_time=$2, end_time=$3, duration_hours=$4,
+         break_rules=$5, channel_coverage=$6, color=$7, is_overnight=$8, updated_at=NOW()
+       WHERE id=$9 AND organization_id=1 RETURNING *`,
+      [name, start_time, end_time, duration_hours||null, JSON.stringify(break_rules||[]), channel_coverage||[], color||'#6366f1', is_overnight??false, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Shift template not found' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/scheduling/shift-templates/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM scheduling_shift_templates WHERE id=$1 AND organization_id=1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Scheduling: Labor Laws ────────────────────────────────────────────────────
+app.get('/api/scheduling/labor-laws', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM scheduling_labor_laws WHERE organization_id = 1 ORDER BY is_preset DESC, jurisdiction_name ASC'
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/scheduling/labor-laws', async (req, res) => {
+  const { jurisdiction_name, jurisdiction_code, max_hours_per_day, max_hours_per_week, max_consecutive_days, overtime_threshold_daily, overtime_threshold_weekly, rest_hours_between_shifts, rest_days_per_week, meal_break_minutes, meal_break_after_hours, short_breaks_count, short_break_minutes, night_differential_pct, overtime_rate_multiplier, custom_rules, notes } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO scheduling_labor_laws
+         (organization_id, jurisdiction_name, jurisdiction_code, is_preset,
+          max_hours_per_day, max_hours_per_week, max_consecutive_days,
+          overtime_threshold_daily, overtime_threshold_weekly,
+          rest_hours_between_shifts, rest_days_per_week,
+          meal_break_minutes, meal_break_after_hours,
+          short_breaks_count, short_break_minutes,
+          night_differential_pct, overtime_rate_multiplier, custom_rules, notes)
+       VALUES (1,$1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+      [jurisdiction_name, jurisdiction_code||null, max_hours_per_day||8, max_hours_per_week||40, max_consecutive_days||5, overtime_threshold_daily||null, overtime_threshold_weekly||40, rest_hours_between_shifts||8, rest_days_per_week||1, meal_break_minutes||60, meal_break_after_hours||5, short_breaks_count||2, short_break_minutes||15, night_differential_pct||0, overtime_rate_multiplier||1.25, JSON.stringify(custom_rules||{}), notes||null]
+    );
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/scheduling/labor-laws/:id', async (req, res) => {
+  const { jurisdiction_name, jurisdiction_code, max_hours_per_day, max_hours_per_week, max_consecutive_days, overtime_threshold_daily, overtime_threshold_weekly, rest_hours_between_shifts, rest_days_per_week, meal_break_minutes, meal_break_after_hours, short_breaks_count, short_break_minutes, night_differential_pct, overtime_rate_multiplier, custom_rules, notes } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE scheduling_labor_laws SET
+         jurisdiction_name=$1, jurisdiction_code=$2,
+         max_hours_per_day=$3, max_hours_per_week=$4, max_consecutive_days=$5,
+         overtime_threshold_daily=$6, overtime_threshold_weekly=$7,
+         rest_hours_between_shifts=$8, rest_days_per_week=$9,
+         meal_break_minutes=$10, meal_break_after_hours=$11,
+         short_breaks_count=$12, short_break_minutes=$13,
+         night_differential_pct=$14, overtime_rate_multiplier=$15,
+         custom_rules=$16, notes=$17, updated_at=NOW()
+       WHERE id=$18 AND organization_id=1 AND is_preset=false RETURNING *`,
+      [jurisdiction_name, jurisdiction_code||null, max_hours_per_day||8, max_hours_per_week||40, max_consecutive_days||5, overtime_threshold_daily||null, overtime_threshold_weekly||40, rest_hours_between_shifts||8, rest_days_per_week||1, meal_break_minutes||60, meal_break_after_hours||5, short_breaks_count||2, short_break_minutes||15, night_differential_pct||0, overtime_rate_multiplier||1.25, JSON.stringify(custom_rules||{}), notes||null, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Rule not found or preset rules cannot be edited' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/scheduling/labor-laws/:id', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      'DELETE FROM scheduling_labor_laws WHERE id=$1 AND organization_id=1 AND is_preset=false',
+      [req.params.id]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'Rule not found or preset rules cannot be deleted' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Scheduling: Hub counts ────────────────────────────────────────────────────
+app.get('/api/scheduling/counts', async (req, res) => {
+  try {
+    const [agents, shifts, laws] = await Promise.all([
+      pool.query('SELECT COUNT(*)::int AS n FROM scheduling_agents WHERE organization_id=1'),
+      pool.query('SELECT COUNT(*)::int AS n FROM scheduling_shift_templates WHERE organization_id=1'),
+      pool.query('SELECT COUNT(*)::int AS n, SUM(CASE WHEN is_preset THEN 1 ELSE 0 END)::int AS presets FROM scheduling_labor_laws WHERE organization_id=1'),
+    ]);
+    res.json({ agents: agents.rows[0].n, shifts: shifts.rows[0].n, laws: laws.rows[0].n, lawPresets: laws.rows[0].presets });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.use(express.static(distPath));
