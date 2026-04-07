@@ -298,6 +298,21 @@ async function ensureAppTables() {
       UNIQUE (organization_id, lob_id)
     )
   `);
+
+  // ── demand_actuals — per-LOB, per-channel actual volumes for re-cut ──────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS demand_actuals (
+      id              SERIAL PRIMARY KEY,
+      organization_id INTEGER NOT NULL DEFAULT 1,
+      lob_id          INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      year            INTEGER NOT NULL,
+      month           INTEGER NOT NULL,
+      channel         TEXT    NOT NULL,
+      actual_volume   INTEGER NOT NULL,
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, year, month, channel)
+    )
+  `);
 }
 
 // ── LOB helper ────────────────────────────────────────────────────────────────
@@ -1090,6 +1105,50 @@ app.put('/api/demand-planner-active-state', async (req, res) => {
   } catch (err) {
     console.error('Demand Planner Active State Save Error:', err.message);
     res.status(500).json({ error: 'Failed to save active state' });
+  }
+});
+
+// ── Demand Actuals (Re-cut) ───────────────────────────────────────────────────
+app.get('/api/demand-actuals', async (req, res) => {
+  const user = getCurrentUser(req);
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  const year = req.query.year ? parseInt(req.query.year) : null;
+  try {
+    const params = [user.organization_id, lobId];
+    const yearClause = year ? ' AND year = $3' : '';
+    if (year) params.push(year);
+    const result = await pool.query(
+      `SELECT year, month, channel, actual_volume, updated_at
+       FROM demand_actuals
+       WHERE organization_id = $1 AND lob_id = $2${yearClause}
+       ORDER BY year, month, channel`,
+      params
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Demand Actuals Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch demand actuals' });
+  }
+});
+
+app.put('/api/demand-actuals', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { lob_id, year, month, channel, actual_volume } = req.body;
+  if (!lob_id || !year || !month || !channel || actual_volume == null) {
+    return res.status(400).json({ error: 'lob_id, year, month, channel, and actual_volume are required' });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO demand_actuals (organization_id, lob_id, year, month, channel, actual_volume, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       ON CONFLICT (organization_id, lob_id, year, month, channel)
+       DO UPDATE SET actual_volume = EXCLUDED.actual_volume, updated_at = NOW()`,
+      [user.organization_id, lob_id, year, month, channel, actual_volume]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Demand Actuals Save Error:', err.message);
+    res.status(500).json({ error: 'Failed to save demand actual' });
   }
 });
 

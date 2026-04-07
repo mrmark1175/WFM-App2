@@ -47,7 +47,9 @@ interface PlannerSnapshot {
   isHistoricalSourceOpen: boolean;
   isBlendedStaffingOpen: boolean;
   selectedHistoricalChannel: ChannelKey;
+  recutVolumesByChannel?: Record<ChannelKey, number[]> | null;
 }
+interface DemandActualRow { year: number; month: number; channel: ChannelKey; actual_volume: number; }
 interface Scenario { id: string; name: string; assumptions: Assumptions; snapshot: PlannerSnapshot; }
 interface HistoricalSourceRow { index: number; monthLabel: string; apiVolume: number; overrideVolume: string; finalVolume: number; variancePct: number | null; isOverridden: boolean; canEdit: boolean; stateLabel: "API" | "Editing" | "Manual"; }
 interface DemandPlannerScenarioRecord { scenario_id: string; scenario_name: string; planner_snapshot: Partial<PlannerSnapshot>; }
@@ -677,6 +679,7 @@ function buildPlannerSnapshot(
   isHistoricalSourceOpen: boolean,
   isBlendedStaffingOpen: boolean,
   selectedHistoricalChannel: ChannelKey,
+  recutVolumesByChannel: Record<ChannelKey, number[]> | null = null,
 ): PlannerSnapshot {
   const normalizedChannels = normalizeSelectedChannels(selectedChannels);
   return {
@@ -702,6 +705,7 @@ function buildPlannerSnapshot(
     isHistoricalSourceOpen,
     isBlendedStaffingOpen,
     selectedHistoricalChannel,
+    recutVolumesByChannel,
   };
 }
 function createScenario(id: string, name: string, snapshot: PlannerSnapshot): Scenario { return ({
@@ -871,13 +875,19 @@ export default function LongTermForecastingDemand() {
   const [historicalApiDataByChannel, setHistoricalApiDataByChannel] = useState<Record<ChannelKey, number[]>>(EMPTY_CHANNEL_DATA);
   const [syncedHistoricalApiDataByChannel, setSyncedHistoricalApiDataByChannel] = useState<Record<ChannelKey, number[]>>(EMPTY_CHANNEL_DATA);
   const [historicalOverridesByChannel, setHistoricalOverridesByChannel] = useState<Record<ChannelKey, Record<number, string>>>(EMPTY_CHANNEL_OVERRIDES);
+  const [recutVolumesByChannel, setRecutVolumesByChannel] = useState<Record<ChannelKey, number[]> | null>(null);
+  // Re-cut actuals state
+  const [detailChannel, setDetailChannel] = useState<ChannelKey>("voice");
+  const [demandActuals, setDemandActuals] = useState<Record<string, number | null>>({});
+  const [savingActuals, setSavingActuals] = useState<Set<string>>(new Set());
+  const [savedActuals, setSavedActuals] = useState<Set<string>>(new Set());
   const hasHydratedRef = useRef(false);
   const activeScenario = scenarios[selectedScenarioId];
   const historicalApiData = historicalApiDataByChannel.voice;
   const historicalOverrides = historicalOverridesByChannel.voice;
   const visibleHistoricalApiData = historicalApiDataByChannel[historicalChannelView];
   const visibleHistoricalOverrides = historicalOverridesByChannel[historicalChannelView];
-  const getCurrentPlannerSnapshot = () => buildPlannerSnapshot(assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, historicalOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView);
+  const getCurrentPlannerSnapshot = () => buildPlannerSnapshot(assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, historicalOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, recutVolumesByChannel);
   const normalizePersistedScenarios = (records: DemandPlannerScenarioRecord[]) => records.reduce<Record<string, Scenario>>((acc, record) => {
     const nextScenario = normalizeScenario({
       id: record.scenario_id,
@@ -909,6 +919,7 @@ export default function LongTermForecastingDemand() {
     setIsHistoricalSourceOpen(snapshot.isHistoricalSourceOpen);
     setIsBlendedStaffingOpen(snapshot.isBlendedStaffingOpen);
     setHistoricalChannelView(snapshot.selectedHistoricalChannel || "voice");
+    setRecutVolumesByChannel(snapshot.recutVolumesByChannel ?? null);
   };
 
   const persistActiveStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1056,7 +1067,8 @@ export default function LongTermForecastingDemand() {
     const source = assumptions.shrinkageSource;
     if (source === "planner_excl" || source === "planner_incl") {
       try {
-        const stored = localStorage.getItem("wfm_shrinkage_totals");
+        const lobKey = activeLob ? `_lob${activeLob.id}` : "";
+        const stored = localStorage.getItem(`wfm_shrinkage_totals${lobKey}`);
         if (stored) {
           const parsed = JSON.parse(stored) as { totalExcl?: number; totalIncl?: number; lastUpdated?: string };
           const value = source === "planner_excl" ? parsed.totalExcl : parsed.totalIncl;
@@ -1068,7 +1080,22 @@ export default function LongTermForecastingDemand() {
         // ignore malformed localStorage
       }
     }
-  }, [assumptions.shrinkageSource]);
+  }, [assumptions.shrinkageSource, activeLob?.id]);
+
+  // Load demand actuals (for re-cut) whenever the LOB or forecast year changes
+  useEffect(() => {
+    if (!activeLob) return;
+    const year = assumptions.startDate ? new Date(assumptions.startDate).getFullYear() : new Date().getFullYear();
+    fetch(apiUrl(`/api/demand-actuals?lob_id=${activeLob.id}&year=${year}`))
+      .then((r) => r.json())
+      .then((rows: DemandActualRow[]) => {
+        if (!Array.isArray(rows)) return;
+        const map: Record<string, number | null> = {};
+        rows.forEach((row) => { map[`${row.year}-${row.month}-${row.channel}`] = row.actual_volume; });
+        setDemandActuals(map);
+      })
+      .catch(() => { /* non-critical */ });
+  }, [activeLob?.id, assumptions.startDate]);
 
   useEffect(() => {
     if (!activeLob) { setLoading(false); return; }
@@ -1303,6 +1330,76 @@ export default function LongTermForecastingDemand() {
     printWindow.print();
   };
 
+  // ── Actual-volume save handler ────────────────────────────────────────────────
+  const handleSaveActual = async (monthOffset: number, channel: ChannelKey, value: number | null) => {
+    if (!activeLob || value == null) return;
+    const d = new Date(assumptions.startDate);
+    d.setMonth(d.getMonth() + monthOffset);
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+    const key = `${year}-${month}-${channel}`;
+    setSavingActuals((s) => new Set(s).add(key));
+    setSavedActuals((s) => { const n = new Set(s); n.delete(key); return n; });
+    try {
+      const res = await fetch(apiUrl("/api/demand-actuals"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lob_id: activeLob.id, year, month, channel, actual_volume: value }),
+      });
+      if (res.ok) {
+        setDemandActuals((prev) => ({ ...prev, [key]: value }));
+        setSavedActuals((s) => new Set(s).add(key));
+        setTimeout(() => setSavedActuals((s) => { const n = new Set(s); n.delete(key); return n; }), 2500);
+      } else {
+        toast.error("Failed to save actual volume");
+      }
+    } catch {
+      toast.error("Failed to save actual volume");
+    } finally {
+      setSavingActuals((s) => { const n = new Set(s); n.delete(key); return n; });
+    }
+  };
+
+  // ── Publish re-cut to Intraday ────────────────────────────────────────────────
+  const handlePublishRecut = () => {
+    const channels: ChannelKey[] = ["voice", "email", "chat"];
+    const published: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [] };
+    for (const ch of channels) {
+      const vols = forecastVolumesByChannel[ch];
+      const factor = recutFactorByChannel[ch];
+      published[ch] = vols.map((v, i) => {
+        if (completedMonthIndices.includes(i)) {
+          // Use actual if available, else original forecast
+          const key = getActualKey(i, ch);
+          return demandActuals[key] ?? v;
+        }
+        return factor != null ? Math.round(v * factor) : v;
+      });
+    }
+    setRecutVolumesByChannel(published);
+    // Persist immediately via active state
+    const snapshot = buildPlannerSnapshot(
+      assumptions, forecastMethod, hwParams, arimaParams, decompParams,
+      historicalApiDataByChannel, historicalOverridesByChannel, selectedChannels,
+      poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView,
+      published,
+    );
+    persistActiveState({ selectedScenarioId, plannerSnapshot: snapshot });
+    toast.success("Re-cut volumes published to Intraday Forecast");
+  };
+
+  const handleClearRecut = () => {
+    setRecutVolumesByChannel(null);
+    const snapshot = buildPlannerSnapshot(
+      assumptions, forecastMethod, hwParams, arimaParams, decompParams,
+      historicalApiDataByChannel, historicalOverridesByChannel, selectedChannels,
+      poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView,
+      null,
+    );
+    persistActiveState({ selectedScenarioId, plannerSnapshot: snapshot });
+    toast.success("Re-cut cleared — Intraday reverts to original forecast");
+  };
+
   const finalHistoricalData = useMemo(() => buildChannelHistoricalData(historicalApiData, historicalOverrides), [historicalApiData, historicalOverrides]);
   // Per-channel final historical data (applies each channel's own overrides)
   const finalHistoricalDataByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
@@ -1452,6 +1549,76 @@ export default function LongTermForecastingDemand() {
       channelMetrics,
     };
   }), [forecastData, forecastVolumesByChannel, selectedBlendConfig, assumptions]);
+  // ── Re-cut helpers ────────────────────────────────────────────────────────────
+  // Which forecast month-indices (0-based) are fully in the past?
+  const completedMonthIndices = useMemo<number[]>(() => {
+    if (!assumptions.startDate) return [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const indices: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const start = new Date(assumptions.startDate);
+      start.setMonth(start.getMonth() + i);
+      // End of that calendar month
+      const endOfMonth = new Date(start.getFullYear(), start.getMonth() + 1, 0);
+      if (endOfMonth < today) indices.push(i);
+    }
+    return indices;
+  }, [assumptions.startDate]);
+
+  // Build an actualKey helper (stable format)
+  const getActualKey = (monthOffset: number, channel: ChannelKey): string => {
+    if (!assumptions.startDate) return `0-0-${channel}`;
+    const d = new Date(assumptions.startDate);
+    d.setMonth(d.getMonth() + monthOffset);
+    return `${d.getFullYear()}-${d.getMonth() + 1}-${channel}`;
+  };
+
+  // Per-channel re-cut factor: Σactuals_completed / Σforecast_completed
+  // Returns null if no completed months have actuals for that channel.
+  const recutFactorByChannel = useMemo<Record<ChannelKey, number | null>>(() => {
+    const compute = (ch: ChannelKey) => {
+      const vols = forecastVolumesByChannel[ch];
+      let sumActuals = 0, sumForecast = 0, hasAny = false;
+      for (const i of completedMonthIndices) {
+        const key = getActualKey(i, ch);
+        const actual = demandActuals[key];
+        if (actual != null) {
+          sumActuals += actual;
+          sumForecast += vols[i] ?? 0;
+          hasAny = true;
+        }
+      }
+      return hasAny && sumForecast > 0 ? sumActuals / sumForecast : null;
+    };
+    return { voice: compute("voice"), email: compute("email"), chat: compute("chat") };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completedMonthIndices, demandActuals, forecastVolumesByChannel, assumptions.startDate]);
+
+  const activeRecutFactor = recutFactorByChannel[detailChannel];
+
+  // All 12 months (past + future) with per-channel volumes for the detail table
+  const allForecastMonths = useMemo(() => {
+    if (!assumptions.startDate) return [];
+    return Array.from({ length: 12 }, (_, i) => {
+      const d = new Date(assumptions.startDate);
+      d.setMonth(d.getMonth() + i);
+      const year = d.getFullYear();
+      const month1 = d.getMonth() + 1; // 1-based
+      const monthLabel = MONTH_NAMES[d.getMonth()];
+      const isCompleted = completedMonthIndices.includes(i);
+      const forecastVol = forecastVolumesByChannel[detailChannel][i] ?? 0;
+      const actualKey = `${year}-${month1}-${detailChannel}`;
+      const actualVol = demandActuals[actualKey] ?? null;
+      const variancePct = actualVol != null && forecastVol > 0
+        ? Number((((actualVol - forecastVol) / forecastVol) * 100).toFixed(1))
+        : null;
+      const factor = recutFactorByChannel[detailChannel];
+      const recutVol = !isCompleted && factor != null ? Math.round(forecastVol * factor) : null;
+      return { index: i, year, month1, monthLabel, isCompleted, forecastVol, actualVol, variancePct, recutVol, actualKey };
+    });
+  }, [assumptions.startDate, completedMonthIndices, forecastVolumesByChannel, detailChannel, demandActuals, recutFactorByChannel]);
+
   const kpis = useMemo(() => futureData.length === 0 ? { avgVolume: 0, avgWorkloadHours: 0, avgRequiredFTE: 0 } : ({
     avgVolume: Math.round(futureData.reduce((sum, row) => sum + row.volume, 0) / futureData.length),
     avgWorkloadHours: Number((futureData.reduce((sum, row) => sum + row.pools.reduce((poolSum, pool) => poolSum + pool.workloadHours, 0), 0) / futureData.length).toFixed(1)),
@@ -1645,7 +1812,8 @@ export default function LongTermForecastingDemand() {
   }> = ({ source, shrinkage }) => {
     const stored = (() => {
       try {
-        const raw = localStorage.getItem("wfm_shrinkage_totals");
+        const lobKey = activeLob ? `_lob${activeLob.id}` : "";
+        const raw = localStorage.getItem(`wfm_shrinkage_totals${lobKey}`);
         return raw ? JSON.parse(raw) : null;
       } catch {
         return null;
@@ -2048,9 +2216,152 @@ export default function LongTermForecastingDemand() {
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
               </div>
               <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Scenario Comparison — Required FTE</CardTitle></CardHeader><CardContent className="p-6 h-[360px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={scenarioComparisonData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{Object.values(scenarios).map((scenario, index) => <Line key={scenario.id} type="monotone" dataKey={scenario.id} name={scenario.name} stroke={scenarioColors[index % scenarioColors.length]} strokeWidth={scenario.id === selectedScenarioId ? 3.5 : 2} dot={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
+              {/* ── Demand Forecast Detail + Re-cut ─────────────────────────── */}
               <Card className="border border-border/50 shadow-lg bg-card">
                 <CardHeader className="border-b border-border/50 bg-muted/50">
-                  <CardTitle className="text-sm font-bold">Demand Forecast Detail</CardTitle>
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-start justify-between gap-4 flex-wrap">
+                      <div>
+                        <CardTitle className="text-sm font-bold flex items-center gap-2">
+                          Demand Forecast Detail
+                          {recutVolumesByChannel && (
+                            <Badge className="bg-emerald-600 text-white text-[10px]">Re-cut Active</Badge>
+                          )}
+                        </CardTitle>
+                        <p className="text-xs text-foreground/60 mt-0.5">Per-channel view. Enter actuals for completed months to generate a re-cut.</p>
+                      </div>
+                      {/* Channel selector tabs */}
+                      <div className="flex gap-1 rounded-lg border border-border p-1 bg-muted/40">
+                        {(["voice", "email", "chat"] as ChannelKey[]).map((ch) => (
+                          <button
+                            key={ch}
+                            type="button"
+                            onClick={() => setDetailChannel(ch)}
+                            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${detailChannel === ch ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                          >
+                            {CHANNEL_ASSUMPTION_META[ch].label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Re-cut factor banner */}
+                    {activeRecutFactor != null && (
+                      <div className="flex items-center gap-3 flex-wrap rounded-xl border border-emerald-200/60 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/40 px-4 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">Re-cut Factor ({CHANNEL_ASSUMPTION_META[detailChannel].label})</span>
+                          <Badge className={`font-black text-sm ${activeRecutFactor >= 1 ? "bg-emerald-600" : "bg-rose-600"} text-white`}>
+                            {activeRecutFactor.toFixed(4)}×
+                          </Badge>
+                        </div>
+                        <span className="text-xs text-muted-foreground">({activeRecutFactor >= 1 ? "+" : ""}{((activeRecutFactor - 1) * 100).toFixed(1)}% vs original)</span>
+                        <div className="ml-auto flex gap-2">
+                          {recutVolumesByChannel ? (
+                            <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5 border-rose-300 text-rose-700 hover:bg-rose-50" onClick={handleClearRecut}>
+                              <X className="size-3" />Clear Re-cut
+                            </Button>
+                          ) : null}
+                          <Button size="sm" className="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white" onClick={handlePublishRecut}>
+                            <TrendingUp className="size-3" />Publish to Intraday
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {completedMonthIndices.length > 0 && activeRecutFactor == null && (
+                      <p className="text-xs text-amber-700 dark:text-amber-400">
+                        Enter actual volumes for completed months below to unlock the Re-cut factor.
+                      </p>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent className="p-0 overflow-x-auto">
+                  <Table>
+                    <TableHeader className="bg-muted/50">
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Month</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Forecast Volume</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Actual Volume</TableHead>
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Variance</TableHead>
+                        {activeRecutFactor != null && (
+                          <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-emerald-700">Re-cut Forecast</TableHead>
+                        )}
+                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {allForecastMonths.map((row) => {
+                        const isSaving = savingActuals.has(row.actualKey);
+                        const isSaved = savedActuals.has(row.actualKey);
+                        return (
+                          <TableRow key={`${row.year}-${row.month1}-${detailChannel}`} className={`hover:bg-muted/30 ${row.isCompleted ? "bg-blue-50/30 dark:bg-blue-950/10" : ""}`}>
+                            <TableCell className="pl-6">
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-sm">{row.monthLabel} {row.year}</span>
+                                {row.isCompleted && <Badge variant="outline" className="text-[10px] h-4 px-1 text-blue-600 border-blue-300">Completed</Badge>}
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-sm font-bold text-primary">{row.forecastVol.toLocaleString()}</TableCell>
+                            <TableCell className="text-right">
+                              {row.isCompleted ? (
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    className="h-7 w-28 text-right text-xs font-mono font-bold"
+                                    placeholder="Enter actual"
+                                    defaultValue={row.actualVol ?? ""}
+                                    onBlur={(e) => {
+                                      const val = e.target.value.trim();
+                                      if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
+                                        void handleSaveActual(row.index, detailChannel, Number(val));
+                                      }
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        const val = (e.target as HTMLInputElement).value.trim();
+                                        if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
+                                          void handleSaveActual(row.index, detailChannel, Number(val));
+                                          (e.target as HTMLInputElement).blur();
+                                        }
+                                      }
+                                    }}
+                                  />
+                                  {isSaving && <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0" />}
+                                  {isSaved && !isSaving && <span className="text-emerald-600 text-xs font-bold shrink-0">✓</span>}
+                                </div>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-sm">
+                              {row.variancePct != null ? (
+                                <span className={row.variancePct >= 0 ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>
+                                  {row.variancePct >= 0 ? "+" : ""}{row.variancePct}%
+                                </span>
+                              ) : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
+                            {activeRecutFactor != null && (
+                              <TableCell className="text-right font-mono text-sm">
+                                {row.recutVol != null ? (
+                                  <span className="font-bold text-emerald-700">{row.recutVol.toLocaleString()}</span>
+                                ) : row.isCompleted && row.actualVol != null ? (
+                                  <span className="font-bold text-blue-700">{row.actualVol.toLocaleString()}</span>
+                                ) : <span className="text-muted-foreground">—</span>}
+                              </TableCell>
+                            )}
+                            <TableCell className="text-right text-xs text-muted-foreground">
+                              {row.isCompleted ? "Actual entry" : "Forecast"}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+              {/* ── Original detailed FTE table (future months only) ─────────── */}
+              <Card className="border border-border/50 shadow-lg bg-card">
+                <CardHeader className="border-b border-border/50 bg-muted/50">
+                  <CardTitle className="text-sm font-bold">Staffing Detail — Future Months</CardTitle>
                   <p className="text-xs text-foreground/60">Details tied to the {selectedBlendConfig.label} setup.</p>
                 </CardHeader>
                 <CardContent className="p-0 overflow-x-auto">

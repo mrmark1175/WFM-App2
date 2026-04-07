@@ -271,6 +271,13 @@ export const IntradayForecast = () => {
   const forecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     const empty = { voice: [] as number[], email: [] as number[], chat: [] as number[] };
     if (!plannerSnapshot) return empty;
+
+    // When a re-cut has been published from the Demand page, use those volumes directly.
+    const recut = (plannerSnapshot as Record<string, unknown>).recutVolumesByChannel as Record<ChannelKey, number[]> | null | undefined;
+    if (recut && recut.voice && recut.email && recut.chat) {
+      return { voice: recut.voice, email: recut.email, chat: recut.chat };
+    }
+
     const { forecastMethod, hwParams, arimaParams, decompParams, assumptions,
             channelHistoricalApiData = {} as Record<ChannelKey, number[]>,
             channelHistoricalOverrides = {} as Record<ChannelKey, Record<number, string>> } = plannerSnapshot;
