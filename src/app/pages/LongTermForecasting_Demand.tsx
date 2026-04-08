@@ -186,7 +186,28 @@ const computeShrinkageFromItems = (items: ShrinkageItem[], operatingHoursPerDay:
   }, 0);
   return Math.min(99, Number(((totalLostMinutes / minutesPerYear) * 100).toFixed(1)));
 };
-const FORECAST_METHODS = [{ key: "holtwinters", label: "Holt-Winters (Triple Exponential Smoothing)" }, { key: "arima", label: "ARIMA (Autoregressive Integrated Moving Average)" }, { key: "decomposition", label: "Decomposition (Trend + Seasonality)" }];
+const FORECAST_MODEL_COPY = {
+  holtwinters: {
+    label: "Cyclical Trend Analysis Model (CTA Model)",
+    description: "Maps long-term growth trajectories against established seasonal baselines.",
+    badge: "CTA",
+  },
+  arima: {
+    label: "Dynamic Variance Projection Model (DVP Model)",
+    description: "An adaptive model designed to respond to short-term market volatility and shifting momentum.",
+    badge: "DVP",
+  },
+  decomposition: {
+    label: "Core Baseline Extraction Model (CBE Model)",
+    description: "Isolates the underlying volume from non-recurring anomalies and environmental noise.",
+    badge: "CBE",
+  },
+} as const;
+const FORECAST_METHODS = [
+  { key: "holtwinters", label: FORECAST_MODEL_COPY.holtwinters.label },
+  { key: "arima", label: FORECAST_MODEL_COPY.arima.label },
+  { key: "decomposition", label: FORECAST_MODEL_COPY.decomposition.label },
+];
 // ── LOB Settings → Assumptions helpers ───────────────────────────────────────
 function deriveOperatingDaysPerWeek(schedule?: Record<string, { enabled: boolean }>): number {
   if (!schedule) return 5;
@@ -1709,7 +1730,11 @@ export default function LongTermForecastingDemand() {
     const totalVol = chanVols.reduce((s, c) => s + c.avg, 0);
     const channelMix = chanVols.map((c) => ({ ...c, pct: totalVol > 0 ? Math.round((c.avg / totalVol) * 100) : 0 })).sort((a, b) => b.pct - a.pct);
     // Method label
-    const methodLabels: Record<string, string> = { holtwinters: "Holt-Winters", arima: "ARIMA", decomposition: "Seasonal Decomposition" };
+    const methodLabels: Record<string, string> = {
+      holtwinters: FORECAST_MODEL_COPY.holtwinters.label,
+      arima: FORECAST_MODEL_COPY.arima.label,
+      decomposition: FORECAST_MODEL_COPY.decomposition.label,
+    };
     const methodLabel = methodLabels[forecastMethod] ?? forecastMethod;
     // Growth
     const growthRate = assumptions.growthRate ?? 0;
@@ -2653,9 +2678,15 @@ export default function LongTermForecastingDemand() {
                     {/* ── Model parameters — shown immediately below the selector ── */}
                     {forecastMethod === "holtwinters" && (
                       <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
-                        <div className="flex items-center justify-between">
-                          <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">HW Smoothing Parameters</Label>
-                          <Badge className="bg-amber-500 font-black tracking-tight">Triple Exp</Badge>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-1.5">
+                            <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">{FORECAST_MODEL_COPY.holtwinters.label}</Label>
+                            <UITooltip>
+                              <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
+                              <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.holtwinters.description}</p></TooltipContent>
+                            </UITooltip>
+                          </div>
+                          <Badge className="bg-amber-500 font-black tracking-tight">{FORECAST_MODEL_COPY.holtwinters.badge}</Badge>
                         </div>
                         <div className="grid grid-cols-2 gap-4">
                           <div className="space-y-1">
@@ -2691,9 +2722,15 @@ export default function LongTermForecastingDemand() {
                     )}
                     {forecastMethod === "arima" && (
                       <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
-                        <div className="flex items-center justify-between">
-                          <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">ARIMA Parameters</Label>
-                          <Badge className="bg-emerald-500 font-black tracking-tight">p · d · q</Badge>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-1.5">
+                            <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">{FORECAST_MODEL_COPY.arima.label}</Label>
+                            <UITooltip>
+                              <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
+                              <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.arima.description}</p></TooltipContent>
+                            </UITooltip>
+                          </div>
+                          <Badge className="bg-emerald-500 font-black tracking-tight">{FORECAST_MODEL_COPY.arima.badge}</Badge>
                         </div>
                         <div className="grid grid-cols-3 gap-3">
                           <div className="space-y-1">
@@ -2723,9 +2760,15 @@ export default function LongTermForecastingDemand() {
                     )}
                     {forecastMethod === "decomposition" && (
                       <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
-                        <div className="flex items-center justify-between">
-                          <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Decomposition Parameters</Label>
-                          <Badge className="bg-blue-500 font-black tracking-tight">Trend · Season</Badge>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-1.5">
+                            <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">{FORECAST_MODEL_COPY.decomposition.label}</Label>
+                            <UITooltip>
+                              <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
+                              <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.decomposition.description}</p></TooltipContent>
+                            </UITooltip>
+                          </div>
+                          <Badge className="bg-blue-500 font-black tracking-tight">{FORECAST_MODEL_COPY.decomposition.badge}</Badge>
                         </div>
                         <div className="space-y-3">
                           <div className="space-y-1">
