@@ -37,7 +37,7 @@ export function Home() {
         {/* Header */}
         <div className="text-center mb-16">
           <div className="inline-block mb-4">
-            <img src={logo} alt="Exordium WFM" className="h-48 w-auto" />
+            <img src={logo} alt="Exordium WFM" className="h-20 w-auto" />
           </div>
         </div>
 
