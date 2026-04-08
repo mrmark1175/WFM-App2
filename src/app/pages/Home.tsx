@@ -30,9 +30,12 @@ export function Home() {
       <div className="container mx-auto px-6 py-16">
         {/* Header */}
         <div className="text-center mb-16">
-          <div className="inline-block mb-4">
-            <img src={logo} alt="Exordium WFM" className="h-20 w-auto" />
+          <div className="inline-block mb-5">
+            <img src={logo} alt="Exordium WFM" className="h-32 w-auto" />
           </div>
+          <p className="text-xs font-bold tracking-[0.4em] uppercase text-muted-foreground">
+            Workforce Management &nbsp;·&nbsp; Enterprise Platform
+          </p>
         </div>
 
         {/* Navigation Cards */}
