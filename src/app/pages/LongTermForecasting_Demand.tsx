@@ -908,6 +908,11 @@ export default function LongTermForecastingDemand() {
   const [savedActuals, setSavedActuals] = useState<Set<string>>(new Set());
   const hasHydratedRef = useRef(false);
   const activeScenario = scenarios[selectedScenarioId];
+  const forecastYear = Number.isFinite(new Date(assumptions.startDate).getTime())
+    ? new Date(assumptions.startDate).getFullYear()
+    : new Date().getFullYear();
+  const historicalWindowStart = `${forecastYear - 2}-01-01`;
+  const historicalWindowEnd = `${forecastYear - 1}-12-31`;
   const historicalApiData = historicalApiDataByChannel.voice;
   const historicalOverrides = historicalOverridesByChannel.voice;
   const visibleHistoricalApiData = historicalApiDataByChannel[historicalChannelView];
@@ -2166,20 +2171,23 @@ export default function LongTermForecastingDemand() {
                           </Select>
                         </div>
                         <div className="w-full sm:w-[120px]">
-                          <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Data Year</Label>
+                          <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Forecast Year</Label>
                           <Input
                             type="number"
                             min={2000}
                             max={2100}
                             className="mt-2 h-10 font-bold"
-                            value={new Date(assumptions.startDate).getFullYear() - 1}
+                            value={forecastYear}
                             onChange={(e) => {
                               const yr = Math.max(2000, Math.min(2100, Number(e.target.value)));
                               if (Number.isFinite(yr)) {
-                                setAssumptions((prev) => ({ ...prev, startDate: `${yr + 1}-01-01` }));
+                                setAssumptions((prev) => ({ ...prev, startDate: `${yr}-01-01` }));
                               }
                             }}
                           />
+                          <p className="mt-2 text-[11px] leading-relaxed text-foreground/55">
+                            Requires the previous 24 months: {new Date(historicalWindowStart).toLocaleString("en-US", { month: "short", year: "numeric" })} - {new Date(historicalWindowEnd).toLocaleString("en-US", { month: "short", year: "numeric" })}
+                          </p>
                         </div>
                         <div className="text-sm font-semibold text-foreground">
                           Currently Viewing: <span className={CHANNEL_ASSUMPTION_META[historicalChannelView].colorClass}>{CHANNEL_ASSUMPTION_META[historicalChannelView].label}</span>
