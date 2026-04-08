@@ -2641,19 +2641,19 @@ export default function LongTermForecastingDemand() {
                     </colgroup>
                     <TableHeader className="bg-muted/50">
                       <TableRow className="hover:bg-transparent">
-                        <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Month</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">
-                          {CHANNEL_ASSUMPTION_META[detailChannel].label} Volume
+                        <TableHead className="pl-6 text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Month</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">
+                          {CHANNEL_ASSUMPTION_META[detailChannel].label} Vol.
                         </TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Blended Workload Hrs</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Wtd. AHT</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Occupancy</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Shrinkage</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Active Setup</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Shared Pool Workload</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Shared Pool FTE</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Standalone Pool FTE</TableHead>
-                        <TableHead className="pr-6 text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Total Required FTE</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Blended Wkld</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">AHT</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Occ.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Shr.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Setup</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Shared Wkld</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Shared FTE</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Solo FTE</TableHead>
+                        <TableHead className="pr-6 text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Req. FTE</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
