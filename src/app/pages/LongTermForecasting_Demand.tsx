@@ -2415,39 +2415,13 @@ export default function LongTermForecastingDemand() {
                   ))}
                 </CardContent>
               </Card>
-                <Card className="border border-border/60 shadow-none rounded-3xl bg-card">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground/80">Channel Workload Assumptions</CardTitle>
-                  <p className="text-xs text-foreground/55">Live calculation logic for each channel under the current selection setup.</p>
-                </CardHeader>
-                <CardContent className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                  {channelAssumptionSummary.map((channel) => (
-                    <div key={channel.key} className={`rounded-lg border border-border/50 p-4 ${CHANNEL_ASSUMPTION_META[channel.key].bgClass}`}>
-                      <div className="flex items-center justify-between gap-3">
-                        <p className={`text-xs font-semibold uppercase tracking-wide text-foreground/70 ${CHANNEL_ASSUMPTION_META[channel.key].colorClass}`}>{channel.label}</p>
-                        <Badge variant="outline">{channel.isIncluded ? "Included" : "Excluded"}</Badge>
-                      </div>
-                      <div className="mt-3 space-y-1.5 text-xs">
-                        <p><span className="font-semibold text-foreground/60">Model:</span> {channel.modelRule}</p>
-                        <p><span className="font-semibold text-foreground/60">Volume:</span> {channel.volumeRule}</p>
-                        <p><span className="font-semibold text-foreground/60">AHT:</span> {channel.ahtRule}</p>
-                        <p><span className="font-semibold text-foreground/60">SLA / ASA:</span> {channel.serviceRule}</p>
-                        <p><span className="font-semibold text-foreground/60">Workload:</span> {channel.workloadRule}</p>
-                        <p><span className="font-semibold text-foreground/60">Staffing:</span> {channel.staffingRule}</p>
-                        <p><span className="font-semibold text-foreground/60">Occupancy:</span> {channel.occupancyRule}</p>
-                        <p><span className="font-semibold text-foreground/60">FTE:</span> {channel.fteRule}</p>
-                      </div>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
                 </CardContent>
               </div>
             </div>
           </Card>
-          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-6 items-start">
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_304px] gap-6 items-start">
             <div className="space-y-6">
-              <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6">
+              <div className="space-y-6">
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Workload Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Pool workloads update with the current channel selection and pooling mode.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={pooledWorkloadChartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{selectedBlendConfig.pools.map((_, index) => <Line key={`pool${index + 1}`} type="monotone" dataKey={`pool${index + 1}`} name={`Pool ${String.fromCharCode(65 + index)} Workload`} stroke={["#4f46e5", "#0f766e", "#dc2626"][index % 3]} strokeWidth={3} />)}<Line type="monotone" dataKey="totalWorkloadHours" name="Total Workload" stroke="#94a3b8" strokeDasharray="6 4" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Required Staffing Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">FTE recalculated from pooled workload, service targets, and the current staffing setup.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={requiredStaffingTrendData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Line type="monotone" dataKey="sharedPoolFTE" name="Shared Pool FTE" stroke="#0f766e" strokeWidth={3} /><Line type="monotone" dataKey="standalonePoolFTE" name="Standalone Pool FTE" stroke="#2563eb" strokeWidth={3} /><Line type="monotone" dataKey="totalRequiredFTE" name="Total Required FTE" stroke="#f59e0b" strokeWidth={3} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>

@@ -147,8 +147,8 @@ function SideNavItem({
     <Tooltip>
       <TooltipTrigger asChild>
         <Link to={item.path} className={linkClass}>
-          <span className="flex items-center justify-center size-6 rounded-md bg-sky-100 dark:bg-sky-900/40 shrink-0">
-            <Icon className="size-3.5 text-gray-900 dark:text-gray-100" />
+          <span className="flex items-center justify-center size-6 rounded-md bg-blue-700 dark:bg-blue-600 shrink-0">
+            <Icon className="size-3.5 text-white" />
           </span>
           {expanded && <span className="truncate leading-none">{item.label}</span>}
         </Link>
@@ -236,8 +236,8 @@ export function PageLayout({ children, title }: PageLayoutProps) {
                     !expanded && "justify-center",
                   ].join(" ")}
                 >
-                  <span className="flex items-center justify-center size-6 rounded-md bg-sky-100 dark:bg-sky-900/40 shrink-0">
-                    <Home className="size-3.5 text-gray-900 dark:text-gray-100" />
+                  <span className="flex items-center justify-center size-6 rounded-md bg-blue-700 dark:bg-blue-600 shrink-0">
+                    <Home className="size-3.5 text-white" />
                   </span>
                   {expanded && <span className="truncate leading-none">Home</span>}
                 </Link>
