@@ -1193,6 +1193,17 @@ export default function LongTermForecastingDemand() {
     setSelectedScenarioId(nextScenarioId);
     applyPlannerSnapshot(scenario.snapshot);
   };
+  const handleRevertToBaseCase = () => {
+    const baseScenario = scenarios.base || DEFAULT_SCENARIOS.base;
+    if (!baseScenario) return;
+    setSelectedScenarioId(baseScenario.id);
+    applyPlannerSnapshot(baseScenario.snapshot);
+    persistActiveState({
+      selectedScenarioId: baseScenario.id,
+      plannerSnapshot: baseScenario.snapshot,
+    });
+    toast.success("Reverted to Base Case");
+  };
   const handleSaveScenario = async () => {
     const id = activeScenario?.id || "base";
     const existing = scenarios[id];
@@ -2085,6 +2096,16 @@ export default function LongTermForecastingDemand() {
                   <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={handleRenameScenario}>
                     <Pencil className="size-3.5" />
                     Rename
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-1.5 text-xs"
+                    onClick={handleRevertToBaseCase}
+                    disabled={selectedScenarioId === "base"}
+                  >
+                    <RotateCcw className="size-3.5" />
+                    Base Case
                   </Button>
                   <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={handleSaveScenario}>
                     <Save className="size-3.5" />
