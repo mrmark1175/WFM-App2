@@ -782,7 +782,7 @@ export const IntradayForecast = () => {
           <div className="flex flex-wrap items-end gap-4">
             {/* Channel */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Channel</span>
+              <span className="text-xs font-semibold text-foreground">Channel</span>
               <Select value={selectedChannel} onValueChange={(v) => setPrefs({ selectedChannel: v as ChannelKey, targetMonthOffset: 0, targetWeekStart: "" })}>
                 <SelectTrigger className="w-32 h-8 text-sm">
                   <SelectValue />
@@ -797,7 +797,7 @@ export const IntradayForecast = () => {
 
             {/* Target month */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Target Month</span>
+              <span className="text-xs font-semibold text-foreground">Target Month</span>
               <Select
                 value={String(safeOffset)}
                 onValueChange={(v) => setPrefs({ targetMonthOffset: parseInt(v), targetWeekStart: "" })}
@@ -816,7 +816,7 @@ export const IntradayForecast = () => {
 
             {/* Target week */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Target Week</span>
+              <span className="text-xs font-semibold text-foreground">Target Week</span>
               <Select
                 value={targetWeekStart}
                 onValueChange={(v) => setPrefs({ targetWeekStart: v })}
@@ -837,7 +837,7 @@ export const IntradayForecast = () => {
 
             {/* Monthly volume display */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Monthly Volume</span>
+              <span className="text-xs font-semibold text-foreground">Monthly Volume</span>
               <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold min-w-[100px]">
                 {isLoadingForecast
                   ? <span className="text-muted-foreground animate-pulse">Loading...</span>
@@ -849,7 +849,7 @@ export const IntradayForecast = () => {
 
             {/* Weekly volume display */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Week Volume</span>
+              <span className="text-xs font-semibold text-foreground">Week Volume</span>
               <div className="h-8 flex items-center px-3 rounded-md border bg-blue-50 dark:bg-blue-950/30 text-sm font-bold text-blue-900 dark:text-blue-100 min-w-[100px]">
                 {forecastedWeekVolume > 0
                   ? Math.round(forecastedWeekVolume).toLocaleString()
@@ -859,7 +859,7 @@ export const IntradayForecast = () => {
 
             {/* Status badge */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Source</span>
+              <span className="text-xs font-semibold text-foreground">Source</span>
               {isLoadingForecast ? (
                 <Badge variant="secondary" className="h-8 px-3 text-xs">Loading...</Badge>
               ) : plannerSnapshot ? (
@@ -957,7 +957,7 @@ export const IntradayForecast = () => {
                     <div className="flex flex-wrap gap-3 items-end">
                       {Array.from({ length: inputCount }, (_, i) => (
                         <div key={i} className="flex flex-col gap-1">
-                          <label className="text-xs font-medium text-muted-foreground">
+                          <label className="text-xs font-semibold text-foreground">
                             Week {i + 1}{i === inputCount - 1 && filledCount >= inputCount - 1 ? " (most recent)" : ""}
                           </label>
                           <Input
@@ -1101,7 +1101,7 @@ export const IntradayForecast = () => {
             {/* ── Baseline period selector ── */}
             <div className="flex flex-wrap items-end gap-3 p-3 rounded-lg border bg-muted/20">
               <div className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-muted-foreground">Year</span>
+                <span className="text-xs font-semibold text-foreground">Year</span>
                 <Input
                   type="number"
                   min={2010}
@@ -1117,7 +1117,7 @@ export const IntradayForecast = () => {
                 />
               </div>
               <div className="flex flex-col gap-1 flex-1 min-w-[220px]">
-                <span className="text-xs font-medium text-muted-foreground">Starting Week</span>
+                <span className="text-xs font-semibold text-foreground">Starting Week</span>
                 <Select
                   value={String(baselineStartWeek)}
                   onValueChange={(v) => setPrefs({ baselineStartWeek: parseInt(v) })}
@@ -1216,7 +1216,7 @@ export const IntradayForecast = () => {
                           key={idx}
                           className={baselineDataCount > 0 && !hasAny ? "opacity-25" : undefined}
                         >
-                          <TableCell className="sticky left-0 bg-background text-xs text-muted-foreground font-mono py-0.5 z-10">
+                          <TableCell className="sticky left-0 bg-background text-xs text-foreground font-mono py-0.5 z-10">
                             {iv.label}
                           </TableCell>
                           {rowVals.map((val, ci) => {
@@ -1378,7 +1378,7 @@ export const IntradayForecast = () => {
                       const maxVal = Math.max(...DOW_LABELS.map((_, d) => displayForecast[d]?.[idx] ?? 0));
                       return (
                         <TableRow key={idx}>
-                          <TableCell className="text-xs text-muted-foreground py-1.5 sticky left-0 bg-background">
+                          <TableCell className="text-xs text-foreground py-1.5 sticky left-0 bg-background">
                             {iv.label}
                           </TableCell>
                           {DOW_LABELS.map((_, d) => {
@@ -1531,7 +1531,7 @@ export const IntradayForecast = () => {
                       const maxFTE = Math.max(...rowVals.map((r) => r?.fte ?? 0));
                       return (
                         <TableRow key={idx}>
-                          <TableCell className="text-xs text-muted-foreground py-1.5 sticky left-0 bg-background font-mono">
+                          <TableCell className="text-xs text-foreground py-1.5 sticky left-0 bg-background font-mono">
                             {iv.label}
                           </TableCell>
                           {rowVals.map((result, d) => {
@@ -1731,7 +1731,7 @@ export const IntradayForecast = () => {
                       const maxVal = Math.max(...rowVals);
                       return (
                         <TableRow key={idx}>
-                          <TableCell className="text-xs text-muted-foreground py-1 sticky left-0 bg-background font-mono">
+                          <TableCell className="text-xs text-foreground py-1 sticky left-0 bg-background font-mono">
                             {iv.label}
                           </TableCell>
                           {rowVals.map((val, d) => {
@@ -1844,7 +1844,7 @@ export const IntradayForecast = () => {
                       const maxVal = Math.max(...rowVals);
                       return (
                         <TableRow key={idx}>
-                          <TableCell className="text-xs text-muted-foreground py-1 sticky left-0 bg-background font-mono">
+                          <TableCell className="text-xs text-foreground py-1 sticky left-0 bg-background font-mono">
                             {iv.label}
                           </TableCell>
                           {rowVals.map((val, d) => {

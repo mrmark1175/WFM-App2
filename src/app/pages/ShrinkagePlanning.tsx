@@ -429,17 +429,17 @@ export function ShrinkagePlanning() {
 
               <div className="rounded-lg bg-slate-100 dark:bg-slate-800 p-3 space-y-1.5 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Shift Duration</span>
+                  <span className="text-foreground">Shift Duration</span>
                   <span className="font-bold">{shiftMinutes} min</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Hours per Week</span>
+                  <span className="text-foreground">Hours per Week</span>
                   <span className="font-bold">
                     {(hoursPerDay * daysPerWeek).toFixed(1)}h
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Operating Days/Year</span>
+                  <span className="text-foreground">Operating Days/Year</span>
                   <span className="font-bold">{daysPerYear}d</span>
                 </div>
               </div>
@@ -680,7 +680,7 @@ function ShrinkageSummary({
         {/* Tiles */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="rounded-lg border p-4 text-center space-y-1">
-            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
+            <p className="text-xs font-black uppercase tracking-widest text-foreground">
               Absence (excl.)
             </p>
             <p className="text-2xl font-black text-amber-600 dark:text-amber-400">
@@ -689,7 +689,7 @@ function ShrinkageSummary({
           </div>
 
           <div className="rounded-lg border p-4 text-center space-y-1">
-            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
+            <p className="text-xs font-black uppercase tracking-widest text-foreground">
               In-Work Off-Phone
             </p>
             <p className="text-2xl font-black text-blue-600 dark:text-blue-400">
@@ -793,13 +793,13 @@ function FteImpactCalculator({
           </div>
 
           <div className="rounded-xl border p-4 text-center space-y-1">
-            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">
+            <p className="text-xs font-black uppercase tracking-widest text-foreground">
               Gross FTE (excl. Holidays)
             </p>
             <p className="text-2xl font-black text-foreground">
               {grossFteExcl !== null ? grossFteExcl : "—"}
             </p>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-foreground">
               Using {totalExcl}% shrinkage
             </p>
           </div>
@@ -811,7 +811,7 @@ function FteImpactCalculator({
             <p className="text-2xl font-black text-rose-600 dark:text-rose-400">
               {grossFteIncl !== null ? grossFteIncl : "—"}
             </p>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-foreground">
               Using {totalIncl}% shrinkage
             </p>
           </div>

@@ -2011,7 +2011,7 @@ export default function LongTermForecastingDemand() {
                 <div className="flex items-center gap-2 mb-2">
                   <Sparkles className="size-3.5 text-violet-300 shrink-0" />
                   <span className="text-[10px] uppercase tracking-widest text-slate-200 font-bold">Insight Narrative</span>
-                  <span className="text-[10px] text-slate-400">· Exordium Private AI Engine · runs on your isolated server</span>
+                  <span className="text-[10px] text-slate-200">· Exordium Private AI Engine · runs on your isolated server</span>
                 </div>
                 <p className={`text-sm font-bold mb-2 ${insightNarrative.trendDir === "growing" ? "text-emerald-300" : insightNarrative.trendDir === "declining" ? "text-rose-300" : "text-sky-200"}`}>
                   {insightNarrative.headline}
@@ -2021,7 +2021,7 @@ export default function LongTermForecastingDemand() {
                   <p>{insightNarrative.peakSentence}</p>
                   {insightNarrative.channelSentence && <p>{insightNarrative.channelSentence}</p>}
                   <p>{insightNarrative.growthSentence}</p>
-                  <p className="text-slate-400 italic text-[11px]">⚠ {insightNarrative.gapPlaceholder}</p>
+                  <p className="text-slate-200 italic text-[11px]">⚠ {insightNarrative.gapPlaceholder}</p>
                 </div>
               </div>
             )}
