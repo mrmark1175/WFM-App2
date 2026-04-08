@@ -4,7 +4,8 @@ import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { Card, CardContent } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
-import { Users, Clock, Scale, Activity, ChevronRight, Lock, CheckCircle2, Circle, CalendarDays } from "lucide-react";
+import { Users, Clock, Scale, Activity, ChevronRight, Lock, CheckCircle2, Circle, CalendarDays, ArrowRight } from "lucide-react";
+import { Button } from "../components/ui/button";
 
 interface HubCounts { agents: number; shifts: number; laws: number; lawPresets: number; }
 
@@ -171,10 +172,18 @@ export function SchedulingHub() {
                 }
               </p>
             </div>
-            <Badge variant="outline" className="gap-1.5 text-xs">
-              <Lock className="size-3" />
-              Coming Soon — Scheduling Engine v1.0
-            </Badge>
+            {allReady ? (
+              <Link to="/scheduling/schedule">
+                <Button className="gap-2">
+                  <CalendarDays className="size-4" />Open Schedule Editor<ArrowRight className="size-3.5" />
+                </Button>
+              </Link>
+            ) : (
+              <Badge variant="outline" className="gap-1.5 text-xs">
+                <Lock className="size-3" />
+                Coming Soon — Scheduling Engine v1.0
+              </Badge>
+            )}
           </div>
         </div>
       </div>

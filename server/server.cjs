@@ -402,6 +402,39 @@ async function ensureAppTables() {
        'Shops and Commercial Establishments Act. Max 9 hrs/day, 48 hrs/week. Minimum 12 hrs rest between shifts. OT at 2x rate. 1 paid weekly off mandatory. State-specific variations apply — verify with local HR compliance counsel.')
     ON CONFLICT (organization_id, jurisdiction_code) DO NOTHING
   `);
+
+  // ── Schedule Assignments — agent shift assignments per date ──────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schedule_assignments (
+      id                  SERIAL PRIMARY KEY,
+      organization_id     INTEGER NOT NULL DEFAULT 1,
+      lob_id              INTEGER REFERENCES lobs(id) ON DELETE CASCADE,
+      agent_id            INTEGER REFERENCES scheduling_agents(id) ON DELETE CASCADE,
+      shift_template_id   INTEGER REFERENCES scheduling_shift_templates(id) ON DELETE SET NULL,
+      work_date           DATE NOT NULL,
+      start_time          TIME NOT NULL,
+      end_time            TIME NOT NULL,
+      is_overnight        BOOLEAN NOT NULL DEFAULT FALSE,
+      channel             TEXT NOT NULL DEFAULT 'voice',
+      notes               TEXT,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // ── Shift Activities — breaks, meals, coaching, training, meetings within a shift ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shift_activities (
+      id              SERIAL PRIMARY KEY,
+      assignment_id   INTEGER NOT NULL REFERENCES schedule_assignments(id) ON DELETE CASCADE,
+      activity_type   TEXT NOT NULL,
+      start_time      TIME NOT NULL,
+      end_time        TIME NOT NULL,
+      is_paid         BOOLEAN NOT NULL DEFAULT FALSE,
+      notes           TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 // ── LOB helper ────────────────────────────────────────────────────────────────
@@ -1585,6 +1618,109 @@ app.get('/api/scheduling/counts', async (req, res) => {
       pool.query('SELECT COUNT(*)::int AS n, SUM(CASE WHEN is_preset THEN 1 ELSE 0 END)::int AS presets FROM scheduling_labor_laws WHERE organization_id=1'),
     ]);
     res.json({ agents: agents.rows[0].n, shifts: shifts.rows[0].n, laws: laws.rows[0].n, lawPresets: laws.rows[0].presets });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Scheduling: Assignments ───────────────────────────────────────────────────
+app.get('/api/scheduling/assignments', async (req, res) => {
+  const { lob_id, date_start, date_end } = req.query;
+  try {
+    const params = [1];
+    let sql = `
+      SELECT sa.*,
+        json_agg(
+          json_build_object(
+            'id', act.id,
+            'activity_type', act.activity_type,
+            'start_time', act.start_time::text,
+            'end_time', act.end_time::text,
+            'is_paid', act.is_paid,
+            'notes', act.notes
+          ) ORDER BY act.start_time
+        ) FILTER (WHERE act.id IS NOT NULL) AS activities,
+        ag.full_name AS agent_name,
+        ag.skill_voice, ag.skill_chat, ag.skill_email,
+        st.name AS template_name, st.color AS template_color
+      FROM schedule_assignments sa
+      LEFT JOIN shift_activities act ON act.assignment_id = sa.id
+      LEFT JOIN scheduling_agents ag ON ag.id = sa.agent_id
+      LEFT JOIN scheduling_shift_templates st ON st.id = sa.shift_template_id
+      WHERE sa.organization_id = $1
+    `;
+    if (lob_id) { params.push(lob_id); sql += ` AND sa.lob_id = $${params.length}`; }
+    if (date_start) { params.push(date_start); sql += ` AND sa.work_date >= $${params.length}`; }
+    if (date_end) { params.push(date_end); sql += ` AND sa.work_date <= $${params.length}`; }
+    sql += ' GROUP BY sa.id, ag.full_name, ag.skill_voice, ag.skill_chat, ag.skill_email, st.name, st.color ORDER BY sa.work_date, sa.start_time';
+    const { rows } = await pool.query(sql, params);
+    // Ensure activities is always an array
+    const result = rows.map(r => ({ ...r, activities: r.activities || [] }));
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/scheduling/assignments', async (req, res) => {
+  const { lob_id, agent_id, shift_template_id, work_date, start_time, end_time, is_overnight, channel, notes } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO schedule_assignments (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time, is_overnight, channel, notes)
+       VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [lob_id || null, agent_id, shift_template_id || null, work_date, start_time, end_time, is_overnight || false, channel || 'voice', notes || null]
+    );
+    res.json({ ...rows[0], activities: [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/scheduling/assignments/:id', async (req, res) => {
+  const { start_time, end_time, is_overnight, channel, notes, shift_template_id } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE schedule_assignments
+       SET start_time=$1, end_time=$2, is_overnight=$3, channel=$4, notes=$5, shift_template_id=$6, updated_at=NOW()
+       WHERE id=$7 AND organization_id=1 RETURNING *`,
+      [start_time, end_time, is_overnight ?? false, channel || 'voice', notes ?? null, shift_template_id ?? null, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/scheduling/assignments/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM schedule_assignments WHERE id=$1 AND organization_id=1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Scheduling: Activities within a shift ─────────────────────────────────────
+app.post('/api/scheduling/activities', async (req, res) => {
+  const { assignment_id, activity_type, start_time, end_time, is_paid, notes } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO shift_activities (assignment_id, activity_type, start_time, end_time, is_paid, notes)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [assignment_id, activity_type, start_time, end_time, is_paid || false, notes || null]
+    );
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/scheduling/activities/:id', async (req, res) => {
+  const { activity_type, start_time, end_time, is_paid, notes } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE shift_activities SET activity_type=$1, start_time=$2, end_time=$3, is_paid=$4, notes=$5
+       WHERE id=$6 RETURNING *`,
+      [activity_type, start_time, end_time, is_paid ?? false, notes ?? null, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/scheduling/activities/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM shift_activities WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

@@ -74,6 +74,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Scheduling",
     items: [
       { label: "Scheduling Hub",   icon: CalendarDays, path: "/scheduling" },
+      { label: "Schedule Editor",  icon: Grid,         path: "/scheduling/schedule" },
       { label: "Agent Roster",     icon: UserCheck,    path: "/scheduling/agents" },
       { label: "Shift Templates",  icon: Clock,        path: "/scheduling/shifts" },
       { label: "Labor Law Rules",  icon: Scale,        path: "/scheduling/labor-laws" },

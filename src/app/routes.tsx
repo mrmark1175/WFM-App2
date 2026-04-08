@@ -18,6 +18,7 @@ import { SchedulingHub } from "./pages/SchedulingHub";
 import { AgentRoster } from "./pages/AgentRoster";
 import { ShiftTemplates } from "./pages/ShiftTemplates";
 import { LaborLawRules } from "./pages/LaborLawRules";
+import { ScheduleEditor } from "./pages/ScheduleEditor";
 
 export const router = createBrowserRouter([
   { path: "/",                            Component: Home },
@@ -39,5 +40,6 @@ export const router = createBrowserRouter([
   { path: "/scheduling/agents",           Component: AgentRoster },
   { path: "/scheduling/shifts",           Component: ShiftTemplates },
   { path: "/scheduling/labor-laws",       Component: LaborLawRules },
+  { path: "/scheduling/schedule",         Component: ScheduleEditor },
   { path: "*",                            Component: Home },
 ]);
