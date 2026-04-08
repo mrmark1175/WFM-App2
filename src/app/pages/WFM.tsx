@@ -27,10 +27,11 @@ export function WFM() {
       path: "/wfm/capacity",
     },
     {
-      title: "Schedule Management",
-      description: "Create, edit, and publish employee schedules",
+      title: "Scheduling Hub",
+      description: "Agent roster, shift templates, labor law rules, and AI schedule generation",
       icon: Calendar,
-      stats: "24 Active Schedules",
+      stats: "Scheduling",
+      path: "/scheduling",
     },
     {
       title: "Real Time Management",
