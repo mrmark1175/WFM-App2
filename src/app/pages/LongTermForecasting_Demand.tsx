@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
-import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X, BrainCircuit, AlertTriangle, ShieldCheck, CheckCircle2, Sparkles } from "lucide-react";
+import { TrendingUp, Clock, Users, Settings2, ChevronRight, ChevronDown, ChevronUp, Save, Plus, Loader2, Calendar, Info, ShieldAlert, LayoutDashboard, Trash2, RotateCcw, CircleHelp, LineChart as LineChartIcon, Pencil, X, BrainCircuit, AlertTriangle, ShieldCheck, CheckCircle2, Sparkles } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -882,6 +882,7 @@ export default function LongTermForecastingDemand() {
   const [isAssumptionsOpen, setIsAssumptionsOpen] = useState(true);
   const [isHistoricalSourceOpen, setIsHistoricalSourceOpen] = useState(false);
   const [isBlendedStaffingOpen, setIsBlendedStaffingOpen] = useState(true);
+  const [isInsightNarrativeOpen, setIsInsightNarrativeOpen] = useState(false);
   const [outlierResults, setOutlierResults] = useState<OutlierResult[] | null>(null);
   const [isOutlierPanelOpen, setIsOutlierPanelOpen] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -2049,11 +2050,27 @@ export default function LongTermForecastingDemand() {
             {/* ── Insight Narrative ── */}
             {insightNarrative && (
               <div className="mt-4 pt-4 border-t border-white/10">
-                <div className="flex items-center gap-2 mb-2">
-                  <Sparkles className="size-3.5 text-violet-300 shrink-0" />
-                  <span className="text-[10px] uppercase tracking-widest text-slate-200 font-bold">Insight Narrative</span>
-                  <span className="text-[10px] text-slate-200">· Exordium Private AI Engine · runs on your isolated server</span>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Sparkles className="size-3.5 text-violet-300 shrink-0" />
+                    <span className="text-[10px] uppercase tracking-widest text-slate-200 font-bold">Insight Narrative</span>
+                    <span className="hidden sm:inline text-[10px] text-slate-200">· Exordium Private AI Engine · runs on your isolated server</span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsInsightNarrativeOpen((open) => !open)}
+                    className="h-7 px-2 text-[10px] text-slate-100 hover:bg-white/10 hover:text-white shrink-0"
+                  >
+                    {isInsightNarrativeOpen ? "Collapse" : "Expand"}
+                    {isInsightNarrativeOpen ? <ChevronUp className="size-3.5 ml-1" /> : <ChevronDown className="size-3.5 ml-1" />}
+                  </Button>
                 </div>
+              </div>
+            )}
+            {insightNarrative && isInsightNarrativeOpen && (
+              <div className="mt-4 pt-4 border-t border-white/10">
                 <p className={`text-sm font-bold mb-2 ${insightNarrative.trendDir === "growing" ? "text-emerald-300" : insightNarrative.trendDir === "declining" ? "text-rose-300" : "text-sky-200"}`}>
                   {insightNarrative.headline}
                 </p>
