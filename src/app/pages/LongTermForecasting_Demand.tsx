@@ -2364,23 +2364,23 @@ export default function LongTermForecastingDemand() {
                     </div>
                   )}
                   <div className="overflow-x-auto rounded-xl border border-border/60">
-                    <Table className="table-fixed">
+                    <Table className="table-fixed min-w-[980px]">
                       <colgroup>
-                        <col className="w-[18%]" />
                         <col className="w-[14%]" />
-                        <col className="w-[16%]" />
+                        <col className="w-[14%]" />
+                        <col className="w-[15%]" />
                         <col className="w-[16%]" />
                         <col className="w-[12%]" />
-                        <col className="w-[24%]" />
+                        <col className="w-[29%]" />
                       </colgroup>
                       <TableHeader className="bg-muted/50">
                         <TableRow className="hover:bg-transparent">
-                          <TableHead className="pl-6 text-xs font-black uppercase tracking-widest whitespace-nowrap">Month</TableHead>
-                          <TableHead className="text-right text-xs font-black uppercase tracking-widest whitespace-nowrap">API Volume</TableHead>
-                          <TableHead className="text-right text-xs font-black uppercase tracking-widest whitespace-nowrap">Override Volume</TableHead>
-                          <TableHead className="text-right text-xs font-black uppercase tracking-widest whitespace-nowrap">Final Volume Used</TableHead>
-                          <TableHead className="text-right text-xs font-black uppercase tracking-widest whitespace-nowrap">Variance %</TableHead>
-                          <TableHead className="pr-6 text-right text-xs font-black uppercase tracking-widest whitespace-nowrap">Override Toggle / Edit State</TableHead>
+                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Month</TableHead>
+                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">API Volume</TableHead>
+                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Override Volume</TableHead>
+                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Final Volume Used</TableHead>
+                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Variance %</TableHead>
+                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Override Toggle / Edit State</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -2388,9 +2388,9 @@ export default function LongTermForecastingDemand() {
                           const outlier = outlierResults?.find((r) => r.index === row.index);
                           return (
                           <TableRow key={row.index} className={outlier && !outlier.applied ? (outlier.severity === "extreme" ? "bg-rose-50/40 dark:bg-rose-950/10" : "bg-amber-50/40 dark:bg-amber-950/10") : row.canEdit ? "bg-amber-50/60 dark:bg-amber-950/10" : ""}>
-                            <TableCell className="pl-6 align-top">
-                              <div className="flex flex-col gap-0.5">
-                                <div className="flex items-center gap-1.5">
+                            <TableCell className="px-3 text-center align-middle">
+                              <div className="flex flex-col items-center gap-0.5">
+                                <div className="flex items-center justify-center gap-1.5">
                                   <span className="font-bold text-sm">{row.monthLabel}</span>
                                   {outlier && !outlier.applied && (
                                     <UITooltip>
@@ -2406,12 +2406,12 @@ export default function LongTermForecastingDemand() {
                                   )}
                                   {outlier?.applied && <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" />}
                                 </div>
-                                {row.canEdit && <span className="text-[11px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-400">{row.stateLabel}</span>}
+                                {row.canEdit && <span className="text-[11px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-400 text-center">{row.stateLabel}</span>}
                               </div>
                             </TableCell>
-                            <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">{formatInteger(row.apiVolume)}</TableCell>
-                            <TableCell className="text-right align-middle">
-                              <div className="flex justify-end">
+                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{formatInteger(row.apiVolume)}</TableCell>
+                            <TableCell className="px-3 text-center align-middle">
+                              <div className="flex justify-center">
                                 <Input
                                   inputMode="numeric"
                                   pattern="[0-9]*"
@@ -2420,17 +2420,17 @@ export default function LongTermForecastingDemand() {
                                   onBlur={() => handleOverrideBlur(row.index)}
                                   placeholder={String(row.apiVolume)}
                                   disabled={!row.canEdit}
-                                  className="h-9 w-full max-w-[9.5rem] text-right font-mono tabular-nums"
+                                  className="h-9 w-full max-w-[8.5rem] text-center font-mono tabular-nums"
                                 />
                               </div>
                             </TableCell>
-                            <TableCell className="text-right font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap">{formatInteger(row.finalVolume)}</TableCell>
-                            <TableCell className={`text-right font-mono text-sm tabular-nums whitespace-nowrap ${row.variancePct === null ? "text-muted-foreground" : row.variancePct >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                            <TableCell className="px-3 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">{formatInteger(row.finalVolume)}</TableCell>
+                            <TableCell className={`px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle ${row.variancePct === null ? "text-muted-foreground" : row.variancePct >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
                               {row.variancePct === null ? "0.0%" : `${row.variancePct > 0 ? "+" : ""}${row.variancePct.toFixed(1)}%`}
                             </TableCell>
-                            <TableCell className="pr-6 align-middle">
-                              <div className="flex items-center justify-end gap-3">
-                                <div className="flex items-center gap-2">
+                            <TableCell className="px-3 text-center align-middle">
+                              <div className="flex items-center justify-center gap-3">
+                                <div className="flex items-center justify-center gap-2">
                                   <Switch checked={row.canEdit} onCheckedChange={(checked) => handleOverrideToggle(row.index, checked)} disabled={row.stateLabel === "Manual"} />
                                   <Badge variant={row.canEdit ? "default" : "outline"} className={row.canEdit ? "bg-amber-500 hover:bg-amber-500 text-black" : ""}>{row.stateLabel}</Badge>
                                 </div>
@@ -2483,8 +2483,8 @@ export default function LongTermForecastingDemand() {
                           className="mt-0.5"
                         />
                         <div className="space-y-1">
-                      <p className={`text-xs font-bold uppercase tracking-wider ${CHANNEL_ASSUMPTION_META[channel].colorClass}`}>{CHANNEL_ASSUMPTION_META[channel].label}</p>
-                          <p className="text-xs text-foreground/55 mt-0.5">
+                      <p className="text-xs font-black uppercase tracking-wider text-slate-950 dark:text-white">{CHANNEL_ASSUMPTION_META[channel].label}</p>
+                          <p className="text-xs text-slate-800 dark:text-slate-200 mt-0.5">
                             {channel === "voice" ? "Priority queue and base staffing channel." : channel === "chat" ? `Concurrent channel with ${assumptions.chatConcurrency} chats per staffed seat.` : "Deferred workload channel shared with Email."}
                           </p>
                         </div>
@@ -2640,20 +2640,20 @@ export default function LongTermForecastingDemand() {
                         const isSaved = savedActuals.has(row.actualKey);
                         return (
                           <TableRow key={`${row.year}-${row.month1}-${detailChannel}`} className={`hover:bg-muted/30 ${row.isCompleted ? "bg-blue-50/30 dark:bg-blue-950/10" : ""}`}>
-                            <TableCell className="pl-6 align-top">
-                              <div className="flex items-center gap-2 min-w-0">
+                            <TableCell className="px-3 text-center align-middle">
+                              <div className="flex items-center justify-center gap-2 min-w-0">
                                 <span className="font-bold text-sm">{row.monthLabel} {row.year}</span>
                                 {row.isCompleted && <Badge variant="outline" className="text-[10px] h-4 px-1 text-blue-600 border-blue-300">Completed</Badge>}
                               </div>
                             </TableCell>
-                            <TableCell className="text-right font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap">{row.forecastVol.toLocaleString()}</TableCell>
-                            <TableCell className="text-right align-middle">
+                            <TableCell className="px-3 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">{row.forecastVol.toLocaleString()}</TableCell>
+                            <TableCell className="px-3 text-center align-middle">
                               {row.isCompleted ? (
-                                <div className="flex items-center justify-end gap-1.5">
+                                <div className="flex items-center justify-center gap-1.5">
                                   <Input
                                     type="number"
                                     min={0}
-                                    className="h-7 w-full max-w-[9rem] text-right text-xs font-mono font-bold tabular-nums"
+                                    className="h-7 w-full max-w-[8.5rem] text-center text-xs font-mono font-bold tabular-nums"
                                     placeholder="Enter actual"
                                     defaultValue={row.actualVol ?? ""}
                                     onBlur={(e) => {
@@ -2679,7 +2679,7 @@ export default function LongTermForecastingDemand() {
                                 <span className="text-xs text-muted-foreground">—</span>
                               )}
                             </TableCell>
-                            <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">
+                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
                               {row.variancePct != null ? (
                                 <span className={row.variancePct >= 0 ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>
                                   {row.variancePct >= 0 ? "+" : ""}{row.variancePct}%
@@ -2687,7 +2687,7 @@ export default function LongTermForecastingDemand() {
                               ) : <span className="text-muted-foreground">—</span>}
                             </TableCell>
                             {activeRecutFactor != null && (
-                              <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">
+                              <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
                                 {row.recutVol != null ? (
                                   <span className="font-bold text-emerald-700">{row.recutVol.toLocaleString()}</span>
                                 ) : row.isCompleted && row.actualVol != null ? (
@@ -2695,7 +2695,7 @@ export default function LongTermForecastingDemand() {
                                 ) : <span className="text-muted-foreground">—</span>}
                               </TableCell>
                             )}
-                            <TableCell className="text-right text-xs text-muted-foreground whitespace-nowrap">
+                            <TableCell className="px-3 text-center text-xs text-muted-foreground whitespace-nowrap align-middle">
                               {row.isCompleted ? "Actual entry" : "Forecast"}
                             </TableCell>
                           </TableRow>
@@ -2756,17 +2756,17 @@ export default function LongTermForecastingDemand() {
                         const channelVol = row.channelMetrics[detailChannel].volume;
                         return (
                           <TableRow key={`${row.year}-${row.month}`} className="hover:bg-muted/30">
-                            <TableCell className="pl-6 font-bold text-sm align-top">{row.month} {row.year}</TableCell>
-                            <TableCell className="text-right font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap">{channelVol.toLocaleString()}</TableCell>
-                            <TableCell className="text-right font-mono text-sm text-indigo-600 tabular-nums whitespace-nowrap">{row.workloadHours.toLocaleString()}</TableCell>
-                            <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">{row.aht}s</TableCell>
-                            <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">{row.occupancy}%</TableCell>
-                            <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">{row.shrinkage}%</TableCell>
-                            <TableCell className="text-right text-sm whitespace-nowrap truncate max-w-0">{row.activeBlendPreset}</TableCell>
-                            <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">{row.sharedPoolWorkload > 0 ? row.sharedPoolWorkload.toLocaleString() : "-"}</TableCell>
-                            <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "-"}</TableCell>
-                            <TableCell className="text-right font-mono text-sm tabular-nums whitespace-nowrap">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "-"}</TableCell>
-                            <TableCell className="pr-6 text-right font-mono text-sm font-bold text-amber-600 tabular-nums whitespace-nowrap">{row.totalRequiredFTE}</TableCell>
+                            <TableCell className="px-3 text-center font-bold text-sm align-middle">{row.month} {row.year}</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">{channelVol.toLocaleString()}</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm text-indigo-600 tabular-nums whitespace-nowrap align-middle">{row.workloadHours.toLocaleString()}</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.aht}s</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.occupancy}%</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.shrinkage}%</TableCell>
+                            <TableCell className="px-3 text-center text-sm whitespace-nowrap truncate max-w-0 align-middle">{row.activeBlendPreset}</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.sharedPoolWorkload > 0 ? row.sharedPoolWorkload.toLocaleString() : "-"}</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "-"}</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "-"}</TableCell>
+                            <TableCell className="px-3 text-center font-mono text-sm font-bold text-amber-600 tabular-nums whitespace-nowrap align-middle">{row.totalRequiredFTE}</TableCell>
                           </TableRow>
                         );
                       })}
