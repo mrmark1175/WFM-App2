@@ -37,6 +37,7 @@ interface PlannerSnapshot {
   decompParams: { trendStrength: number; seasonalityStrength: number };
   channelHistoricalApiData: Record<ChannelKey, number[]>;
   channelHistoricalOverrides: Record<ChannelKey, Record<number, string>>;
+  recutVolumesByChannel?: Record<ChannelKey, number[]> | null;
 }
 
 interface DistributionProfile {
@@ -71,6 +72,7 @@ interface IntradayPrefs {
 }
 
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3 };
+const USER_INPUTS_STORAGE_KEY = "lt_forecast_demand_user_inputs";
 const DEFAULT_PREFS: IntradayPrefs = {
   selectedChannel: "voice",
   targetMonthOffset: 0,
@@ -88,6 +90,22 @@ const DEFAULT_PREFS: IntradayPrefs = {
   smoothWindow: 2,
 };
 const DOW_COLORS = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#9333ea", "#e11d48", "#94a3b8"];
+
+interface PersistedDemandPlannerState {
+  selectedScenarioId?: string;
+  plannerSnapshot?: Partial<PlannerSnapshot>;
+}
+
+function readPersistedDemandPlannerSnapshot(): PlannerSnapshot | null {
+  try {
+    const raw = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedDemandPlannerState;
+    return (parsed?.plannerSnapshot as PlannerSnapshot | undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // ── Helper: apply overrides to API data (mirrors demand planner logic) ────────
 function applyHistoricalOverrides(apiData: number[], overrides: Record<number, string>): number[] {
@@ -156,8 +174,16 @@ export const IntradayForecast = () => {
       fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
       fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
     ]).then(([activeState, lobSettings]) => {
-      if (activeState?.plannerSnapshot) {
-        setPlannerSnapshot(activeState.plannerSnapshot as PlannerSnapshot);
+      const apiSnapshot = activeState?.plannerSnapshot as PlannerSnapshot | undefined;
+      const localSnapshot = readPersistedDemandPlannerSnapshot();
+      const snapshot = localSnapshot?.recutVolumesByChannel
+        ? localSnapshot
+        : apiSnapshot?.recutVolumesByChannel
+          ? apiSnapshot
+          : localSnapshot ?? apiSnapshot;
+
+      if (snapshot) {
+        setPlannerSnapshot(snapshot);
       } else if (lobSettings) {
         // No Demand Planner session yet — build a minimal snapshot from LOB settings
         const a = lobSettings as Record<string, number | Record<string, boolean> | string>;
