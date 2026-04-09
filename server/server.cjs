@@ -280,7 +280,7 @@ async function ensureAppTables() {
       id                   SERIAL PRIMARY KEY,
       organization_id      INTEGER NOT NULL DEFAULT 1,
       lob_id               INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
-      channels_enabled     JSONB   NOT NULL DEFAULT '{"voice":true,"email":false,"chat":false}',
+      channels_enabled     JSONB   NOT NULL DEFAULT '{"voice":true,"email":false,"chat":false,"cases":false}',
       pooling_mode         TEXT    NOT NULL DEFAULT 'dedicated',
       voice_aht            INTEGER NOT NULL DEFAULT 300,
       voice_sla_target     NUMERIC NOT NULL DEFAULT 80,
@@ -1441,7 +1441,7 @@ app.put('/api/lob-settings', async (req, res) => {
          updated_at         = NOW()`,
       [
         user.organization_id, lobId,
-        JSON.stringify(channels_enabled ?? { voice: true, email: false, chat: false }),
+        JSON.stringify(channels_enabled ?? { voice: true, email: false, chat: false, cases: false }),
         pooling_mode ?? 'dedicated',
         voice_aht ?? 300, voice_sla_target ?? 80, voice_sla_seconds ?? 20,
         chat_aht ?? 450, chat_sla_target ?? 80, chat_sla_seconds ?? 30, chat_concurrency ?? 2,

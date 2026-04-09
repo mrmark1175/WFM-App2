@@ -13,12 +13,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
 import {
   ChevronDown, ChevronRight, Cloud, CloudOff, Loader2,
-  Phone, Mail, MessageSquare, Clock, SlidersHorizontal,
+  Phone, Mail, MessageSquare, Clock, SlidersHorizontal, ClipboardList,
 } from "lucide-react";
 import { toast } from "sonner";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type ChannelKey = "voice" | "email" | "chat";
+type ChannelKey = "voice" | "email" | "chat" | "cases";
 type DayKey = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
 type PoolingMode = "blended" | "dedicated";
 
@@ -71,6 +71,7 @@ const CHANNEL_META: Record<ChannelKey, { label: string; Icon: React.FC<{ classNa
   voice: { label: "Voice", Icon: Phone,          colorClass: "text-sky-600 dark:text-sky-400",     bgClass: "bg-sky-50 dark:bg-sky-950/30" },
   email: { label: "Email", Icon: Mail,            colorClass: "text-emerald-600 dark:text-emerald-400", bgClass: "bg-emerald-50 dark:bg-emerald-950/30" },
   chat:  { label: "Chat",  Icon: MessageSquare,   colorClass: "text-amber-600 dark:text-amber-400", bgClass: "bg-amber-50 dark:bg-amber-950/30" },
+  cases: { label: "Cases", Icon: ClipboardList,   colorClass: "text-violet-600 dark:text-violet-400", bgClass: "bg-violet-50 dark:bg-violet-950/30" },
 };
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -88,6 +89,7 @@ const DEFAULT_HOURS: HoursOfOperation = {
   voice: makeDefaultChannelSchedule(),
   email: makeDefaultChannelSchedule(),
   chat:  makeDefaultChannelSchedule(),
+  cases: makeDefaultChannelSchedule(),
 };
 
 function mergeHours(saved: Partial<HoursOfOperation> | null | undefined): HoursOfOperation {
@@ -95,6 +97,7 @@ function mergeHours(saved: Partial<HoursOfOperation> | null | undefined): HoursO
     voice: { ...makeDefaultChannelSchedule(), ...(saved?.voice ?? {}) },
     email: { ...makeDefaultChannelSchedule(), ...(saved?.email ?? {}) },
     chat:  { ...makeDefaultChannelSchedule(), ...(saved?.chat  ?? {}) },
+    cases: { ...makeDefaultChannelSchedule(), ...(saved?.cases ?? {}) },
   };
   return result;
 }
@@ -103,7 +106,7 @@ function applyDefaults(raw: Partial<LobSettings> & { lob_id: number; lob_name: s
   return {
     lob_id:            raw.lob_id,
     lob_name:          raw.lob_name,
-    channels_enabled:  raw.channels_enabled  ?? { voice: true, email: false, chat: false },
+    channels_enabled:  raw.channels_enabled  ?? { voice: true, email: false, chat: false, cases: false },
     pooling_mode:      raw.pooling_mode       ?? "dedicated",
     voice_aht:         raw.voice_aht          ?? 300,
     voice_sla_target:  raw.voice_sla_target   ?? 80,
@@ -230,13 +233,21 @@ function ChannelStaffingSection({
             tooltip="Target agent utilisation % for email. Unlike voice, this IS an input — email has no queue, so utilisation drives the backlog model." />
         </div>
       )}
+      {channel === "cases" && (
+        <div className="rounded-md border border-dashed border-violet-300/70 bg-violet-50/60 dark:bg-violet-950/20 p-3">
+          <p className="text-sm font-semibold text-violet-700 dark:text-violet-300">Cases uses the same staffing settings as Email.</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            It is saved as a separate channel toggle and operating-hours schedule, but the blended staffing model reuses the Email backlog parameters.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── HoursTable — module-level ─────────────────────────────────────────────────
 function HoursTable({ s, onUpdateHours }: { s: LobSettings; onUpdateHours: UpdateHoursFn }) {
-  const enabledChannels = (["voice", "email", "chat"] as ChannelKey[]).filter((c) => s.channels_enabled[c]);
+  const enabledChannels = (["voice", "email", "chat", "cases"] as ChannelKey[]).filter((c) => s.channels_enabled[c]);
   if (enabledChannels.length === 0) {
     return (
       <p className="text-sm text-muted-foreground text-center py-8">
@@ -333,7 +344,7 @@ interface LobCardProps {
   onUpdateHours: UpdateHoursFn;
 }
 function LobCard({ s, isOpen, isSaving, hasError, onToggle, onUpdate, onUpdateHours }: LobCardProps) {
-  const enabledChannelCount = (["voice", "email", "chat"] as ChannelKey[]).filter((c) => s.channels_enabled[c]).length;
+  const enabledChannelCount = (["voice", "email", "chat", "cases"] as ChannelKey[]).filter((c) => s.channels_enabled[c]).length;
 
   return (
     <Card className="border border-border shadow-sm overflow-hidden">
@@ -343,7 +354,7 @@ function LobCard({ s, isOpen, isSaving, hasError, onToggle, onUpdate, onUpdateHo
             <div className="flex items-center gap-3 flex-wrap min-w-0">
               <CardTitle className="text-base font-black uppercase tracking-widest truncate">{s.lob_name}</CardTitle>
               <div className="flex gap-1.5 flex-wrap">
-                {(["voice", "email", "chat"] as ChannelKey[]).filter((c) => s.channels_enabled[c]).map((c) => (
+                {(["voice", "email", "chat", "cases"] as ChannelKey[]).filter((c) => s.channels_enabled[c]).map((c) => (
                   <Badge key={c} variant="outline" className={`text-xs ${CHANNEL_META[c].colorClass}`}>
                     {CHANNEL_META[c].label}
                   </Badge>
@@ -393,7 +404,7 @@ function LobCard({ s, isOpen, isSaving, hasError, onToggle, onUpdate, onUpdateHo
                 <div className="space-y-3">
                   <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Active Channels</p>
                   <div className="flex gap-4 flex-wrap">
-                    {(["voice", "email", "chat"] as ChannelKey[]).map((ch) => {
+                    {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((ch) => {
                       const { Icon: ChIcon, colorClass, bgClass, label } = CHANNEL_META[ch];
                       return (
                         <label key={ch} className={`flex items-center gap-2.5 rounded-lg border border-border/60 px-4 py-3 cursor-pointer transition-colors ${s.channels_enabled[ch] ? bgClass : "bg-muted/20 opacity-60"}`}>
@@ -433,7 +444,7 @@ function LobCard({ s, isOpen, isSaving, hasError, onToggle, onUpdate, onUpdateHo
 
                 <div className="space-y-3">
                   <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Staffing Parameters</p>
-                  {(["voice", "email", "chat"] as ChannelKey[])
+                  {(["voice", "email", "chat", "cases"] as ChannelKey[])
                     .filter((c) => s.channels_enabled[c])
                     .map((ch) => <ChannelStaffingSection key={ch} s={s} channel={ch} onUpdate={onUpdate} />)
                   }
@@ -492,7 +503,7 @@ function SummaryTable({ settings, onToggle }: { settings: LobSettings[]; onToggl
                   <td className="py-2 pl-4 pr-2 font-semibold">{s.lob_name}</td>
                   <td className="py-2 px-2">
                     <div className="flex gap-1 flex-wrap">
-                      {(["voice", "email", "chat"] as ChannelKey[]).filter((c) => s.channels_enabled[c]).map((c) => (
+                      {(["voice", "email", "chat", "cases"] as ChannelKey[]).filter((c) => s.channels_enabled[c]).map((c) => (
                         <Badge key={c} variant="outline" className={`text-xs ${CHANNEL_META[c].colorClass}`}>
                           {CHANNEL_META[c].label}
                         </Badge>
