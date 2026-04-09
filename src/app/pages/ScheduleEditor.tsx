@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { ChevronLeft, ChevronRight, Loader2, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, CalendarDays, Users, Clock3, LayoutGrid } from "lucide-react";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
 import { CoverageGraph } from "../components/schedule/CoverageGraph";
@@ -194,6 +194,8 @@ export function ScheduleEditor() {
 
   const [weekStart, setWeekStart] = useState<Date>(() => getMondayOf(new Date()));
   const [activeDayIdx, setActiveDayIdx] = useState(0); // 0=Mon … 6=Sun
+  const [agentQuery, setAgentQuery] = useState("");
+  const [skillFilter, setSkillFilter] = useState<"all" | "voice" | "chat" | "email">("all");
 
   const [agents, setAgents]           = useState<Agent[]>([]);
   const [templates, setTemplates]     = useState<ShiftTemplate[]>([]);
@@ -406,82 +408,192 @@ export function ScheduleEditor() {
     [agents]
   );
 
+  const visibleAgents = useMemo(() => {
+    const query = agentQuery.trim().toLowerCase();
+    return activeAgents.filter((agent) => {
+      const matchesQuery = !query || agent.full_name.toLowerCase().includes(query);
+      const matchesSkill =
+        skillFilter === "all" ||
+        (skillFilter === "voice" && agent.skill_voice) ||
+        (skillFilter === "chat" && agent.skill_chat) ||
+        (skillFilter === "email" && agent.skill_email);
+      return matchesQuery && matchesSkill;
+    });
+  }, [activeAgents, agentQuery, skillFilter]);
+
   const todayShiftCount = useMemo(() =>
     assignments.filter(a => a.work_date?.startsWith(activeDate)).length,
     [assignments, activeDate]
   );
 
+  const visibleShiftCount = useMemo(() =>
+    assignments.filter(a => a.work_date?.startsWith(activeDate) && visibleAgents.some(agent => agent.id === a.agent_id)).length,
+    [assignments, activeDate, visibleAgents]
+  );
+
+  const coverageRate = useMemo(() => {
+    if (!requiredFte || !requiredFte.length) return null;
+    const scheduled = assignments.filter(a => a.work_date?.startsWith(activeDate)).length;
+    const required = requiredFte.reduce((sum, v) => sum + (v ?? 0), 0) / requiredFte.length;
+    if (!required) return null;
+    return Math.min(999, Math.round((scheduled / required) * 100));
+  }, [assignments, activeDate, requiredFte]);
+
   return (
     <PageLayout title="Schedule Editor">
-      <div className="flex flex-col gap-5 pb-12">
+      <div className="flex flex-col gap-5 pb-12 bg-gradient-to-b from-slate-50 via-white to-slate-100/70">
 
         {/* Hero toolbar */}
-        <section className="rounded-2xl bg-gradient-to-br from-slate-800 to-slate-700 px-5 py-4 shadow-lg">
-          <div className="flex items-center gap-3 flex-wrap justify-between">
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.4em] text-slate-300 font-semibold">Exordium WFM</p>
-              <h1 className="font-bold text-xl text-white leading-tight">Schedule Editor</h1>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge className="bg-white/10 text-white border-0">{activeAgents.length} agents</Badge>
-              <Badge className="bg-white/10 text-white border-0">{todayShiftCount} shift{todayShiftCount !== 1 ? "s" : ""} today</Badge>
-              <Button size="sm" className="gap-1.5 bg-primary" onClick={() => { setPrefillAgent(undefined); setPrefillStart(undefined); setAddOpen(true); }}>
-                <Plus className="size-3.5" />Add Shift
-              </Button>
-            </div>
+        <section className="relative overflow-hidden rounded-[28px] border border-slate-200/80 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-900 px-5 py-5 shadow-[0_20px_50px_rgba(15,23,42,0.20)] text-white">
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute -top-16 -right-20 h-48 w-48 rounded-full bg-cyan-400/20 blur-3xl" />
+            <div className="absolute -bottom-16 left-1/3 h-56 w-56 rounded-full bg-sky-500/10 blur-3xl" />
           </div>
 
-          {/* Week navigation */}
-          <div className="mt-4 flex items-center gap-2 flex-wrap">
-            <button
-              className="text-white/60 hover:text-white transition-colors"
-              onClick={() => setWeekStart(d => addDays(d, -7))}
-            >
-              <ChevronLeft className="size-4" />
-            </button>
-            <span className="text-sm text-white font-semibold">
-              {formatDate(weekStart)} – {formatDate(weekDates[6])}
-            </span>
-            <button
-              className="text-white/60 hover:text-white transition-colors"
-              onClick={() => setWeekStart(d => addDays(d, 7))}
-            >
-              <ChevronRight className="size-4" />
-            </button>
-            <button
-              className="ml-2 text-xs text-slate-300 hover:text-white transition-colors underline underline-offset-2"
-              onClick={() => { setWeekStart(getMondayOf(new Date())); setActiveDayIdx(0); }}
-            >
-              This week
-            </button>
+          <div className="relative flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+            <div className="space-y-4 flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className="border-0 bg-white/10 text-white">Exordium WFM</Badge>
+                <Badge className="border-0 bg-cyan-400/15 text-cyan-100">{activeAgents.length} agents</Badge>
+                <Badge className="border-0 bg-emerald-400/15 text-emerald-100">{todayShiftCount} shifts today</Badge>
+              </div>
+              <div className="space-y-1">
+                <p className="text-[10px] uppercase tracking-[0.45em] text-cyan-100/70 font-semibold">Schedule Editor</p>
+                <h1 className="text-2xl lg:text-3xl font-black leading-tight">Schedule Editor</h1>
+                <p className="max-w-2xl text-sm text-slate-200/80">
+                  Plan weekly staffing, drag shifts across the timeline, and keep the roster aligned with coverage demand.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-[1.35fr_auto]">
+                <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
+                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+                    <div className="relative flex-1 min-w-0">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/55" />
+                      <Input
+                        value={agentQuery}
+                        onChange={(e) => setAgentQuery(e.target.value)}
+                        placeholder="Search agents"
+                        className="h-10 border-white/15 bg-white/10 pl-10 text-white placeholder:text-white/55 focus-visible:ring-cyan-300/60"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/8 p-1">
+                        <button
+                          type="button"
+                          onClick={() => setWeekStart((d) => addDays(d, -7))}
+                          className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                          aria-label="Previous week"
+                        >
+                          <ChevronLeft className="size-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWeekStart((d) => addDays(d, 7))}
+                          className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                          aria-label="Next week"
+                        >
+                          <ChevronRight className="size-4" />
+                        </button>
+                      </div>
+                      <Input
+                        type="date"
+                        value={activeDate}
+                        onChange={(e) => {
+                          const next = new Date(`${e.target.value}T00:00:00`);
+                          if (Number.isNaN(next.getTime())) return;
+                          const monday = getMondayOf(next);
+                          setWeekStart(monday);
+                          setActiveDayIdx(Math.max(0, Math.min(6, Math.floor((next.getTime() - monday.getTime()) / 86400000))));
+                        }}
+                        className="h-10 w-[160px] border-white/15 bg-white/10 text-white [color-scheme:dark]"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-10 gap-1.5 rounded-xl border border-white/10 bg-white/8 px-3 text-white hover:bg-white/12 hover:text-white"
+                        onClick={() => { setWeekStart(getMondayOf(new Date())); setActiveDayIdx(0); }}
+                      >
+                        <RotateCcw className="size-3.5" />
+                        This week
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/8 p-1">
+                      <Filter className="ml-1 size-3.5 text-cyan-100/80" />
+                      {(["all", "voice", "chat", "email"] as const).map((filter) => (
+                        <button
+                          key={filter}
+                          type="button"
+                          onClick={() => setSkillFilter(filter)}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold capitalize transition-colors ${
+                            skillFilter === filter ? "bg-white text-slate-900 shadow-sm" : "text-white/80 hover:bg-white/10 hover:text-white"
+                          }`}
+                        >
+                          {filter}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-slate-200/70">
+                      <LayoutGrid className="size-3.5" />
+                      <span>{visibleAgents.length} visible / {activeAgents.length} active agents</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:w-[420px]">
+                  <div className="rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
+                    <p className="text-[10px] uppercase tracking-[0.3em] text-slate-200/60">Visible</p>
+                    <p className="mt-1 text-2xl font-black">{visibleAgents.length}</p>
+                    <p className="text-xs text-slate-200/70">Agents</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
+                    <p className="text-[10px] uppercase tracking-[0.3em] text-slate-200/60">Shifts</p>
+                    <p className="mt-1 text-2xl font-black">{visibleShiftCount}</p>
+                    <p className="text-xs text-slate-200/70">Today</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
+                    <p className="text-[10px] uppercase tracking-[0.3em] text-slate-200/60">Coverage</p>
+                    <p className="mt-1 text-2xl font-black">{coverageRate != null ? `${coverageRate}%` : "—"}</p>
+                    <p className="text-xs text-slate-200/70">vs demand</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
+                    <p className="text-[10px] uppercase tracking-[0.3em] text-slate-200/60">Window</p>
+                    <p className="mt-1 text-2xl font-black">{formatDate(weekStart)}</p>
+                    <p className="text-xs text-slate-200/70">Week start</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Day tabs */}
-          <div className="mt-3 flex gap-1 flex-wrap">
+          <div className="relative mt-5 grid grid-cols-7 gap-2">
             {DAY_LABELS.map((label, i) => {
               const dayDate = weekDates[i];
               const count = assignments.filter(a => a.work_date?.startsWith(toDateStr(dayDate))).length;
               const isToday = toDateStr(dayDate) === toDateStr(new Date());
+              const active = activeDayIdx === i;
               return (
                 <button
                   key={label}
                   onClick={() => setActiveDayIdx(i)}
-                  className={`flex flex-col items-center px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                    activeDayIdx === i
-                      ? "bg-white text-slate-800"
-                      : "text-slate-300 hover:bg-white/10"
+                  className={`rounded-2xl border px-3 py-2 text-left transition-all ${
+                    active
+                      ? "border-cyan-300 bg-white text-slate-900 shadow-lg shadow-cyan-950/20"
+                      : "border-white/10 bg-white/10 text-white/85 hover:bg-white/15"
                   }`}
                 >
-                  <span>{label}</span>
-                  <span className="text-[10px] opacity-70">{formatDate(dayDate)}</span>
-                  {count > 0 && (
-                    <span className={`mt-0.5 text-[9px] font-bold ${activeDayIdx === i ? "text-primary" : "text-emerald-400"}`}>
-                      {count}
-                    </span>
-                  )}
-                  {isToday && activeDayIdx !== i && (
-                    <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  )}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-[0.28em]">{label}</span>
+                    {isToday && <span className="h-2 w-2 rounded-full bg-emerald-400" />}
+                  </div>
+                  <div className="mt-1 flex items-end justify-between gap-2">
+                    <span className="text-sm font-semibold">{formatDate(dayDate)}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${active ? "bg-cyan-100 text-cyan-900" : "bg-white/15 text-white"}`}>{count}</span>
+                  </div>
                 </button>
               );
             })}
@@ -498,9 +610,14 @@ export function ScheduleEditor() {
             <p className="text-muted-foreground text-sm">No active agents found.</p>
             <p className="text-xs text-muted-foreground mt-1">Add agents in the <a href="/scheduling/agents" className="underline text-primary">Agent Roster</a> first.</p>
           </div>
+        ) : visibleAgents.length === 0 ? (
+          <div className="rounded-2xl border border-slate-200 bg-white/90 p-10 text-center shadow-sm">
+            <p className="text-sm font-semibold text-slate-700">No agents match the current search or skill filter.</p>
+            <p className="mt-1 text-xs text-slate-500">Clear the search or switch back to All to view the full schedule.</p>
+          </div>
         ) : (
           <ScheduleGrid
-            agents={activeAgents}
+            agents={visibleAgents}
             assignments={assignments}
             activeDate={activeDate}
             onShiftMove={moveShift}

@@ -129,13 +129,13 @@ export function ScheduleGrid({
 
   return (
     <DndContext sensors={sensors} modifiers={[restrictToHorizontalAxis]} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <div className="overflow-auto rounded-xl border border-border" style={{ maxHeight: "60vh" }}>
+      <div className="overflow-auto rounded-[24px] border border-slate-200 bg-white shadow-[0_12px_30px_rgba(15,23,42,0.08)]" style={{ maxHeight: "60vh" }}>
         <div style={{ width: gridWidth, minWidth: gridWidth }}>
           {/* Time header */}
-          <div className="flex sticky top-0 z-20 bg-card border-b border-border">
+          <div className="flex sticky top-0 z-20 bg-white border-b border-slate-200">
             {/* Agent column header */}
             <div
-              className="flex items-center px-3 text-[11px] font-bold text-muted-foreground uppercase tracking-wider sticky left-0 z-30 bg-card border-r border-border shrink-0"
+              className="flex items-center px-3 text-[11px] font-black text-slate-500 uppercase tracking-[0.25em] sticky left-0 z-30 bg-slate-50 border-r border-slate-200 shrink-0"
               style={{ width: AGENT_W, height: 32 }}
             >
               Agent
@@ -145,7 +145,7 @@ export function ScheduleGrid({
               {TIME_LABELS.filter(t => t.label).map(({ slot, label }) => (
                 <div
                   key={slot}
-                  className="absolute text-[10px] text-muted-foreground select-none"
+                  className="absolute text-[10px] text-slate-500 select-none"
                   style={{ left: slot * COL_W, top: 8, transform: "translateX(-50%)" }}
                 >
                   {label}
@@ -155,7 +155,7 @@ export function ScheduleGrid({
               {TIME_LABELS.filter(t => t.label).map(({ slot }) => (
                 <div
                   key={`vl-${slot}`}
-                  className="absolute border-l border-border/40"
+                  className="absolute border-l border-slate-200/80"
                   style={{ left: slot * COL_W, top: 0, height: 32 }}
                 />
               ))}
@@ -168,10 +168,10 @@ export function ScheduleGrid({
               a => a.agent_id === agent.id && a.work_date?.startsWith(activeDate)
             );
             return (
-              <div key={agent.id} className="flex" style={{ height: ROW_H }}>
+              <div key={agent.id} className="flex odd:bg-slate-50/40" style={{ height: ROW_H }}>
                 {/* Agent name (sticky left) */}
                 <div
-                  className="flex items-center px-3 text-sm font-medium text-foreground sticky left-0 z-10 bg-card border-r border-b border-border shrink-0 truncate"
+                  className="flex items-center px-3 text-sm font-semibold text-slate-700 sticky left-0 z-10 bg-slate-50 border-r border-b border-slate-200 shrink-0 truncate"
                   style={{ width: AGENT_W, height: ROW_H }}
                   title={agent.full_name}
                 >
@@ -181,7 +181,7 @@ export function ScheduleGrid({
                 {/* Grid row (clickable to add shift) */}
                 <div
                   ref={idx === 0 ? gridRef : undefined}
-                  className="relative border-b border-border cursor-pointer hover:bg-muted/20 transition-colors"
+                  className="relative border-b border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors"
                   style={{ width: TOTAL_COLS * COL_W, height: ROW_H }}
                   onClick={(e) => handleCellClick(agent.id, e)}
                   title="Click to add a shift"
@@ -190,7 +190,7 @@ export function ScheduleGrid({
                   {TIME_LABELS.filter(t => t.label).map(({ slot }) => (
                     <div
                       key={`gl-${slot}`}
-                      className="absolute border-l border-border/30 pointer-events-none"
+                      className="absolute border-l border-slate-200/70 pointer-events-none"
                       style={{ left: slot * COL_W, top: 0, height: ROW_H }}
                     />
                   ))}
@@ -198,7 +198,7 @@ export function ScheduleGrid({
                   {Array.from({ length: 48 }, (_, i) => i * 2).map(slot => (
                     <div
                       key={`hl-${slot}`}
-                      className="absolute border-l border-border/15 pointer-events-none"
+                      className="absolute border-l border-slate-200/35 pointer-events-none"
                       style={{ left: slot * COL_W, top: 0, height: ROW_H }}
                     />
                   ))}
@@ -222,7 +222,7 @@ export function ScheduleGrid({
                   {/* Empty state hint */}
                   {agentAssignments.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <span className="flex items-center gap-1 text-[10px] text-muted-foreground/40">
+                      <span className="flex items-center gap-1 text-[10px] text-slate-400">
                         <Plus className="size-3" />click to assign shift
                       </span>
                     </div>
