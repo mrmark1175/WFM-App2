@@ -55,7 +55,7 @@ interface HistoricalSourceRow { index: number; monthLabel: string; apiVolume: nu
 interface OutlierResult { index: number; monthLabel: string; finalVolume: number; suggestedValue: number; direction: "high" | "low"; severity: "mild" | "extreme"; modZScore: number; reason: string; applied?: boolean; }
 interface DemandPlannerScenarioRecord { scenario_id: string; scenario_name: string; planner_snapshot: Partial<PlannerSnapshot>; }
 interface LongTermActualRecord { year_index: number; month_index: number; volume: number; }
-type ChannelKey = "voice" | "email" | "chat";
+type ChannelKey = "voice" | "email" | "chat" | "cases";
 type PoolingMode = "dedicated" | "blended";
 type BlendPresetId = "voice-only" | "voice-email" | "voice-chat" | "email-chat" | "all-blended" | "dedicated";
 interface BlendPreset { id: BlendPresetId; label: string; description: string; pools: ChannelKey[][]; }
@@ -274,9 +274,9 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   useShrinkageModeler: false,
   shrinkageItems: DEFAULT_SHRINKAGE_ITEMS,
 };
-const EMPTY_CHANNEL_DATA: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [] };
-const EMPTY_CHANNEL_OVERRIDES: Record<ChannelKey, Record<number, string>> = { voice: {}, email: {}, chat: {} };
-const DEFAULT_SELECTED_CHANNELS: Record<ChannelKey, boolean> = { voice: true, email: true, chat: true };
+const EMPTY_CHANNEL_DATA: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [], cases: [] };
+const EMPTY_CHANNEL_OVERRIDES: Record<ChannelKey, Record<number, string>> = { voice: {}, email: {}, chat: {}, cases: {} };
+const DEFAULT_SELECTED_CHANNELS: Record<ChannelKey, boolean> = { voice: true, email: true, chat: true, cases: false };
 const DEFAULT_HISTORY_MONTHS = 12;
 const DEFAULT_SCENARIOS: Record<string, Scenario> = {
   base: createScenario("base", "Base Case (Steady)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, EMPTY_CHANNEL_DATA, EMPTY_CHANNEL_OVERRIDES, DEFAULT_SELECTED_CHANNELS, "blended", false, "voice")),
@@ -288,10 +288,10 @@ const BLEND_PRESETS: BlendPreset[] = [
   { id: "voice-email", label: "Voice + Email", description: "Blend voice and email; exclude chat", pools: [["voice", "email"]] },
   { id: "voice-chat", label: "Voice + Chat", description: "Blend voice and chat; exclude email", pools: [["voice", "chat"]] },
   { id: "email-chat", label: "Email + Chat", description: "Blend email and chat; exclude voice", pools: [["email", "chat"]] },
-  { id: "all-blended", label: "Voice + Email + Chat", description: "All selected channels share one agent pool", pools: [["voice", "email", "chat"]] },
-  { id: "dedicated", label: "Dedicated per channel", description: "No channel blending across staffing pools", pools: [["voice"], ["email"], ["chat"]] },
+  { id: "all-blended", label: "Voice + Email + Chat + Cases", description: "All selected channels share one agent pool", pools: [["voice", "email", "chat", "cases"]] },
+  { id: "dedicated", label: "Dedicated per channel", description: "No channel blending across staffing pools", pools: [["voice"], ["email"], ["chat"], ["cases"]] },
 ];
-const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3 };
+const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
 const EMAIL_AHT_SECONDS = 600;
 const CHAT_AHT_SECONDS = 450;
 const CHAT_CONCURRENCY = 2;
@@ -302,6 +302,7 @@ const CHANNEL_ASSUMPTION_META: Record<ChannelKey, { label: string; colorClass: s
   voice: { label: "Voice", colorClass: "text-sky-700 dark:text-sky-300", bgClass: "bg-sky-50 dark:bg-sky-950/30" },
   email: { label: "Email", colorClass: "text-emerald-700 dark:text-emerald-300", bgClass: "bg-emerald-50 dark:bg-emerald-950/30" },
   chat: { label: "Chat", colorClass: "text-amber-700 dark:text-amber-300", bgClass: "bg-amber-50 dark:bg-amber-950/30" },
+  cases: { label: "Cases", colorClass: "text-violet-700 dark:text-violet-300", bgClass: "bg-violet-50 dark:bg-violet-950/30" },
 };
 const USER_INPUTS_STORAGE_KEY = "lt_forecast_demand_user_inputs";
 const SCENARIOS_STORAGE_KEY = "lt_forecast_demand_scenarios";
@@ -314,7 +315,7 @@ const getOpenSecondsPerDay = (assumptions: Assumptions) => assumptions.operating
 const getBusinessDaysPerMonth = (assumptions: Assumptions) => assumptions.operatingDaysPerWeek * WEEKS_PER_MONTH;
 const getChannelModelLabel = (channel: ChannelKey, chatConcurrency = CHAT_CONCURRENCY) => {
   if (channel === "chat") return `Modified Erlang C (${chatConcurrency} concurrent chats)`;
-  if (channel === "email") return "Deferred backlog model";
+  if (channel === "email" || channel === "cases") return "Deferred backlog model";
   return "Erlang C";
 };
 const roundTo = (value: number, digits: number) => Number(value.toFixed(digits));
@@ -323,39 +324,40 @@ function normalizeSelectedChannels(value?: Partial<Record<ChannelKey, boolean>> 
     voice: Boolean(value?.voice),
     email: Boolean(value?.email),
     chat: Boolean(value?.chat),
+    cases: Boolean(value?.cases),
   };
-  if (!normalized.voice && !normalized.email && !normalized.chat) return { voice: true, email: false, chat: false };
+  if (!normalized.voice && !normalized.email && !normalized.chat && !normalized.cases) return { voice: true, email: false, chat: false, cases: false };
   return normalized;
 }
 function getIncludedChannelsFromSelection(selectedChannels: Record<ChannelKey, boolean>): ChannelKey[] {
-  return (["voice", "email", "chat"] as ChannelKey[]).filter((channel) => selectedChannels[channel]);
+  return (["voice", "email", "chat", "cases"] as ChannelKey[]).filter((channel) => selectedChannels[channel]);
 }
 function getLegacyBlendPresetId(selectedChannels: Record<ChannelKey, boolean>, poolingMode: PoolingMode): BlendPresetId | undefined {
   const normalized = normalizeSelectedChannels(selectedChannels);
   const included = getIncludedChannelsFromSelection(normalized);
-  if (poolingMode === "dedicated" && normalized.voice && normalized.email && normalized.chat) return "dedicated";
+  if (poolingMode === "dedicated" && normalized.voice && normalized.email && normalized.chat && normalized.cases) return "dedicated";
   if (included.length === 1 && included[0] === "voice") return "voice-only";
   if (poolingMode === "blended" && included.length === 2 && included.includes("voice") && included.includes("email")) return "voice-email";
   if (poolingMode === "blended" && included.length === 2 && included.includes("voice") && included.includes("chat")) return "voice-chat";
   if (poolingMode === "blended" && included.length === 2 && included.includes("email") && included.includes("chat")) return "email-chat";
-  if (poolingMode === "blended" && included.length === 3) return "all-blended";
+  if (poolingMode === "blended" && included.length === 4) return "all-blended";
   return undefined;
 }
 function getBlendStateFromLegacyPreset(presetId?: BlendPresetId): { selectedChannels: Record<ChannelKey, boolean>; poolingMode: PoolingMode } {
   switch (presetId) {
     case "voice-only":
-      return { selectedChannels: { voice: true, email: false, chat: false }, poolingMode: "blended" };
+      return { selectedChannels: { voice: true, email: false, chat: false, cases: false }, poolingMode: "blended" };
     case "voice-email":
-      return { selectedChannels: { voice: true, email: true, chat: false }, poolingMode: "blended" };
+      return { selectedChannels: { voice: true, email: true, chat: false, cases: false }, poolingMode: "blended" };
     case "voice-chat":
-      return { selectedChannels: { voice: true, email: false, chat: true }, poolingMode: "blended" };
+      return { selectedChannels: { voice: true, email: false, chat: true, cases: false }, poolingMode: "blended" };
     case "email-chat":
-      return { selectedChannels: { voice: false, email: true, chat: true }, poolingMode: "blended" };
+      return { selectedChannels: { voice: false, email: true, chat: true, cases: false }, poolingMode: "blended" };
     case "dedicated":
-      return { selectedChannels: { voice: true, email: true, chat: true }, poolingMode: "dedicated" };
+      return { selectedChannels: { voice: true, email: true, chat: true, cases: true }, poolingMode: "dedicated" };
     case "all-blended":
     default:
-      return { selectedChannels: { voice: true, email: true, chat: true }, poolingMode: "blended" };
+      return { selectedChannels: { voice: true, email: true, chat: true, cases: true }, poolingMode: "blended" };
   }
 }
 function buildBlendConfiguration(selectedChannels: Record<ChannelKey, boolean>, poolingMode: PoolingMode): BlendConfiguration {
@@ -415,7 +417,7 @@ const occupancyFromIntensity = (intensity: number, agents: number): number => (
   agents > 0 ? intensity / agents : 0
 );
 const getChannelServiceTargets = (assumptions: Assumptions, channel: ChannelKey) => {
-  if (channel === "email") {
+  if (channel === "email" || channel === "cases") {
     return {
       slaTarget: assumptions.emailSlaTarget,
       slaAnswerSeconds: assumptions.emailSlaAnswerSeconds,
@@ -436,7 +438,7 @@ const getChannelServiceTargets = (assumptions: Assumptions, channel: ChannelKey)
   };
 };
 const getChannelAhtSeconds = (assumptions: Assumptions, channel: ChannelKey) => {
-  if (channel === "email") return assumptions.emailAht;
+  if (channel === "email" || channel === "cases") return assumptions.emailAht;
   if (channel === "chat") return assumptions.chatAht;
   return assumptions.aht;
 };
@@ -715,11 +717,13 @@ function buildPlannerSnapshot(
       voice: { ...channelHistoricalOverrides.voice },
       email: { ...channelHistoricalOverrides.email },
       chat: { ...channelHistoricalOverrides.chat },
+      cases: { ...channelHistoricalOverrides.cases },
     },
     channelHistoricalApiData: {
       voice: [...channelHistoricalApiData.voice],
       email: [...channelHistoricalApiData.email],
       chat: [...channelHistoricalApiData.chat],
+      cases: [...channelHistoricalApiData.cases],
     },
     activeBlendPreset: getLegacyBlendPresetId(normalizedChannels, poolingMode),
     selectedChannels: normalizedChannels,
@@ -745,11 +749,13 @@ function createScenario(id: string, name: string, snapshot: PlannerSnapshot): Sc
       voice: { ...snapshot.channelHistoricalOverrides.voice },
       email: { ...snapshot.channelHistoricalOverrides.email },
       chat: { ...snapshot.channelHistoricalOverrides.chat },
+      cases: { ...snapshot.channelHistoricalOverrides.cases },
     },
     channelHistoricalApiData: {
       voice: [...(snapshot.channelHistoricalApiData?.voice || [])],
       email: [...(snapshot.channelHistoricalApiData?.email || [])],
       chat: [...(snapshot.channelHistoricalApiData?.chat || [])],
+      cases: [...(snapshot.channelHistoricalApiData?.cases || [])],
     },
     selectedChannels: { ...snapshot.selectedChannels },
     poolingMode: snapshot.poolingMode,
@@ -776,18 +782,20 @@ function normalizeScenario(value: unknown, fallbackId: string): Scenario | null 
       voice: Object.keys(normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.voice)).length > 0 ? normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.voice) : normalizeHistoricalOverrides(snapshot?.historicalOverrides),
       email: normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.email),
       chat: normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.chat),
+      cases: normalizeHistoricalOverrides(snapshot?.channelHistoricalOverrides?.cases),
     },
     channelHistoricalApiData: {
       voice: Array.isArray(snapshot?.channelHistoricalApiData?.voice) ? [...snapshot.channelHistoricalApiData.voice] : [],
       email: Array.isArray(snapshot?.channelHistoricalApiData?.email) ? [...snapshot.channelHistoricalApiData.email] : [],
       chat: Array.isArray(snapshot?.channelHistoricalApiData?.chat) ? [...snapshot.channelHistoricalApiData.chat] : [],
+      cases: Array.isArray(snapshot?.channelHistoricalApiData?.cases) ? [...snapshot.channelHistoricalApiData.cases] : [],
     },
     activeBlendPreset: getLegacyBlendPresetId(selectedChannels, poolingMode),
     selectedChannels,
     poolingMode,
     isHistoricalSourceOpen: typeof snapshot?.isHistoricalSourceOpen === "boolean" ? snapshot.isHistoricalSourceOpen : false,
     isBlendedStaffingOpen: typeof snapshot?.isBlendedStaffingOpen === "boolean" ? snapshot.isBlendedStaffingOpen : true,
-    selectedHistoricalChannel: snapshot?.selectedHistoricalChannel === "email" || snapshot?.selectedHistoricalChannel === "chat" ? snapshot.selectedHistoricalChannel : "voice",
+    selectedHistoricalChannel: snapshot?.selectedHistoricalChannel === "email" || snapshot?.selectedHistoricalChannel === "chat" || snapshot?.selectedHistoricalChannel === "cases" ? snapshot.selectedHistoricalChannel : "voice",
   });
 }
 const getTimeline = (startDateStr: string, monthsPast = 0, monthsFuture = 12) => {
@@ -831,7 +839,7 @@ const calculatePooledFTE = (
     }
     const voiceEntry = channelMix.find((entry) => entry.channel === "voice");
     const chatEntry = channelMix.find((entry) => entry.channel === "chat");
-    const emailEntry = channelMix.find((entry) => entry.channel === "email");
+    const emailLikeEntries = channelMix.filter((entry) => entry.channel === "email" || entry.channel === "cases");
     const blendedRequirement = calculateBlendedTriChannelRequirement({
       voiceVolume: voiceEntry?.volume ?? 0,
       voiceAhtSeconds: assumptions.aht,
@@ -840,7 +848,7 @@ const calculatePooledFTE = (
       chatVolume: chatEntry?.volume ?? 0,
       chatAhtSeconds: assumptions.chatAht,
       chatConcurrency: Math.max(1, assumptions.chatConcurrency),
-      emailVolume: emailEntry?.volume ?? 0,
+      emailVolume: emailLikeEntries.reduce((sum, entry) => sum + entry.volume, 0),
       emailAhtSeconds: assumptions.emailAht,
       intervalHours: getOpenHoursPerMonth(assumptions),
       shrinkagePct: assumptions.shrinkage,
@@ -939,11 +947,13 @@ export default function LongTermForecastingDemand() {
       voice: [...(snapshot.channelHistoricalApiData?.voice || [])],
       email: [...(snapshot.channelHistoricalApiData?.email || [])],
       chat: [...(snapshot.channelHistoricalApiData?.chat || [])],
+      cases: [...(snapshot.channelHistoricalApiData?.cases || [])],
     });
     setHistoricalOverridesByChannel({
       voice: { ...(snapshot.channelHistoricalOverrides?.voice || snapshot.historicalOverrides || {}) },
       email: { ...(snapshot.channelHistoricalOverrides?.email || {}) },
       chat: { ...(snapshot.channelHistoricalOverrides?.chat || {}) },
+      cases: { ...(snapshot.channelHistoricalOverrides?.cases || {}) },
     });
     setSelectedChannels(normalizeSelectedChannels(snapshot.selectedChannels));
     setPoolingMode(snapshot.poolingMode === "dedicated" ? "dedicated" : "blended");
@@ -1133,7 +1143,7 @@ export default function LongTermForecastingDemand() {
     const fetchHistoricalData = async () => {
       setLoading(true);
       try {
-        const channels: ChannelKey[] = ["voice", "email", "chat"];
+        const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
         const results = await Promise.all(channels.map(async (channel) => {
           try {
             const actualsResponse = await fetch(apiUrl(`/api/long-term-actuals?channel=${channel}&lob_id=${activeLob.id}`));
@@ -1154,17 +1164,19 @@ export default function LongTermForecastingDemand() {
         const nextApiData = results.reduce<Record<ChannelKey, number[]>>((acc, { channel, data }) => {
           acc[channel] = data;
           return acc;
-        }, { voice: [], email: [], chat: [] });
+        }, { voice: [], email: [], chat: [], cases: [] });
         setHistoricalApiDataByChannel((current) => ({
           voice: current.voice.length > 0 ? current.voice : nextApiData.voice,
           email: current.email.length > 0 ? current.email : nextApiData.email,
           chat: current.chat.length > 0 ? current.chat : nextApiData.chat,
+          cases: current.cases.length > 0 ? current.cases : nextApiData.cases,
         }));
         setSyncedHistoricalApiDataByChannel(nextApiData);
         setHistoricalOverridesByChannel((current) => ({
           voice: Object.fromEntries(Object.entries(current.voice).filter(([key]) => Number(key) < nextApiData.voice.length)),
           email: Object.fromEntries(Object.entries(current.email).filter(([key]) => Number(key) < nextApiData.email.length)),
           chat: Object.fromEntries(Object.entries(current.chat).filter(([key]) => Number(key) < nextApiData.chat.length)),
+          cases: Object.fromEntries(Object.entries(current.cases).filter(([key]) => Number(key) < nextApiData.cases.length)),
         }));
       } catch (error) { console.error("Error fetching mock data:", error); }
       finally { setLoading(false); }
@@ -1461,8 +1473,8 @@ export default function LongTermForecastingDemand() {
 
   // ── Publish re-cut to Intraday ────────────────────────────────────────────────
   const handlePublishRecut = () => {
-    const channels: ChannelKey[] = ["voice", "email", "chat"];
-    const published: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [] };
+    const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
+    const published: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [], cases: [] };
     for (const ch of channels) {
       const vols = forecastVolumesByChannel[ch];
       const factor = recutFactorByChannel[ch];
@@ -1503,25 +1515,30 @@ export default function LongTermForecastingDemand() {
   // Per-channel final historical data (applies each channel's own overrides)
   const finalHistoricalDataByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     const applyOverrides = (channel: ChannelKey) => buildChannelHistoricalData(historicalApiDataByChannel[channel], historicalOverridesByChannel[channel]);
-    return { voice: finalHistoricalData, email: applyOverrides("email"), chat: applyOverrides("chat") };
+    return { voice: finalHistoricalData, email: applyOverrides("email"), chat: applyOverrides("chat"), cases: applyOverrides("cases") };
   }, [finalHistoricalData, historicalApiDataByChannel, historicalOverridesByChannel]);
   const hasExplicitHistoryByChannel = useMemo<Record<ChannelKey, boolean>>(() => ({
     voice: historicalApiDataByChannel.voice.length > 0 || Object.keys(historicalOverridesByChannel.voice).length > 0,
     email: historicalApiDataByChannel.email.length > 0 || Object.keys(historicalOverridesByChannel.email).length > 0,
     chat: historicalApiDataByChannel.chat.length > 0 || Object.keys(historicalOverridesByChannel.chat).length > 0,
+    cases: historicalApiDataByChannel.cases.length > 0 || Object.keys(historicalOverridesByChannel.cases).length > 0,
   }), [historicalApiDataByChannel, historicalOverridesByChannel]);
   // Per-channel 12-month forecast volumes — uses each channel's own history when available
   const forecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     const voiceForecast = getCalculatedVolumes(finalHistoricalDataByChannel.voice, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
     const emailHistory = finalHistoricalDataByChannel.email;
     const chatHistory = finalHistoricalDataByChannel.chat;
+    const casesHistory = finalHistoricalDataByChannel.cases;
     const emailForecast = hasExplicitHistoryByChannel.email
       ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
       : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
     const chatForecast = hasExplicitHistoryByChannel.chat
       ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
       : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
-    return { voice: voiceForecast, email: emailForecast, chat: chatForecast };
+    const casesForecast = hasExplicitHistoryByChannel.cases
+      ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
+    return { voice: voiceForecast, email: emailForecast, chat: chatForecast, cases: casesForecast };
   }, [finalHistoricalDataByChannel, hasExplicitHistoryByChannel, forecastMethod, assumptions, hwParams, arimaParams, decompParams]);
   const visibleFinalHistoricalData = useMemo(() => buildChannelHistoricalData(visibleHistoricalApiData, visibleHistoricalOverrides), [visibleHistoricalApiData, visibleHistoricalOverrides]);
   const canRestoreApiData = useMemo(() => {
@@ -1608,10 +1625,12 @@ export default function LongTermForecastingDemand() {
   const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row, futureIdx) => {
     const emailForecastVol = forecastVolumesByChannel.email[futureIdx] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email);
     const chatForecastVol = forecastVolumesByChannel.chat[futureIdx] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat);
+    const casesForecastVol = forecastVolumesByChannel.cases[futureIdx] ?? Math.round(emailForecastVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email);
     const channelMetrics: Record<ChannelKey, ChannelStaffingMetrics> = {
       voice: getChannelStaffingMetrics("voice", row.volume, assumptions),
       email: getChannelStaffingMetrics("email", emailForecastVol, assumptions),
       chat: getChannelStaffingMetrics("chat", chatForecastVol, assumptions),
+      cases: getChannelStaffingMetrics("cases", casesForecastVol, assumptions),
     };
     const pools = selectedBlendConfig.pools.map((channels, index) => {
       const workloadHours = Number(channels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
@@ -1829,6 +1848,7 @@ export default function LongTermForecastingDemand() {
       const snapVoiceHistory = buildSnapHistory("voice").length > 0 ? buildSnapHistory("voice") : finalHistoricalData;
       const snapEmailHistory = buildSnapHistory("email");
       const snapChatHistory = buildSnapHistory("chat");
+      const snapCasesHistory = buildSnapHistory("cases");
       const voiceForecast = getCalculatedVolumes(snapVoiceHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams);
       const emailForecast = snapEmailHistory.length > 0
         ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams)
@@ -1836,6 +1856,9 @@ export default function LongTermForecastingDemand() {
       const chatForecast = snapChatHistory.length > 0
         ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams)
         : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
+      const casesForecast = snapCasesHistory.length > 0
+        ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams)
+        : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
       const snapBlendConfig = buildBlendConfiguration(activeSelectedChannels, activePoolingMode);
       const snapEmailAht = activeAssumptions.emailAht ?? EMAIL_AHT_SECONDS;
       const snapChatAht = activeAssumptions.chatAht ?? CHAT_AHT_SECONDS;
@@ -1848,6 +1871,7 @@ export default function LongTermForecastingDemand() {
             voice: getChannelStaffingMetrics("voice", row.volume, activeAssumptions),
             email: getChannelStaffingMetrics("email", emailVol, activeAssumptions),
             chat: getChannelStaffingMetrics("chat", chatVol, activeAssumptions),
+            cases: getChannelStaffingMetrics("cases", casesForecast[fi] ?? Math.round(emailVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email), activeAssumptions),
           };
           const totalRequiredFTE = snapBlendConfig.pools.reduce((sum, channels) => {
             const workloadHours = channels.reduce((poolSum, ch) => poolSum + channelMetrics[ch].workloadHours, 0);
@@ -1894,6 +1918,11 @@ export default function LongTermForecastingDemand() {
       averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.chat.requiredFTE, 0) / futureData.length, 1) : 0,
       averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.chat.requiredOccupancy, 0) / futureData.length, 1) : 0,
     },
+    cases: {
+      model: getChannelModelLabel("cases"),
+      averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.cases.requiredFTE, 0) / futureData.length, 1) : 0,
+      averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.cases.requiredOccupancy, 0) / futureData.length, 1) : 0,
+    },
   }), [futureData]);
   const isChannelIncludedInBlend = (channel: ChannelKey) => includedChannels.includes(channel);
   const channelAssumptionSummary = useMemo(() => [
@@ -1934,6 +1963,25 @@ export default function LongTermForecastingDemand() {
       fteRule: isChannelIncludedInBlend("email")
         ? `${averageChannelMetrics.email.averageFTE} average FTE equivalent before shared-pool offsets`
         : `${averageChannelMetrics.email.averageFTE} average standalone FTE`,
+    },
+    {
+      key: "cases" as const,
+      label: CHANNEL_ASSUMPTION_META.cases.label,
+      isIncluded: isChannelIncludedInBlend("cases"),
+      modelRule: averageChannelMetrics.cases.model,
+      volumeRule: hasExplicitHistoryByChannel.cases ? "Uses channel historical series and forecast method" : "Email-style fallback volume",
+      ahtRule: `${assumptions.emailAht}s AHT`,
+      serviceRule: `Staffing uses the same backlog window as Email: ${assumptions.emailSlaTarget}% within ${assumptions.emailSlaAnswerSeconds}s. ASA ${assumptions.emailAsaTargetSeconds}s is stored on the page but not applied in this calculation.`,
+      workloadRule: "Shares the async backlog pool with Email and only uses remaining idle capacity after Voice and Chat",
+      staffingRule: isChannelIncludedInBlend("cases")
+        ? "Cases competes with Email for the remaining idle capacity after Voice and Chat."
+        : "Agents = max(base workload seats, SLA backlog seats) before shrinkage and safety margin.",
+      occupancyRule: isChannelIncludedInBlend("cases")
+        ? `${averageChannelMetrics.cases.averageOccupancy}% required occupancy when Cases needs dedicated coverage`
+        : `${averageChannelMetrics.cases.averageOccupancy}% standalone required occupancy`,
+      fteRule: isChannelIncludedInBlend("cases")
+        ? `${averageChannelMetrics.cases.averageFTE} average FTE equivalent before shared-pool offsets`
+        : `${averageChannelMetrics.cases.averageFTE} average standalone FTE`,
     },
     {
       key: "chat" as const,
@@ -2427,7 +2475,7 @@ export default function LongTermForecastingDemand() {
                   <p className="text-xs text-foreground/55">Tick the channels to include in the staffing view.</p>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    {(["voice", "email", "chat"] as ChannelKey[]).map((channel) => (
+                    {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((channel) => (
                       <label key={channel} className={`flex items-start gap-3 rounded-xl border border-border/60 p-4 cursor-pointer ${CHANNEL_ASSUMPTION_META[channel].bgClass}`}>
                         <Checkbox
                           checked={selectedChannels[channel]}
@@ -2437,7 +2485,7 @@ export default function LongTermForecastingDemand() {
                         <div className="space-y-1">
                       <p className={`text-xs font-bold uppercase tracking-wider ${CHANNEL_ASSUMPTION_META[channel].colorClass}`}>{CHANNEL_ASSUMPTION_META[channel].label}</p>
                           <p className="text-xs text-foreground/55 mt-0.5">
-                            {channel === "voice" ? "Priority queue and base staffing channel." : channel === "chat" ? `Concurrent channel with ${assumptions.chatConcurrency} chats per staffed seat.` : "Deferred workload channel."}
+                            {channel === "voice" ? "Priority queue and base staffing channel." : channel === "chat" ? `Concurrent channel with ${assumptions.chatConcurrency} chats per staffed seat.` : "Deferred workload channel shared with Email."}
                           </p>
                         </div>
                       </label>
@@ -2523,7 +2571,7 @@ export default function LongTermForecastingDemand() {
                       </div>
                       {/* Channel selector tabs */}
                       <div className="flex gap-1 rounded-lg border border-border p-1 bg-muted/40">
-                        {(["voice", "email", "chat"] as ChannelKey[]).map((ch) => (
+                        {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((ch) => (
                           <button
                             key={ch}
                             type="button"
@@ -2940,7 +2988,7 @@ export default function LongTermForecastingDemand() {
                       <Badge variant="outline" className="font-black text-xs border-indigo-200 text-indigo-700">Derived From SLA</Badge>
                     </div>
                     <div className="grid grid-cols-1 gap-3">
-                      {(["voice", "email", "chat"] as ChannelKey[]).map((channelKey) => (
+                      {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((channelKey) => (
                         <div key={channelKey} className={`rounded-xl border border-border/60 p-3 ${CHANNEL_ASSUMPTION_META[channelKey].bgClass}`}>
                           <div className="flex items-center justify-between gap-3">
                             <div>

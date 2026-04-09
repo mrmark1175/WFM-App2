@@ -27,7 +27,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Textarea } from "../components/ui/textarea";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type ChannelKey = "voice" | "email" | "chat";
+type ChannelKey = "voice" | "email" | "chat" | "cases";
 
 interface PlannerSnapshot {
   assumptions: Assumptions;
@@ -71,7 +71,7 @@ interface IntradayPrefs {
   smoothWindow: number;
 }
 
-const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3 };
+const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
 const USER_INPUTS_STORAGE_KEY = "lt_forecast_demand_user_inputs";
 const DEFAULT_PREFS: IntradayPrefs = {
   selectedChannel: "voice",
@@ -233,9 +233,9 @@ export const IntradayForecast = () => {
           hwParams: { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 },
           arimaParams: { p: 1, d: 1, q: 1 },
           decompParams: { trendStrength: 1, seasonalityStrength: 1 },
-          channelHistoricalApiData: { voice: [], email: [], chat: [] },
-          channelHistoricalOverrides: { voice: {}, email: {}, chat: {} },
-          selectedChannels: (lobSettings.channels_enabled as Record<string, boolean> | undefined) ?? { voice: true, email: false, chat: false },
+          channelHistoricalApiData: { voice: [], email: [], chat: [], cases: [] },
+          channelHistoricalOverrides: { voice: {}, email: {}, chat: {}, cases: {} },
+          selectedChannels: (lobSettings.channels_enabled as Record<string, boolean> | undefined) ?? { voice: true, email: false, chat: false, cases: false },
           poolingMode: (a.pooling_mode as string) === "blended" ? "blended" : "dedicated",
           isHistoricalSourceOpen: false,
           isBlendedStaffingOpen: true,
@@ -295,13 +295,13 @@ export const IntradayForecast = () => {
 
   // ── Forecast computation ───────────────────────────────────────────────────
   const forecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
-    const empty = { voice: [] as number[], email: [] as number[], chat: [] as number[] };
+    const empty = { voice: [] as number[], email: [] as number[], chat: [] as number[], cases: [] as number[] };
     if (!plannerSnapshot) return empty;
 
     // When a re-cut has been published from the Demand page, use those volumes directly.
     const recut = (plannerSnapshot as Record<string, unknown>).recutVolumesByChannel as Record<ChannelKey, number[]> | null | undefined;
-    if (recut && recut.voice && recut.email && recut.chat) {
-      return { voice: recut.voice, email: recut.email, chat: recut.chat };
+    if (recut && recut.voice && recut.email && recut.chat && recut.cases) {
+      return { voice: recut.voice, email: recut.email, chat: recut.chat, cases: recut.cases };
     }
 
     const { forecastMethod, hwParams, arimaParams, decompParams, assumptions,
@@ -314,6 +314,7 @@ export const IntradayForecast = () => {
     const voiceHistory = getHistory("voice");
     const emailHistory = getHistory("email");
     const chatHistory = getHistory("chat");
+    const casesHistory = getHistory("cases");
 
     const voiceForecast = getCalculatedVolumes(voiceHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
     const emailForecast = emailHistory.length > 0
@@ -322,8 +323,11 @@ export const IntradayForecast = () => {
     const chatForecast = chatHistory.length > 0
       ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
       : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
+    const casesForecast = casesHistory.length > 0
+      ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
 
-    return { voice: voiceForecast, email: emailForecast, chat: chatForecast };
+    return { voice: voiceForecast, email: emailForecast, chat: chatForecast, cases: casesForecast };
   }, [plannerSnapshot]);
 
   const monthLabels = useMemo(
@@ -447,7 +451,7 @@ export const IntradayForecast = () => {
       slaTarget:    ch === "voice" ? a.voiceSlaTarget : ch === "chat" ? a.chatSlaTarget : a.emailSlaTarget,
       slaSec:       ch === "voice" ? a.voiceSlaAnswerSeconds : ch === "chat" ? a.chatSlaAnswerSeconds : a.emailSlaAnswerSeconds,
       // occupancy is NOT a staffing input for voice/chat Erlang C — it is an output.
-      // We pass it only for the email workload model which needs a utilisation target.
+      // We pass it only for the email-style workload model which needs a utilisation target.
       emailOccupancy: a.occupancy,
       shrinkage:    a.shrinkage,
       concurrency:  ch === "chat" ? Math.max(1, a.chatConcurrency ?? 1) : 1,
@@ -817,6 +821,7 @@ export const IntradayForecast = () => {
                   <SelectItem value="voice">Voice</SelectItem>
                   <SelectItem value="email">Email</SelectItem>
                   <SelectItem value="chat">Chat</SelectItem>
+                  <SelectItem value="cases">Cases</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1473,7 +1478,7 @@ export const IntradayForecast = () => {
               {fteParams ? (
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-6 py-2 border-b text-xs text-muted-foreground bg-muted/20">
                   <span><span className="font-semibold text-foreground">AHT</span> {fteParams.ahtSec}s</span>
-                  {selectedChannel !== "email" && (
+                  {selectedChannel !== "email" && selectedChannel !== "cases" && (
                     <span><span className="font-semibold text-foreground">SLA</span> {fteParams.slaTarget}% in {fteParams.slaSec}s</span>
                   )}
                   <span><span className="font-semibold text-foreground">Shrinkage</span> {fteParams.shrinkage}%</span>
@@ -1482,8 +1487,8 @@ export const IntradayForecast = () => {
                   )}
                   <span><span className="font-semibold text-foreground">FTE hrs/day</span> {shrinkageHoursPerDay}h</span>
                   <span className="text-[10px] italic">
-                    {selectedChannel === "email"
-                      ? "Email: workload ÷ available agent-seconds per interval"
+                    {selectedChannel === "email" || selectedChannel === "cases"
+                      ? "Email/Cases: workload ÷ available agent-seconds per interval"
                       : selectedChannel === "chat"
                       ? "Chat: Erlang C with concurrency-adjusted demand"
                       : "Voice: Erlang C queuing model"}
@@ -1568,7 +1573,7 @@ export const IntradayForecast = () => {
                                 key={d}
                                 className="text-xs text-right py-1.5 font-mono"
                                 title={result && result.rawAgents > 0
-                                  ? `${result.rawAgents} on-phone agents | A=${result.erlangs} Erl${selectedChannel !== "email" ? ` | SL: ${result.achievedSL}% | Occ: ${result.occupancy}%` : ` | Occ: ${result.occupancy}%`}`
+                                  ? `${result.rawAgents} on-phone agents | A=${result.erlangs} Erl${selectedChannel !== "email" && selectedChannel !== "cases" ? ` | SL: ${result.achievedSL}% | Occ: ${result.occupancy}%` : ` | Occ: ${result.occupancy}%`}`
                                   : undefined}
                                 style={{
                                   backgroundColor: fte > 0
@@ -1621,7 +1626,7 @@ export const IntradayForecast = () => {
                         Exp. SLA
                       </TableCell>
                       {DOW_LABELS.map((_, d) => {
-                        if (selectedChannel === "email") {
+                        if (selectedChannel === "email" || selectedChannel === "cases") {
                           return <TableCell key={d} className="text-xs text-right py-2 text-muted-foreground">N/A</TableCell>;
                         }
                         let weightedSL = 0, totalCalls = 0;

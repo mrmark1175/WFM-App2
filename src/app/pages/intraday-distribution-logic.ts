@@ -56,7 +56,7 @@ export interface IntervalFTEResult {
  * @param slaSec            Speed-of-answer threshold in seconds (e.g. 20)
  * @param emailOccupancy    Used ONLY for email workload model (0–100); ignored for voice/chat
  * @param shrinkage         Shrinkage %, 0–100; grosses rawAgents up to schedulable FTE
- * @param channel           "voice" | "chat" | "email"
+ * @param channel           "voice" | "chat" | "email" | "cases"
  * @param concurrency       Chat only: simultaneous sessions per agent (default 1)
  */
 export function computeIntervalFTE(
@@ -67,7 +67,7 @@ export function computeIntervalFTE(
   slaSec: number,
   emailOccupancy: number,
   shrinkage: number,
-  channel: "voice" | "chat" | "email",
+  channel: "voice" | "chat" | "email" | "cases",
   concurrency = 1,
 ): IntervalFTEResult {
   const zero: IntervalFTEResult = { rawAgents: 0, fte: 0, achievedSL: 0, erlangs: 0, occupancy: 0 };
@@ -76,7 +76,7 @@ export function computeIntervalFTE(
   const intervalSeconds = grainMinutes * 60;
   const shrinkFactor = Math.max(0.01, 1 - shrinkage / 100);
 
-  if (channel === "email") {
+  if (channel === "email" || channel === "cases") {
     // Async workload — no SLA queue; utilisation target fills agent time
     const occupancyFactor = Math.max(0.01, emailOccupancy / 100);
     const workloadSec = callsPerInterval * ahtSec;
