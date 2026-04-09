@@ -2483,8 +2483,8 @@ export default function LongTermForecastingDemand() {
                           className="mt-0.5"
                         />
                         <div className="space-y-1">
-                      <p className="text-xs font-black uppercase tracking-wider text-slate-950 dark:text-white">{CHANNEL_ASSUMPTION_META[channel].label}</p>
-                          <p className="text-xs text-slate-800 dark:text-slate-200 mt-0.5">
+                      <p className="text-xs font-black uppercase tracking-wider text-black">{CHANNEL_ASSUMPTION_META[channel].label}</p>
+                          <p className="text-xs text-black/75 mt-0.5">
                             {channel === "voice" ? "Priority queue and base staffing channel." : channel === "chat" ? `Concurrent channel with ${assumptions.chatConcurrency} chats per staffed seat.` : "Deferred workload channel shared with Email."}
                           </p>
                         </div>
