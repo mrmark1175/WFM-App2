@@ -1,6 +1,4 @@
 import React, { useState } from "react";
-import { useDraggable } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { Label } from "../ui/label";
@@ -42,18 +40,15 @@ interface ActivityBlockProps {
   onDelete: (id: number) => void;
 }
 
+// Activities are NOT independently draggable — they travel with the parent shift block.
+// Clicking opens the edit dialog.
 export function ActivityBlock({ activity, shiftStartMins, colW, rowH, onUpdate, onDelete }: ActivityBlockProps) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<Partial<Activity>>({});
 
-  const { attributes, listeners, setNodeRef, transform } = useDraggable({
-    id: `activity-${activity.id}`,
-    data: { type: "activity", activity },
-  });
-
-  const startMins = timeToMins(activity.start_time);
-  const endMins   = timeToMins(activity.end_time);
-  const offsetMins = startMins - shiftStartMins;
+  const startMins    = timeToMins(activity.start_time);
+  const endMins      = timeToMins(activity.end_time);
+  const offsetMins   = startMins - shiftStartMins;
   const durationMins = endMins - startMins;
 
   const left  = (offsetMins / 15) * colW;
@@ -63,27 +58,33 @@ export function ActivityBlock({ activity, shiftStartMins, colW, rowH, onUpdate, 
 
   const style: React.CSSProperties = {
     position: "absolute",
-    top: 26,
-    height: rowH - 30,
+    // Sits below the slim time-strip header (20px) with 2px gap
+    top: 22,
+    height: rowH - 26,
     left,
     width,
     backgroundColor: cfg.color,
     color: cfg.textColor,
-    borderRadius: 4,
+    borderRadius: 3,
     fontSize: 10,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
-    cursor: "grab",
+    cursor: "pointer",
     userSelect: "none",
     zIndex: 10,
-    transform: CSS.Translate.toString(transform),
   };
 
   const openEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setForm({ activity_type: activity.activity_type, start_time: activity.start_time, end_time: activity.end_time, is_paid: activity.is_paid, notes: activity.notes ?? "" });
+    setForm({
+      activity_type: activity.activity_type,
+      start_time: activity.start_time,
+      end_time: activity.end_time,
+      is_paid: activity.is_paid,
+      notes: activity.notes ?? "",
+    });
     setEditing(true);
   };
 
@@ -94,7 +95,11 @@ export function ActivityBlock({ activity, shiftStartMins, colW, rowH, onUpdate, 
 
   return (
     <>
-      <div ref={setNodeRef} style={style} {...listeners} {...attributes} onClick={openEdit} title={`${cfg.label} ${activity.start_time}–${activity.end_time}`}>
+      <div
+        style={style}
+        onClick={openEdit}
+        title={`${cfg.label} ${activity.start_time}–${activity.end_time}`}
+      >
         <span className="truncate px-1 font-semibold">{cfg.label}</span>
       </div>
 

@@ -657,6 +657,7 @@ export function ScheduleEditor() {
               agents={visibleAgents}
               assignments={assignments}
               activeDate={activeDate}
+              requiredFte={requiredFte}
               onShiftMove={moveShift}
               onShiftDelete={deleteShift}
               onAddShift={handleGridAddShift}
