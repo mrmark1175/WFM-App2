@@ -791,24 +791,22 @@ export const IntradayForecast = () => {
 
       {/* ── No LOB selected ── */}
       {!activeLob && (
-        <Card className="border-amber-200 bg-amber-50 dark:bg-amber-950/20">
-          <CardContent className="py-8 text-center text-amber-700 dark:text-amber-400">
-            <AlertTriangle className="h-8 w-8 mx-auto mb-3 opacity-70" />
-            <p className="font-semibold">No Line of Business selected</p>
-            <p className="text-sm mt-1 opacity-80">Use the LOB selector in the top-right corner of the header to choose a LOB.</p>
-          </CardContent>
-        </Card>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-8 text-center text-amber-700">
+          <AlertTriangle className="h-8 w-8 mx-auto mb-3 opacity-70" />
+          <p className="font-semibold">No Line of Business selected</p>
+          <p className="text-sm mt-1 opacity-80">Use the LOB selector in the top-right corner of the header to choose a LOB.</p>
+        </div>
       )}
 
       {/* ── Forecast Source Panel ── */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200">
+          <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
             <BarChart2 className="h-4 w-4 text-blue-500" />
             Forecast Source &amp; Target Selection
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+          </h2>
+        </div>
+        <div className="p-4">
           <div className="flex flex-wrap items-end gap-4">
             {/* Channel */}
             <div className="flex flex-col gap-1.5">
@@ -1065,30 +1063,28 @@ export const IntradayForecast = () => {
               </div>
             )}
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       {/* ── Baseline Panel — Interval Pattern Data ── */}
-      <Card>
-        <CardHeader className="pb-3 cursor-pointer" onClick={() => setPrefs({ isBaselineOpen: !isBaselineOpen })}>
-          <CardTitle className="text-base flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <Table2 className="h-4 w-4 text-orange-500" />
-              Interval Pattern Baseline
-              <span className="text-xs font-normal text-muted-foreground">(shapes the intraday curve)</span>
-            </span>
-            <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-              {baselineDataCount > 0 && (
-                <Badge variant="secondary" className="text-xs">
-                  {baselineDataCount} day{baselineDataCount !== 1 ? "s" : ""} · {totalIntervalCount.toLocaleString()} intervals
-                </Badge>
-              )}
-              {isBaselineOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            </span>
-          </CardTitle>
-        </CardHeader>
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 cursor-pointer" onClick={() => setPrefs({ isBaselineOpen: !isBaselineOpen })}>
+          <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+            <Table2 className="h-4 w-4 text-orange-500" />
+            Interval Pattern Baseline
+            <span className="text-xs font-normal text-slate-400">(shapes the intraday curve)</span>
+          </h2>
+          <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            {baselineDataCount > 0 && (
+              <Badge variant="secondary" className="text-xs">
+                {baselineDataCount} day{baselineDataCount !== 1 ? "s" : ""} · {totalIntervalCount.toLocaleString()} intervals
+              </Badge>
+            )}
+            {isBaselineOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </span>
+        </div>
         {isBaselineOpen && (
-          <CardContent className="space-y-3">
+          <div className="p-4 space-y-3">
             {/* Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs text-muted-foreground">
@@ -1272,36 +1268,34 @@ export const IntradayForecast = () => {
                   </TableBody>
                 </Table>
             </div>
-          </CardContent>
+          </div>
         )}
-      </Card>
+      </section>
 
       {/* ── Pattern Preview Chart ── */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center justify-between">
-            <span>Intraday Arrival Pattern</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">Grain:</span>
-              <div className="flex rounded-md border overflow-hidden">
-                {([15, 30, 60] as const).map((g) => (
-                  <button
-                    key={g}
-                    onClick={() => setPrefs({ grain: g })}
-                    className={`px-3 py-1 text-xs font-medium transition-colors ${
-                      grain === g
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-background text-muted-foreground hover:bg-muted"
-                    }`}
-                  >
-                    {g} min
-                  </button>
-                ))}
-              </div>
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <h2 className="text-sm font-semibold text-slate-700">Intraday Arrival Pattern</h2>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Grain:</span>
+            <div className="flex rounded-md border border-slate-200 overflow-hidden">
+              {([15, 30, 60] as const).map((g) => (
+                <button
+                  key={g}
+                  onClick={() => setPrefs({ grain: g })}
+                  className={`px-3 py-1 text-xs font-medium transition-colors ${
+                    grain === g
+                      ? "bg-slate-800 text-white"
+                      : "bg-white text-slate-500 hover:bg-slate-50"
+                  }`}
+                >
+                  {g} min
+                </button>
+              ))}
             </div>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+          </div>
+        </div>
+        <div className="p-4">
           {!canGenerateForecast ? (
             <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
               {targetMonthlyVolume === 0
@@ -1349,34 +1343,32 @@ export const IntradayForecast = () => {
               </AreaChart>
             </ResponsiveContainer>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       {/* ── Forecast Results Table ── */}
       {canGenerateForecast && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <Table2 className="h-4 w-4 text-indigo-500" />
-                Interval Forecast &mdash; {targetWeekStart && weeksInMonth.find((w) => w.start === targetWeekStart)?.label}
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+            <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+              <Table2 className="h-4 w-4 text-indigo-500" />
+              Interval Forecast &mdash; {targetWeekStart && weeksInMonth.find((w) => w.start === targetWeekStart)?.label}
+            </h2>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400">
+                Grand Total: <span className="font-bold text-slate-700">{Math.round(grandTotal).toLocaleString()}</span>
               </span>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">
-                  Grand Total: <span className="font-bold text-foreground">{Math.round(grandTotal).toLocaleString()}</span>
-                </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowForecastTable((v) => !v)}
-                >
-                  {showForecastTable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                </Button>
-              </div>
-            </CardTitle>
-          </CardHeader>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowForecastTable((v) => !v)}
+              >
+                {showForecastTable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </Button>
+            </div>
+          </div>
           {showForecastTable && (
-            <CardContent className="p-0">
+            <div>
               <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 500 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
@@ -1449,31 +1441,29 @@ export const IntradayForecast = () => {
                     </TableRow>
                   </TableBody>
               </Table>
-            </CardContent>
+            </div>
           )}
-        </Card>
+        </section>
       )}
 
       {/* ── Required FTE per Interval ── */}
       {canGenerateForecast && (
-        <Card>
-          <CardHeader
-            className="pb-3 cursor-pointer"
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div
+            className="flex items-center justify-between px-4 py-3 border-b border-slate-200 cursor-pointer"
             onClick={() => setShowFTETable((v) => !v)}
           >
-            <CardTitle className="text-base flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <Table2 className="h-4 w-4 text-orange-500" />
-                Required FTE per Interval
-                <span className="text-xs font-normal text-muted-foreground">
-                  (Erlang C — min. agents to meet SLA, grossed up for shrinkage)
-                </span>
+            <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+              <Table2 className="h-4 w-4 text-orange-500" />
+              Required FTE per Interval
+              <span className="text-xs font-normal text-slate-400">
+                (Erlang C — min. agents to meet SLA, grossed up for shrinkage)
               </span>
-              {showFTETable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            </CardTitle>
-          </CardHeader>
+            </h2>
+            {showFTETable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </div>
           {showFTETable && (
-            <CardContent className="p-0">
+            <div>
               {/* Assumptions banner */}
               {fteParams ? (
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-6 py-2 border-b text-xs text-muted-foreground bg-muted/20">
@@ -1655,18 +1645,18 @@ export const IntradayForecast = () => {
                   </TableBody>
                 </Table>
               )}
-            </CardContent>
+            </div>
           )}
-        </Card>
+        </section>
       )}
 
       {/* ── Day Weights Summary ── */}
       {baselineDataCount > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Day-of-Week Weights</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center px-4 py-3 border-b border-slate-200">
+            <h2 className="text-sm font-semibold text-slate-700">Day-of-Week Weights</h2>
+          </div>
+          <div className="p-4">
             <div className="grid grid-cols-7 gap-2">
               {DOW_LABELS.map((label, d) => (
                 <div key={label} className="text-center">
@@ -1676,59 +1666,57 @@ export const IntradayForecast = () => {
                   >
                     {label}
                   </div>
-                  <div className="text-sm font-bold">
+                  <div className="text-sm font-bold text-slate-700">
                     {(distributionWeights.dayWeights[d] * 100).toFixed(1)}%
                   </div>
                 </div>
               ))}
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       )}
 
       {/* ── Table 1: Median Pattern ── */}
       {baselineDataCount > 0 && (
-        <Card>
-          <CardHeader
-            className="pb-3 cursor-pointer"
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div
+            className="flex items-center justify-between px-4 py-3 border-b border-slate-200 cursor-pointer"
             onClick={() => setShowMedianTable((v) => !v)}
           >
-            <CardTitle className="text-base flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <Table2 className="h-4 w-4 text-teal-500" />
-                Table 1 — Median Pattern
-                <span className="text-xs font-normal text-muted-foreground">
-                  (median volume per interval &amp; day)
-                </span>
+            <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+              <Table2 className="h-4 w-4 text-teal-500" />
+              Table 1 — Median Pattern
+              <span className="text-xs font-normal text-slate-400">
+                (median volume per interval &amp; day)
               </span>
-              <span className="flex items-center gap-2">
-                <Badge variant="secondary" className="text-xs">
-                  Grand total: {medianGrandTotal.toFixed(1)}
-                </Badge>
-                <div
-                  className="flex rounded-md border overflow-hidden"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {([15, 30, 60] as const).map((g) => (
-                    <button
-                      key={g}
-                      onClick={() => setPrefs({ grain: g })}
-                      className={`px-2.5 py-1 text-xs font-medium transition-colors ${
-                        grain === g
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-background text-muted-foreground hover:bg-muted"
-                      }`}
-                    >
-                      {g === 60 ? "1 hr" : `${g} min`}
-                    </button>
-                  ))}
-                </div>
-                {showMedianTable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-              </span>
-            </CardTitle>
-          </CardHeader>
+            </h2>
+            <span className="flex items-center gap-2">
+              <Badge variant="secondary" className="text-xs">
+                Grand total: {medianGrandTotal.toFixed(1)}
+              </Badge>
+              <div
+                className="flex rounded-md border border-slate-200 overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {([15, 30, 60] as const).map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => setPrefs({ grain: g })}
+                    className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                      grain === g
+                        ? "bg-slate-800 text-white"
+                        : "bg-white text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    {g === 60 ? "1 hr" : `${g} min`}
+                  </button>
+                ))}
+              </div>
+              {showMedianTable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </span>
+          </div>
           {showMedianTable && (
-            <CardContent className="p-0">
+            <div>
               <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 480 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
@@ -1800,36 +1788,34 @@ export const IntradayForecast = () => {
                     </TableRow>
                   </TableBody>
               </Table>
-            </CardContent>
+            </div>
           )}
-        </Card>
+        </section>
       )}
 
       {/* ── Table 2: Distribution Model ── */}
       {baselineDataCount > 0 && (
-        <Card>
-          <CardHeader
-            className="pb-3 cursor-pointer"
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div
+            className="flex items-center justify-between px-4 py-3 border-b border-slate-200 cursor-pointer"
             onClick={() => setShowDistributionTable((v) => !v)}
           >
-            <CardTitle className="text-base flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <Table2 className="h-4 w-4 text-purple-500" />
-                Table 2 — Arrival Pattern Model
-                <span className="text-xs font-normal text-muted-foreground">
-                  (% distribution weights)
-                </span>
+            <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+              <Table2 className="h-4 w-4 text-purple-500" />
+              Table 2 — Arrival Pattern Model
+              <span className="text-xs font-normal text-slate-400">
+                (% distribution weights)
               </span>
-              <span className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs">
-                  {medianPattern.sampleCounts.reduce((s, c) => s + c, 0)} total samples
-                </Badge>
-                {showDistributionTable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-              </span>
-            </CardTitle>
-          </CardHeader>
+            </h2>
+            <span className="flex items-center gap-2">
+              <Badge variant="outline" className="text-xs">
+                {medianPattern.sampleCounts.reduce((s, c) => s + c, 0)} total samples
+              </Badge>
+              {showDistributionTable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </span>
+          </div>
           {showDistributionTable && (
-            <CardContent className="p-0">
+            <div>
               <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 480 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
@@ -1899,46 +1885,44 @@ export const IntradayForecast = () => {
                     })}
                   </TableBody>
               </Table>
-            </CardContent>
+            </div>
           )}
-        </Card>
+        </section>
       )}
 
       {/* ── Weight Editor ── */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <Edit2 className="h-4 w-4 text-purple-500" />
-              Interval Weight Editor
-              {editableWeights && (
-                <Badge variant="secondary" className="text-xs">Custom weights active</Badge>
-              )}
-            </span>
-            <div className="flex gap-2">
-              {editableWeights && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => { setPrefs({ editableWeights: null }); toast.success("Reset to computed weights"); }}
-                >
-                  <RotateCcw className="h-3.5 w-3.5 mr-1.5" />Reset
-                </Button>
-              )}
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+            <Edit2 className="h-4 w-4 text-purple-500" />
+            Interval Weight Editor
+            {editableWeights && (
+              <Badge variant="secondary" className="text-xs">Custom weights active</Badge>
+            )}
+          </h2>
+          <div className="flex gap-2">
+            {editableWeights && (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setIsEditingWeights((v) => !v)}
-                disabled={baselineDataCount === 0}
+                onClick={() => { setPrefs({ editableWeights: null }); toast.success("Reset to computed weights"); }}
               >
-                {isEditingWeights ? <><X className="h-3.5 w-3.5 mr-1.5" />Close</> : <><Edit2 className="h-3.5 w-3.5 mr-1.5" />Edit Weights</>}
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" />Reset
               </Button>
-            </div>
-          </CardTitle>
-        </CardHeader>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsEditingWeights((v) => !v)}
+              disabled={baselineDataCount === 0}
+            >
+              {isEditingWeights ? <><X className="h-3.5 w-3.5 mr-1.5" />Close</> : <><Edit2 className="h-3.5 w-3.5 mr-1.5" />Edit Weights</>}
+            </Button>
+          </div>
+        </div>
         {isEditingWeights && baselineDataCount > 0 && (
-          <CardContent className="p-0">
-            <p className="text-xs text-muted-foreground px-6 pb-2">
+          <div>
+            <p className="text-xs text-slate-400 px-6 pt-3 pb-2">
               Values are % of daily volume for each interval. Changes are applied immediately to the chart and table above.
             </p>
             <div
@@ -1994,33 +1978,31 @@ export const IntradayForecast = () => {
                 </Table>
               </div>
             </div>
-          </CardContent>
+          </div>
         )}
-      </Card>
+      </section>
 
       {/* ── Profile Manager ── */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <Save className="h-4 w-4 text-green-500" />
-              Distribution Profiles
-              <Badge variant="outline" className="text-xs">{selectedChannel}</Badge>
-            </span>
-            <Button
-              size="sm"
-              onClick={() => setSaveModalOpen(true)}
-              disabled={baselineDataCount === 0 || !canGenerateForecast}
-            >
-              <Save className="h-3.5 w-3.5 mr-1.5" />Save Current
-            </Button>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+            <Save className="h-4 w-4 text-green-500" />
+            Distribution Profiles
+            <Badge variant="outline" className="text-xs">{selectedChannel}</Badge>
+          </h2>
+          <Button
+            size="sm"
+            onClick={() => setSaveModalOpen(true)}
+            disabled={baselineDataCount === 0 || !canGenerateForecast}
+          >
+            <Save className="h-3.5 w-3.5 mr-1.5" />Save Current
+          </Button>
+        </div>
+        <div className="p-4">
           {isLoadingProfiles ? (
-            <p className="text-sm text-muted-foreground animate-pulse">Loading profiles...</p>
+            <p className="text-sm text-slate-400 animate-pulse">Loading profiles...</p>
           ) : savedProfiles.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-slate-400">
               No saved profiles for this LOB + channel yet. Compute a pattern and save it.
             </p>
           ) : (
@@ -2028,11 +2010,11 @@ export const IntradayForecast = () => {
               {savedProfiles.map((profile) => (
                 <div
                   key={profile.id}
-                  className="flex items-center justify-between p-3 rounded-lg border bg-muted/30"
+                  className="flex items-center justify-between p-3 rounded-lg border border-slate-200 bg-slate-50"
                 >
                   <div>
-                    <p className="text-sm font-medium">{profile.profile_name}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
+                    <p className="text-sm font-medium text-slate-700">{profile.profile_name}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
                       {profile.baseline_start_date && profile.baseline_end_date
                         ? `Baseline: ${profile.baseline_start_date} \u2192 ${profile.baseline_end_date}`
                         : "No baseline metadata"}
@@ -2056,8 +2038,8 @@ export const IntradayForecast = () => {
               ))}
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       {/* ── Save Profile Dialog ── */}
       <Dialog open={saveModalOpen} onOpenChange={setSaveModalOpen}>

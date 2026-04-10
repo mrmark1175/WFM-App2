@@ -2078,51 +2078,45 @@ export default function LongTermForecastingDemand() {
     <TooltipProvider>
       <PageLayout title="Long Term Forecasting  Demand">
         <div className="flex flex-col gap-8 pb-12">
-          <section className="rounded-2xl bg-gradient-to-br from-slate-800 to-slate-700 px-6 py-5 shadow-lg">
-            {/* Header row — compact */}
-            <div className="flex items-baseline gap-3 flex-wrap">
-              <p className="text-[10px] uppercase tracking-[0.4em] text-slate-300 font-semibold shrink-0">Long Term Forecasting</p>
-              <h1 className="font-bold text-xl md:text-2xl text-white leading-tight">Multi-Channel Demand & Capacity Planning</h1>
+          <section className="rounded-xl border border-slate-200 bg-white px-6 py-4 shadow-sm">
+            {/* Header row */}
+            <div className="flex items-baseline gap-3 flex-wrap mb-4">
+              <p className="text-[10px] uppercase tracking-[0.4em] text-slate-400 font-semibold shrink-0">Long Term Forecasting</p>
+              <h1 className="font-bold text-xl md:text-2xl text-slate-800 leading-tight">Multi-Channel Demand & Capacity Planning</h1>
             </div>
-            {/* KPI cards — compact */}
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
-              <Card className="bg-white/10 border border-white/10 shadow-none">
-                <CardContent className="p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-200">Forecasted Monthly Volume</p>
-                  <h3 className="mt-1 text-xl font-bold text-white">{kpis.avgVolume.toLocaleString()}</h3>
-                  <p className="text-[11px] text-slate-300 mt-0.5">Avg across the active horizon</p>
-                </CardContent>
-              </Card>
-              <Card className="bg-white/10 border border-white/10 shadow-none">
-                <CardContent className="p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-200">Workload Hours</p>
-                  <h3 className="mt-1 text-xl font-bold text-white">{kpis.avgWorkloadHours.toLocaleString()}</h3>
-                  <p className="text-[11px] text-slate-300 mt-0.5">From channel AHTs &amp; open hours</p>
-                </CardContent>
-              </Card>
-              <Card className="bg-white/10 border border-white/10 shadow-none">
-                <CardContent className="p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-200">Required Agents / FTE</p>
-                  <h3 className="mt-1 text-xl font-bold text-white">{kpis.avgRequiredFTE}</h3>
-                  <p className="text-[11px] text-slate-300 mt-0.5">{selectedBlendConfig.label}</p>
-                </CardContent>
-              </Card>
+            {/* KPI tiles */}
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Forecasted Monthly Volume</p>
+                <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgVolume.toLocaleString()}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Avg across the active horizon</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Workload Hours</p>
+                <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgWorkloadHours.toLocaleString()}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">From channel AHTs &amp; open hours</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Required Agents / FTE</p>
+                <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgRequiredFTE}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">{selectedBlendConfig.label}</p>
+              </div>
             </div>
-            {/* ── Insight Narrative ── */}
+            {/* Insight Narrative */}
             {insightNarrative && (
-              <div className="mt-4 pt-4 border-t border-white/10">
+              <div className="mt-4 pt-4 border-t border-slate-200">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 min-w-0">
-                    <Sparkles className="size-3.5 text-violet-300 shrink-0" />
-                    <span className="text-[10px] uppercase tracking-widest text-slate-200 font-bold">Insight Narrative</span>
-                    <span className="hidden sm:inline text-[10px] text-slate-200">· Exordium Private AI Engine · runs on your isolated server</span>
+                    <Sparkles className="size-3.5 text-violet-500 shrink-0" />
+                    <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Insight Narrative</span>
+                    <span className="hidden sm:inline text-[10px] text-slate-400">· Exordium Private AI Engine · runs on your isolated server</span>
                   </div>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     onClick={() => setIsInsightNarrativeOpen((open) => !open)}
-                    className="h-7 px-2 text-[10px] text-slate-100 hover:bg-white/10 hover:text-white shrink-0"
+                    className="h-7 px-2 text-[10px] text-slate-600 hover:bg-slate-100 hover:text-slate-800 shrink-0"
                   >
                     {isInsightNarrativeOpen ? "Collapse" : "Expand"}
                     {isInsightNarrativeOpen ? <ChevronUp className="size-3.5 ml-1" /> : <ChevronDown className="size-3.5 ml-1" />}
@@ -2131,16 +2125,16 @@ export default function LongTermForecastingDemand() {
               </div>
             )}
             {insightNarrative && isInsightNarrativeOpen && (
-              <div className="mt-4 pt-4 border-t border-white/10">
-                <p className={`text-sm font-bold mb-2 ${insightNarrative.trendDir === "growing" ? "text-emerald-300" : insightNarrative.trendDir === "declining" ? "text-rose-300" : "text-sky-200"}`}>
+              <div className="mt-3">
+                <p className={`text-sm font-bold mb-2 ${insightNarrative.trendDir === "growing" ? "text-emerald-600" : insightNarrative.trendDir === "declining" ? "text-rose-600" : "text-sky-700"}`}>
                   {insightNarrative.headline}
                 </p>
-                <div className="text-xs text-slate-200 space-y-1.5 leading-relaxed">
+                <div className="text-xs text-slate-600 space-y-1.5 leading-relaxed">
                   <p>{insightNarrative.trendSentence}</p>
                   <p>{insightNarrative.peakSentence}</p>
                   {insightNarrative.channelSentence && <p>{insightNarrative.channelSentence}</p>}
                   <p>{insightNarrative.growthSentence}</p>
-                  <p className="text-slate-200 italic text-[11px]">⚠ {insightNarrative.gapPlaceholder}</p>
+                  <p className="text-slate-400 italic text-[11px]">⚠ {insightNarrative.gapPlaceholder}</p>
                 </div>
               </div>
             )}
@@ -3077,7 +3071,15 @@ export default function LongTermForecastingDemand() {
                   <Button className="w-full h-11 font-black uppercase tracking-widest text-xs mt-4 shadow-lg shadow-primary/20" onClick={() => toast.info("Demand forecast recalculated", { duration: 1500 })}><LayoutDashboard className="size-4 mr-2" />Recalculate</Button>
                 </CardContent>}
               </Card>
-              <Card className="bg-gradient-to-br from-slate-900 to-slate-800 text-white border-none shadow-2xl mt-6"><CardHeader className="pb-2"><CardTitle className="text-[10px] font-black flex items-center gap-2 uppercase tracking-[0.2em] text-blue-400"><LineChartIcon className="size-4" />Demand Notes</CardTitle></CardHeader><CardContent className="space-y-4 pt-2"><div className="space-y-2"><p className="text-[10px] text-slate-300 uppercase font-bold tracking-[0.15em]">Staffing Logic</p><p className="text-xs font-medium leading-relaxed">Voice uses Erlang C, chat uses modified Erlang C with concurrency, and email uses a backlog-clearing model. Service-level targets drive the staffing requirement; occupancy is reported as an output, not an input.</p></div><div className="space-y-2"><p className="text-[10px] text-slate-300 uppercase font-bold tracking-[0.15em]">Blended Pools</p><p className="text-xs font-medium leading-relaxed">Voice establishes the staffed base. Remaining idle capacity is then reused for chat first and email second before any additional blended staffing is added.</p></div><div className="space-y-2"><p className="text-[10px] text-slate-300 uppercase font-bold tracking-[0.15em]">Open-Hours Effect</p><p className="text-xs font-medium leading-relaxed">Monthly open hours determine how much productive staffed-seat time is available and therefore the gross FTE after shrinkage.</p></div><div className="space-y-2"><p className="text-[10px] text-slate-300 uppercase font-bold tracking-[0.15em]">Seasonality View</p><p className="text-xs font-medium leading-relaxed">The seasonality chart indexes each forecast month against the average monthly forecast volume.</p></div></CardContent></Card>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 mt-6 px-4 py-3">
+                <p className="text-[10px] font-black flex items-center gap-2 uppercase tracking-[0.2em] text-slate-500 mb-3"><LineChartIcon className="size-4" />Demand Notes</p>
+                <div className="space-y-3">
+                  <div><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.15em] mb-0.5">Staffing Logic</p><p className="text-xs text-slate-600 leading-relaxed">Voice uses Erlang C, chat uses modified Erlang C with concurrency, and email uses a backlog-clearing model. Service-level targets drive the staffing requirement; occupancy is reported as an output, not an input.</p></div>
+                  <div><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.15em] mb-0.5">Blended Pools</p><p className="text-xs text-slate-600 leading-relaxed">Voice establishes the staffed base. Remaining idle capacity is then reused for chat first and email second before any additional blended staffing is added.</p></div>
+                  <div><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.15em] mb-0.5">Open-Hours Effect</p><p className="text-xs text-slate-600 leading-relaxed">Monthly open hours determine how much productive staffed-seat time is available and therefore the gross FTE after shrinkage.</p></div>
+                  <div><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.15em] mb-0.5">Seasonality View</p><p className="text-xs text-slate-600 leading-relaxed">The seasonality chart indexes each forecast month against the average monthly forecast volume.</p></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
