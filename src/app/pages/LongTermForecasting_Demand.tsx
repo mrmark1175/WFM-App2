@@ -2797,9 +2797,9 @@ export default function LongTermForecastingDemand() {
             </div>
             <div className="xl:sticky xl:top-[180px]">
               <Card className="border border-border/80 shadow-xl overflow-hidden">
-                <CardHeader className="border-b border-border/50 bg-slate-900 text-white py-4">
+                <CardHeader className="border-b border-border/50 bg-[#171717] text-white py-4">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm font-black flex items-center gap-2 uppercase tracking-[0.2em]"><Settings2 className="size-4 text-blue-400" />Demand Assumptions</CardTitle>
+                    <CardTitle className="text-sm font-semibold flex items-center gap-2 uppercase tracking-[-0.32px]"><Settings2 className="size-4 text-[#0a72ef]" />Demand Assumptions</CardTitle>
                     <Button variant="ghost" size="icon" className="size-6 text-white hover:bg-white/10" onClick={() => setIsAssumptionsOpen(!isAssumptionsOpen)}>{isAssumptionsOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}</Button>
                   </div>
                   {isOverridingLobDefaults && (
@@ -2811,19 +2811,19 @@ export default function LongTermForecastingDemand() {
                     </div>
                   )}
                 </CardHeader>
-                {isAssumptionsOpen && <CardContent className="pt-6 space-y-6 bg-card">
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="startDate" className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Planning Start Date</Label><Calendar className="size-3.5 text-primary" /></div><Input id="startDate" type="date" value={assumptions.startDate} onChange={(event) => setAssumptions({ ...assumptions, startDate: event.target.value })} className="h-10 font-bold" /></div>
+                {isAssumptionsOpen && <CardContent className="pt-6 space-y-6 bg-white">
+                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="startDate" className="text-xs font-medium uppercase text-[#4d4d4d]">Planning Start Date</Label><Calendar className="size-3.5 text-[#0a72ef]" /></div><Input id="startDate" type="date" value={assumptions.startDate} onChange={(event) => setAssumptions({ ...assumptions, startDate: event.target.value })} className="h-10 font-bold" /></div>
                   <div className="space-y-3 border-t border-border pt-4">
                     <Select value={forecastMethod} onValueChange={setForecastMethod}>
-                      <SelectTrigger className="h-10 font-bold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger>
+                      <SelectTrigger className="h-10 font-semibold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger>
                       <SelectContent>{FORECAST_METHODS.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}</SelectContent>
                     </Select>
                     {/* ── Model parameters — shown immediately below the selector ── */}
                     {forecastMethod === "holtwinters" && (
-                      <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
+                      <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4 mt-3">
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-1.5">
-                            <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">{FORECAST_MODEL_COPY.holtwinters.label}</Label>
+                            <Label className="text-xs font-medium uppercase text-[#4d4d4d]">{FORECAST_MODEL_COPY.holtwinters.label}</Label>
                             <UITooltip>
                               <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
                               <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.holtwinters.description}</p></TooltipContent>
@@ -2834,28 +2834,28 @@ export default function LongTermForecastingDemand() {
                         <div className="grid grid-cols-2 gap-4">
                           <div className="space-y-1">
                             <div className="flex items-center gap-1">
-                              <Label className="text-xs font-bold">Alpha (α) — Level</Label>
+                              <Label className="text-xs font-medium text-[#4d4d4d]">Alpha (α) — Level</Label>
                               <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the model adapts to new observed levels. Higher α = more weight on recent data, faster response to sudden shifts. Lower α = smoother, more stable level estimate. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
                             </div>
                             <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.alpha} onChange={(e) => setHwParams({ ...hwParams, alpha: Number(e.target.value) })} className="h-8 text-xs" />
                           </div>
                           <div className="space-y-1">
                             <div className="flex items-center gap-1">
-                              <Label className="text-xs font-bold">Beta (β) — Trend</Label>
+                              <Label className="text-xs font-medium text-[#4d4d4d]">Beta (β) — Trend</Label>
                               <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the trend component adapts to new slope observations. Lower β = stable, persistent trend. Higher β = trend reacts faster to recent direction changes. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
                             </div>
                             <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.beta} onChange={(e) => setHwParams({ ...hwParams, beta: Number(e.target.value) })} className="h-8 text-xs" />
                           </div>
                           <div className="space-y-1">
                             <div className="flex items-center gap-1">
-                              <Label className="text-xs font-bold">Gamma (γ) — Seasonality</Label>
+                              <Label className="text-xs font-medium text-[#4d4d4d]">Gamma (γ) — Seasonality</Label>
                               <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the seasonal indices update each cycle. Higher γ = seasonal pattern adapts quickly to the most recent year. Lower γ = stable, averaged seasonal shape across all history. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
                             </div>
                             <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.gamma} onChange={(e) => setHwParams({ ...hwParams, gamma: Number(e.target.value) })} className="h-8 text-xs" />
                           </div>
                           <div className="space-y-1">
                             <div className="flex items-center gap-1">
-                              <Label className="text-xs font-bold">Season Length</Label>
+                              <Label className="text-xs font-medium text-[#4d4d4d]">Season Length</Label>
                               <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Number of periods per seasonal cycle. Set to 12 for monthly data with annual seasonality. Requires at least 2 full seasons of history to fit properly.</p></TooltipContent></UITooltip>
                             </div>
                             <Input type="number" min="2" max="24" value={hwParams.seasonLength} onChange={(e) => setHwParams({ ...hwParams, seasonLength: Number(e.target.value) })} className="h-8 text-xs" />
@@ -2864,10 +2864,10 @@ export default function LongTermForecastingDemand() {
                       </div>
                     )}
                     {forecastMethod === "arima" && (
-                      <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
+                      <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4 mt-3">
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-1.5">
-                            <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">{FORECAST_MODEL_COPY.arima.label}</Label>
+                            <Label className="text-xs font-medium uppercase text-[#4d4d4d]">{FORECAST_MODEL_COPY.arima.label}</Label>
                             <UITooltip>
                               <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
                               <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.arima.description}</p></TooltipContent>
@@ -2878,34 +2878,34 @@ export default function LongTermForecastingDemand() {
                         <div className="grid grid-cols-3 gap-3">
                           <div className="space-y-1">
                             <div className="flex items-center gap-1">
-                              <Label className="text-xs font-bold">p — AR Order</Label>
+                              <Label className="text-xs font-medium text-[#4d4d4d]">p — AR Order</Label>
                               <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Autoregressive order.</span> How many past periods the model uses to predict the next value. AR coefficients are estimated via OLS, so the model learns the actual momentum pattern from your data. Higher p captures longer-range persistence but needs more history. Typical range: 1–3.</p></TooltipContent></UITooltip>
                             </div>
                             <Input type="number" min="0" max="6" value={arimaParams.p} onChange={(e) => setArimaParams({ ...arimaParams, p: Number(e.target.value) })} className="h-8 text-xs" />
                           </div>
                           <div className="space-y-1">
                             <div className="flex items-center gap-1">
-                              <Label className="text-xs font-bold">d — Differencing</Label>
+                              <Label className="text-xs font-medium text-[#4d4d4d]">d — Differencing</Label>
                               <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Integration order (trend removal).</span> 0 = model raw volumes (already stationary). 1 = model month-over-month changes — removes a linear trend and is correct for most call-volume series. 2 = model changes-in-changes — removes a quadratic (accelerating) trend. Start with d=1.</p></TooltipContent></UITooltip>
                             </div>
                             <Input type="number" min="0" max="2" value={arimaParams.d} onChange={(e) => setArimaParams({ ...arimaParams, d: Number(e.target.value) })} className="h-8 text-xs" />
                           </div>
                           <div className="space-y-1">
                             <div className="flex items-center gap-1">
-                              <Label className="text-xs font-bold">q — MA Order</Label>
+                              <Label className="text-xs font-medium text-[#4d4d4d]">q — MA Order</Label>
                               <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Moving average order.</span> Uses the last q in-sample forecast errors to correct each next prediction, dampening the effect of random shocks. q=1 corrects for the most recent shock; q=2 smooths over two periods. Higher q reduces responsiveness to outliers. Typical range: 1–2.</p></TooltipContent></UITooltip>
                             </div>
                             <Input type="number" min="0" max="6" value={arimaParams.q} onChange={(e) => setArimaParams({ ...arimaParams, q: Number(e.target.value) })} className="h-8 text-xs" />
                           </div>
                         </div>
-                        <p className="text-[11px] text-muted-foreground">AR coefficients are OLS-estimated from your historical data. MA term corrects for recent forecast error. Recommended starting point: p=1, d=1, q=1.</p>
+                        <p className="text-[11px] text-[#4d4d4d]">AR coefficients are OLS-estimated from your historical data. MA term corrects for recent forecast error. Recommended starting point: p=1, d=1, q=1.</p>
                       </div>
                     )}
                     {forecastMethod === "decomposition" && (
-                      <div className="space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 mt-3">
+                      <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4 mt-3">
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-1.5">
-                            <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">{FORECAST_MODEL_COPY.decomposition.label}</Label>
+                            <Label className="text-xs font-medium uppercase text-[#4d4d4d]">{FORECAST_MODEL_COPY.decomposition.label}</Label>
                             <UITooltip>
                               <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
                               <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.decomposition.description}</p></TooltipContent>
@@ -2917,7 +2917,7 @@ export default function LongTermForecastingDemand() {
                           <div className="space-y-1">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-1">
-                                <Label className="text-xs font-bold">Trend Strength</Label>
+                                <Label className="text-xs font-medium text-[#4d4d4d]">Trend Strength</Label>
                                 <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Scales the extracted trend slope.</span> 1.0 = project the observed historical trend as-is. &lt;1.0 = dampen the trend (conservative / mean-reverting). &gt;1.0 = amplify the trend (optimistic growth assumption). Does not affect the seasonal pattern.</p></TooltipContent></UITooltip>
                               </div>
                               <span className="text-xs font-bold">{decompParams.trendStrength}×</span>
@@ -2927,7 +2927,7 @@ export default function LongTermForecastingDemand() {
                           <div className="space-y-1">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-1">
-                                <Label className="text-xs font-bold">Seasonality Strength</Label>
+                                <Label className="text-xs font-medium text-[#4d4d4d]">Seasonality Strength</Label>
                                 <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Scales the seasonal indices around 1.0.</span> 1.0 = apply the observed seasonal pattern in full. &lt;1.0 = flatten seasonality (peaks and troughs are reduced toward the trend line). &gt;1.0 = amplify seasonal swings. Seasonal indices are normalized to average 1.0 before this multiplier is applied.</p></TooltipContent></UITooltip>
                               </div>
                               <span className="text-xs font-bold">{decompParams.seasonalityStrength}×</span>
@@ -2938,34 +2938,34 @@ export default function LongTermForecastingDemand() {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-semibold uppercase tracking-wider text-foreground/70">AHT Assumption</Label><span className="text-xs font-black bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-primary">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Email AHT</Label><span className="text-xs font-black bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded text-emerald-700 dark:text-emerald-300">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Chat AHT</Label><span className="text-xs font-black bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded text-amber-700 dark:text-amber-300">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-medium uppercase text-[#4d4d4d]">AHT Assumption</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-10 font-semibold" /></div>
+                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-medium uppercase text-[#4d4d4d]">Email AHT</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-10 font-semibold" /></div>
+                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-medium uppercase text-[#4d4d4d]">Chat AHT</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-10 font-semibold" /></div>
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1">
-                        <Label htmlFor="chatConcurrency" className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Chat Concurrency</Label>
+                        <Label htmlFor="chatConcurrency" className="text-xs font-medium uppercase text-[#4d4d4d]">Chat Concurrency</Label>
                         <UITooltip>
                           <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
                           <TooltipContent><p className="text-xs">Simultaneous chats handled per agent. Reduces effective AHT (AHT ÷ concurrency) for Erlang C and workload calculations. Higher concurrency lowers FTE but raises agent cognitive load.</p></TooltipContent>
                         </UITooltip>
                       </div>
-                      <span className="text-xs font-black bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded text-amber-700 dark:text-amber-300">{assumptions.chatConcurrency}×</span>
+                      <span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">{assumptions.chatConcurrency}×</span>
                     </div>
                     <Input id="chatConcurrency" type="number" min="1" max="10" step="1" value={assumptions.chatConcurrency} onChange={(event) => setAssumptions({ ...assumptions, chatConcurrency: validateInput(Math.round(Number(event.target.value)), 1, 10) })} className="h-10 font-bold" />
-                    <p className="text-[11px] text-muted-foreground">Effective Chat AHT = {assumptions.chatAht}s ÷ {assumptions.chatConcurrency} = <span className="font-bold text-foreground">{Math.round(assumptions.chatAht / Math.max(1, assumptions.chatConcurrency))}s</span></p>
+                    <p className="text-[11px] text-[#4d4d4d]">Effective Chat AHT = {assumptions.chatAht}s ÷ {assumptions.chatConcurrency} = <span className="font-semibold text-[#171717]">{Math.round(assumptions.chatAht / Math.max(1, assumptions.chatConcurrency))}s</span></p>
                   </div>
                   {/* ── Shrinkage ── */}
                   <div className="space-y-3 border-t border-border pt-4">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5">
-                        <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Shrinkage</Label>
+                        <Label className="text-xs font-medium uppercase text-[#4d4d4d]">Shrinkage</Label>
                         <UITooltip>
                           <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
                           <TooltipContent><p className="text-xs">FTE gross-up. Use Manual for a flat %, or pull from the Shrinkage Planner.</p></TooltipContent>
                         </UITooltip>
                       </div>
-                      <span className="text-xs font-black bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded text-rose-600">
+                      <span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">
                         {assumptions.shrinkage}%
                       </span>
                     </div>
@@ -3004,7 +3004,7 @@ export default function LongTermForecastingDemand() {
                   </div>
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
-                      <Label className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Occupancy</Label>
+                      <Label className="text-xs font-medium uppercase text-[#4d4d4d]">Occupancy</Label>
                       <Badge variant="outline" className="font-black text-xs border-indigo-200 text-indigo-700">Derived From SLA</Badge>
                     </div>
                     <div className="grid grid-cols-1 gap-3">
@@ -3025,43 +3025,43 @@ export default function LongTermForecastingDemand() {
                       ))}
                     </div>
                   </div>
-                  <div className="space-y-4 rounded-xl border border-border/60 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Voice SLA / ASA</p>
+                  <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4">
+                    <p className="text-xs font-medium uppercase text-[#4d4d4d]">Voice SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="voiceSlaTarget" className="text-xs font-medium text-foreground/70">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs font-medium text-foreground/70">Within Sec</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs font-medium text-foreground/70">ASA Sec</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceSlaTarget" className="text-xs font-medium text-[#4d4d4d]">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-semibold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs font-medium text-[#4d4d4d]">Within Sec</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-semibold" /></div>
+                      <div className="space-y-2"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs font-medium text-[#4d4d4d]">ASA Sec</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-semibold" /></div>
                     </div>
                   </div>
-                  <div className="space-y-4 rounded-xl border border-border/60 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Email SLA / ASA</p>
+                  <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4">
+                    <p className="text-xs font-medium uppercase text-[#4d4d4d]">Email SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="emailSlaTarget" className="text-xs font-medium text-foreground/70">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs font-medium text-foreground/70">Within Sec</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="emailAsaTargetSeconds" className="text-xs font-medium text-foreground/70">ASA Sec</Label><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailSlaTarget" className="text-xs font-medium text-[#4d4d4d]">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-semibold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs font-medium text-[#4d4d4d]">Within Sec</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-semibold" /></div>
+                      <div className="space-y-2"><Label htmlFor="emailAsaTargetSeconds" className="text-xs font-medium text-[#4d4d4d]">ASA Sec</Label><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-semibold" /></div>
                     </div>
                   </div>
-                  <div className="space-y-4 rounded-xl border border-border/60 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Chat SLA / ASA</p>
+                  <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4">
+                    <p className="text-xs font-medium uppercase text-[#4d4d4d]">Chat SLA / ASA</p>
                     <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="chatSlaTarget" className="text-xs font-medium text-foreground/70">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs font-medium text-foreground/70">Within Sec</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
-                      <div className="space-y-2"><Label htmlFor="chatAsaTargetSeconds" className="text-xs font-medium text-foreground/70">ASA Sec</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-bold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatSlaTarget" className="text-xs font-medium text-[#4d4d4d]">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-semibold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs font-medium text-[#4d4d4d]">Within Sec</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-semibold" /></div>
+                      <div className="space-y-2"><Label htmlFor="chatAsaTargetSeconds" className="text-xs font-medium text-[#4d4d4d]">ASA Sec</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-semibold" /></div>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-foreground/70">Hours Per Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-bold" /></div>
-                    <div className="space-y-2"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-foreground/70">Days Per Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-bold" /></div>
+                    <div className="space-y-2"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-[#4d4d4d]">Hours Per Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-semibold" /></div>
+                    <div className="space-y-2"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-[#4d4d4d]">Days Per Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-semibold" /></div>
                   </div>
-                  <div className="rounded-lg border border-border/60 bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                    Operating window: <span className="font-bold text-foreground">{assumptions.operatingHoursPerDay}h/day x {assumptions.operatingDaysPerWeek}d/week</span> = <span className="font-bold text-foreground">{openHoursPerMonth}</span> open hours/month
+                  <div className="rounded-lg border border-border/60 bg-[#fafafa] px-3 py-2 text-xs text-[#4d4d4d]">
+                    Operating window: <span className="font-semibold text-[#171717]">{assumptions.operatingHoursPerDay}h/day x {assumptions.operatingDaysPerWeek}d/week</span> = <span className="font-semibold text-[#171717]">{openHoursPerMonth}</span> open hours/month
                   </div>
-                  <div className="space-y-2"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-foreground/70">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-bold" /></div>
-                  <div className="space-y-2"><Label htmlFor="fteMonthlyHours" className="text-xs font-medium text-foreground/70">FTE Monthly Hours</Label><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-10 font-bold" /></div>
+                  <div className="space-y-2"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-[#4d4d4d]">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-[#4d4d4d] cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-semibold" /></div>
+                  <div className="space-y-2"><Label htmlFor="fteMonthlyHours" className="text-xs font-medium text-[#4d4d4d]">FTE Monthly Hours</Label><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-10 font-semibold" /></div>
                   <div className="space-y-3 border-t border-border pt-6 mt-6">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1">
-                        <Label htmlFor="growthRate" className="text-xs font-semibold uppercase tracking-wider text-foreground/70">Growth Rate</Label>
+                        <Label htmlFor="growthRate" className="text-xs font-medium uppercase text-[#4d4d4d]">Growth Rate</Label>
                         <UITooltip>
                           <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
                           <TooltipContent><p className="text-xs">Applied as a volume multiplier on top of the forecast. Negative values model volume decline. YoY method uses this rate directly; all other methods apply it as a post-forecast adjustment.</p></TooltipContent>
@@ -3073,19 +3073,19 @@ export default function LongTermForecastingDemand() {
                     </div>
                     <Input id="growthRate" type="number" value={assumptions.growthRate} onChange={(event) => setAssumptions({ ...assumptions, growthRate: validateInput(Number(event.target.value), -100, 500) })} className={`h-10 font-bold ${assumptions.growthRate >= 0 ? "border-emerald-200" : "border-rose-200"}`} />
                     {assumptions.growthRate !== 0 && (
-                      <p className="text-[11px] text-muted-foreground">Applied as a ×{(1 + assumptions.growthRate / 100).toFixed(3)} multiplier after {FORECAST_METHODS.find((m) => m.key === forecastMethod)?.label ?? forecastMethod}.</p>
+                      <p className="text-[11px] text-[#4d4d4d]">Applied as a ×{(1 + assumptions.growthRate / 100).toFixed(3)} multiplier after {FORECAST_METHODS.find((m) => m.key === forecastMethod)?.label ?? forecastMethod}.</p>
                     )}
                   </div>
                   <Button className="w-full h-11 font-black uppercase tracking-widest text-xs mt-4 shadow-lg shadow-primary/20" onClick={() => toast.info("Demand forecast recalculated", { duration: 1500 })}><LayoutDashboard className="size-4 mr-2" />Recalculate</Button>
                 </CardContent>}
               </Card>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 mt-6 px-4 py-3">
-                <p className="text-[10px] font-black flex items-center gap-2 uppercase tracking-[0.2em] text-slate-500 mb-3"><LineChartIcon className="size-4" />Demand Notes</p>
+              <div className="rounded-lg border border-[#ebebeb] bg-[#fafafa] mt-6 px-4 py-3">
+                <p className="text-[10px] font-semibold flex items-center gap-2 uppercase text-[#4d4d4d] mb-3"><LineChartIcon className="size-4" />Demand Notes</p>
                 <div className="space-y-3">
-                  <div><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.15em] mb-0.5">Staffing Logic</p><p className="text-xs text-slate-600 leading-relaxed">Voice uses Erlang C, chat uses modified Erlang C with concurrency, and email uses a backlog-clearing model. Service-level targets drive the staffing requirement; occupancy is reported as an output, not an input.</p></div>
-                  <div><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.15em] mb-0.5">Blended Pools</p><p className="text-xs text-slate-600 leading-relaxed">Voice establishes the staffed base. Remaining idle capacity is then reused for chat first and email second before any additional blended staffing is added.</p></div>
-                  <div><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.15em] mb-0.5">Open-Hours Effect</p><p className="text-xs text-slate-600 leading-relaxed">Monthly open hours determine how much productive staffed-seat time is available and therefore the gross FTE after shrinkage.</p></div>
-                  <div><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.15em] mb-0.5">Seasonality View</p><p className="text-xs text-slate-600 leading-relaxed">The seasonality chart indexes each forecast month against the average monthly forecast volume.</p></div>
+                  <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Staffing Logic</p><p className="text-xs text-[#4d4d4d] leading-relaxed">Voice uses Erlang C, chat uses modified Erlang C with concurrency, and email uses a backlog-clearing model. Service-level targets drive the staffing requirement; occupancy is reported as an output, not an input.</p></div>
+                  <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Blended Pools</p><p className="text-xs text-[#4d4d4d] leading-relaxed">Voice establishes the staffed base. Remaining idle capacity is then reused for chat first and email second before any additional blended staffing is added.</p></div>
+                  <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Open-Hours Effect</p><p className="text-xs text-[#4d4d4d] leading-relaxed">Monthly open hours determine how much productive staffed-seat time is available and therefore the gross FTE after shrinkage.</p></div>
+                  <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Seasonality View</p><p className="text-xs text-[#4d4d4d] leading-relaxed">The seasonality chart indexes each forecast month against the average monthly forecast volume.</p></div>
                 </div>
               </div>
             </div>
