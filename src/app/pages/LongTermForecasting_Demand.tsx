@@ -204,9 +204,9 @@ const FORECAST_MODEL_COPY = {
   },
 } as const;
 const FORECAST_METHODS = [
-  { key: "holtwinters", label: FORECAST_MODEL_COPY.holtwinters.label },
-  { key: "arima", label: FORECAST_MODEL_COPY.arima.label },
-  { key: "decomposition", label: FORECAST_MODEL_COPY.decomposition.label },
+  { key: "holtwinters", label: "Holt-Winters (Seasonal Trend)" },
+  { key: "arima", label: "ARIMA" },
+  { key: "decomposition", label: "Decomposition" },
 ];
 // ── LOB Settings → Assumptions helpers ───────────────────────────────────────
 function deriveOperatingDaysPerWeek(schedule?: Record<string, { enabled: boolean }>): number {
@@ -899,6 +899,15 @@ export default function LongTermForecastingDemand() {
   const [isHistoricalSourceOpen, setIsHistoricalSourceOpen] = useState(false);
   const [isBlendedStaffingOpen, setIsBlendedStaffingOpen] = useState(true);
   const [isInsightNarrativeOpen, setIsInsightNarrativeOpen] = useState(false);
+  // Sidebar section open/close states
+  const [sbForecast,      setSbForecast]      = useState(true);
+  const [sbChannelAht,    setSbChannelAht]    = useState(false);
+  const [sbServiceLevels, setSbServiceLevels] = useState(false);
+  const [sbShrinkage,     setSbShrinkage]     = useState(true);
+  const [sbOperations,    setSbOperations]    = useState(false);
+  const [sbGrowth,        setSbGrowth]        = useState(true);
+  // Staffing detail table column visibility
+  const [showDetailCols,  setShowDetailCols]  = useState(false);
   const [outlierResults, setOutlierResults] = useState<OutlierResult[] | null>(null);
   const [isOutlierPanelOpen, setIsOutlierPanelOpen] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -1766,6 +1775,24 @@ export default function LongTermForecastingDemand() {
     avgRequiredFTE: Number((futureData.reduce((sum, row) => sum + row.totalRequiredFTE, 0) / futureData.length).toFixed(2)),
   }), [futureData]);
 
+  const kpiTrends = useMemo(() => {
+    const hist = forecastData.filter(r => !r.isFuture);
+    const future = forecastData.filter(r => r.isFuture);
+    if (hist.length === 0 || future.length === 0) return null;
+    const pct = (a: number, b: number) => b > 0 ? Math.round((a - b) / b * 100) : 0;
+    const histAvgVol = hist.reduce((s, r) => s + r.historicalVolume, 0) / hist.length;
+    const futAvgVol  = future.reduce((s, r) => s + r.volume, 0) / future.length;
+    const histAvgWkl = hist.reduce((s, r) => s + r.workloadHours, 0) / hist.length;
+    const futAvgWkl  = future.reduce((s, r) => s + r.workloadHours, 0) / future.length;
+    const histAvgFTE = hist.reduce((s, r) => s + r.requiredFTE, 0) / hist.length;
+    const futAvgFTE  = future.reduce((s, r) => s + r.requiredFTE, 0) / future.length;
+    return {
+      volume:  pct(futAvgVol,  histAvgVol),
+      workload: pct(futAvgWkl, histAvgWkl),
+      fte:     pct(futAvgFTE,  histAvgFTE),
+    };
+  }, [forecastData]);
+
   const insightNarrative = useMemo(() => {
     if (futureData.length === 0) return null;
     const n = futureData.length;
@@ -2088,6 +2115,29 @@ export default function LongTermForecastingDemand() {
     <TooltipProvider>
       <PageLayout title="Long Term Forecasting  Demand">
         <div className="flex flex-col gap-8 pb-12">
+          {/* ── Workflow Step Navigator ─────────────────────────────────── */}
+          <div className="flex items-center gap-1 flex-wrap">
+            {([
+              { label: "Historical Data",  id: "section-historical" },
+              { label: "Assumptions",      id: "section-assumptions" },
+              { label: "Forecast",         id: "section-charts" },
+              { label: "Channel Staffing", id: "section-staffing-setup" },
+              { label: "Staffing Detail",  id: "section-staffing-detail" },
+            ] as const).map((step, i, arr) => (
+              <React.Fragment key={step.id}>
+                <button
+                  type="button"
+                  onClick={() => document.getElementById(step.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-400 text-slate-600 hover:text-slate-900 transition-colors shadow-sm"
+                >
+                  <span className="text-slate-400 font-mono">{i + 1}</span>
+                  {step.label}
+                </button>
+                {i < arr.length - 1 && <ChevronRight className="size-3 text-slate-300 shrink-0" />}
+              </React.Fragment>
+            ))}
+          </div>
+
           <section className="rounded-xl border border-slate-200 bg-white px-6 py-4 shadow-sm">
             {/* Header row */}
             <div className="flex items-baseline gap-3 flex-wrap mb-4">
@@ -2096,21 +2146,39 @@ export default function LongTermForecastingDemand() {
             </div>
             {/* KPI tiles */}
             <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Forecasted Monthly Volume</p>
-                <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgVolume.toLocaleString()}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">Avg across the active horizon</p>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Workload Hours</p>
-                <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgWorkloadHours.toLocaleString()}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">From channel AHTs &amp; open hours</p>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Required Agents / FTE</p>
-                <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgRequiredFTE}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">{selectedBlendConfig.label}</p>
-              </div>
+              {(() => {
+                const trendChip = (pct: number | undefined) => {
+                  if (pct == null) return null;
+                  const up = pct >= 0;
+                  return (
+                    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold ${up ? "text-emerald-600" : "text-rose-600"}`}>
+                      {up ? "↑" : "↓"} {up ? "+" : ""}{pct}% vs prior
+                    </span>
+                  );
+                };
+                return (
+                  <>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Forecasted Monthly Volume</p>
+                      <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgVolume.toLocaleString()}</p>
+                      <div className="mt-0.5 flex items-center gap-2">{trendChip(kpiTrends?.volume)}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Workload Hours</p>
+                      <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgWorkloadHours.toLocaleString()}</p>
+                      <div className="mt-0.5 flex items-center gap-2">{trendChip(kpiTrends?.workload)}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Required Agents / FTE</p>
+                      <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgRequiredFTE}</p>
+                      <div className="mt-0.5 flex items-center gap-2">
+                        {trendChip(kpiTrends?.fte)}
+                        <span className="text-[10px] text-slate-400">{selectedBlendConfig.label}</span>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
             {/* Insight Narrative */}
             {insightNarrative && (
@@ -2203,7 +2271,7 @@ export default function LongTermForecastingDemand() {
             </CardContent>
           </Card>
 
-          <Card className="border border-primary/15 shadow-md overflow-hidden">
+          <Card id="section-historical" className="border border-primary/15 shadow-md overflow-hidden">
             <CardHeader className="bg-muted/40 border-b border-border/50">
               <button type="button" className="w-full flex items-start justify-between gap-4 text-left" onClick={() => setIsHistoricalSourceOpen((current) => !current)}>
                 <div className="space-y-2">
@@ -2475,7 +2543,7 @@ export default function LongTermForecastingDemand() {
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-foreground/50">Section B</p>
             <p className="text-sm font-semibold text-foreground">Forecasted Demand Output</p>
           </div>
-          <Card className="border border-border/60 shadow-sm overflow-hidden">
+          <Card id="section-staffing-setup" className="border border-border/60 shadow-sm overflow-hidden">
             <CardHeader className="border-b border-border/50 bg-muted/40">
               <button type="button" className="w-full flex items-start justify-between gap-4 text-left" onClick={() => setIsBlendedStaffingOpen((current) => !current)}>
                 <div className="space-y-2">
@@ -2570,11 +2638,12 @@ export default function LongTermForecastingDemand() {
           </Card>
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_304px] gap-6 items-start">
             <div className="space-y-6">
-              <div className="space-y-6">
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Workload Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Pool workloads update with the current channel selection and pooling mode.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={pooledWorkloadChartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{selectedBlendConfig.pools.map((_, index) => <Line key={`pool${index + 1}`} type="monotone" dataKey={`pool${index + 1}`} name={`Pool ${String.fromCharCode(65 + index)} Workload`} stroke={["#4f46e5", "#0f766e", "#dc2626"][index % 3]} strokeWidth={3} />)}<Line type="monotone" dataKey="totalWorkloadHours" name="Total Workload" stroke="#94a3b8" strokeDasharray="6 4" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Blended Staffing Requirement</CardTitle><p className="text-xs text-foreground/60 mt-1">Voice is staffed with Erlang C, chat uses modified Erlang C with concurrency, and email uses a backlog model. In blended pools, idle capacity is reused across channels before additional staffing is added.</p></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={requiredStaffingTrendData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Line type="monotone" dataKey="sharedPoolFTE" name="Shared Pool FTE" stroke="#0f766e" strokeWidth={3} /><Line type="monotone" dataKey="standalonePoolFTE" name="Standalone Pool FTE" stroke="#2563eb" strokeWidth={3} /><Line type="monotone" dataKey="totalRequiredFTE" name="Total Required FTE" stroke="#f59e0b" strokeWidth={3} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[340px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
+              {/* ── Four charts in 2×2 grid ───────────────────────────────── */}
+              <div id="section-charts" className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Workload Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Pool workloads update with the current channel selection and pooling mode.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={pooledWorkloadChartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{selectedBlendConfig.pools.map((_, index) => <Line key={`pool${index + 1}`} type="monotone" dataKey={`pool${index + 1}`} name={`Pool ${String.fromCharCode(65 + index)} Workload`} stroke={["#4f46e5", "#0f766e", "#dc2626"][index % 3]} strokeWidth={3} />)}<Line type="monotone" dataKey="totalWorkloadHours" name="Total Workload" stroke="#94a3b8" strokeDasharray="6 4" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Blended Staffing Requirement</CardTitle><p className="text-xs text-foreground/60 mt-1">Voice: Erlang C · Chat: Modified Erlang C · Email: backlog model. Idle capacity reused across channels.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={requiredStaffingTrendData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Line type="monotone" dataKey="sharedPoolFTE" name="Shared Pool FTE" stroke="#0f766e" strokeWidth={3} /><Line type="monotone" dataKey="standalonePoolFTE" name="Standalone Pool FTE" stroke="#2563eb" strokeWidth={3} /><Line type="monotone" dataKey="totalRequiredFTE" name="Total Required FTE" stroke="#f59e0b" strokeWidth={3} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
               </div>
               <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Scenario Comparison — Required FTE</CardTitle></CardHeader><CardContent className="p-6 h-[360px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={scenarioComparisonData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{Object.values(scenarios).map((scenario, index) => <Line key={scenario.id} type="monotone" dataKey={scenario.id} name={scenario.name} stroke={scenarioColors[index % scenarioColors.length]} strokeWidth={scenario.id === selectedScenarioId ? 3.5 : 2} dot={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
               {/* ── Demand Forecast Detail + Re-cut ─────────────────────────── */}
@@ -2627,11 +2696,19 @@ export default function LongTermForecastingDemand() {
                         </div>
                       </div>
                     )}
-                    {completedMonthIndices.length > 0 && activeRecutFactor == null && (
-                      <p className="text-xs text-amber-700 dark:text-amber-400">
-                        Enter actual volumes for completed months below to unlock the Re-cut factor.
-                      </p>
-                    )}
+                    {completedMonthIndices.length > 0 && activeRecutFactor == null && (() => {
+                      const missing = allForecastMonths.filter(m => m.isCompleted && (m.actualVol == null || m.actualVol === 0)).length;
+                      if (missing === 0) return null;
+                      return (
+                        <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 flex-wrap">
+                          <AlertTriangle className="size-4 text-amber-600 shrink-0" />
+                          <span className="text-xs font-semibold text-amber-800">
+                            {missing} completed {missing === 1 ? "month has" : "months have"} no actuals entered. Add them below to unlock the Re-cut factor.
+                          </span>
+                          <span className="text-xs text-amber-600">↓ scroll down in this table</span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </CardHeader>
                 <CardContent className="p-0 overflow-x-auto">
@@ -2728,7 +2805,7 @@ export default function LongTermForecastingDemand() {
                 </CardContent>
               </Card>
               {/* ── Staffing detail — future months ──────────────────────────── */}
-              <Card className="border border-border/50 shadow-lg bg-card">
+              <Card id="section-staffing-detail" className="border border-border/50 shadow-lg bg-card">
                 <CardHeader className="border-b border-border/50 bg-muted/50">
                   <div className="flex items-start justify-between gap-4 flex-wrap">
                     <div>
@@ -2739,25 +2816,35 @@ export default function LongTermForecastingDemand() {
                         AHT, Occ., and Req. FTE reflect the blended staffing allocation ({selectedBlendConfig.label}).
                       </p>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowDetailCols(v => !v)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-border bg-background hover:bg-muted/50 text-foreground/70 transition-colors shrink-0"
+                    >
+                      {showDetailCols ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                      {showDetailCols ? "Fewer columns" : "Show detail columns"}
+                    </button>
                   </div>
                 </CardHeader>
                 <CardContent className="p-0 overflow-x-auto">
-                  <Table className="min-w-[1050px]">
+                  <Table className={showDetailCols ? "min-w-[1050px]" : "min-w-[680px]"}>
                     <TableHeader className="bg-muted/50">
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="pl-4 text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Month</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-blue-600 whitespace-nowrap">Voice Vol.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-violet-600 whitespace-nowrap">Chat Vol.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-rose-600 whitespace-nowrap">Email Vol.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-amber-600 whitespace-nowrap">Cases Vol.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Blended Wkld</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">AHT</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Occ.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Shr.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Setup</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Shared FTE</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Solo FTE</TableHead>
-                        <TableHead className="pr-4 text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Req. FTE</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-blue-600 whitespace-nowrap" title="Total inbound voice contacts forecast for the month">Voice Vol.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-violet-600 whitespace-nowrap" title="Total inbound chat sessions forecast for the month">Chat Vol.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-rose-600 whitespace-nowrap" title="Total inbound email contacts forecast for the month">Email Vol.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-amber-600 whitespace-nowrap" title="Total case/ticket volume forecast for the month">Cases Vol.</TableHead>
+                        {showDetailCols && <>
+                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Total blended workload hours across all active channels for the month">Blended Wkld</TableHead>
+                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Blended average handle time (weighted by channel volume and AHT)">AHT</TableHead>
+                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Required occupancy % — derived from Erlang C to meet the SLA target. This is an output, not an input.">Occ.</TableHead>
+                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Shrinkage % applied to gross up net FTE (breaks, training, leave, etc.)">Shr.</TableHead>
+                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Active channel pooling configuration for this calculation">Setup</TableHead>
+                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="FTE in the shared/blended agent pool (voice + chat + email in one team)">Shared FTE</TableHead>
+                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="FTE in dedicated standalone pools (not sharing capacity with other channels)">Solo FTE</TableHead>
+                        </>}
+                        <TableHead className="pr-4 text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Total required FTE after shrinkage and safety margin">Req. FTE</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2779,13 +2866,15 @@ export default function LongTermForecastingDemand() {
                             <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.cases ? volClass : "text-muted-foreground"}`}>
                               {selectedChannels.cases ? row.channelMetrics.cases.volume.toLocaleString() : "—"}
                             </TableCell>
-                            <TableCell className="px-3 text-right font-mono text-sm text-indigo-600 tabular-nums whitespace-nowrap align-middle">{row.workloadHours.toLocaleString()}</TableCell>
-                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.aht}s</TableCell>
-                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.occupancy}%</TableCell>
-                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.shrinkage}%</TableCell>
-                            <TableCell className="px-3 text-right text-xs whitespace-nowrap align-middle">{row.activeBlendPreset}</TableCell>
-                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "—"}</TableCell>
-                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "—"}</TableCell>
+                            {showDetailCols && <>
+                              <TableCell className="px-3 text-right font-mono text-sm text-indigo-600 tabular-nums whitespace-nowrap align-middle">{row.workloadHours.toLocaleString()}</TableCell>
+                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.aht}s</TableCell>
+                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.occupancy}%</TableCell>
+                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.shrinkage}%</TableCell>
+                              <TableCell className="px-3 text-right text-xs whitespace-nowrap align-middle">{row.activeBlendPreset}</TableCell>
+                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "—"}</TableCell>
+                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "—"}</TableCell>
+                            </>}
                             <TableCell className="pr-4 pl-3 text-right font-mono text-sm font-bold text-amber-600 tabular-nums whitespace-nowrap align-middle">{row.totalRequiredFTE}</TableCell>
                           </TableRow>
                         );
@@ -2795,7 +2884,7 @@ export default function LongTermForecastingDemand() {
                 </CardContent>
               </Card>
             </div>
-            <div className="xl:sticky xl:top-[180px]">
+            <div id="section-assumptions" className="xl:sticky xl:top-[180px]">
               <Card className="border border-border/80 shadow-xl overflow-hidden">
                 <CardHeader className="border-b border-border/50 bg-[#171717] text-white py-4">
                   <div className="flex items-center justify-between">
@@ -2811,273 +2900,251 @@ export default function LongTermForecastingDemand() {
                     </div>
                   )}
                 </CardHeader>
-                {isAssumptionsOpen && <CardContent className="pt-6 space-y-6 bg-white">
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="startDate" className="text-xs font-medium uppercase text-[#4d4d4d]">Planning Start Date</Label><Calendar className="size-3.5 text-[#0a72ef]" /></div><Input id="startDate" type="date" value={assumptions.startDate} onChange={(event) => setAssumptions({ ...assumptions, startDate: event.target.value })} className="h-10 font-bold" /></div>
-                  <div className="space-y-3 border-t border-border pt-4">
-                    <Select value={forecastMethod} onValueChange={setForecastMethod}>
-                      <SelectTrigger className="h-10 font-semibold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger>
-                      <SelectContent>{FORECAST_METHODS.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}</SelectContent>
-                    </Select>
-                    {/* ── Model parameters — shown immediately below the selector ── */}
-                    {forecastMethod === "holtwinters" && (
-                      <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4 mt-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-1.5">
-                            <Label className="text-xs font-medium uppercase text-[#4d4d4d]">{FORECAST_MODEL_COPY.holtwinters.label}</Label>
-                            <UITooltip>
-                              <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
-                              <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.holtwinters.description}</p></TooltipContent>
-                            </UITooltip>
-                          </div>
-                          <Badge className="bg-amber-500 font-black tracking-tight">{FORECAST_MODEL_COPY.holtwinters.badge}</Badge>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1">
-                              <Label className="text-xs font-medium text-[#4d4d4d]">Alpha (α) — Level</Label>
-                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the model adapts to new observed levels. Higher α = more weight on recent data, faster response to sudden shifts. Lower α = smoother, more stable level estimate. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
-                            </div>
-                            <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.alpha} onChange={(e) => setHwParams({ ...hwParams, alpha: Number(e.target.value) })} className="h-8 text-xs" />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1">
-                              <Label className="text-xs font-medium text-[#4d4d4d]">Beta (β) — Trend</Label>
-                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the trend component adapts to new slope observations. Lower β = stable, persistent trend. Higher β = trend reacts faster to recent direction changes. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
-                            </div>
-                            <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.beta} onChange={(e) => setHwParams({ ...hwParams, beta: Number(e.target.value) })} className="h-8 text-xs" />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1">
-                              <Label className="text-xs font-medium text-[#4d4d4d]">Gamma (γ) — Seasonality</Label>
-                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">How quickly the seasonal indices update each cycle. Higher γ = seasonal pattern adapts quickly to the most recent year. Lower γ = stable, averaged seasonal shape across all history. Range: 0.01–0.99.</p></TooltipContent></UITooltip>
-                            </div>
-                            <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.gamma} onChange={(e) => setHwParams({ ...hwParams, gamma: Number(e.target.value) })} className="h-8 text-xs" />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1">
-                              <Label className="text-xs font-medium text-[#4d4d4d]">Season Length</Label>
-                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Number of periods per seasonal cycle. Set to 12 for monthly data with annual seasonality. Requires at least 2 full seasons of history to fit properly.</p></TooltipContent></UITooltip>
-                            </div>
-                            <Input type="number" min="2" max="24" value={hwParams.seasonLength} onChange={(e) => setHwParams({ ...hwParams, seasonLength: Number(e.target.value) })} className="h-8 text-xs" />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    {forecastMethod === "arima" && (
-                      <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4 mt-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-1.5">
-                            <Label className="text-xs font-medium uppercase text-[#4d4d4d]">{FORECAST_MODEL_COPY.arima.label}</Label>
-                            <UITooltip>
-                              <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
-                              <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.arima.description}</p></TooltipContent>
-                            </UITooltip>
-                          </div>
-                          <Badge className="bg-emerald-500 font-black tracking-tight">{FORECAST_MODEL_COPY.arima.badge}</Badge>
-                        </div>
-                        <div className="grid grid-cols-3 gap-3">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1">
-                              <Label className="text-xs font-medium text-[#4d4d4d]">p — AR Order</Label>
-                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Autoregressive order.</span> How many past periods the model uses to predict the next value. AR coefficients are estimated via OLS, so the model learns the actual momentum pattern from your data. Higher p captures longer-range persistence but needs more history. Typical range: 1–3.</p></TooltipContent></UITooltip>
-                            </div>
-                            <Input type="number" min="0" max="6" value={arimaParams.p} onChange={(e) => setArimaParams({ ...arimaParams, p: Number(e.target.value) })} className="h-8 text-xs" />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1">
-                              <Label className="text-xs font-medium text-[#4d4d4d]">d — Differencing</Label>
-                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Integration order (trend removal).</span> 0 = model raw volumes (already stationary). 1 = model month-over-month changes — removes a linear trend and is correct for most call-volume series. 2 = model changes-in-changes — removes a quadratic (accelerating) trend. Start with d=1.</p></TooltipContent></UITooltip>
-                            </div>
-                            <Input type="number" min="0" max="2" value={arimaParams.d} onChange={(e) => setArimaParams({ ...arimaParams, d: Number(e.target.value) })} className="h-8 text-xs" />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1">
-                              <Label className="text-xs font-medium text-[#4d4d4d]">q — MA Order</Label>
-                              <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Moving average order.</span> Uses the last q in-sample forecast errors to correct each next prediction, dampening the effect of random shocks. q=1 corrects for the most recent shock; q=2 smooths over two periods. Higher q reduces responsiveness to outliers. Typical range: 1–2.</p></TooltipContent></UITooltip>
-                            </div>
-                            <Input type="number" min="0" max="6" value={arimaParams.q} onChange={(e) => setArimaParams({ ...arimaParams, q: Number(e.target.value) })} className="h-8 text-xs" />
-                          </div>
-                        </div>
-                        <p className="text-[11px] text-[#4d4d4d]">AR coefficients are OLS-estimated from your historical data. MA term corrects for recent forecast error. Recommended starting point: p=1, d=1, q=1.</p>
-                      </div>
-                    )}
-                    {forecastMethod === "decomposition" && (
-                      <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4 mt-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-1.5">
-                            <Label className="text-xs font-medium uppercase text-[#4d4d4d]">{FORECAST_MODEL_COPY.decomposition.label}</Label>
-                            <UITooltip>
-                              <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
-                              <TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.decomposition.description}</p></TooltipContent>
-                            </UITooltip>
-                          </div>
-                          <Badge className="bg-blue-500 font-black tracking-tight">{FORECAST_MODEL_COPY.decomposition.badge}</Badge>
-                        </div>
-                        <div className="space-y-3">
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-1">
-                                <Label className="text-xs font-medium text-[#4d4d4d]">Trend Strength</Label>
-                                <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Scales the extracted trend slope.</span> 1.0 = project the observed historical trend as-is. &lt;1.0 = dampen the trend (conservative / mean-reverting). &gt;1.0 = amplify the trend (optimistic growth assumption). Does not affect the seasonal pattern.</p></TooltipContent></UITooltip>
+                {isAssumptionsOpen && (
+                <CardContent className="p-0 bg-white divide-y divide-[#ebebeb]">
+
+                  {/* ── Section: Planning Start Date ── */}
+                  <div className="px-4 py-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="startDate" className="text-xs font-medium uppercase text-[#4d4d4d]">Planning Start Date</Label>
+                      <Calendar className="size-3.5 text-[#0a72ef]" />
+                    </div>
+                    <Input id="startDate" type="date" value={assumptions.startDate} onChange={(event) => setAssumptions({ ...assumptions, startDate: event.target.value })} className="h-9 font-bold" />
+                  </div>
+
+                  {/* ── Group: Forecast Model ── */}
+                  <div>
+                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbForecast(v => !v)}>
+                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Forecast Model</span>
+                      {sbForecast ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
+                    </button>
+                    {sbForecast && (
+                      <div className="px-4 pb-4 space-y-3">
+                        <Select value={forecastMethod} onValueChange={setForecastMethod}>
+                          <SelectTrigger className="h-10 font-semibold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger>
+                          <SelectContent>{FORECAST_METHODS.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}</SelectContent>
+                        </Select>
+                        {forecastMethod === "holtwinters" && (
+                          <div className="space-y-3 rounded-xl border border-border/60 bg-[#fafafa] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-semibold text-[#4d4d4d]">Holt-Winters parameters</span>
+                                <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.holtwinters.description}</p></TooltipContent></UITooltip>
                               </div>
-                              <span className="text-xs font-bold">{decompParams.trendStrength}×</span>
+                              <Badge className="bg-amber-500 font-black tracking-tight">{FORECAST_MODEL_COPY.holtwinters.badge}</Badge>
                             </div>
-                            <Input type="number" step="0.1" min="0" max="3" value={decompParams.trendStrength} onChange={(e) => setDecompParams({ ...decompParams, trendStrength: Number(e.target.value) })} className="h-8 text-xs" />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-1">
-                                <Label className="text-xs font-medium text-[#4d4d4d]">Seasonality Strength</Label>
-                                <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs"><span className="font-bold">Scales the seasonal indices around 1.0.</span> 1.0 = apply the observed seasonal pattern in full. &lt;1.0 = flatten seasonality (peaks and troughs are reduced toward the trend line). &gt;1.0 = amplify seasonal swings. Seasonal indices are normalized to average 1.0 before this multiplier is applied.</p></TooltipContent></UITooltip>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Alpha (α)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Level smoothing. Higher = reacts faster to recent data. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
+                                <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.alpha} onChange={(e) => setHwParams({ ...hwParams, alpha: Number(e.target.value) })} className="h-8 text-xs" />
                               </div>
-                              <span className="text-xs font-bold">{decompParams.seasonalityStrength}×</span>
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Beta (β)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Trend smoothing. Lower = stable persistent trend. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
+                                <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.beta} onChange={(e) => setHwParams({ ...hwParams, beta: Number(e.target.value) })} className="h-8 text-xs" />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Gamma (γ)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Seasonality smoothing. Higher = seasonal pattern adapts quickly. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
+                                <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.gamma} onChange={(e) => setHwParams({ ...hwParams, gamma: Number(e.target.value) })} className="h-8 text-xs" />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Season Length</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Periods per seasonal cycle. 12 for monthly/annual.</p></TooltipContent></UITooltip></div>
+                                <Input type="number" min="2" max="24" value={hwParams.seasonLength} onChange={(e) => setHwParams({ ...hwParams, seasonLength: Number(e.target.value) })} className="h-8 text-xs" />
+                              </div>
                             </div>
-                            <Input type="number" step="0.1" min="0" max="3" value={decompParams.seasonalityStrength} onChange={(e) => setDecompParams({ ...decompParams, seasonalityStrength: Number(e.target.value) })} className="h-8 text-xs" />
+                          </div>
+                        )}
+                        {forecastMethod === "arima" && (
+                          <div className="space-y-3 rounded-xl border border-border/60 bg-[#fafafa] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-xs font-semibold text-[#4d4d4d]">ARIMA parameters</span>
+                              <Badge className="bg-emerald-500 font-black tracking-tight">{FORECAST_MODEL_COPY.arima.badge}</Badge>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3">
+                              <div className="space-y-1"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">p (AR)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">Autoregressive order — how many past periods drive predictions. Typical: 1–3.</p></TooltipContent></UITooltip></div><Input type="number" min="0" max="6" value={arimaParams.p} onChange={(e) => setArimaParams({ ...arimaParams, p: Number(e.target.value) })} className="h-8 text-xs" /></div>
+                              <div className="space-y-1"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">d (diff)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">Differencing order. 1 removes a linear trend. Start with d=1.</p></TooltipContent></UITooltip></div><Input type="number" min="0" max="2" value={arimaParams.d} onChange={(e) => setArimaParams({ ...arimaParams, d: Number(e.target.value) })} className="h-8 text-xs" /></div>
+                              <div className="space-y-1"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">q (MA)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">Moving average order. Corrects for recent forecast error. Typical: 1–2.</p></TooltipContent></UITooltip></div><Input type="number" min="0" max="6" value={arimaParams.q} onChange={(e) => setArimaParams({ ...arimaParams, q: Number(e.target.value) })} className="h-8 text-xs" /></div>
+                            </div>
+                            <p className="text-[11px] text-[#4d4d4d]">Recommended start: p=1, d=1, q=1.</p>
+                          </div>
+                        )}
+                        {forecastMethod === "decomposition" && (
+                          <div className="space-y-3 rounded-xl border border-border/60 bg-[#fafafa] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-xs font-semibold text-[#4d4d4d]">Decomposition parameters</span>
+                              <Badge className="bg-blue-500 font-black tracking-tight">{FORECAST_MODEL_COPY.decomposition.badge}</Badge>
+                            </div>
+                            <div className="space-y-3">
+                              <div className="space-y-1"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Trend Strength</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">1.0 = project observed trend as-is. &lt;1 = conservative. &gt;1 = optimistic growth.</p></TooltipContent></UITooltip></div><span className="text-xs font-bold">{decompParams.trendStrength}×</span></div><Input type="number" step="0.1" min="0" max="3" value={decompParams.trendStrength} onChange={(e) => setDecompParams({ ...decompParams, trendStrength: Number(e.target.value) })} className="h-8 text-xs" /></div>
+                              <div className="space-y-1"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Seasonality Strength</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">1.0 = apply observed seasonality in full. &lt;1 = flatten swings. &gt;1 = amplify swings.</p></TooltipContent></UITooltip></div><span className="text-xs font-bold">{decompParams.seasonalityStrength}×</span></div><Input type="number" step="0.1" min="0" max="3" value={decompParams.seasonalityStrength} onChange={(e) => setDecompParams({ ...decompParams, seasonalityStrength: Number(e.target.value) })} className="h-8 text-xs" /></div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── Group: Channel AHT ── */}
+                  <div>
+                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbChannelAht(v => !v)}>
+                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Channel AHT</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-[#4d4d4d]">{assumptions.aht}s · {assumptions.chatAht}s · {assumptions.emailAht}s</span>
+                        {sbChannelAht ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
+                      </div>
+                    </button>
+                    {sbChannelAht && (
+                      <div className="px-4 pb-4 space-y-3">
+                        <div className="space-y-2"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-medium text-[#4d4d4d]">Voice AHT (seconds)</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-9 font-semibold" /></div>
+                        <div className="space-y-2"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-medium text-[#4d4d4d]">Chat AHT (seconds)</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-9 font-semibold" /></div>
+                        <div className="space-y-2"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-medium text-[#4d4d4d]">Email AHT (seconds)</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-9 font-semibold" /></div>
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1"><Label htmlFor="chatConcurrency" className="text-xs font-medium text-[#4d4d4d]">Chat Concurrency</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Simultaneous chats per agent. Lowers effective AHT (AHT ÷ concurrency).</p></TooltipContent></UITooltip></div>
+                            <span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.chatConcurrency}×</span>
+                          </div>
+                          <Input id="chatConcurrency" type="number" min="1" max="10" step="1" value={assumptions.chatConcurrency} onChange={(event) => setAssumptions({ ...assumptions, chatConcurrency: validateInput(Math.round(Number(event.target.value)), 1, 10) })} className="h-9 font-bold" />
+                          <p className="text-[11px] text-[#4d4d4d]">Effective Chat AHT = {assumptions.chatAht}s ÷ {assumptions.chatConcurrency} = <span className="font-semibold text-[#171717]">{Math.round(assumptions.chatAht / Math.max(1, assumptions.chatConcurrency))}s</span></p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── Group: Service Levels ── */}
+                  <div>
+                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbServiceLevels(v => !v)}>
+                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Service Levels</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-[#4d4d4d]">{assumptions.voiceSlaTarget}% · {assumptions.chatSlaTarget}% · {assumptions.emailSlaTarget}%</span>
+                        {sbServiceLevels ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
+                      </div>
+                    </button>
+                    {sbServiceLevels && (
+                      <div className="px-4 pb-4 space-y-3">
+                        <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-sky-700">Voice SLA</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="space-y-1"><Label htmlFor="voiceSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
+                            <div className="space-y-1"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
+                            <div className="space-y-1"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs text-[#4d4d4d]">ASA (s)</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Chat SLA</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="space-y-1"><Label htmlFor="chatSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
+                            <div className="space-y-1"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
+                            <div className="space-y-1"><Label htmlFor="chatAsaTargetSeconds" className="text-xs text-[#4d4d4d]">ASA (s)</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Email / Cases SLA</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="space-y-1"><Label htmlFor="emailSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
+                            <div className="space-y-1"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-8 text-xs font-semibold" /></div>
+                            <div className="space-y-1"><Label htmlFor="emailAsaTargetSeconds" className="text-xs text-[#4d4d4d]">ASA (s)</Label><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-8 text-xs font-semibold" /></div>
+                          </div>
+                        </div>
+                        {/* Occupancy display */}
+                        <div className="space-y-2 pt-1">
+                          <div className="flex items-center justify-between"><p className="text-[10px] font-semibold uppercase text-[#4d4d4d]">Resulting Occupancy</p><Badge variant="outline" className="font-black text-xs border-indigo-200 text-indigo-700">Derived</Badge></div>
+                          <div className="grid grid-cols-1 gap-2">
+                            {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((channelKey) => (
+                              <div key={channelKey} className={`rounded-lg border border-border/60 px-3 py-2 flex items-center justify-between ${CHANNEL_ASSUMPTION_META[channelKey].bgClass}`}>
+                                <div><p className={`text-[10px] font-black uppercase tracking-widest ${CHANNEL_ASSUMPTION_META[channelKey].colorClass}`}>{CHANNEL_ASSUMPTION_META[channelKey].label}</p><p className="text-[10px] text-muted-foreground">{averageChannelMetrics[channelKey].averageFTE} FTE avg</p></div>
+                                <span className="font-black text-sm text-foreground">{averageChannelMetrics[channelKey].averageOccupancy}%</span>
+                              </div>
+                            ))}
                           </div>
                         </div>
                       </div>
                     )}
                   </div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-medium uppercase text-[#4d4d4d]">AHT Assumption</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-10 font-semibold" /></div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-medium uppercase text-[#4d4d4d]">Email AHT</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-10 font-semibold" /></div>
-                  <div className="space-y-3"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-medium uppercase text-[#4d4d4d]">Chat AHT</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-10 font-semibold" /></div>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1">
-                        <Label htmlFor="chatConcurrency" className="text-xs font-medium uppercase text-[#4d4d4d]">Chat Concurrency</Label>
-                        <UITooltip>
-                          <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
-                          <TooltipContent><p className="text-xs">Simultaneous chats handled per agent. Reduces effective AHT (AHT ÷ concurrency) for Erlang C and workload calculations. Higher concurrency lowers FTE but raises agent cognitive load.</p></TooltipContent>
-                        </UITooltip>
+
+                  {/* ── Group: Shrinkage ── */}
+                  <div>
+                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbShrinkage(v => !v)}>
+                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Shrinkage</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.shrinkage}%</span>
+                        {sbShrinkage ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
                       </div>
-                      <span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">{assumptions.chatConcurrency}×</span>
-                    </div>
-                    <Input id="chatConcurrency" type="number" min="1" max="10" step="1" value={assumptions.chatConcurrency} onChange={(event) => setAssumptions({ ...assumptions, chatConcurrency: validateInput(Math.round(Number(event.target.value)), 1, 10) })} className="h-10 font-bold" />
-                    <p className="text-[11px] text-[#4d4d4d]">Effective Chat AHT = {assumptions.chatAht}s ÷ {assumptions.chatConcurrency} = <span className="font-semibold text-[#171717]">{Math.round(assumptions.chatAht / Math.max(1, assumptions.chatConcurrency))}s</span></p>
-                  </div>
-                  {/* ── Shrinkage ── */}
-                  <div className="space-y-3 border-t border-border pt-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <Label className="text-xs font-medium uppercase text-[#4d4d4d]">Shrinkage</Label>
-                        <UITooltip>
-                          <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
-                          <TooltipContent><p className="text-xs">FTE gross-up. Use Manual for a flat %, or pull from the Shrinkage Planner.</p></TooltipContent>
-                        </UITooltip>
+                    </button>
+                    {sbShrinkage && (
+                      <div className="px-4 pb-4 space-y-3">
+                        <Select value={assumptions.shrinkageSource ?? "manual"} onValueChange={(val) => setAssumptions((prev) => ({ ...prev, shrinkageSource: val as Assumptions["shrinkageSource"] }))}>
+                          <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="manual" className="text-xs">Manual entry</SelectItem>
+                            <SelectItem value="planner_excl" className="text-xs">Shrinkage Planner (excl. holidays)</SelectItem>
+                            <SelectItem value="planner_incl" className="text-xs">Shrinkage Planner (incl. holidays)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        {(assumptions.shrinkageSource ?? "manual") === "manual" && (
+                          <Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(e) => setAssumptions({ ...assumptions, shrinkage: validateInput(Number(e.target.value), 0, 99) })} className="h-9 font-bold" />
+                        )}
+                        {((assumptions.shrinkageSource ?? "manual") === "planner_excl" || (assumptions.shrinkageSource ?? "manual") === "planner_incl") && (
+                          <ShrinkagePlannerLink source={assumptions.shrinkageSource!} shrinkage={assumptions.shrinkage} />
+                        )}
                       </div>
-                      <span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2.5 py-0.5 rounded-full">
-                        {assumptions.shrinkage}%
-                      </span>
-                    </div>
-
-                    <Select
-                      value={assumptions.shrinkageSource ?? "manual"}
-                      onValueChange={(val) =>
-                        setAssumptions((prev) => ({ ...prev, shrinkageSource: val as Assumptions["shrinkageSource"] }))
-                      }>
-                      <SelectTrigger className="h-9 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="manual" className="text-xs">Manual entry</SelectItem>
-                        <SelectItem value="planner_excl" className="text-xs">Shrinkage Planner (excl. holidays)</SelectItem>
-                        <SelectItem value="planner_incl" className="text-xs">Shrinkage Planner (incl. holidays)</SelectItem>
-                      </SelectContent>
-                    </Select>
-
-                    {(assumptions.shrinkageSource ?? "manual") === "manual" && (
-                      <Input
-                        id="shrinkage"
-                        type="number"
-                        value={assumptions.shrinkage}
-                        onChange={(e) =>
-                          setAssumptions({ ...assumptions, shrinkage: validateInput(Number(e.target.value), 0, 99) })
-                        }
-                        className="h-10 font-bold"
-                      />
-                    )}
-
-                    {((assumptions.shrinkageSource ?? "manual") === "planner_excl" ||
-                      (assumptions.shrinkageSource ?? "manual") === "planner_incl") && (
-                      <ShrinkagePlannerLink source={assumptions.shrinkageSource!} shrinkage={assumptions.shrinkage} />
                     )}
                   </div>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs font-medium uppercase text-[#4d4d4d]">Occupancy</Label>
-                      <Badge variant="outline" className="font-black text-xs border-indigo-200 text-indigo-700">Derived From SLA</Badge>
-                    </div>
-                    <div className="grid grid-cols-1 gap-3">
-                      {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((channelKey) => (
-                        <div key={channelKey} className={`rounded-xl border border-border/60 p-3 ${CHANNEL_ASSUMPTION_META[channelKey].bgClass}`}>
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <p className={`text-xs font-black uppercase tracking-widest ${CHANNEL_ASSUMPTION_META[channelKey].colorClass}`}>{CHANNEL_ASSUMPTION_META[channelKey].label}</p>
-                              <p className="text-[11px] text-muted-foreground">{averageChannelMetrics[channelKey].model}</p>
-                            </div>
-                            <Badge variant="outline" className="font-black">{averageChannelMetrics[channelKey].averageFTE} FTE</Badge>
-                          </div>
-                          <div className="mt-3 flex items-center justify-between text-sm">
-                            <span className="text-muted-foreground">Required Occupancy</span>
-                            <span className="font-black text-foreground">{averageChannelMetrics[channelKey].averageOccupancy}%</span>
-                          </div>
+
+                  {/* ── Group: Operating Hours & Safety ── */}
+                  <div>
+                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbOperations(v => !v)}>
+                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Operating Hours</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-[#4d4d4d]">{assumptions.operatingHoursPerDay}h/day · {assumptions.operatingDaysPerWeek}d/wk</span>
+                        {sbOperations ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
+                      </div>
+                    </button>
+                    {sbOperations && (
+                      <div className="px-4 pb-4 space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-[#4d4d4d]">Hours / Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-9 font-semibold" /></div>
+                          <div className="space-y-1"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-[#4d4d4d]">Days / Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-9 font-semibold" /></div>
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4">
-                    <p className="text-xs font-medium uppercase text-[#4d4d4d]">Voice SLA / ASA</p>
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="voiceSlaTarget" className="text-xs font-medium text-[#4d4d4d]">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-semibold" /></div>
-                      <div className="space-y-2"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs font-medium text-[#4d4d4d]">Within Sec</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-semibold" /></div>
-                      <div className="space-y-2"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs font-medium text-[#4d4d4d]">ASA Sec</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-semibold" /></div>
-                    </div>
-                  </div>
-                  <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4">
-                    <p className="text-xs font-medium uppercase text-[#4d4d4d]">Email SLA / ASA</p>
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="emailSlaTarget" className="text-xs font-medium text-[#4d4d4d]">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-semibold" /></div>
-                      <div className="space-y-2"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs font-medium text-[#4d4d4d]">Within Sec</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-semibold" /></div>
-                      <div className="space-y-2"><Label htmlFor="emailAsaTargetSeconds" className="text-xs font-medium text-[#4d4d4d]">ASA Sec</Label><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-10 font-semibold" /></div>
-                    </div>
-                  </div>
-                  <div className="space-y-4 rounded-xl border border-border/60 bg-[#fafafa] p-4">
-                    <p className="text-xs font-medium uppercase text-[#4d4d4d]">Chat SLA / ASA</p>
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2"><Label htmlFor="chatSlaTarget" className="text-xs font-medium text-[#4d4d4d]">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-10 font-semibold" /></div>
-                      <div className="space-y-2"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs font-medium text-[#4d4d4d]">Within Sec</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-semibold" /></div>
-                      <div className="space-y-2"><Label htmlFor="chatAsaTargetSeconds" className="text-xs font-medium text-[#4d4d4d]">ASA Sec</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-10 font-semibold" /></div>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-[#4d4d4d]">Hours Per Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-10 font-semibold" /></div>
-                    <div className="space-y-2"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-[#4d4d4d]">Days Per Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-10 font-semibold" /></div>
-                  </div>
-                  <div className="rounded-lg border border-border/60 bg-[#fafafa] px-3 py-2 text-xs text-[#4d4d4d]">
-                    Operating window: <span className="font-semibold text-[#171717]">{assumptions.operatingHoursPerDay}h/day x {assumptions.operatingDaysPerWeek}d/week</span> = <span className="font-semibold text-[#171717]">{openHoursPerMonth}</span> open hours/month
-                  </div>
-                  <div className="space-y-2"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-[#4d4d4d]">Safety Margin</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-[#4d4d4d] cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Demand staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-10 font-semibold" /></div>
-                  <div className="space-y-2"><Label htmlFor="fteMonthlyHours" className="text-xs font-medium text-[#4d4d4d]">FTE Monthly Hours</Label><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-10 font-semibold" /></div>
-                  <div className="space-y-3 border-t border-border pt-6 mt-6">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1">
-                        <Label htmlFor="growthRate" className="text-xs font-medium uppercase text-[#4d4d4d]">Growth Rate</Label>
-                        <UITooltip>
-                          <TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger>
-                          <TooltipContent><p className="text-xs">Applied as a volume multiplier on top of the forecast. Negative values model volume decline. YoY method uses this rate directly; all other methods apply it as a post-forecast adjustment.</p></TooltipContent>
-                        </UITooltip>
+                        <div className="rounded-lg border border-border/60 bg-[#fafafa] px-3 py-2 text-xs text-[#4d4d4d]">
+                          {assumptions.operatingHoursPerDay}h/day × {assumptions.operatingDaysPerWeek}d/week = <span className="font-semibold text-[#171717]">{openHoursPerMonth} open hours/month</span>
+                        </div>
+                        <div className="space-y-1"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-[#4d4d4d]">Safety Margin %</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-[#4d4d4d] cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-9 font-semibold" /></div>
+                        <div className="space-y-1"><Label htmlFor="fteMonthlyHours" className="text-xs font-medium text-[#4d4d4d]">FTE Monthly Hours</Label><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-9 font-semibold" /></div>
                       </div>
-                      <Badge className={assumptions.growthRate >= 0 ? "bg-emerald-500 font-black tracking-tight" : "bg-rose-500 font-black tracking-tight"}>
-                        {assumptions.growthRate >= 0 ? "+" : ""}{assumptions.growthRate}%
-                      </Badge>
-                    </div>
-                    <Input id="growthRate" type="number" value={assumptions.growthRate} onChange={(event) => setAssumptions({ ...assumptions, growthRate: validateInput(Number(event.target.value), -100, 500) })} className={`h-10 font-bold ${assumptions.growthRate >= 0 ? "border-emerald-200" : "border-rose-200"}`} />
-                    {assumptions.growthRate !== 0 && (
-                      <p className="text-[11px] text-[#4d4d4d]">Applied as a ×{(1 + assumptions.growthRate / 100).toFixed(3)} multiplier after {FORECAST_METHODS.find((m) => m.key === forecastMethod)?.label ?? forecastMethod}.</p>
                     )}
                   </div>
-                  <Button className="w-full h-11 font-black uppercase tracking-widest text-xs mt-4 shadow-lg shadow-primary/20" onClick={() => toast.info("Demand forecast recalculated", { duration: 1500 })}><LayoutDashboard className="size-4 mr-2" />Recalculate</Button>
-                </CardContent>}
+
+                  {/* ── Group: Growth Rate ── */}
+                  <div>
+                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbGrowth(v => !v)}>
+                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Growth Rate</span>
+                      <div className="flex items-center gap-2">
+                        <Badge className={assumptions.growthRate >= 0 ? "bg-emerald-500 font-black tracking-tight text-xs" : "bg-rose-500 font-black tracking-tight text-xs"}>
+                          {assumptions.growthRate >= 0 ? "+" : ""}{assumptions.growthRate}%
+                        </Badge>
+                        {sbGrowth ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
+                      </div>
+                    </button>
+                    {sbGrowth && (
+                      <div className="px-4 pb-4 space-y-3">
+                        <div className="flex items-center gap-1.5">
+                          <Info className="size-3 text-muted-foreground shrink-0" />
+                          <p className="text-[11px] text-[#4d4d4d]">Applied as a post-forecast volume multiplier. Negative values model decline.</p>
+                        </div>
+                        <Input id="growthRate" type="number" value={assumptions.growthRate} onChange={(event) => setAssumptions({ ...assumptions, growthRate: validateInput(Number(event.target.value), -100, 500) })} className={`h-9 font-bold ${assumptions.growthRate >= 0 ? "border-emerald-200" : "border-rose-200"}`} />
+                        {assumptions.growthRate !== 0 && (
+                          <p className="text-[11px] text-[#4d4d4d]">×{(1 + assumptions.growthRate / 100).toFixed(3)} multiplier after {FORECAST_METHODS.find((m) => m.key === forecastMethod)?.label ?? forecastMethod}.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── Recalculate button ── */}
+                  <div className="px-4 py-4">
+                    <Button className="w-full h-10 font-black uppercase tracking-widest text-xs shadow-lg shadow-primary/20" onClick={() => toast.info("Demand forecast recalculated", { duration: 1500 })}><LayoutDashboard className="size-4 mr-2" />Recalculate</Button>
+                  </div>
+
+                </CardContent>
+                )}
               </Card>
               <div className="rounded-lg border border-[#ebebeb] bg-[#fafafa] mt-6 px-4 py-3">
                 <p className="text-[10px] font-semibold flex items-center gap-2 uppercase text-[#4d4d4d] mb-3"><LineChartIcon className="size-4" />Demand Notes</p>
