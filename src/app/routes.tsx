@@ -1,45 +1,83 @@
 import { createBrowserRouter } from "react-router-dom";
 import { Home } from "./pages/Home";
-import { MyAccount } from "./pages/MyAccount";
-import { WFM } from "./pages/WFM";
-import { Configuration } from "./pages/Configuration";
-import { EmployeeRoster } from "./pages/EmployeeRoster";
-import { CapacityPlanning } from "./pages/CapacityPlanning";
-import { IntradayForecast } from "./pages/IntradayForecast";
-import { InteractionArrival } from "./pages/InteractionArrival";
-import { ArrivalAnalysis } from "./pages/ArrivalAnalysis";
-import { TelephonyRawData } from "./pages/TelephonyRawData";
-import { PerformanceAnalytics } from "./pages/PerformanceAnalytics";
-import LongTermForecastingDemand from "./pages/LongTermForecasting_Demand";
-import { ShrinkagePlanning } from "./pages/ShrinkagePlanning";
-import { LOBManagement } from "./pages/LOBManagement";
-import { LOBSettings } from "./pages/LOBSettings";
-import { SchedulingHub } from "./pages/SchedulingHub";
-import { AgentRoster } from "./pages/AgentRoster";
-import { ShiftTemplates } from "./pages/ShiftTemplates";
-import { LaborLawRules } from "./pages/LaborLawRules";
-import { ScheduleEditor } from "./pages/ScheduleEditor";
 
 export const router = createBrowserRouter([
   { path: "/",                            Component: Home },
-  { path: "/my-account",                 Component: MyAccount },
-  { path: "/wfm",                         Component: WFM },
-  { path: "/wfm/roster",                 Component: EmployeeRoster },
-  { path: "/wfm/long-term-forecasting-demand", Component: LongTermForecastingDemand },
-  { path: "/wfm/capacity",               Component: CapacityPlanning },
-  { path: "/wfm/shrinkage",              Component: ShrinkagePlanning },
-  { path: "/wfm/intraday",               Component: IntradayForecast },
-  { path: "/wfm/interaction-arrival",    Component: InteractionArrival },
-  { path: "/wfm/arrival-analysis",       Component: ArrivalAnalysis },
-  { path: "/wfm/telephony-raw",          Component: TelephonyRawData },
-  { path: "/wfm/performance-analytics",  Component: PerformanceAnalytics },
-  { path: "/configuration",              Component: Configuration },
-  { path: "/configuration/lob-management", Component: LOBManagement },
-  { path: "/configuration/lob-settings",  Component: LOBSettings },
-  { path: "/scheduling",                  Component: SchedulingHub },
-  { path: "/scheduling/agents",           Component: AgentRoster },
-  { path: "/scheduling/shifts",           Component: ShiftTemplates },
-  { path: "/scheduling/labor-laws",       Component: LaborLawRules },
-  { path: "/scheduling/schedule",         Component: ScheduleEditor },
   { path: "*",                            Component: Home },
+  {
+    path: "/my-account",
+    lazy: async () => { const { MyAccount } = await import("./pages/MyAccount"); return { Component: MyAccount }; },
+  },
+  {
+    path: "/wfm",
+    lazy: async () => { const { WFM } = await import("./pages/WFM"); return { Component: WFM }; },
+  },
+  {
+    path: "/wfm/roster",
+    lazy: async () => { const { EmployeeRoster } = await import("./pages/EmployeeRoster"); return { Component: EmployeeRoster }; },
+  },
+  {
+    path: "/wfm/long-term-forecasting-demand",
+    lazy: async () => { const mod = await import("./pages/LongTermForecasting_Demand"); return { Component: mod.default }; },
+  },
+  {
+    path: "/wfm/capacity",
+    lazy: async () => { const { CapacityPlanning } = await import("./pages/CapacityPlanning"); return { Component: CapacityPlanning }; },
+  },
+  {
+    path: "/wfm/shrinkage",
+    lazy: async () => { const { ShrinkagePlanning } = await import("./pages/ShrinkagePlanning"); return { Component: ShrinkagePlanning }; },
+  },
+  {
+    path: "/wfm/intraday",
+    lazy: async () => { const { IntradayForecast } = await import("./pages/IntradayForecast"); return { Component: IntradayForecast }; },
+  },
+  {
+    path: "/wfm/interaction-arrival",
+    lazy: async () => { const { InteractionArrival } = await import("./pages/InteractionArrival"); return { Component: InteractionArrival }; },
+  },
+  {
+    path: "/wfm/arrival-analysis",
+    lazy: async () => { const { ArrivalAnalysis } = await import("./pages/ArrivalAnalysis"); return { Component: ArrivalAnalysis }; },
+  },
+  {
+    path: "/wfm/telephony-raw",
+    lazy: async () => { const { TelephonyRawData } = await import("./pages/TelephonyRawData"); return { Component: TelephonyRawData }; },
+  },
+  {
+    path: "/wfm/performance-analytics",
+    lazy: async () => { const { PerformanceAnalytics } = await import("./pages/PerformanceAnalytics"); return { Component: PerformanceAnalytics }; },
+  },
+  {
+    path: "/configuration",
+    lazy: async () => { const { Configuration } = await import("./pages/Configuration"); return { Component: Configuration }; },
+  },
+  {
+    path: "/configuration/lob-management",
+    lazy: async () => { const { LOBManagement } = await import("./pages/LOBManagement"); return { Component: LOBManagement }; },
+  },
+  {
+    path: "/configuration/lob-settings",
+    lazy: async () => { const { LOBSettings } = await import("./pages/LOBSettings"); return { Component: LOBSettings }; },
+  },
+  {
+    path: "/scheduling",
+    lazy: async () => { const { SchedulingHub } = await import("./pages/SchedulingHub"); return { Component: SchedulingHub }; },
+  },
+  {
+    path: "/scheduling/agents",
+    lazy: async () => { const { AgentRoster } = await import("./pages/AgentRoster"); return { Component: AgentRoster }; },
+  },
+  {
+    path: "/scheduling/shifts",
+    lazy: async () => { const { ShiftTemplates } = await import("./pages/ShiftTemplates"); return { Component: ShiftTemplates }; },
+  },
+  {
+    path: "/scheduling/labor-laws",
+    lazy: async () => { const { LaborLawRules } = await import("./pages/LaborLawRules"); return { Component: LaborLawRules }; },
+  },
+  {
+    path: "/scheduling/schedule",
+    lazy: async () => { const { ScheduleEditor } = await import("./pages/ScheduleEditor"); return { Component: ScheduleEditor }; },
+  },
 ]);

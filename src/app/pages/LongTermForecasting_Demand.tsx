@@ -796,6 +796,14 @@ function normalizeScenario(value: unknown, fallbackId: string): Scenario | null 
     isHistoricalSourceOpen: typeof snapshot?.isHistoricalSourceOpen === "boolean" ? snapshot.isHistoricalSourceOpen : false,
     isBlendedStaffingOpen: typeof snapshot?.isBlendedStaffingOpen === "boolean" ? snapshot.isBlendedStaffingOpen : true,
     selectedHistoricalChannel: snapshot?.selectedHistoricalChannel === "email" || snapshot?.selectedHistoricalChannel === "chat" || snapshot?.selectedHistoricalChannel === "cases" ? snapshot.selectedHistoricalChannel : "voice",
+    recutVolumesByChannel: (snapshot?.recutVolumesByChannel && typeof snapshot.recutVolumesByChannel === "object")
+      ? {
+          voice: Array.isArray(snapshot.recutVolumesByChannel.voice) ? [...snapshot.recutVolumesByChannel.voice] : [],
+          email: Array.isArray(snapshot.recutVolumesByChannel.email) ? [...snapshot.recutVolumesByChannel.email] : [],
+          chat: Array.isArray(snapshot.recutVolumesByChannel.chat) ? [...snapshot.recutVolumesByChannel.chat] : [],
+          cases: Array.isArray(snapshot.recutVolumesByChannel.cases) ? [...snapshot.recutVolumesByChannel.cases] : [],
+        }
+      : null,
   });
 }
 const getTimeline = (startDateStr: string, monthsPast = 0, monthsFuture = 12) => {
@@ -995,16 +1003,23 @@ export default function LongTermForecastingDemand() {
     if (!activeLob) { setLoading(false); return; }
     hasHydratedRef.current = false;
     const hydratePlanner = async () => {
+      // Fire all three API calls in parallel — was sequential before (3 round trips → 1)
+      const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      const [scenariosData, lobSettingsData, activeStateData] = await Promise.all([
+        fetch(apiUrl(`/api/demand-planner-scenarios?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
+      ]);
+
+      // ── Scenarios ────────────────────────────────────────────────────────────
       let nextScenarios = DEFAULT_SCENARIOS;
-      try {
-        const response = await fetch(apiUrl(`/api/demand-planner-scenarios?lob_id=${activeLob.id}`));
-        if (response.ok) {
-          const records = await response.json() as DemandPlannerScenarioRecord[];
-          const normalized = Array.isArray(records) ? normalizePersistedScenarios(records) : {};
+      if (scenariosData) {
+        try {
+          const normalized = Array.isArray(scenariosData) ? normalizePersistedScenarios(scenariosData as DemandPlannerScenarioRecord[]) : {};
           if (Object.keys(normalized).length > 0) nextScenarios = normalized;
+        } catch (error) {
+          console.error("Failed to normalize demand scenarios", error);
         }
-      } catch (error) {
-        console.error("Failed to load persisted demand scenarios", error);
       }
       if (nextScenarios === DEFAULT_SCENARIOS) {
         try {
@@ -1023,35 +1038,24 @@ export default function LongTermForecastingDemand() {
         }
       }
       setScenarios(nextScenarios);
+
       try {
-        // Fetch LOB defaults in parallel — used as fallback and for override indicator
-        let fetchedLobDefaults: LobSettingsDefaults | null = null;
-        try {
-          const lobRes = await fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`));
-          if (lobRes.ok) fetchedLobDefaults = await lobRes.json() as LobSettingsDefaults;
-        } catch { /* non-critical */ }
+        // ── LOB defaults ─────────────────────────────────────────────────────
+        const fetchedLobDefaults = lobSettingsData as LobSettingsDefaults | null;
         if (fetchedLobDefaults) setLobDefaults(fetchedLobDefaults);
 
-        // On production (non-localhost): DB is source of truth so changes sync across devices.
-        // On localhost: localStorage first so local dev state isn't clobbered by production DB.
-        const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+        // ── Active state ─────────────────────────────────────────────────────
+        // On localhost: localStorage is the source of truth.
+        // On production: DB is the source of truth (syncs across devices).
         let savedInputs: { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null = null;
         if (isLocalDev) {
           const localRaw = localStorage.getItem(USER_INPUTS_STORAGE_KEY);
           if (localRaw) {
-            savedInputs = JSON.parse(localRaw) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
+            try { savedInputs = JSON.parse(localRaw) as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> }; } catch { /* ignore */ }
           }
         }
         if (!savedInputs) {
-          try {
-            const activeStateResponse = await fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`));
-            if (activeStateResponse.ok) {
-              const dbState = await activeStateResponse.json() as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> } | null;
-              if (dbState && typeof dbState === "object") savedInputs = dbState;
-            }
-          } catch {
-            // fall through to scenario snapshot
-          }
+          if (activeStateData && typeof activeStateData === "object") savedInputs = activeStateData as { selectedScenarioId?: string; plannerSnapshot?: Partial<PlannerSnapshot> };
         }
         if (!savedInputs && !isLocalDev) {
           // Last resort on production: try localStorage
@@ -1571,6 +1575,15 @@ export default function LongTermForecastingDemand() {
     });
   }, [assumptions.startDate, visibleHistoricalApiData, visibleHistoricalOverrides, visibleFinalHistoricalData]);
   const overrideCount = useMemo(() => historicalSourceRows.filter((row) => row.isOverridden).length, [historicalSourceRows]);
+  const historicalRowsByYear = useMemo(() => {
+    const groups: { year: string; rows: HistoricalSourceRow[] }[] = [];
+    for (const row of historicalSourceRows) {
+      const year = row.monthLabel.split(" ")[1] ?? "Unknown";
+      const existing = groups.find((g) => g.year === year);
+      if (existing) { existing.rows.push(row); } else { groups.push({ year, rows: [row] }); }
+    }
+    return groups;
+  }, [historicalSourceRows]);
   const forecastData = useMemo(() => buildDemandForecastData(finalHistoricalData, assumptions, forecastMethod, hwParams, arimaParams, decompParams), [finalHistoricalData, assumptions, forecastMethod, hwParams, arimaParams, decompParams]);
   const selectedBlendConfig = useMemo(() => buildBlendConfiguration(selectedChannels, poolingMode), [selectedChannels, poolingMode]);
   const includedChannels = useMemo(() => selectedBlendConfig.includedChannels, [selectedBlendConfig]);
@@ -2232,6 +2245,7 @@ export default function LongTermForecastingDemand() {
                               <SelectItem value="voice">Voice</SelectItem>
                               <SelectItem value="email">Email</SelectItem>
                               <SelectItem value="chat">Chat</SelectItem>
+                              <SelectItem value="cases">Cases</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -2363,88 +2377,92 @@ export default function LongTermForecastingDemand() {
                       )}
                     </div>
                   )}
-                  <div className="overflow-x-auto rounded-xl border border-border/60">
-                    <Table className="table-fixed min-w-[980px]">
-                      <colgroup>
-                        <col className="w-[14%]" />
-                        <col className="w-[14%]" />
-                        <col className="w-[15%]" />
-                        <col className="w-[16%]" />
-                        <col className="w-[12%]" />
-                        <col className="w-[29%]" />
-                      </colgroup>
-                      <TableHeader className="bg-muted/50">
-                        <TableRow className="hover:bg-transparent">
-                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Month</TableHead>
-                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">API Volume</TableHead>
-                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Override Volume</TableHead>
-                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Final Volume Used</TableHead>
-                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Variance %</TableHead>
-                          <TableHead className="px-3 text-center text-xs font-black uppercase tracking-widest whitespace-nowrap">Override Toggle / Edit State</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {historicalSourceRows.map((row) => {
-                          const outlier = outlierResults?.find((r) => r.index === row.index);
-                          return (
-                          <TableRow key={row.index} className={outlier && !outlier.applied ? (outlier.severity === "extreme" ? "bg-rose-50/40 dark:bg-rose-950/10" : "bg-amber-50/40 dark:bg-amber-950/10") : row.canEdit ? "bg-amber-50/60 dark:bg-amber-950/10" : ""}>
-                            <TableCell className="px-3 text-center align-middle">
-                              <div className="flex flex-col items-center gap-0.5">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  <span className="font-bold text-sm">{row.monthLabel}</span>
-                                  {outlier && !outlier.applied && (
-                                    <UITooltip>
-                                      <TooltipTrigger asChild>
-                                        <AlertTriangle className={`size-3.5 shrink-0 cursor-help ${outlier.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
-                                      </TooltipTrigger>
-                                      <TooltipContent className="max-w-[280px]">
-                                        <p className="text-xs font-semibold mb-1">{outlier.severity === "extreme" ? "Extreme Outlier" : "Mild Outlier"} — {outlier.direction === "high" ? "↑ Above upper fence" : "↓ Below lower fence"}</p>
-                                        <p className="text-xs">{outlier.reason}</p>
-                                        <p className="text-xs mt-1 font-semibold text-violet-300">Suggested: {outlier.suggestedValue.toLocaleString()}</p>
-                                      </TooltipContent>
-                                    </UITooltip>
-                                  )}
-                                  {outlier?.applied && <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" />}
-                                </div>
-                                {row.canEdit && <span className="text-[11px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-400 text-center">{row.stateLabel}</span>}
-                              </div>
-                            </TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{formatInteger(row.apiVolume)}</TableCell>
-                            <TableCell className="px-3 text-center align-middle">
-                              <div className="flex justify-center">
-                                <Input
-                                  inputMode="numeric"
-                                  pattern="[0-9]*"
-                                  value={row.overrideVolume}
-                                  onChange={(event) => handleOverrideChange(row.index, event.target.value)}
-                                  onBlur={() => handleOverrideBlur(row.index)}
-                                  placeholder={String(row.apiVolume)}
-                                  disabled={!row.canEdit}
-                                  className="h-9 w-full max-w-[8.5rem] text-center font-mono tabular-nums"
-                                />
-                              </div>
-                            </TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">{formatInteger(row.finalVolume)}</TableCell>
-                            <TableCell className={`px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle ${row.variancePct === null ? "text-muted-foreground" : row.variancePct >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                              {row.variancePct === null ? "0.0%" : `${row.variancePct > 0 ? "+" : ""}${row.variancePct.toFixed(1)}%`}
-                            </TableCell>
-                            <TableCell className="px-3 text-center align-middle">
-                              <div className="flex items-center justify-center gap-3">
-                                <div className="flex items-center justify-center gap-2">
-                                  <Switch checked={row.canEdit} onCheckedChange={(checked) => handleOverrideToggle(row.index, checked)} disabled={row.stateLabel === "Manual"} />
-                                  <Badge variant={row.canEdit ? "default" : "outline"} className={row.canEdit ? "bg-amber-500 hover:bg-amber-500 text-black" : ""}>{row.stateLabel}</Badge>
-                                </div>
-                                <Button variant="ghost" size="sm" className="h-8 px-2" onClick={() => handleResetMonthOverride(row.index)} disabled={!row.canEdit}>
-                                  Reset
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </div>
+                  {(() => {
+                    const renderYearTable = (yearGroup: { year: string; rows: HistoricalSourceRow[] }) => (
+                      <div key={yearGroup.year} className="flex-1 min-w-0 overflow-x-auto rounded-xl border border-border/60">
+                        <div className="bg-muted/70 border-b border-border/60 px-3 py-1.5 text-center">
+                          <span className="text-xs font-black uppercase tracking-widest text-foreground/70">{yearGroup.year}</span>
+                        </div>
+                        <Table className="table-fixed w-full">
+                          <colgroup>
+                            <col className="w-[18%]" />
+                            <col className="w-[16%]" />
+                            <col className="w-[20%]" />
+                            <col className="w-[16%]" />
+                            <col className="w-[11%]" />
+                            <col className="w-[19%]" />
+                          </colgroup>
+                          <TableHeader className="bg-muted/50">
+                            <TableRow className="hover:bg-transparent">
+                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Month</TableHead>
+                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">API Vol</TableHead>
+                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Override</TableHead>
+                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Final</TableHead>
+                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Var%</TableHead>
+                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Edit</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {yearGroup.rows.map((row) => {
+                              const outlier = outlierResults?.find((r) => r.index === row.index);
+                              return (
+                                <TableRow key={row.index} className={`h-9 ${outlier && !outlier.applied ? (outlier.severity === "extreme" ? "bg-rose-50/40 dark:bg-rose-950/10" : "bg-amber-50/40 dark:bg-amber-950/10") : row.canEdit ? "bg-amber-50/60 dark:bg-amber-950/10" : ""}`}>
+                                  <TableCell className="px-2 py-1 text-center align-middle">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <span className="font-bold text-xs">{row.monthLabel.split(" ")[0]}</span>
+                                      {outlier && !outlier.applied && (
+                                        <UITooltip>
+                                          <TooltipTrigger asChild>
+                                            <AlertTriangle className={`size-3 shrink-0 cursor-help ${outlier.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
+                                          </TooltipTrigger>
+                                          <TooltipContent className="max-w-[280px]">
+                                            <p className="text-xs font-semibold mb-1">{outlier.severity === "extreme" ? "Extreme Outlier" : "Mild Outlier"} — {outlier.direction === "high" ? "↑ Above upper fence" : "↓ Below lower fence"}</p>
+                                            <p className="text-xs">{outlier.reason}</p>
+                                            <p className="text-xs mt-1 font-semibold text-violet-300">Suggested: {outlier.suggestedValue.toLocaleString()}</p>
+                                          </TooltipContent>
+                                        </UITooltip>
+                                      )}
+                                      {outlier?.applied && <CheckCircle2 className="size-3 text-emerald-500 shrink-0" />}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="px-2 py-1 text-center font-mono text-xs tabular-nums whitespace-nowrap align-middle">{formatInteger(row.apiVolume)}</TableCell>
+                                  <TableCell className="px-2 py-1 text-center align-middle">
+                                    <Input
+                                      inputMode="numeric"
+                                      pattern="[0-9]*"
+                                      value={row.overrideVolume}
+                                      onChange={(event) => handleOverrideChange(row.index, event.target.value)}
+                                      onBlur={() => handleOverrideBlur(row.index)}
+                                      placeholder={String(row.apiVolume)}
+                                      disabled={!row.canEdit}
+                                      className="h-7 w-full text-center font-mono tabular-nums text-xs px-1"
+                                    />
+                                  </TableCell>
+                                  <TableCell className="px-2 py-1 text-center font-mono text-xs font-bold text-primary tabular-nums whitespace-nowrap align-middle">{formatInteger(row.finalVolume)}</TableCell>
+                                  <TableCell className={`px-2 py-1 text-center font-mono text-xs tabular-nums whitespace-nowrap align-middle ${row.variancePct === null ? "text-muted-foreground" : row.variancePct >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                    {row.variancePct === null ? "—" : `${row.variancePct > 0 ? "+" : ""}${row.variancePct.toFixed(1)}%`}
+                                  </TableCell>
+                                  <TableCell className="px-2 py-1 text-center align-middle">
+                                    <div className="flex items-center justify-center gap-1.5">
+                                      <Switch checked={row.canEdit} onCheckedChange={(checked) => handleOverrideToggle(row.index, checked)} disabled={row.stateLabel === "Manual"} className="scale-75" />
+                                      <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[10px]" onClick={() => handleResetMonthOverride(row.index)} disabled={!row.canEdit}>
+                                        Reset
+                                      </Button>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    );
+                    return (
+                      <div className={`flex gap-3 ${historicalRowsByYear.length > 1 ? "flex-row" : "flex-col"}`}>
+                        {historicalRowsByYear.map(renderYearTable)}
+                      </div>
+                    );
+                  })()}
                 </CardContent>
               </div>
             </div>
