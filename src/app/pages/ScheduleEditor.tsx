@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, CalendarDays, Users, Clock3, LayoutGrid } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter } from "lucide-react";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
 import { CoverageGraph } from "../components/schedule/CoverageGraph";
@@ -18,7 +18,7 @@ import { Activity } from "../components/schedule/ActivityBlock";
 // ── Date utilities ───────────────────────────────────────────────────────────
 
 function getMondayOf(d: Date): Date {
-  const day = d.getDay(); // 0=Sun
+  const day = d.getDay();
   const diff = (day === 0 ? -6 : 1 - day);
   const m = new Date(d);
   m.setDate(d.getDate() + diff);
@@ -36,8 +36,12 @@ function toDateStr(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function formatDate(d: Date): string {
+function formatShortDate(d: Date): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function formatFullDate(d: Date): string {
+  return d.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
 }
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -68,6 +72,23 @@ interface ShiftTemplate {
   color: string;
   channel_coverage: string[];
   break_rules: Array<{ name: string; duration_minutes: number; after_hours: number; is_paid: boolean }>;
+}
+
+// ── KPI tile ─────────────────────────────────────────────────────────────────
+
+interface KpiTileProps {
+  label: string;
+  value: string | number;
+  accent: string; // tailwind bg+text pair classes
+}
+
+function KpiTile({ label, value, accent }: KpiTileProps) {
+  return (
+    <div className={`flex flex-col items-center justify-center rounded-lg px-3 py-1.5 min-w-[56px] ${accent}`}>
+      <span className="text-lg font-black leading-none">{value}</span>
+      <span className="text-[10px] uppercase tracking-widest font-semibold mt-0.5 opacity-80">{label}</span>
+    </div>
+  );
 }
 
 // ── Add Shift Dialog ─────────────────────────────────────────────────────────
@@ -165,6 +186,7 @@ function AddShiftDialog({ open, onClose, agents, templates, prefillAgentId, pref
                 <SelectItem value="voice">Voice</SelectItem>
                 <SelectItem value="chat">Chat</SelectItem>
                 <SelectItem value="email">Email</SelectItem>
+                <SelectItem value="cases">Cases</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -193,7 +215,7 @@ export function ScheduleEditor() {
   const { activeLob } = useLOB();
 
   const [weekStart, setWeekStart] = useState<Date>(() => getMondayOf(new Date()));
-  const [activeDayIdx, setActiveDayIdx] = useState(0); // 0=Mon … 6=Sun
+  const [activeDayIdx, setActiveDayIdx] = useState(0);
   const [agentQuery, setAgentQuery] = useState("");
   const [skillFilter, setSkillFilter] = useState<"all" | "voice" | "chat" | "email">("all");
 
@@ -237,7 +259,6 @@ export function ScheduleEditor() {
       .finally(() => setLoading(false));
   }, [activeLob, dateStart, dateEnd]);
 
-  // Load required FTE from demand planner snapshot
   useEffect(() => {
     if (!activeLob) return;
     fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`))
@@ -245,20 +266,17 @@ export function ScheduleEditor() {
       .then(data => {
         const snap = data?.state_value?.plannerSnapshot;
         if (!snap?.fteTable) return;
-        // fteTable is keyed by day label; pick first available day's data
         const days = Object.values(snap.fteTable) as Array<Array<{ fte: number }>>;
         if (!days.length) return;
-        // Average required FTE across all days (representative week)
         const slots = days[0].length;
         const avgFte = Array.from({ length: Math.min(slots, 96) }, (_, i) => {
           const sum = days.reduce((acc, d) => acc + (d[i]?.fte ?? 0), 0);
           return sum / days.length;
         });
-        // Pad to 96 if needed
         while (avgFte.length < 96) avgFte.push(0);
         setRequiredFte(avgFte);
       })
-      .catch(() => {}); // non-fatal
+      .catch(() => {});
   }, [activeLob]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
@@ -279,7 +297,6 @@ export function ScheduleEditor() {
         body: JSON.stringify({ ...fields, lob_id: activeLob.id, work_date: activeDate }),
       });
       const row: Assignment = await res.json();
-      // Enrich with agent/template info
       const agent = agents.find(a => a.id === row.agent_id);
       const tmpl  = templates.find(t => t.id === row.shift_template_id);
       const enriched: Assignment = {
@@ -293,7 +310,6 @@ export function ScheduleEditor() {
         activities: [],
       };
 
-      // Auto-add break rules from template
       if (tmpl?.break_rules?.length) {
         const shiftStartMins = timeToMins(fields.start_time);
         for (const rule of tmpl.break_rules) {
@@ -326,10 +342,7 @@ export function ScheduleEditor() {
   const moveShift = useCallback(async (id: number, newStart: string, newEnd: string) => {
     const prev = assignments.find(a => a.id === id);
     if (!prev) return;
-
-    // Optimistic update
     setAssignments(all => all.map(a => a.id === id ? { ...a, start_time: newStart, end_time: newEnd } : a));
-
     try {
       await fetch(apiUrl(`/api/scheduling/assignments/${id}`), {
         method: "PUT",
@@ -337,7 +350,6 @@ export function ScheduleEditor() {
         body: JSON.stringify({ start_time: newStart, end_time: newEnd, is_overnight: prev.is_overnight, channel: prev.channel, notes: prev.notes, shift_template_id: prev.shift_template_id }),
       });
     } catch {
-      // Rollback
       setAssignments(all => all.map(a => a.id === id ? prev : a));
       toast.error("Failed to save shift move");
     }
@@ -393,15 +405,13 @@ export function ScheduleEditor() {
     } catch { toast.error("Failed to delete activity"); }
   }, []);
 
-  // ── Grid click → open add dialog pre-filled ──────────────────────────────
-
   const handleGridAddShift = useCallback((agentId: number, startTime: string) => {
     setPrefillAgent(agentId);
     setPrefillStart(startTime);
     setAddOpen(true);
   }, []);
 
-  // ── Counts for header badges ──────────────────────────────────────────────
+  // ── Derived counts ────────────────────────────────────────────────────────
 
   const activeAgents = useMemo(() =>
     agents.filter(a => a.status === "active"),
@@ -426,216 +436,244 @@ export function ScheduleEditor() {
     [assignments, activeDate]
   );
 
-  const visibleShiftCount = useMemo(() =>
-    assignments.filter(a => a.work_date?.startsWith(activeDate) && visibleAgents.some(agent => agent.id === a.agent_id)).length,
-    [assignments, activeDate, visibleAgents]
-  );
-
   const coverageRate = useMemo(() => {
-    if (!requiredFte || !requiredFte.length) return null;
+    if (!requiredFte?.length) return null;
     const scheduled = assignments.filter(a => a.work_date?.startsWith(activeDate)).length;
     const required = requiredFte.reduce((sum, v) => sum + (v ?? 0), 0) / requiredFte.length;
     if (!required) return null;
     return Math.min(999, Math.round((scheduled / required) * 100));
   }, [assignments, activeDate, requiredFte]);
 
+  const todayStr = toDateStr(new Date());
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
   return (
     <PageLayout title="Schedule Editor">
-      <div className="flex flex-col gap-5 pb-12 bg-gradient-to-b from-slate-50 via-white to-slate-100/70">
+      <div className="flex flex-col bg-white min-h-screen">
 
-        {/* Hero toolbar */}
-        <section className="relative overflow-hidden rounded-[28px] border border-slate-200/80 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-900 px-5 py-5 shadow-[0_20px_50px_rgba(15,23,42,0.20)] text-white">
-          <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute -top-16 -right-20 h-48 w-48 rounded-full bg-cyan-400/20 blur-3xl" />
-            <div className="absolute -bottom-16 left-1/3 h-56 w-56 rounded-full bg-sky-500/10 blur-3xl" />
+        {/* ── Primary toolbar ─────────────────────────────────────────────── */}
+        <div className="sticky top-0 z-30 flex items-center gap-2 border-b border-slate-200 bg-white px-4 h-[52px]">
+
+          {/* Week navigation */}
+          <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setWeekStart(d => addDays(d, -7))}
+              className="flex items-center justify-center h-8 w-8 text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-colors border-r border-slate-200"
+              aria-label="Previous week"
+            >
+              <ChevronLeft className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setWeekStart(d => addDays(d, 7))}
+              className="flex items-center justify-center h-8 w-8 text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-colors"
+              aria-label="Next week"
+            >
+              <ChevronRight className="size-3.5" />
+            </button>
           </div>
 
-          <div className="relative flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-            <div className="space-y-4 flex-1 min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge className="border-0 bg-white/10 text-white">Exordium WFM</Badge>
-                <Badge className="border-0 bg-cyan-400/15 text-cyan-100">{activeAgents.length} agents</Badge>
-                <Badge className="border-0 bg-emerald-400/15 text-emerald-100">{todayShiftCount} shifts today</Badge>
-              </div>
-              <div className="space-y-1">
-                <p className="text-[10px] uppercase tracking-[0.45em] text-cyan-100/70 font-semibold">Schedule Editor</p>
-                <h1 className="text-2xl lg:text-3xl font-black leading-tight">Schedule Editor</h1>
-                <p className="max-w-2xl text-sm text-slate-200/80">
-                  Plan weekly staffing, drag shifts across the timeline, and keep the roster aligned with coverage demand.
-                </p>
-              </div>
+          {/* Date input */}
+          <Input
+            type="date"
+            value={activeDate}
+            onChange={(e) => {
+              const next = new Date(`${e.target.value}T00:00:00`);
+              if (Number.isNaN(next.getTime())) return;
+              const monday = getMondayOf(next);
+              setWeekStart(monday);
+              setActiveDayIdx(Math.max(0, Math.min(6, Math.floor((next.getTime() - monday.getTime()) / 86400000))));
+            }}
+            className="h-8 w-36 text-xs border-slate-200 text-slate-700"
+          />
 
-              <div className="grid gap-3 md:grid-cols-[1.35fr_auto]">
-                <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
-                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
-                    <div className="relative flex-1 min-w-0">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/55" />
-                      <Input
-                        value={agentQuery}
-                        onChange={(e) => setAgentQuery(e.target.value)}
-                        placeholder="Search agents"
-                        className="h-10 border-white/15 bg-white/10 pl-10 text-white placeholder:text-white/55 focus-visible:ring-cyan-300/60"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/8 p-1">
-                        <button
-                          type="button"
-                          onClick={() => setWeekStart((d) => addDays(d, -7))}
-                          className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white"
-                          aria-label="Previous week"
-                        >
-                          <ChevronLeft className="size-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setWeekStart((d) => addDays(d, 7))}
-                          className="rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white"
-                          aria-label="Next week"
-                        >
-                          <ChevronRight className="size-4" />
-                        </button>
-                      </div>
-                      <Input
-                        type="date"
-                        value={activeDate}
-                        onChange={(e) => {
-                          const next = new Date(`${e.target.value}T00:00:00`);
-                          if (Number.isNaN(next.getTime())) return;
-                          const monday = getMondayOf(next);
-                          setWeekStart(monday);
-                          setActiveDayIdx(Math.max(0, Math.min(6, Math.floor((next.getTime() - monday.getTime()) / 86400000))));
-                        }}
-                        className="h-10 w-[160px] border-white/15 bg-white/10 text-white [color-scheme:dark]"
-                      />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-10 gap-1.5 rounded-xl border border-white/10 bg-white/8 px-3 text-white hover:bg-white/12 hover:text-white"
-                        onClick={() => { setWeekStart(getMondayOf(new Date())); setActiveDayIdx(0); }}
-                      >
-                        <RotateCcw className="size-3.5" />
-                        This week
-                      </Button>
-                    </div>
-                  </div>
+          <button
+            type="button"
+            onClick={() => { setWeekStart(getMondayOf(new Date())); setActiveDayIdx(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1); }}
+            className="h-8 px-2.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-1.5"
+          >
+            <RotateCcw className="size-3" />
+            Today
+          </button>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/8 p-1">
-                      <Filter className="ml-1 size-3.5 text-cyan-100/80" />
-                      {(["all", "voice", "chat", "email"] as const).map((filter) => (
-                        <button
-                          key={filter}
-                          type="button"
-                          onClick={() => setSkillFilter(filter)}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold capitalize transition-colors ${
-                            skillFilter === filter ? "bg-white text-slate-900 shadow-sm" : "text-white/80 hover:bg-white/10 hover:text-white"
-                          }`}
-                        >
-                          {filter}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-200/70">
-                      <LayoutGrid className="size-3.5" />
-                      <span>{visibleAgents.length} visible / {activeAgents.length} active agents</span>
-                    </div>
-                  </div>
+          {/* Page label */}
+          <div className="hidden sm:flex items-center gap-2 ml-1">
+            <div className="h-4 w-px bg-slate-200" />
+            <span className="text-sm font-bold text-slate-800">Schedule Editor</span>
+            {activeLob && <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-slate-200 text-slate-500">{activeLob.name}</Badge>}
+          </div>
+
+          <div className="flex-1" />
+
+          {/* KPI tiles */}
+          <div className="hidden md:flex items-center gap-1.5">
+            <KpiTile
+              label="Active"
+              value={activeAgents.length}
+              accent="bg-blue-50 text-blue-700"
+            />
+            <KpiTile
+              label="Shifts"
+              value={todayShiftCount}
+              accent="bg-emerald-50 text-emerald-700"
+            />
+            {coverageRate != null && (
+              <KpiTile
+                label="Coverage"
+                value={`${coverageRate}%`}
+                accent={coverageRate >= 80 ? "bg-green-50 text-green-700" : coverageRate >= 60 ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"}
+              />
+            )}
+          </div>
+
+          <div className="h-5 w-px bg-slate-200 hidden md:block" />
+
+          <Button
+            size="sm"
+            className="h-8 gap-1.5 bg-slate-900 text-white hover:bg-slate-800"
+            onClick={() => { setPrefillAgent(undefined); setPrefillStart(undefined); setAddOpen(true); }}
+          >
+            <Plus className="size-3.5" />
+            <span className="hidden sm:inline">Add Shift</span>
+          </Button>
+        </div>
+
+        {/* ── Search + skill filter row ────────────────────────────────────── */}
+        <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50/40 px-4 h-[40px]">
+          <Filter className="size-3.5 text-slate-400 shrink-0" />
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-slate-400" />
+            <Input
+              value={agentQuery}
+              onChange={(e) => setAgentQuery(e.target.value)}
+              placeholder="Search agents…"
+              className="h-7 w-44 pl-7 text-xs border-slate-200 bg-white text-slate-700 placeholder:text-slate-400"
+            />
+          </div>
+
+          <div className="flex items-center gap-0.5 ml-1">
+            {(["all", "voice", "chat", "email"] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setSkillFilter(f)}
+                className={`h-6 px-2.5 rounded-full text-[11px] font-semibold capitalize transition-colors ${
+                  skillFilter === f
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:bg-slate-200 hover:text-slate-800"
+                }`}
+              >
+                {f === "all" ? "All Skills" : f.charAt(0).toUpperCase() + f.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex-1" />
+          <span className="text-[11px] text-slate-400 font-medium">
+            {visibleAgents.length} of {activeAgents.length} agents
+          </span>
+        </div>
+
+        {/* ── Day tabs ────────────────────────────────────────────────────── */}
+        <div className="flex items-stretch border-b border-slate-200 bg-white overflow-x-auto">
+          {DAY_LABELS.map((label, i) => {
+            const dayDate = weekDates[i];
+            const dayStr = toDateStr(dayDate);
+            const count = assignments.filter(a => a.work_date?.startsWith(dayStr)).length;
+            const isToday = dayStr === todayStr;
+            const active = activeDayIdx === i;
+            return (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setActiveDayIdx(i)}
+                className={`relative flex flex-col items-center justify-center gap-0 px-5 py-2.5 text-center min-w-[80px] transition-colors border-b-2 ${
+                  active
+                    ? "border-blue-600 bg-white text-blue-600"
+                    : "border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50"
+                }`}
+              >
+                <span className={`text-[10px] font-black uppercase tracking-[0.2em] ${active ? "text-blue-500" : "text-slate-400"}`}>
+                  {label}
+                </span>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className={`text-sm font-bold ${active ? "text-blue-700" : "text-slate-700"}`}>
+                    {dayDate.getDate()}
+                  </span>
+                  {isToday && (
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                  )}
                 </div>
+                {count > 0 && (
+                  <span className={`text-[10px] font-black mt-0.5 ${active ? "text-blue-400" : "text-slate-400"}`}>
+                    {count} shift{count !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </button>
+            );
+          })}
 
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:w-[420px]">
-                  <div className="rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
-                    <p className="text-[10px] uppercase tracking-[0.3em] text-slate-200/60">Visible</p>
-                    <p className="mt-1 text-2xl font-black">{visibleAgents.length}</p>
-                    <p className="text-xs text-slate-200/70">Agents</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
-                    <p className="text-[10px] uppercase tracking-[0.3em] text-slate-200/60">Shifts</p>
-                    <p className="mt-1 text-2xl font-black">{visibleShiftCount}</p>
-                    <p className="text-xs text-slate-200/70">Today</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
-                    <p className="text-[10px] uppercase tracking-[0.3em] text-slate-200/60">Coverage</p>
-                    <p className="mt-1 text-2xl font-black">{coverageRate != null ? `${coverageRate}%` : "—"}</p>
-                    <p className="text-xs text-slate-200/70">vs demand</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/8 p-3 backdrop-blur-sm">
-                    <p className="text-[10px] uppercase tracking-[0.3em] text-slate-200/60">Window</p>
-                    <p className="mt-1 text-2xl font-black">{formatDate(weekStart)}</p>
-                    <p className="text-xs text-slate-200/70">Week start</p>
-                  </div>
-                </div>
+          {/* Active date label (right side) */}
+          <div className="flex items-center ml-auto px-4 shrink-0">
+            <span className="text-[11px] text-slate-400 font-medium hidden lg:block">
+              {formatFullDate(weekDates[activeDayIdx])}
+            </span>
+          </div>
+        </div>
+
+        {/* ── Schedule content ─────────────────────────────────────────────── */}
+        <div className="flex-1 p-4 space-y-4 bg-slate-50/30">
+          {loading ? (
+            <div className="flex items-center justify-center py-24 text-slate-400 gap-2">
+              <Loader2 className="animate-spin size-5" />
+              <span className="text-sm">Loading schedule…</span>
+            </div>
+          ) : activeAgents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-white py-20 text-center">
+              <div className="text-slate-400 text-sm font-semibold">No active agents found</div>
+              <div className="text-xs text-slate-400">
+                Add agents in the{" "}
+                <a href="/scheduling/agents" className="text-blue-600 underline underline-offset-2">
+                  Agent Roster
+                </a>{" "}
+                first.
               </div>
             </div>
-          </div>
+          ) : visibleAgents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-16 text-center">
+              <div className="text-sm font-semibold text-slate-700">No agents match this filter</div>
+              <button
+                type="button"
+                onClick={() => { setAgentQuery(""); setSkillFilter("all"); }}
+                className="text-xs text-blue-600 hover:underline"
+              >
+                Clear filters
+              </button>
+            </div>
+          ) : (
+            <ScheduleGrid
+              agents={visibleAgents}
+              assignments={assignments}
+              activeDate={activeDate}
+              onShiftMove={moveShift}
+              onShiftDelete={deleteShift}
+              onAddShift={handleGridAddShift}
+              onAddActivity={addActivity}
+              onUpdateActivity={updateActivity}
+              onDeleteActivity={deleteActivity}
+              onUpdateTimes={updateTimes}
+            />
+          )}
 
-          {/* Day tabs */}
-          <div className="relative mt-5 grid grid-cols-7 gap-2">
-            {DAY_LABELS.map((label, i) => {
-              const dayDate = weekDates[i];
-              const count = assignments.filter(a => a.work_date?.startsWith(toDateStr(dayDate))).length;
-              const isToday = toDateStr(dayDate) === toDateStr(new Date());
-              const active = activeDayIdx === i;
-              return (
-                <button
-                  key={label}
-                  onClick={() => setActiveDayIdx(i)}
-                  className={`rounded-2xl border px-3 py-2 text-left transition-all ${
-                    active
-                      ? "border-cyan-300 bg-white text-slate-900 shadow-lg shadow-cyan-950/20"
-                      : "border-white/10 bg-white/10 text-white/85 hover:bg-white/15"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-black uppercase tracking-[0.28em]">{label}</span>
-                    {isToday && <span className="h-2 w-2 rounded-full bg-emerald-400" />}
-                  </div>
-                  <div className="mt-1 flex items-end justify-between gap-2">
-                    <span className="text-sm font-semibold">{formatDate(dayDate)}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${active ? "bg-cyan-100 text-cyan-900" : "bg-white/15 text-white"}`}>{count}</span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* Schedule Grid */}
-        {loading ? (
-          <div className="flex items-center justify-center py-20 text-muted-foreground gap-2">
-            <Loader2 className="animate-spin size-5" />Loading schedule…
-          </div>
-        ) : activeAgents.length === 0 ? (
-          <div className="rounded-xl border-2 border-dashed border-border p-10 text-center">
-            <p className="text-muted-foreground text-sm">No active agents found.</p>
-            <p className="text-xs text-muted-foreground mt-1">Add agents in the <a href="/scheduling/agents" className="underline text-primary">Agent Roster</a> first.</p>
-          </div>
-        ) : visibleAgents.length === 0 ? (
-          <div className="rounded-2xl border border-slate-200 bg-white/90 p-10 text-center shadow-sm">
-            <p className="text-sm font-semibold text-slate-700">No agents match the current search or skill filter.</p>
-            <p className="mt-1 text-xs text-slate-500">Clear the search or switch back to All to view the full schedule.</p>
-          </div>
-        ) : (
-          <ScheduleGrid
-            agents={visibleAgents}
+          {/* Coverage chart */}
+          <CoverageGraph
             assignments={assignments}
             activeDate={activeDate}
-            onShiftMove={moveShift}
-            onShiftDelete={deleteShift}
-            onAddShift={handleGridAddShift}
-            onAddActivity={addActivity}
-            onUpdateActivity={updateActivity}
-            onDeleteActivity={deleteActivity}
-            onUpdateTimes={updateTimes}
+            requiredFte={requiredFte}
           />
-        )}
-
-        {/* Coverage Graph */}
-        <CoverageGraph
-          assignments={assignments}
-          activeDate={activeDate}
-          requiredFte={requiredFte}
-        />
+        </div>
 
       </div>
 
