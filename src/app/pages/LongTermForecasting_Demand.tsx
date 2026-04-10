@@ -1636,14 +1636,24 @@ export default function LongTermForecastingDemand() {
     return { chartData, series };
   }, [assumptions.startDate, includedChannels, finalHistoricalDataByChannel, forecastVolumesByChannel]);
   const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row, futureIdx) => {
-    const emailForecastVol = forecastVolumesByChannel.email[futureIdx] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email);
-    const chatForecastVol = forecastVolumesByChannel.chat[futureIdx] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat);
-    const casesForecastVol = forecastVolumesByChannel.cases[futureIdx] ?? Math.round(emailForecastVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email);
+    // Use published recut volumes if available, otherwise fall back to base forecast
+    const voiceBaseVol = forecastVolumesByChannel.voice[futureIdx] ?? row.volume;
+    const voiceVol = recutVolumesByChannel?.voice[futureIdx] ?? voiceBaseVol;
+
+    const emailBaseVol = forecastVolumesByChannel.email[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.email);
+    const emailVol = recutVolumesByChannel?.email[futureIdx] ?? emailBaseVol;
+
+    const chatBaseVol = forecastVolumesByChannel.chat[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.chat);
+    const chatVol = recutVolumesByChannel?.chat[futureIdx] ?? chatBaseVol;
+
+    const casesBaseVol = forecastVolumesByChannel.cases[futureIdx] ?? Math.round(emailBaseVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email);
+    const casesVol = recutVolumesByChannel?.cases[futureIdx] ?? casesBaseVol;
+
     const channelMetrics: Record<ChannelKey, ChannelStaffingMetrics> = {
-      voice: getChannelStaffingMetrics("voice", row.volume, assumptions),
-      email: getChannelStaffingMetrics("email", emailForecastVol, assumptions),
-      chat: getChannelStaffingMetrics("chat", chatForecastVol, assumptions),
-      cases: getChannelStaffingMetrics("cases", casesForecastVol, assumptions),
+      voice: getChannelStaffingMetrics("voice", voiceVol, assumptions),
+      email: getChannelStaffingMetrics("email", emailVol, assumptions),
+      chat: getChannelStaffingMetrics("chat", chatVol, assumptions),
+      cases: getChannelStaffingMetrics("cases", casesVol, assumptions),
     };
     const pools = selectedBlendConfig.pools.map((channels, index) => {
       const workloadHours = Number(channels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
@@ -1679,7 +1689,7 @@ export default function LongTermForecastingDemand() {
       pools,
       channelMetrics,
     };
-  }), [forecastData, forecastVolumesByChannel, selectedBlendConfig, assumptions]);
+  }), [forecastData, forecastVolumesByChannel, selectedBlendConfig, assumptions, recutVolumesByChannel]);
   // ── Re-cut helpers ────────────────────────────────────────────────────────────
   // Which forecast month-indices (0-based) are fully in the past?
   const completedMonthIndices = useMemo<number[]>(() => {
@@ -2724,61 +2734,59 @@ export default function LongTermForecastingDemand() {
                     <div>
                       <CardTitle className="text-sm font-bold">Staffing Detail — Future Months</CardTitle>
                       <p className="text-xs text-foreground/60 mt-0.5">
-                        Volume column mirrors the <span className={`font-semibold ${CHANNEL_ASSUMPTION_META[detailChannel].colorClass}`}>{CHANNEL_ASSUMPTION_META[detailChannel].label}</span> selection above.
-                        Workload &amp; FTE reflect the blended staffing allocation across all included channels ({selectedBlendConfig.label}), with voice as the base and idle capacity reused across chat and email.
+                        Per-channel volumes for all active channels.{" "}
+                        {recutVolumesByChannel != null && <span className="font-semibold text-emerald-700">Re-cut volumes applied.</span>}{" "}
+                        AHT, Occ., and Req. FTE reflect the blended staffing allocation ({selectedBlendConfig.label}).
                       </p>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent className="p-0 overflow-x-auto">
-                  <Table className="table-fixed">
-                    <colgroup>
-                      <col className="w-[14%]" />
-                      <col className="w-[10%]" />
-                      <col className="w-[11%]" />
-                      <col className="w-[9%]" />
-                      <col className="w-[9%]" />
-                      <col className="w-[9%]" />
-                      <col className="w-[12%]" />
-                      <col className="w-[10%]" />
-                      <col className="w-[8%]" />
-                      <col className="w-[8%]" />
-                      <col className="w-[10%]" />
-                    </colgroup>
+                  <Table className="min-w-[1050px]">
                     <TableHeader className="bg-muted/50">
                       <TableRow className="hover:bg-transparent">
-                        <TableHead className="pl-6 text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Month</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">
-                          {CHANNEL_ASSUMPTION_META[detailChannel].label} Vol.
-                        </TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Blended Wkld</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">AHT</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Occ.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Shr.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Setup</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Shared Wkld</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Shared FTE</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Solo FTE</TableHead>
-                        <TableHead className="pr-6 text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-normal leading-tight">Req. FTE</TableHead>
+                        <TableHead className="pl-4 text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Month</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-blue-600 whitespace-nowrap">Voice Vol.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-violet-600 whitespace-nowrap">Chat Vol.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-rose-600 whitespace-nowrap">Email Vol.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-amber-600 whitespace-nowrap">Cases Vol.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Blended Wkld</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">AHT</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Occ.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Shr.</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Setup</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Shared FTE</TableHead>
+                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Solo FTE</TableHead>
+                        <TableHead className="pr-4 text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Req. FTE</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {futureData.map((row) => {
-                        // Show channel volume consistent with the Demand Forecast Detail tab selection
-                        const channelVol = row.channelMetrics[detailChannel].volume;
+                        const isRecut = recutVolumesByChannel != null;
+                        const volClass = isRecut ? "text-emerald-700 font-bold" : "text-primary font-bold";
                         return (
                           <TableRow key={`${row.year}-${row.month}`} className="hover:bg-muted/30">
-                            <TableCell className="px-3 text-center font-bold text-sm align-middle">{row.month} {row.year}</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">{channelVol.toLocaleString()}</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm text-indigo-600 tabular-nums whitespace-nowrap align-middle">{row.workloadHours.toLocaleString()}</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.aht}s</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.occupancy}%</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.shrinkage}%</TableCell>
-                            <TableCell className="px-3 text-center text-sm whitespace-nowrap truncate max-w-0 align-middle">{row.activeBlendPreset}</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.sharedPoolWorkload > 0 ? row.sharedPoolWorkload.toLocaleString() : "-"}</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "-"}</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "-"}</TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm font-bold text-amber-600 tabular-nums whitespace-nowrap align-middle">{row.totalRequiredFTE}</TableCell>
+                            <TableCell className="pl-4 pr-3 font-bold text-sm whitespace-nowrap align-middle">{row.month} {row.year}</TableCell>
+                            <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.voice ? volClass : "text-muted-foreground"}`}>
+                              {selectedChannels.voice ? row.channelMetrics.voice.volume.toLocaleString() : "—"}
+                            </TableCell>
+                            <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.chat ? volClass : "text-muted-foreground"}`}>
+                              {selectedChannels.chat ? row.channelMetrics.chat.volume.toLocaleString() : "—"}
+                            </TableCell>
+                            <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.email ? volClass : "text-muted-foreground"}`}>
+                              {selectedChannels.email ? row.channelMetrics.email.volume.toLocaleString() : "—"}
+                            </TableCell>
+                            <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.cases ? volClass : "text-muted-foreground"}`}>
+                              {selectedChannels.cases ? row.channelMetrics.cases.volume.toLocaleString() : "—"}
+                            </TableCell>
+                            <TableCell className="px-3 text-right font-mono text-sm text-indigo-600 tabular-nums whitespace-nowrap align-middle">{row.workloadHours.toLocaleString()}</TableCell>
+                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.aht}s</TableCell>
+                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.occupancy}%</TableCell>
+                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.shrinkage}%</TableCell>
+                            <TableCell className="px-3 text-right text-xs whitespace-nowrap align-middle">{row.activeBlendPreset}</TableCell>
+                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "—"}</TableCell>
+                            <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "—"}</TableCell>
+                            <TableCell className="pr-4 pl-3 text-right font-mono text-sm font-bold text-amber-600 tabular-nums whitespace-nowrap align-middle">{row.totalRequiredFTE}</TableCell>
                           </TableRow>
                         );
                       })}
