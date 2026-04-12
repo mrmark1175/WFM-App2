@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
 import { getCalculatedVolumes, Assumptions } from "./forecasting-logic";
+import { computeIntervalFTE } from "./intraday-distribution-logic";
 import { PageLayout } from "../components/PageLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -61,8 +62,9 @@ interface LobSettings {
   lob_id: number; lob_name: string;
   channels_enabled: Record<string, boolean>;
   pooling_mode: string;
-  voice_aht?: number; chat_aht?: number; email_aht?: number;
-  chat_concurrency?: number; email_occupancy?: number;
+  voice_aht?: number; voice_sla_target?: number; voice_sla_seconds?: number;
+  chat_aht?: number; chat_sla_target?: number; chat_sla_seconds?: number; chat_concurrency?: number;
+  email_aht?: number; email_sla_target?: number; email_sla_seconds?: number; email_occupancy?: number;
 }
 
 interface DemandAssumptions {
@@ -132,17 +134,39 @@ function monthlyToWeekly(monthlyVol: number, growthPct: number, weekOffset: numb
   return Math.round(weekly * growth);
 }
 
-function calcWeeklyRequiredFTE(
-  weeklyVolume: number, ahtSeconds: number,
-  daysPerWeek: number, hoursPerDay: number,
-  occupancyPct: number, shrinkagePct: number,
-): number {
-  if (weeklyVolume <= 0 || ahtSeconds <= 0 || daysPerWeek <= 0 || hoursPerDay <= 0) return 0;
-  const workloadHours = (weeklyVolume * ahtSeconds) / 3600;
-  const productiveHrsPerFTE = hoursPerDay * daysPerWeek * (occupancyPct / 100);
-  if (productiveHrsPerFTE <= 0) return 0;
-  const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
-  return roundTo(workloadHours / productiveHrsPerFTE / shrinkFactor);
+// Returns required FTE using Erlang C — occupancy is an OUTPUT, not an input.
+// Converts weekly volume to an average calls-per-30min-interval rate, runs Erlang C
+// to find the minimum agents that satisfy the SLA, then converts to daily FTE using
+// the ratio of operating hours to scheduled-shift hours (FTE hours per day).
+function calcWeeklyErlangFTE(
+  weeklyVolume: number,
+  ahtSeconds: number,
+  daysPerWeek: number,
+  operatingHoursPerDay: number,
+  fteHoursPerDay: number,
+  slaTarget: number,          // 0–100, e.g. 80
+  slaAnswerSeconds: number,   // threshold, e.g. 20
+  shrinkagePct: number,
+  channel: "voice" | "chat" | "email",
+  concurrency = 1,
+  emailOccupancyPct = 85,
+): { fte: number; occupancy: number } {
+  if (weeklyVolume <= 0 || ahtSeconds <= 0 || daysPerWeek <= 0 || operatingHoursPerDay <= 0) {
+    return { fte: 0, occupancy: 0 };
+  }
+  const dailyCalls = weeklyVolume / daysPerWeek;
+  const intervalsPerDay = operatingHoursPerDay * 2; // 30-min intervals
+  const callsPerInterval = dailyCalls / intervalsPerDay;
+  const result = computeIntervalFTE(
+    callsPerInterval, 30, ahtSeconds,
+    slaTarget, slaAnswerSeconds, emailOccupancyPct,
+    shrinkagePct, channel, concurrency,
+  );
+  // result.fte is agents-on-floor per interval, shrinkage-adjusted.
+  // Scale to daily FTE: an agent works fteHoursPerDay but the floor needs
+  // coverage for operatingHoursPerDay, so multiply by the coverage ratio.
+  const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
+  return { fte: roundTo(result.fte * coverageRatio), occupancy: result.occupancy };
 }
 
 function calcRampPct(ageWeeks: number, trainWks: number, nestWks: number, nestPct: number): number {
@@ -593,9 +617,19 @@ export function CapacityPlanning() {
   }), [lobSettings, demandAssumptions]);
 
   // ── Staffing params
-  const occupancyPct = Number(demandAssumptions?.occupancy ?? lobSettings?.email_occupancy ?? 85) || 85;
   const shrinkagePct = Number(demandAssumptions?.shrinkage ?? 20) || 20;
   const daysPerWeek = demandAssumptions?.operatingDaysPerWeek ?? 5;
+  const operatingHoursPerDay = demandAssumptions?.operatingHoursPerDay ?? 8;
+  // SLA params — LOB settings are authoritative; fall back to demand planner snapshot values
+  const snap = plannerSnapshot?.assumptions;
+  const slaVoiceTarget = Number(lobSettings?.voice_sla_target ?? snap?.voiceSlaTarget ?? 80);
+  const slaVoiceSec    = Number(lobSettings?.voice_sla_seconds ?? snap?.voiceSlaAnswerSeconds ?? 20);
+  const slaChatTarget  = Number(lobSettings?.chat_sla_target ?? snap?.chatSlaTarget ?? 80);
+  const slaChatSec     = Number(lobSettings?.chat_sla_seconds ?? snap?.chatSlaAnswerSeconds ?? 30);
+  const slaEmailTarget = Number(lobSettings?.email_sla_target ?? snap?.emailSlaTarget ?? 90);
+  const slaEmailSec    = Number(lobSettings?.email_sla_seconds ?? snap?.emailSlaAnswerSeconds ?? 14400);
+  const emailOccupancy = Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85;
+  const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 1));
 
   // ── Full computed calculations per week
   const weekCalcs = useMemo<WeekCalc[]>(() => {
@@ -617,22 +651,35 @@ export function CapacityPlanning() {
       const effAhtChat = inp.ahtChat != null ? inp.ahtChat : autoAhts.chat;
       const effAhtEmail = inp.ahtEmail != null ? inp.ahtEmail : autoAhts.email;
 
-      // Required FTE — blended workload divided by combined productive capacity
+      // Required FTE via Erlang C — occupancy is an OUTPUT, SLA drives the agent count.
       let requiredFTE = 0;
+      let erlangOccupancy = 0;
       if (isDedicated) {
         const vol = activeChannel === "voice" ? effVolVoice : activeChannel === "chat" ? effVolChat : effVolEmail;
         const aht = activeChannel === "voice" ? effAhtVoice : activeChannel === "chat" ? effAhtChat : effAhtEmail;
-        requiredFTE = calcWeeklyRequiredFTE(vol, aht, daysPerWeek, hoursPerDay, occupancyPct, shrinkagePct);
+        const target = activeChannel === "voice" ? slaVoiceTarget : activeChannel === "chat" ? slaChatTarget : slaEmailTarget;
+        const sec    = activeChannel === "voice" ? slaVoiceSec    : activeChannel === "chat" ? slaChatSec    : slaEmailSec;
+        const conc   = activeChannel === "chat" ? chatConcurrency : 1;
+        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, activeChannel, conc, emailOccupancy);
+        requiredFTE = r.fte;
+        erlangOccupancy = r.occupancy;
       } else {
-        const wlVoice = (effVolVoice * effAhtVoice) / 3600;
-        const wlChat = (effVolChat * effAhtChat) / 3600;
-        const wlEmail = (effVolEmail * effAhtEmail) / 3600;
-        const totalWL = wlVoice + wlChat + wlEmail;
-        const productive = hoursPerDay * daysPerWeek * (occupancyPct / 100);
-        if (productive > 0) {
-          const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
-          requiredFTE = roundTo(totalWL / productive / shrinkFactor);
-        }
+        // Blended: sum Erlang FTE per enabled channel (each channel staffed to its own SLA)
+        const rVoice = enabledChannels.includes("voice")
+          ? calcWeeklyErlangFTE(effVolVoice, effAhtVoice, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceTarget, slaVoiceSec, shrinkagePct, "voice")
+          : { fte: 0, occupancy: 0 };
+        const rChat = enabledChannels.includes("chat")
+          ? calcWeeklyErlangFTE(effVolChat, effAhtChat, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatTarget, slaChatSec, shrinkagePct, "chat", chatConcurrency)
+          : { fte: 0, occupancy: 0 };
+        const rEmail = enabledChannels.includes("email")
+          ? calcWeeklyErlangFTE(effVolEmail, effAhtEmail, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaEmailTarget, slaEmailSec, shrinkagePct, "email", 1, emailOccupancy)
+          : { fte: 0, occupancy: 0 };
+        requiredFTE = roundTo(rVoice.fte + rChat.fte + rEmail.fte);
+        // Blended occupancy: weighted average by volume
+        const totalVol = effVolVoice + effVolChat + effVolEmail;
+        erlangOccupancy = totalVol > 0
+          ? (rVoice.occupancy * effVolVoice + rChat.occupancy * effVolChat + rEmail.occupancy * effVolEmail) / totalVol
+          : 0;
       }
 
       // Attrition decay
@@ -667,13 +714,16 @@ export function CapacityPlanning() {
         effVolVoice, effVolChat, effVolEmail, effVolTotal: effVolVoice + effVolChat + effVolEmail,
         autoAhtVoice: autoAhts.voice, autoAhtChat: autoAhts.chat, autoAhtEmail: autoAhts.email,
         effAhtVoice, effAhtChat, effAhtEmail,
-        projOccupancyPct: occupancyPct, projShrinkagePct: shrinkagePct,
+        projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
         knownExits, projectedHc: projHC, actualHc, actualAttrition,
         gapSurplus, actualGapSurplus,
       };
     });
-  }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay, occupancyPct, shrinkagePct, daysPerWeek]);
+  }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay,
+      shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
+      slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
+      emailOccupancy, chatConcurrency]);
 
   // ── Attrition summary
   const attritionSummary = useMemo(() => {
