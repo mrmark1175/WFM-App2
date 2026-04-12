@@ -119,12 +119,24 @@ function getMondayOf(date: Date): Date {
   return d;
 }
 
+function getISOWeek(date: Date): { week: number; year: number } {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum); // shift to nearest Thursday
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return { week, year: d.getUTCFullYear() };
+}
+
 function buildWeeks(planStartDate: string, horizonWeeks: number): WeekMeta[] {
   const monday = getMondayOf(new Date(planStartDate + "T00:00:00"));
+  const { year: startYear } = getISOWeek(monday);
   return Array.from({ length: horizonWeeks }, (_, i) => {
     const start = new Date(monday); start.setDate(start.getDate() + i * 7);
     const end = new Date(start); end.setDate(end.getDate() + 6);
-    return { weekOffset: i, label: `Wk ${i + 1}`, dateLabel: `${fmtDate(start)}–${fmtDate(end)}` };
+    const { week, year } = getISOWeek(start);
+    const yearSuffix = year !== startYear ? `'${String(year).slice(2)}` : "";
+    return { weekOffset: i, label: `W${String(week).padStart(2, "0")}${yearSuffix}`, dateLabel: `${fmtDate(start)}–${fmtDate(end)}` };
   });
 }
 
