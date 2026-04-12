@@ -113,6 +113,45 @@ export function computeIntervalFTE(
 }
 
 /**
+ * Forward Erlang C: given an actual FTE headcount, compute the achievable SLA%.
+ *
+ * This is the inverse of `computeIntervalFTE` — instead of asking "how many agents
+ * do I need?", it asks "given N actual agents, what SLA will I achieve?".
+ *
+ * Returns null for email (async workload model — no queue, so SLA% is undefined).
+ * Returns 0 if the team is under-staffed (A ≥ rawAgents).
+ */
+export function computeAchievedSLFromFTE(
+  weeklyVolume: number,
+  ahtSec: number,
+  actualFTE: number,
+  daysPerWeek: number,
+  operatingHoursPerDay: number,
+  fteHoursPerDay: number,
+  slaSec: number,
+  shrinkagePct: number,
+  channel: "voice" | "chat" | "email",
+  concurrency = 1,
+): number | null {
+  if (channel === "email") return null;
+  if (weeklyVolume <= 0 || ahtSec <= 0 || actualFTE <= 0 || daysPerWeek <= 0 || operatingHoursPerDay <= 0) return null;
+
+  const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
+  const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
+
+  // Invert FTE → raw concurrent agents on floor per average 30-min interval
+  const rawAgents = (actualFTE / coverageRatio) * shrinkFactor;
+
+  // Average traffic intensity per 30-min interval
+  const callsPerInterval = weeklyVolume / daysPerWeek / (operatingHoursPerDay * 2);
+  const effectiveCalls = channel === "chat" ? callsPerInterval / Math.max(1, concurrency) : callsPerInterval;
+  const A = (effectiveCalls * ahtSec) / 1800; // 1800s = 30-min interval
+
+  if (rawAgents <= A) return 0; // under-staffed: everyone waits
+  return +(erlangServiceLevel(A, rawAgents, ahtSec, slaSec) * 100).toFixed(1);
+}
+
+/**
  * Smooth FTE values across intervals for one day using a centered rolling average,
  * then renormalize so the daily total (Σ FTE) is preserved exactly.
  *
