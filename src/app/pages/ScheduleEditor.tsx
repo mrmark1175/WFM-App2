@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
@@ -11,9 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter } from "lucide-react";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
-import { CoverageGraph } from "../components/schedule/CoverageGraph";
 import { Assignment } from "../components/schedule/ShiftBlock";
-import { Activity } from "../components/schedule/ActivityBlock";
+import { Activity, ActivityType } from "../components/schedule/ActivityBlock";
 
 // ── Date utilities ───────────────────────────────────────────────────────────
 
@@ -46,14 +45,18 @@ function formatFullDate(d: Date): string {
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-// ── Intraday FTE helpers ─────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 function timeToMins(t: string): number {
   const [h, m] = t.split(":").map(Number);
   return h * 60 + m;
 }
 
-// ── Agent & template types ───────────────────────────────────────────────────
+function toTime(m: number): string {
+  return `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+// ── Types ───────────────────────────────────────────────────────────────────
 
 interface Agent {
   id: number;
@@ -74,12 +77,29 @@ interface ShiftTemplate {
   break_rules: Array<{ name: string; duration_minutes: number; after_hours: number; is_paid: boolean }>;
 }
 
+interface ClipboardShift {
+  shift_template_id: number | null;
+  start_time: string;
+  end_time: string;
+  channel: string;
+  template_color: string | null;
+  template_name: string | null;
+  activities: Array<{ activity_type: ActivityType; offset_mins: number; duration_mins: number; is_paid: boolean; notes: string | null }>;
+}
+
+type UndoAction =
+  | { type: "add"; assignmentId: number }
+  | { type: "delete"; assignment: Assignment }
+  | { type: "move"; assignmentId: number; prevStart: string; prevEnd: string; prevAgentId: number }
+  | { type: "addActivity"; activityId: number; assignmentId: number }
+  | { type: "updateActivity"; activityId: number; prevFields: Partial<Activity> };
+
 // ── KPI tile ─────────────────────────────────────────────────────────────────
 
 interface KpiTileProps {
   label: string;
   value: string | number;
-  accent: string; // tailwind bg+text pair classes
+  accent: string;
 }
 
 function KpiTile({ label, value, accent }: KpiTileProps) {
@@ -229,13 +249,28 @@ export function ScheduleEditor() {
   const [prefillAgent, setPrefillAgent] = useState<number | undefined>();
   const [prefillStart, setPrefillStart] = useState<string | undefined>();
 
+  // Selection, clipboard, undo
+  const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<number>>(new Set());
+  const [clipboard, setClipboard] = useState<ClipboardShift | null>(null);
+  const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
+
+  const undoStackRef = useRef(undoStack);
+  undoStackRef.current = undoStack;
+  const assignmentsRef = useRef(assignments);
+  assignmentsRef.current = assignments;
+
+  const pushUndo = useCallback((action: UndoAction) => {
+    setUndoStack(prev => [...prev.slice(-19), action]);
+  }, []);
+
   const weekDates = useMemo(() =>
     Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
     [weekStart]
   );
   const activeDate = toDateStr(weekDates[activeDayIdx]);
-  const dateStart  = toDateStr(weekStart);
-  const dateEnd    = toDateStr(weekDates[6]);
+  const dateStart = toDateStr(weekStart);
+  const dateEnd = toDateStr(weekDates[6]);
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
@@ -298,7 +333,7 @@ export function ScheduleEditor() {
       });
       const row: Assignment = await res.json();
       const agent = agents.find(a => a.id === row.agent_id);
-      const tmpl  = templates.find(t => t.id === row.shift_template_id);
+      const tmpl = templates.find(t => t.id === row.shift_template_id);
       const enriched: Assignment = {
         ...row,
         agent_name: agent?.full_name ?? "",
@@ -310,61 +345,90 @@ export function ScheduleEditor() {
         activities: [],
       };
 
-      if (tmpl?.break_rules?.length) {
-        const shiftStartMins = timeToMins(fields.start_time);
-        for (const rule of tmpl.break_rules) {
-          const breakStartMins = shiftStartMins + rule.after_hours * 60;
-          const breakEndMins   = breakStartMins + rule.duration_minutes;
-          const toTime = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-          try {
-            const actRes = await fetch(apiUrl("/api/scheduling/activities"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                assignment_id: enriched.id,
-                activity_type: rule.duration_minutes >= 30 ? "meal" : "break",
-                start_time: toTime(breakStartMins),
-                end_time: toTime(breakEndMins),
-                is_paid: rule.is_paid,
-                notes: rule.name,
-              }),
-            });
-            const act = await actRes.json();
-            enriched.activities.push(act);
-          } catch {}
-        }
+      // Create default activities: from template break_rules or default 9h pattern
+      const shiftStartMins = timeToMins(fields.start_time);
+      const breakRules = tmpl?.break_rules?.length
+        ? tmpl.break_rules
+        : [
+            { name: "Break", duration_minutes: 15, after_hours: 2, is_paid: true },
+            { name: "Lunch", duration_minutes: 60, after_hours: 4, is_paid: false },
+            { name: "Break", duration_minutes: 15, after_hours: 6, is_paid: true },
+          ];
+
+      for (const rule of breakRules) {
+        const breakStartMins = shiftStartMins + rule.after_hours * 60;
+        const breakEndMins = breakStartMins + rule.duration_minutes;
+        try {
+          const actRes = await fetch(apiUrl("/api/scheduling/activities"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              assignment_id: enriched.id,
+              activity_type: rule.duration_minutes >= 30 ? "meal" : "break",
+              start_time: toTime(breakStartMins),
+              end_time: toTime(breakEndMins),
+              is_paid: rule.is_paid,
+              notes: rule.name,
+            }),
+          });
+          const act = await actRes.json();
+          enriched.activities.push(act);
+        } catch {}
       }
 
       setAssignments(prev => [...prev, enriched]);
+      pushUndo({ type: "add", assignmentId: enriched.id });
     } catch { toast.error("Failed to add shift"); }
-  }, [activeLob, activeDate, agents, templates]);
+  }, [activeLob, activeDate, agents, templates, pushUndo]);
 
-  const moveShift = useCallback(async (id: number, newStart: string, newEnd: string) => {
-    const prev = assignments.find(a => a.id === id);
+  const moveShift = useCallback(async (id: number, newStart: string, newEnd: string, newAgentId?: number) => {
+    const prev = assignmentsRef.current.find(a => a.id === id);
     if (!prev) return;
-    setAssignments(all => all.map(a => a.id === id ? { ...a, start_time: newStart, end_time: newEnd } : a));
+
+    pushUndo({ type: "move", assignmentId: id, prevStart: prev.start_time, prevEnd: prev.end_time, prevAgentId: prev.agent_id });
+
+    const updatedAgent = newAgentId ? agents.find(a => a.id === newAgentId) : null;
+    setAssignments(all => all.map(a => a.id === id ? {
+      ...a,
+      start_time: newStart,
+      end_time: newEnd,
+      ...(newAgentId ? { agent_id: newAgentId, agent_name: updatedAgent?.full_name ?? a.agent_name } : {}),
+    } : a));
+
     try {
       await fetch(apiUrl(`/api/scheduling/assignments/${id}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ start_time: newStart, end_time: newEnd, is_overnight: prev.is_overnight, channel: prev.channel, notes: prev.notes, shift_template_id: prev.shift_template_id }),
+        body: JSON.stringify({
+          start_time: newStart,
+          end_time: newEnd,
+          is_overnight: prev.is_overnight,
+          channel: prev.channel,
+          notes: prev.notes,
+          shift_template_id: prev.shift_template_id,
+          ...(newAgentId ? { agent_id: newAgentId } : {}),
+        }),
       });
     } catch {
       setAssignments(all => all.map(a => a.id === id ? prev : a));
       toast.error("Failed to save shift move");
     }
-  }, [assignments]);
+  }, [agents, pushUndo]);
 
   const updateTimes = useCallback(async (id: number, start: string, end: string) => {
     await moveShift(id, start, end);
   }, [moveShift]);
 
   const deleteShift = useCallback(async (id: number) => {
+    const prev = assignmentsRef.current.find(a => a.id === id);
+    if (prev) pushUndo({ type: "delete", assignment: prev });
+
     setAssignments(prev => prev.filter(a => a.id !== id));
+    if (selectedShiftId === id) setSelectedShiftId(null);
     try {
       await fetch(apiUrl(`/api/scheduling/assignments/${id}`), { method: "DELETE" });
     } catch { toast.error("Failed to delete shift"); }
-  }, []);
+  }, [selectedShiftId, pushUndo]);
 
   const addActivity = useCallback(async (assignmentId: number, act: Omit<Activity, "id" | "assignment_id">) => {
     try {
@@ -377,16 +441,21 @@ export function ScheduleEditor() {
       setAssignments(prev => prev.map(a =>
         a.id === assignmentId ? { ...a, activities: [...a.activities, newAct] } : a
       ));
+      pushUndo({ type: "addActivity", activityId: newAct.id, assignmentId });
     } catch { toast.error("Failed to add activity"); }
-  }, []);
+  }, [pushUndo]);
 
   const updateActivity = useCallback(async (id: number, fields: Partial<Activity>) => {
+    const existing = assignmentsRef.current.flatMap(a => a.activities).find(act => act.id === id);
+    if (existing) {
+      pushUndo({ type: "updateActivity", activityId: id, prevFields: { start_time: existing.start_time, end_time: existing.end_time, activity_type: existing.activity_type } });
+    }
+
     setAssignments(prev => prev.map(a => ({
       ...a,
       activities: a.activities.map(act => act.id === id ? { ...act, ...fields } : act),
     })));
     try {
-      const existing = assignments.flatMap(a => a.activities).find(act => act.id === id);
       if (!existing) return;
       await fetch(apiUrl(`/api/scheduling/activities/${id}`), {
         method: "PUT",
@@ -394,7 +463,7 @@ export function ScheduleEditor() {
         body: JSON.stringify({ ...existing, ...fields }),
       });
     } catch { toast.error("Failed to update activity"); }
-  }, [assignments]);
+  }, [pushUndo]);
 
   const deleteActivity = useCallback(async (assignmentId: number, activityId: number) => {
     setAssignments(prev => prev.map(a =>
@@ -410,6 +479,148 @@ export function ScheduleEditor() {
     setPrefillStart(startTime);
     setAddOpen(true);
   }, []);
+
+  // ── Selection handlers ───────────────────────────────────────────────────
+
+  const handleSelectShift = useCallback((id: number, shiftHeld: boolean) => {
+    setSelectedShiftId(prev => prev === id && !shiftHeld ? null : id);
+  }, []);
+
+  const handleSelectAgent = useCallback((id: number, shiftHeld: boolean) => {
+    setSelectedAgentIds(prev => {
+      const next = new Set(shiftHeld ? prev : []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────────────
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Don't capture when typing in inputs
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      if (e.ctrlKey && e.key === "c") {
+        // Copy selected shift
+        if (!selectedShiftId) return;
+        const shift = assignmentsRef.current.find(a => a.id === selectedShiftId);
+        if (!shift) return;
+        e.preventDefault();
+        const shiftStart = timeToMins(shift.start_time);
+        setClipboard({
+          shift_template_id: shift.shift_template_id,
+          start_time: shift.start_time,
+          end_time: shift.end_time,
+          channel: shift.channel,
+          template_color: shift.template_color,
+          template_name: shift.template_name,
+          activities: shift.activities.map(a => ({
+            activity_type: a.activity_type,
+            offset_mins: timeToMins(a.start_time) - shiftStart,
+            duration_mins: timeToMins(a.end_time) - timeToMins(a.start_time),
+            is_paid: a.is_paid,
+            notes: a.notes,
+          })),
+        });
+        toast.success("Shift copied");
+      }
+
+      if (e.ctrlKey && e.key === "v") {
+        if (!clipboard) return;
+        e.preventDefault();
+        const targetAgents = selectedAgentIds.size > 0
+          ? Array.from(selectedAgentIds)
+          : [];
+        if (targetAgents.length === 0) {
+          toast.error("Select an agent row first (click agent name)");
+          return;
+        }
+        for (const agentId of targetAgents) {
+          addShift({
+            agent_id: agentId,
+            shift_template_id: clipboard.shift_template_id,
+            start_time: clipboard.start_time,
+            end_time: clipboard.end_time,
+            channel: clipboard.channel,
+            notes: "",
+          });
+        }
+        toast.success(`Pasted shift to ${targetAgents.length} agent${targetAgents.length > 1 ? "s" : ""}`);
+      }
+
+      if (e.ctrlKey && e.key === "z") {
+        e.preventDefault();
+        const stack = undoStackRef.current;
+        if (stack.length === 0) { toast("Nothing to undo"); return; }
+        const last = stack[stack.length - 1];
+        setUndoStack(prev => prev.slice(0, -1));
+
+        if (last.type === "add") {
+          // Undo add = delete
+          setAssignments(prev => prev.filter(a => a.id !== last.assignmentId));
+          fetch(apiUrl(`/api/scheduling/assignments/${last.assignmentId}`), { method: "DELETE" }).catch(() => {});
+          toast("Undone: shift removed");
+        } else if (last.type === "delete") {
+          // Undo delete = re-add (optimistic — re-insert without re-creating on server for simplicity)
+          setAssignments(prev => [...prev, last.assignment]);
+          toast("Undone: shift restored");
+        } else if (last.type === "move") {
+          // Undo move = move back
+          const prev = assignmentsRef.current.find(a => a.id === last.assignmentId);
+          if (prev) {
+            const agent = agents.find(a => a.id === last.prevAgentId);
+            setAssignments(all => all.map(a => a.id === last.assignmentId ? {
+              ...a,
+              start_time: last.prevStart,
+              end_time: last.prevEnd,
+              agent_id: last.prevAgentId,
+              agent_name: agent?.full_name ?? a.agent_name,
+            } : a));
+            fetch(apiUrl(`/api/scheduling/assignments/${last.assignmentId}`), {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                start_time: last.prevStart,
+                end_time: last.prevEnd,
+                agent_id: last.prevAgentId,
+                is_overnight: prev.is_overnight,
+                channel: prev.channel,
+                notes: prev.notes,
+                shift_template_id: prev.shift_template_id,
+              }),
+            }).catch(() => {});
+            toast("Undone: shift moved back");
+          }
+        } else if (last.type === "addActivity") {
+          setAssignments(prev => prev.map(a =>
+            a.id === last.assignmentId ? { ...a, activities: a.activities.filter(act => act.id !== last.activityId) } : a
+          ));
+          fetch(apiUrl(`/api/scheduling/activities/${last.activityId}`), { method: "DELETE" }).catch(() => {});
+          toast("Undone: activity removed");
+        } else if (last.type === "updateActivity") {
+          setAssignments(prev => prev.map(a => ({
+            ...a,
+            activities: a.activities.map(act => act.id === last.activityId ? { ...act, ...last.prevFields } : act),
+          })));
+          const existing = assignmentsRef.current.flatMap(a => a.activities).find(act => act.id === last.activityId);
+          if (existing) {
+            fetch(apiUrl(`/api/scheduling/activities/${last.activityId}`), {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...existing, ...last.prevFields }),
+            }).catch(() => {});
+          }
+          toast("Undone: activity reverted");
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedShiftId, clipboard, selectedAgentIds, agents, addShift]);
 
   // ── Derived counts ────────────────────────────────────────────────────────
 
@@ -475,7 +686,6 @@ export function ScheduleEditor() {
             </button>
           </div>
 
-          {/* Date input */}
           <Input
             type="date"
             value={activeDate}
@@ -498,7 +708,6 @@ export function ScheduleEditor() {
             Today
           </button>
 
-          {/* Page label */}
           <div className="hidden sm:flex items-center gap-2 ml-1">
             <div className="h-4 w-px bg-slate-200" />
             <span className="text-sm font-bold text-slate-800">Schedule Editor</span>
@@ -507,18 +716,16 @@ export function ScheduleEditor() {
 
           <div className="flex-1" />
 
-          {/* KPI tiles */}
+          {/* Clipboard indicator */}
+          {clipboard && (
+            <span className="text-[10px] text-slate-400 font-medium hidden md:inline">
+              Shift copied (Ctrl+V to paste)
+            </span>
+          )}
+
           <div className="hidden md:flex items-center gap-1.5">
-            <KpiTile
-              label="Active"
-              value={activeAgents.length}
-              accent="bg-blue-50 text-blue-700"
-            />
-            <KpiTile
-              label="Shifts"
-              value={todayShiftCount}
-              accent="bg-emerald-50 text-emerald-700"
-            />
+            <KpiTile label="Active" value={activeAgents.length} accent="bg-blue-50 text-blue-700" />
+            <KpiTile label="Shifts" value={todayShiftCount} accent="bg-emerald-50 text-emerald-700" />
             {coverageRate != null && (
               <KpiTile
                 label="Coverage"
@@ -615,7 +822,6 @@ export function ScheduleEditor() {
             );
           })}
 
-          {/* Active date label (right side) */}
           <div className="flex items-center ml-auto px-4 shrink-0">
             <span className="text-[11px] text-slate-400 font-medium hidden lg:block">
               {formatFullDate(weekDates[activeDayIdx])}
@@ -624,7 +830,7 @@ export function ScheduleEditor() {
         </div>
 
         {/* ── Schedule content ─────────────────────────────────────────────── */}
-        <div className="flex-1 p-4 space-y-4 bg-slate-50/30">
+        <div className="flex-1 p-4 bg-slate-50/30">
           {loading ? (
             <div className="flex items-center justify-center py-24 text-slate-400 gap-2">
               <Loader2 className="animate-spin size-5" />
@@ -656,8 +862,11 @@ export function ScheduleEditor() {
             <ScheduleGrid
               agents={visibleAgents}
               assignments={assignments}
+              allWeekAssignments={assignments}
               activeDate={activeDate}
               requiredFte={requiredFte}
+              selectedShiftId={selectedShiftId}
+              selectedAgentIds={selectedAgentIds}
               onShiftMove={moveShift}
               onShiftDelete={deleteShift}
               onAddShift={handleGridAddShift}
@@ -665,15 +874,10 @@ export function ScheduleEditor() {
               onUpdateActivity={updateActivity}
               onDeleteActivity={deleteActivity}
               onUpdateTimes={updateTimes}
+              onSelectShift={handleSelectShift}
+              onSelectAgent={handleSelectAgent}
             />
           )}
-
-          {/* Coverage chart */}
-          <CoverageGraph
-            assignments={assignments}
-            activeDate={activeDate}
-            requiredFte={requiredFte}
-          />
         </div>
 
       </div>

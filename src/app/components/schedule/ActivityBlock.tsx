@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { useDraggable } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { Label } from "../ui/label";
@@ -6,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Input } from "../ui/input";
 import { Trash2 } from "lucide-react";
 
-export type ActivityType = "break" | "meal" | "coaching" | "training" | "meeting";
+export type ActivityType = "break" | "meal" | "coaching" | "training" | "meeting" | "late" | "absent";
 
 export interface Activity {
   id: number;
@@ -18,66 +20,68 @@ export interface Activity {
   notes: string | null;
 }
 
-const ACTIVITY_CONFIG: Record<ActivityType, { label: string; color: string; textColor: string }> = {
+export const ACTIVITY_CONFIG: Record<ActivityType, { label: string; color: string; textColor: string }> = {
   break:    { label: "Break",    color: "#f97316", textColor: "#fff" },
   meal:     { label: "Meal",     color: "#f59e0b", textColor: "#000" },
   coaching: { label: "Coaching", color: "#8b5cf6", textColor: "#fff" },
   training: { label: "Training", color: "#14b8a6", textColor: "#fff" },
   meeting:  { label: "Meeting",  color: "#64748b", textColor: "#fff" },
+  late:     { label: "Late",     color: "#dc2626", textColor: "#fff" },
+  absent:   { label: "Absent",   color: "#374151", textColor: "#fff" },
 };
 
-function timeToMins(t: string): number {
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
-}
-
-interface ActivityBlockProps {
+interface ActivitySegmentProps {
   activity: Activity;
-  shiftStartMins: number;
-  colW: number;
-  rowH: number;
+  assignmentId: number;
+  widthPx: number;
+  heightPx: number;
   onUpdate: (id: number, fields: Partial<Activity>) => void;
   onDelete: (id: number) => void;
+  ghost?: boolean;
 }
 
-// Activities are NOT independently draggable — they travel with the parent shift block.
-// Clicking opens the edit dialog.
-export function ActivityBlock({ activity, shiftStartMins, colW, rowH, onUpdate, onDelete }: ActivityBlockProps) {
+export function ActivitySegment({
+  activity,
+  assignmentId,
+  widthPx,
+  heightPx,
+  onUpdate,
+  onDelete,
+  ghost = false,
+}: ActivitySegmentProps) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<Partial<Activity>>({});
 
-  const startMins    = timeToMins(activity.start_time);
-  const endMins      = timeToMins(activity.end_time);
-  const offsetMins   = startMins - shiftStartMins;
-  const durationMins = endMins - startMins;
-
-  const left  = (offsetMins / 15) * colW;
-  const width = Math.max((durationMins / 15) * colW, colW);
+  const { setNodeRef, listeners, attributes, transform, isDragging } = useDraggable({
+    id: `activity-${activity.id}`,
+    data: { type: "activity", activity, assignmentId },
+    disabled: ghost,
+  });
 
   const cfg = ACTIVITY_CONFIG[activity.activity_type] ?? ACTIVITY_CONFIG.break;
 
   const style: React.CSSProperties = {
-    position: "absolute",
-    // Sits below the slim time-strip header (20px) with 2px gap
-    top: 22,
-    height: rowH - 26,
-    left,
-    width,
+    width: widthPx,
+    height: heightPx,
     backgroundColor: cfg.color,
     color: cfg.textColor,
-    borderRadius: 3,
-    fontSize: 10,
+    fontSize: 9,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
-    cursor: "pointer",
+    cursor: ghost ? "default" : isDragging ? "grabbing" : "grab",
     userSelect: "none",
-    zIndex: 10,
+    flexShrink: 0,
+    opacity: isDragging ? 0.4 : 1,
+    transform: CSS.Translate.toString(transform),
+    zIndex: isDragging ? 30 : 10,
+    position: "relative",
   };
 
   const openEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     setForm({
       activity_type: activity.activity_type,
       start_time: activity.start_time,
@@ -96,11 +100,13 @@ export function ActivityBlock({ activity, shiftStartMins, colW, rowH, onUpdate, 
   return (
     <>
       <div
+        ref={setNodeRef}
         style={style}
-        onClick={openEdit}
+        {...(ghost ? {} : { ...listeners, ...attributes })}
+        onDoubleClick={openEdit}
         title={`${cfg.label} ${activity.start_time}–${activity.end_time}`}
       >
-        <span className="truncate px-1 font-semibold">{cfg.label}</span>
+        <span className="truncate px-0.5 font-semibold leading-none">{cfg.label}</span>
       </div>
 
       <Dialog open={editing} onOpenChange={setEditing}>
@@ -147,5 +153,3 @@ export function ActivityBlock({ activity, shiftStartMins, colW, rowH, onUpdate, 
     </>
   );
 }
-
-export { ACTIVITY_CONFIG };

@@ -1713,13 +1713,14 @@ app.post('/api/scheduling/assignments', async (req, res) => {
 });
 
 app.put('/api/scheduling/assignments/:id', async (req, res) => {
-  const { start_time, end_time, is_overnight, channel, notes, shift_template_id } = req.body;
+  const { start_time, end_time, is_overnight, channel, notes, shift_template_id, agent_id } = req.body;
   try {
     const { rows } = await pool.query(
       `UPDATE schedule_assignments
-       SET start_time=$1, end_time=$2, is_overnight=$3, channel=$4, notes=$5, shift_template_id=$6, updated_at=NOW()
+       SET start_time=$1, end_time=$2, is_overnight=$3, channel=$4, notes=$5, shift_template_id=$6,
+           agent_id=COALESCE($8, agent_id), updated_at=NOW()
        WHERE id=$7 AND organization_id=1 RETURNING *`,
-      [start_time, end_time, is_overnight ?? false, channel || 'voice', notes ?? null, shift_template_id ?? null, req.params.id]
+      [start_time, end_time, is_overnight ?? false, channel || 'voice', notes ?? null, shift_template_id ?? null, req.params.id, agent_id ?? null]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);

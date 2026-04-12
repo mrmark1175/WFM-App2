@@ -1,19 +1,20 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { MoreVertical, Plus, Pencil, Trash2 } from "lucide-react";
-import { ActivityBlock, Activity, ActivityType, ACTIVITY_CONFIG } from "./ActivityBlock";
+import { Pencil, Plus, Trash2 } from "lucide-react";
+import { ActivitySegment, Activity, ActivityType, ACTIVITY_CONFIG } from "./ActivityBlock";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { Label } from "../ui/label";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "../ui/dropdown-menu";
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+} from "../ui/context-menu";
 
 export interface Assignment {
   id: number;
@@ -42,8 +43,43 @@ function timeToMins(t: string): number {
 function fmt12(t: string): string {
   const [h, m] = t.split(":").map(Number);
   const ampm = h >= 12 ? "PM" : "AM";
-  const h12  = h % 12 || 12;
+  const h12 = h % 12 || 12;
   return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+// Build segments array: alternating "On Queue" gaps and activity segments
+interface Segment {
+  type: "queue" | "activity";
+  startMins: number;
+  endMins: number;
+  durationMins: number;
+  activity?: Activity;
+}
+
+function buildSegments(activities: Activity[], shiftStartMins: number, shiftEndMins: number): Segment[] {
+  const sorted = [...activities].sort((a, b) => timeToMins(a.start_time) - timeToMins(b.start_time));
+  const segments: Segment[] = [];
+  let cursor = shiftStartMins;
+
+  for (const act of sorted) {
+    const actStart = timeToMins(act.start_time);
+    const actEnd = timeToMins(act.end_time);
+    if (actStart < shiftStartMins || actEnd > shiftEndMins) continue;
+
+    // Gap before this activity = On Queue
+    if (actStart > cursor) {
+      segments.push({ type: "queue", startMins: cursor, endMins: actStart, durationMins: actStart - cursor });
+    }
+    segments.push({ type: "activity", startMins: actStart, endMins: actEnd, durationMins: actEnd - actStart, activity: act });
+    cursor = actEnd;
+  }
+
+  // Trailing gap
+  if (cursor < shiftEndMins) {
+    segments.push({ type: "queue", startMins: cursor, endMins: shiftEndMins, durationMins: shiftEndMins - cursor });
+  }
+
+  return segments;
 }
 
 interface ShiftBlockProps {
@@ -51,6 +87,8 @@ interface ShiftBlockProps {
   colW: number;
   rowH: number;
   ghost?: boolean;
+  isSelected?: boolean;
+  onSelect?: (shiftHeld: boolean) => void;
   onUpdateTimes?: (id: number, start: string, end: string) => void;
   onDelete?: (id: number) => void;
   onAddActivity?: (assignmentId: number, act: Omit<Activity, "id" | "assignment_id">) => void;
@@ -63,15 +101,17 @@ export function ShiftBlock({
   colW,
   rowH,
   ghost = false,
+  isSelected = false,
+  onSelect,
   onUpdateTimes,
   onDelete,
   onAddActivity,
   onUpdateActivity,
   onDeleteActivity,
 }: ShiftBlockProps) {
-  const [editOpen,    setEditOpen]    = useState(false);
-  const [addActOpen,  setAddActOpen]  = useState(false);
-  const [editTimes,   setEditTimes]   = useState({ start: assignment.start_time, end: assignment.end_time });
+  const [editOpen, setEditOpen] = useState(false);
+  const [addActOpen, setAddActOpen] = useState(false);
+  const [editTimes, setEditTimes] = useState({ start: assignment.start_time, end: assignment.end_time });
   const [newAct, setNewAct] = useState<{
     activity_type: ActivityType;
     start_time: string;
@@ -86,121 +126,199 @@ export function ShiftBlock({
     notes: "",
   });
 
+  // Main shift draggable
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `shift-${assignment.id}`,
     data: { type: "shift", assignment },
     disabled: ghost,
   });
 
-  const startMins    = timeToMins(assignment.start_time);
-  const endMins      = timeToMins(assignment.end_time) || 24 * 60;
+  // Resize handles
+  const { setNodeRef: setLeftRef, listeners: leftListeners, attributes: leftAttrs } = useDraggable({
+    id: `resize-left-${assignment.id}`,
+    data: { type: "resize-left", assignment },
+    disabled: ghost,
+  });
+  const { setNodeRef: setRightRef, listeners: rightListeners, attributes: rightAttrs } = useDraggable({
+    id: `resize-right-${assignment.id}`,
+    data: { type: "resize-right", assignment },
+    disabled: ghost,
+  });
+
+  const startMins = timeToMins(assignment.start_time);
+  const endMins = timeToMins(assignment.end_time) || 24 * 60;
   const durationMins = endMins - startMins;
 
-  const left  = (startMins / 15) * colW;
+  const left = (startMins / 15) * colW;
   const width = Math.max((durationMins / 15) * colW, colW * 2);
+  const barH = rowH - 6;
 
   const color = assignment.template_color ?? "#3b82f6";
 
-  const style: React.CSSProperties = {
+  const segments = useMemo(
+    () => buildSegments(assignment.activities, startMins, endMins),
+    [assignment.activities, startMins, endMins]
+  );
+
+  const outerStyle: React.CSSProperties = {
     position: ghost ? "relative" : "absolute",
-    top:    ghost ? undefined : 1,
-    left:   ghost ? undefined : left,
-    width:  ghost ? "100%" : width,
-    height: rowH - 2,
-    backgroundColor: color,
-    borderRadius: 6,
+    top: ghost ? undefined : 3,
+    left: ghost ? undefined : left,
+    width: ghost ? "100%" : width,
+    height: barH,
+    borderRadius: 4,
     overflow: "hidden",
-    cursor: isDragging ? "grabbing" : "grab",
+    cursor: isDragging ? "grabbing" : "move",
     userSelect: "none",
     opacity: ghost ? 0.7 : isDragging ? 0.4 : 1,
-    boxShadow: isDragging ? "none" : "0 1px 4px rgba(0,0,0,0.25)",
+    boxShadow: isSelected
+      ? "0 0 0 2px #3b82f6, 0 1px 3px rgba(0,0,0,0.2)"
+      : isDragging ? "none" : "0 1px 3px rgba(0,0,0,0.18)",
     transform: ghost ? undefined : CSS.Translate.toString(transform),
-    zIndex: isDragging ? 1 : 2,
+    zIndex: isDragging ? 50 : isSelected ? 5 : 2,
+    display: "flex",
+    flexDirection: "row" as const,
+    alignItems: "stretch",
   };
 
-  const stopProp = (e: React.MouseEvent) => e.stopPropagation();
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!ghost && onSelect) {
+      onSelect(e.shiftKey);
+    }
+  };
+
+  const shiftBar = (
+    <div
+      ref={setNodeRef}
+      style={outerStyle}
+      {...(ghost ? {} : { ...listeners, ...attributes })}
+      onClick={handleClick}
+      title={`${fmt12(assignment.start_time)} – ${fmt12(assignment.end_time)}${assignment.template_name ? ` (${assignment.template_name})` : ""}`}
+    >
+      {/* Left resize handle */}
+      {!ghost && (
+        <div
+          ref={setLeftRef}
+          {...leftListeners}
+          {...leftAttrs}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            width: 6,
+            height: "100%",
+            cursor: "col-resize",
+            zIndex: 20,
+          }}
+          onClick={e => e.stopPropagation()}
+        />
+      )}
+
+      {/* Segments */}
+      {segments.map((seg, i) => {
+        const segWidth = Math.max((seg.durationMins / 15) * colW, 1);
+        if (seg.type === "queue") {
+          return (
+            <div
+              key={`q-${i}`}
+              style={{
+                width: segWidth,
+                height: "100%",
+                backgroundColor: color,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                overflow: "hidden",
+                flexShrink: 0,
+              }}
+            >
+              {segWidth > 40 && (
+                <span style={{ fontSize: 9, color: "#fff", fontWeight: 600, opacity: 0.9 }} className="truncate px-0.5">
+                  On Queue
+                </span>
+              )}
+            </div>
+          );
+        }
+        // Activity segment
+        return (
+          <ActivitySegment
+            key={seg.activity!.id}
+            activity={seg.activity!}
+            assignmentId={assignment.id}
+            widthPx={segWidth}
+            heightPx={barH}
+            onUpdate={(id, fields) => onUpdateActivity?.(id, fields)}
+            onDelete={(id) => onDeleteActivity?.(assignment.id, id)}
+            ghost={ghost}
+          />
+        );
+      })}
+
+      {/* Right resize handle */}
+      {!ghost && (
+        <div
+          ref={setRightRef}
+          {...rightListeners}
+          {...rightAttrs}
+          style={{
+            position: "absolute",
+            right: 0,
+            top: 0,
+            width: 6,
+            height: "100%",
+            cursor: "col-resize",
+            zIndex: 20,
+          }}
+          onClick={e => e.stopPropagation()}
+        />
+      )}
+    </div>
+  );
 
   return (
     <>
-      <div ref={setNodeRef} style={style} {...(ghost ? {} : { ...listeners, ...attributes })}>
-
-        {/* ── Slim IEX/Genesys-style header: time range + menu only ── */}
-        <div
-          className="flex items-center justify-between px-1.5 gap-1"
-          style={{ background: "rgba(0,0,0,0.18)", height: 20 }}
-        >
-          {/* Shift time — no agent name (already in sticky column) */}
-          <span className="text-white text-[10px] font-bold tabular-nums truncate">
-            {fmt12(assignment.start_time)}–{fmt12(assignment.end_time)}
-          </span>
-
-          {/* Template badge if any */}
-          {assignment.template_name && (
-            <span
-              className="text-white/70 text-[9px] font-semibold truncate hidden"
-              style={{ maxWidth: 60 }}
+      {ghost ? (
+        shiftBar
+      ) : (
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            {shiftBar}
+          </ContextMenuTrigger>
+          <ContextMenuContent className="z-50">
+            <ContextMenuItem
+              onClick={() => {
+                setEditTimes({ start: assignment.start_time, end: assignment.end_time });
+                setEditOpen(true);
+              }}
             >
-              {assignment.template_name}
-            </span>
-          )}
-
-          {/* Kebab menu — hidden during drag ghost */}
-          {!ghost && (
-            <div onClick={stopProp}>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button className="text-white/70 hover:text-white flex-shrink-0 flex items-center">
-                    <MoreVertical className="size-3" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="z-50">
-                  <DropdownMenuItem
-                    onClick={() => {
-                      setEditTimes({ start: assignment.start_time, end: assignment.end_time });
-                      setEditOpen(true);
-                    }}
-                  >
-                    <Pencil className="size-3 mr-2" />Edit Times
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => {
-                      setNewAct({
-                        activity_type: "break",
-                        start_time: assignment.start_time,
-                        end_time: assignment.start_time,
-                        is_paid: false,
-                        notes: "",
-                      });
-                      setAddActOpen(true);
-                    }}
-                  >
-                    <Plus className="size-3 mr-2" />Add Activity
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className="text-destructive"
-                    onClick={() => onDelete?.(assignment.id)}
-                  >
-                    <Trash2 className="size-3 mr-2" />Delete Shift
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          )}
-        </div>
-
-        {/* ── Activity sub-blocks (render in ghost too so drag preview is accurate) ── */}
-        {assignment.activities.map(act => (
-          <ActivityBlock
-            key={act.id}
-            activity={act}
-            shiftStartMins={startMins}
-            colW={colW}
-            rowH={rowH}
-            onUpdate={(id, fields) => onUpdateActivity?.(id, fields)}
-            onDelete={(id) => onDeleteActivity?.(assignment.id, id)}
-          />
-        ))}
-      </div>
+              <Pencil className="size-3 mr-2" />Edit Times
+            </ContextMenuItem>
+            <ContextMenuItem
+              onClick={() => {
+                setNewAct({
+                  activity_type: "break",
+                  start_time: assignment.start_time,
+                  end_time: assignment.start_time,
+                  is_paid: false,
+                  notes: "",
+                });
+                setAddActOpen(true);
+              }}
+            >
+              <Plus className="size-3 mr-2" />Add Activity
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              className="text-destructive"
+              onClick={() => onDelete?.(assignment.id)}
+            >
+              <Trash2 className="size-3 mr-2" />Delete Shift
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      )}
 
       {/* Edit Times Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -209,21 +327,11 @@ export function ShiftBlock({
           <div className="grid grid-cols-2 gap-4 py-2">
             <div className="flex flex-col gap-1">
               <Label>Start Time</Label>
-              <Input
-                type="time"
-                step={900}
-                value={editTimes.start}
-                onChange={e => setEditTimes(t => ({ ...t, start: e.target.value }))}
-              />
+              <Input type="time" step={900} value={editTimes.start} onChange={e => setEditTimes(t => ({ ...t, start: e.target.value }))} />
             </div>
             <div className="flex flex-col gap-1">
               <Label>End Time</Label>
-              <Input
-                type="time"
-                step={900}
-                value={editTimes.end}
-                onChange={e => setEditTimes(t => ({ ...t, end: e.target.value }))}
-              />
+              <Input type="time" step={900} value={editTimes.end} onChange={e => setEditTimes(t => ({ ...t, end: e.target.value }))} />
             </div>
           </div>
           <DialogFooter>
@@ -242,10 +350,7 @@ export function ShiftBlock({
           <div className="flex flex-col gap-4 py-2">
             <div className="flex flex-col gap-1">
               <Label>Type</Label>
-              <Select
-                value={newAct.activity_type}
-                onValueChange={(v) => setNewAct(a => ({ ...a, activity_type: v as ActivityType }))}
-              >
+              <Select value={newAct.activity_type} onValueChange={(v) => setNewAct(a => ({ ...a, activity_type: v as ActivityType }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {Object.entries(ACTIVITY_CONFIG).map(([k, v]) => (
@@ -257,29 +362,16 @@ export function ShiftBlock({
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1">
                 <Label>Start</Label>
-                <Input
-                  type="time"
-                  step={900}
-                  value={newAct.start_time}
-                  onChange={e => setNewAct(a => ({ ...a, start_time: e.target.value }))}
-                />
+                <Input type="time" step={900} value={newAct.start_time} onChange={e => setNewAct(a => ({ ...a, start_time: e.target.value }))} />
               </div>
               <div className="flex flex-col gap-1">
                 <Label>End</Label>
-                <Input
-                  type="time"
-                  step={900}
-                  value={newAct.end_time}
-                  onChange={e => setNewAct(a => ({ ...a, end_time: e.target.value }))}
-                />
+                <Input type="time" step={900} value={newAct.end_time} onChange={e => setNewAct(a => ({ ...a, end_time: e.target.value }))} />
               </div>
             </div>
             <div className="flex flex-col gap-1">
               <Label>Notes (optional)</Label>
-              <Input
-                value={newAct.notes}
-                onChange={e => setNewAct(a => ({ ...a, notes: e.target.value }))}
-              />
+              <Input value={newAct.notes} onChange={e => setNewAct(a => ({ ...a, notes: e.target.value }))} />
             </div>
           </div>
           <DialogFooter>
