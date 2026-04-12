@@ -1725,7 +1725,10 @@ export default function LongTermForecastingDemand() {
   };
 
   // Per-channel re-cut factor: Σactuals_completed / Σforecast_completed
-  // Returns null if no completed months have actuals for that channel.
+  // Returns null if no completed months have actuals (> 0) for that channel.
+  // Uses ratio-of-sums (volume-weighted) so high-volume months have proportional influence.
+  // actual > 0 guard: zero actuals are almost always data-entry mistakes; including them
+  // would produce extreme deflation factors that corrupt all future-month forecasts.
   const recutFactorByChannel = useMemo<Record<ChannelKey, number | null>>(() => {
     const compute = (ch: ChannelKey) => {
       const vols = forecastVolumesByChannel[ch];
@@ -1733,7 +1736,7 @@ export default function LongTermForecastingDemand() {
       for (const i of completedMonthIndices) {
         const key = getActualKey(i, ch);
         const actual = demandActuals[key];
-        if (actual != null) {
+        if (actual != null && actual > 0) {
           sumActuals += actual;
           sumForecast += vols[i] ?? 0;
           hasAny = true;
@@ -1741,7 +1744,7 @@ export default function LongTermForecastingDemand() {
       }
       return hasAny && sumForecast > 0 ? sumActuals / sumForecast : null;
     };
-    return { voice: compute("voice"), email: compute("email"), chat: compute("chat") };
+    return { voice: compute("voice"), email: compute("email"), chat: compute("chat"), cases: compute("cases") };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [completedMonthIndices, demandActuals, forecastVolumesByChannel, assumptions.startDate]);
 
@@ -2539,6 +2542,164 @@ export default function LongTermForecastingDemand() {
               </div>
             </div>
           </Card>
+          {/* ── Demand Forecast Detail + Re-cut ─────────────────────────── */}
+          <Card className="border border-border/50 shadow-lg bg-card">
+            <CardHeader className="border-b border-border/50 bg-muted/50">
+              <div className="flex flex-col gap-3">
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div>
+                    <CardTitle className="text-sm font-bold flex items-center gap-2">
+                      Demand Forecast Detail
+                      {recutVolumesByChannel && (
+                        <Badge className="bg-emerald-600 text-white text-[10px]">Re-cut Active</Badge>
+                      )}
+                    </CardTitle>
+                    <p className="text-xs text-foreground/60 mt-0.5">Per-channel view. Enter actuals for completed months to generate a re-cut.</p>
+                  </div>
+                  {/* Channel selector tabs */}
+                  <div className="flex gap-1 rounded-lg border border-border p-1 bg-muted/40">
+                    {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((ch) => (
+                      <button
+                        key={ch}
+                        type="button"
+                        onClick={() => setDetailChannel(ch)}
+                        className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${detailChannel === ch ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                      >
+                        {CHANNEL_ASSUMPTION_META[ch].label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Re-cut factor banner */}
+                {activeRecutFactor != null && (
+                  <div className="flex items-center gap-3 flex-wrap rounded-xl border border-emerald-200/60 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/40 px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">Re-cut Factor ({CHANNEL_ASSUMPTION_META[detailChannel].label})</span>
+                      <Badge className={`font-black text-sm ${activeRecutFactor >= 1 ? "bg-emerald-600" : "bg-rose-600"} text-white`}>
+                        {activeRecutFactor.toFixed(4)}×
+                      </Badge>
+                    </div>
+                    <span className="text-xs text-muted-foreground">({activeRecutFactor >= 1 ? "+" : ""}{((activeRecutFactor - 1) * 100).toFixed(1)}% vs original)</span>
+                    <div className="ml-auto flex gap-2">
+                      {recutVolumesByChannel ? (
+                        <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5 border-rose-300 text-rose-700 hover:bg-rose-50" onClick={handleClearRecut}>
+                          <X className="size-3" />Clear Re-cut
+                        </Button>
+                      ) : null}
+                      <Button size="sm" className="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white" onClick={handlePublishRecut}>
+                        <TrendingUp className="size-3" />Publish to Intraday
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {completedMonthIndices.length > 0 && activeRecutFactor == null && (() => {
+                  const missing = allForecastMonths.filter(m => m.isCompleted && (m.actualVol == null || m.actualVol === 0)).length;
+                  if (missing === 0) return null;
+                  return (
+                    <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 flex-wrap">
+                      <AlertTriangle className="size-4 text-amber-600 shrink-0" />
+                      <span className="text-xs font-semibold text-amber-800">
+                        {missing} completed {missing === 1 ? "month has" : "months have"} no actuals entered. Add them below to unlock the Re-cut factor.
+                      </span>
+                      <span className="text-xs text-amber-600">↓ scroll down in this table</span>
+                    </div>
+                  );
+                })()}
+              </div>
+            </CardHeader>
+            <CardContent className="p-0 overflow-x-auto">
+              <Table className="table-fixed">
+                <colgroup>
+                  <col className="w-[18%]" />
+                  <col className="w-[17%]" />
+                  <col className="w-[17%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[24%]" />
+                </colgroup>
+                <TableHeader className="bg-muted/50">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Month</TableHead>
+                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Forecast Volume</TableHead>
+                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Actual Volume</TableHead>
+                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Variance</TableHead>
+                    {activeRecutFactor != null && (
+                      <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-emerald-700 whitespace-nowrap">Re-cut Forecast</TableHead>
+                    )}
+                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {allForecastMonths.map((row) => {
+                    const isSaving = savingActuals.has(row.actualKey);
+                    const isSaved = savedActuals.has(row.actualKey);
+                    return (
+                      <TableRow key={`${row.year}-${row.month1}-${detailChannel}`} className={`hover:bg-muted/30 ${row.isCompleted ? "bg-blue-50/30 dark:bg-blue-950/10" : ""}`}>
+                        <TableCell className="px-3 text-center align-middle">
+                          <div className="flex items-center justify-center gap-2 min-w-0">
+                            <span className="font-bold text-sm">{row.monthLabel} {row.year}</span>
+                            {row.isCompleted && <Badge variant="outline" className="text-[10px] h-4 px-1 text-blue-600 border-blue-300">Completed</Badge>}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-3 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">{row.forecastVol.toLocaleString()}</TableCell>
+                        <TableCell className="px-3 text-center align-middle">
+                          {row.isCompleted ? (
+                            <div className="flex items-center justify-center gap-1.5">
+                              <Input
+                                type="number"
+                                min={0}
+                                className="h-7 w-full max-w-[8.5rem] text-center text-xs font-mono font-bold tabular-nums"
+                                placeholder="Enter actual"
+                                defaultValue={row.actualVol ?? ""}
+                                onBlur={(e) => {
+                                  const val = e.target.value.trim();
+                                  if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
+                                    void handleSaveActual(row.index, detailChannel, Number(val));
+                                  }
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    const val = (e.target as HTMLInputElement).value.trim();
+                                    if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
+                                      void handleSaveActual(row.index, detailChannel, Number(val));
+                                      (e.target as HTMLInputElement).blur();
+                                    }
+                                  }
+                                }}
+                              />
+                              {isSaving && <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0" />}
+                              {isSaved && !isSaving && <span className="text-emerald-600 text-xs font-bold shrink-0">✓</span>}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
+                          {row.variancePct != null ? (
+                            <span className={row.variancePct >= 0 ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>
+                              {row.variancePct >= 0 ? "+" : ""}{row.variancePct}%
+                            </span>
+                          ) : <span className="text-muted-foreground">—</span>}
+                        </TableCell>
+                        {activeRecutFactor != null && (
+                          <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
+                            {row.recutVol != null ? (
+                              <span className="font-bold text-emerald-700">{row.recutVol.toLocaleString()}</span>
+                            ) : row.isCompleted && row.actualVol != null ? (
+                              <span className="font-bold text-blue-700">{row.actualVol.toLocaleString()}</span>
+                            ) : <span className="text-muted-foreground">—</span>}
+                          </TableCell>
+                        )}
+                        <TableCell className="px-3 text-center text-xs text-muted-foreground whitespace-nowrap align-middle">
+                          {row.isCompleted ? "Actual entry" : "Forecast"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
           <div className="space-y-1">
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-foreground/50">Section B</p>
             <p className="text-sm font-semibold text-foreground">Forecasted Demand Output</p>
@@ -2646,164 +2807,6 @@ export default function LongTermForecastingDemand() {
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
               </div>
               <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Scenario Comparison — Required FTE</CardTitle></CardHeader><CardContent className="p-6 h-[360px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={scenarioComparisonData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{Object.values(scenarios).map((scenario, index) => <Line key={scenario.id} type="monotone" dataKey={scenario.id} name={scenario.name} stroke={scenarioColors[index % scenarioColors.length]} strokeWidth={scenario.id === selectedScenarioId ? 3.5 : 2} dot={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
-              {/* ── Demand Forecast Detail + Re-cut ─────────────────────────── */}
-              <Card className="border border-border/50 shadow-lg bg-card">
-                <CardHeader className="border-b border-border/50 bg-muted/50">
-                  <div className="flex flex-col gap-3">
-                    <div className="flex items-start justify-between gap-4 flex-wrap">
-                      <div>
-                        <CardTitle className="text-sm font-bold flex items-center gap-2">
-                          Demand Forecast Detail
-                          {recutVolumesByChannel && (
-                            <Badge className="bg-emerald-600 text-white text-[10px]">Re-cut Active</Badge>
-                          )}
-                        </CardTitle>
-                        <p className="text-xs text-foreground/60 mt-0.5">Per-channel view. Enter actuals for completed months to generate a re-cut.</p>
-                      </div>
-                      {/* Channel selector tabs */}
-                      <div className="flex gap-1 rounded-lg border border-border p-1 bg-muted/40">
-                        {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((ch) => (
-                          <button
-                            key={ch}
-                            type="button"
-                            onClick={() => setDetailChannel(ch)}
-                            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${detailChannel === ch ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                          >
-                            {CHANNEL_ASSUMPTION_META[ch].label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {/* Re-cut factor banner */}
-                    {activeRecutFactor != null && (
-                      <div className="flex items-center gap-3 flex-wrap rounded-xl border border-emerald-200/60 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/40 px-4 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">Re-cut Factor ({CHANNEL_ASSUMPTION_META[detailChannel].label})</span>
-                          <Badge className={`font-black text-sm ${activeRecutFactor >= 1 ? "bg-emerald-600" : "bg-rose-600"} text-white`}>
-                            {activeRecutFactor.toFixed(4)}×
-                          </Badge>
-                        </div>
-                        <span className="text-xs text-muted-foreground">({activeRecutFactor >= 1 ? "+" : ""}{((activeRecutFactor - 1) * 100).toFixed(1)}% vs original)</span>
-                        <div className="ml-auto flex gap-2">
-                          {recutVolumesByChannel ? (
-                            <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5 border-rose-300 text-rose-700 hover:bg-rose-50" onClick={handleClearRecut}>
-                              <X className="size-3" />Clear Re-cut
-                            </Button>
-                          ) : null}
-                          <Button size="sm" className="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white" onClick={handlePublishRecut}>
-                            <TrendingUp className="size-3" />Publish to Intraday
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                    {completedMonthIndices.length > 0 && activeRecutFactor == null && (() => {
-                      const missing = allForecastMonths.filter(m => m.isCompleted && (m.actualVol == null || m.actualVol === 0)).length;
-                      if (missing === 0) return null;
-                      return (
-                        <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 flex-wrap">
-                          <AlertTriangle className="size-4 text-amber-600 shrink-0" />
-                          <span className="text-xs font-semibold text-amber-800">
-                            {missing} completed {missing === 1 ? "month has" : "months have"} no actuals entered. Add them below to unlock the Re-cut factor.
-                          </span>
-                          <span className="text-xs text-amber-600">↓ scroll down in this table</span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </CardHeader>
-                <CardContent className="p-0 overflow-x-auto">
-                  <Table className="table-fixed">
-                    <colgroup>
-                      <col className="w-[18%]" />
-                      <col className="w-[17%]" />
-                      <col className="w-[17%]" />
-                      <col className="w-[12%]" />
-                      <col className="w-[12%]" />
-                      <col className="w-[24%]" />
-                    </colgroup>
-                    <TableHeader className="bg-muted/50">
-                      <TableRow className="hover:bg-transparent">
-                        <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Month</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Forecast Volume</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Actual Volume</TableHead>
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Variance</TableHead>
-                        {activeRecutFactor != null && (
-                          <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-emerald-700 whitespace-nowrap">Re-cut Forecast</TableHead>
-                        )}
-                        <TableHead className="text-right text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Status</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {allForecastMonths.map((row) => {
-                        const isSaving = savingActuals.has(row.actualKey);
-                        const isSaved = savedActuals.has(row.actualKey);
-                        return (
-                          <TableRow key={`${row.year}-${row.month1}-${detailChannel}`} className={`hover:bg-muted/30 ${row.isCompleted ? "bg-blue-50/30 dark:bg-blue-950/10" : ""}`}>
-                            <TableCell className="px-3 text-center align-middle">
-                              <div className="flex items-center justify-center gap-2 min-w-0">
-                                <span className="font-bold text-sm">{row.monthLabel} {row.year}</span>
-                                {row.isCompleted && <Badge variant="outline" className="text-[10px] h-4 px-1 text-blue-600 border-blue-300">Completed</Badge>}
-                              </div>
-                            </TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">{row.forecastVol.toLocaleString()}</TableCell>
-                            <TableCell className="px-3 text-center align-middle">
-                              {row.isCompleted ? (
-                                <div className="flex items-center justify-center gap-1.5">
-                                  <Input
-                                    type="number"
-                                    min={0}
-                                    className="h-7 w-full max-w-[8.5rem] text-center text-xs font-mono font-bold tabular-nums"
-                                    placeholder="Enter actual"
-                                    defaultValue={row.actualVol ?? ""}
-                                    onBlur={(e) => {
-                                      const val = e.target.value.trim();
-                                      if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
-                                        void handleSaveActual(row.index, detailChannel, Number(val));
-                                      }
-                                    }}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        const val = (e.target as HTMLInputElement).value.trim();
-                                        if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
-                                          void handleSaveActual(row.index, detailChannel, Number(val));
-                                          (e.target as HTMLInputElement).blur();
-                                        }
-                                      }
-                                    }}
-                                  />
-                                  {isSaving && <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0" />}
-                                  {isSaved && !isSaving && <span className="text-emerald-600 text-xs font-bold shrink-0">✓</span>}
-                                </div>
-                              ) : (
-                                <span className="text-xs text-muted-foreground">—</span>
-                              )}
-                            </TableCell>
-                            <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
-                              {row.variancePct != null ? (
-                                <span className={row.variancePct >= 0 ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>
-                                  {row.variancePct >= 0 ? "+" : ""}{row.variancePct}%
-                                </span>
-                              ) : <span className="text-muted-foreground">—</span>}
-                            </TableCell>
-                            {activeRecutFactor != null && (
-                              <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
-                                {row.recutVol != null ? (
-                                  <span className="font-bold text-emerald-700">{row.recutVol.toLocaleString()}</span>
-                                ) : row.isCompleted && row.actualVol != null ? (
-                                  <span className="font-bold text-blue-700">{row.actualVol.toLocaleString()}</span>
-                                ) : <span className="text-muted-foreground">—</span>}
-                              </TableCell>
-                            )}
-                            <TableCell className="px-3 text-center text-xs text-muted-foreground whitespace-nowrap align-middle">
-                              {row.isCompleted ? "Actual entry" : "Forecast"}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
               {/* ── Staffing detail — future months ──────────────────────────── */}
               <Card id="section-staffing-detail" className="border border-border/50 shadow-lg bg-card">
                 <CardHeader className="border-b border-border/50 bg-muted/50">

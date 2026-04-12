@@ -403,6 +403,48 @@ async function ensureAppTables() {
     ON CONFLICT (organization_id, jurisdiction_code) DO NOTHING
   `);
 
+  // ── Capacity Plan Config — assumptions per LOB+channel ───────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS capacity_plan_config (
+      id                      SERIAL PRIMARY KEY,
+      organization_id         INTEGER NOT NULL DEFAULT 1,
+      lob_id                  INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel                 TEXT NOT NULL DEFAULT 'blended',
+      plan_start_date         DATE NOT NULL DEFAULT CURRENT_DATE,
+      horizon_weeks           INTEGER NOT NULL DEFAULT 26,
+      attrition_rate_monthly  NUMERIC NOT NULL DEFAULT 2.0,
+      ramp_training_weeks     INTEGER NOT NULL DEFAULT 4,
+      ramp_nesting_weeks      INTEGER NOT NULL DEFAULT 2,
+      ramp_nesting_pct        NUMERIC NOT NULL DEFAULT 50,
+      starting_hc             NUMERIC NOT NULL DEFAULT 0,
+      updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, channel)
+    )
+  `);
+
+  // ── Capacity Plan Weekly Inputs — user-entered data per LOB+channel+week ──────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS capacity_plan_weekly_inputs (
+      id                    SERIAL PRIMARY KEY,
+      organization_id       INTEGER NOT NULL DEFAULT 1,
+      lob_id                INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel               TEXT NOT NULL DEFAULT 'blended',
+      week_offset           INTEGER NOT NULL,
+      planned_hires         NUMERIC,
+      known_exits           NUMERIC,
+      actual_hc             NUMERIC,
+      actual_attrition      NUMERIC,
+      vol_override_voice    NUMERIC,
+      vol_override_chat     NUMERIC,
+      vol_override_email    NUMERIC,
+      aht_override_voice    NUMERIC,
+      aht_override_chat     NUMERIC,
+      aht_override_email    NUMERIC,
+      updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, channel, week_offset)
+    )
+  `);
+
   // ── Schedule Assignments — agent shift assignments per date ──────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schedule_assignments (
@@ -1722,6 +1764,108 @@ app.delete('/api/scheduling/activities/:id', async (req, res) => {
     await pool.query('DELETE FROM shift_activities WHERE id=$1', [req.params.id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Capacity Plan Config ──────────────────────────────────────────────────────
+app.get('/api/capacity-plan-config', async (req, res) => {
+  const user = getCurrentUser(req);
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  const channel = req.query.channel || 'blended';
+  try {
+    const result = await pool.query(
+      `SELECT * FROM capacity_plan_config WHERE organization_id = $1 AND lob_id = $2 AND channel = $3`,
+      [user.organization_id, lobId, channel]
+    );
+    res.json(result.rows[0] || null);
+  } catch (err) {
+    console.error('Capacity Plan Config Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch capacity plan config' });
+  }
+});
+
+app.put('/api/capacity-plan-config', async (req, res) => {
+  const user = getCurrentUser(req);
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  const channel = req.query.channel || 'blended';
+  const {
+    plan_start_date, horizon_weeks, attrition_rate_monthly,
+    ramp_training_weeks, ramp_nesting_weeks, ramp_nesting_pct, starting_hc
+  } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO capacity_plan_config
+         (organization_id, lob_id, channel, plan_start_date, horizon_weeks,
+          attrition_rate_monthly, ramp_training_weeks, ramp_nesting_weeks,
+          ramp_nesting_pct, starting_hc, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+       ON CONFLICT (organization_id, lob_id, channel) DO UPDATE SET
+         plan_start_date        = EXCLUDED.plan_start_date,
+         horizon_weeks          = EXCLUDED.horizon_weeks,
+         attrition_rate_monthly = EXCLUDED.attrition_rate_monthly,
+         ramp_training_weeks    = EXCLUDED.ramp_training_weeks,
+         ramp_nesting_weeks     = EXCLUDED.ramp_nesting_weeks,
+         ramp_nesting_pct       = EXCLUDED.ramp_nesting_pct,
+         starting_hc            = EXCLUDED.starting_hc,
+         updated_at             = NOW()
+       RETURNING *`,
+      [user.organization_id, lobId, channel,
+       plan_start_date, horizon_weeks ?? 26,
+       attrition_rate_monthly ?? 2.0,
+       ramp_training_weeks ?? 4, ramp_nesting_weeks ?? 2,
+       ramp_nesting_pct ?? 50, starting_hc ?? 0]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Capacity Plan Config Save Error:', err.message);
+    res.status(500).json({ error: 'Failed to save capacity plan config' });
+  }
+});
+
+// ── Capacity Plan Weekly Inputs ───────────────────────────────────────────────
+app.get('/api/capacity-plan-inputs', async (req, res) => {
+  const user = getCurrentUser(req);
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  const channel = req.query.channel || 'blended';
+  try {
+    const result = await pool.query(
+      `SELECT * FROM capacity_plan_weekly_inputs
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3
+       ORDER BY week_offset ASC`,
+      [user.organization_id, lobId, channel]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Capacity Plan Inputs Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch capacity plan inputs' });
+  }
+});
+
+app.put('/api/capacity-plan-inputs', async (req, res) => {
+  const user = getCurrentUser(req);
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  const channel = req.query.channel || 'blended';
+  const { week_offset, field, value } = req.body;
+  if (week_offset == null || !field) {
+    return res.status(400).json({ error: 'week_offset and field are required' });
+  }
+  const allowed = ['planned_hires','known_exits','actual_hc','actual_attrition',
+    'vol_override_voice','vol_override_chat','vol_override_email',
+    'aht_override_voice','aht_override_chat','aht_override_email'];
+  if (!allowed.includes(field)) return res.status(400).json({ error: 'Invalid field' });
+  try {
+    await pool.query(
+      `INSERT INTO capacity_plan_weekly_inputs
+         (organization_id, lob_id, channel, week_offset, ${field}, updated_at)
+       VALUES ($1,$2,$3,$4,$5,NOW())
+       ON CONFLICT (organization_id, lob_id, channel, week_offset) DO UPDATE
+         SET ${field} = EXCLUDED.${field}, updated_at = NOW()`,
+      [user.organization_id, lobId, channel, week_offset, value]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Capacity Plan Input Save Error:', err.message);
+    res.status(500).json({ error: 'Failed to save capacity plan input' });
+  }
 });
 
 app.use(express.static(distPath));

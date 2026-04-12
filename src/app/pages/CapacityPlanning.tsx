@@ -1,1158 +1,1043 @@
-import React from "react";
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
-import { usePagePreferences } from "../lib/usePagePreferences";
+import { PageLayout } from "../components/PageLayout";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Badge } from "../components/ui/badge";
+import { toast } from "sonner";
+import {
+  ChevronDown, ChevronRight, RotateCcw, Settings2, TrendingDown, AlertTriangle, CheckCircle2, Loader2,
+} from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface FTEParams {
-  callVolume: number; ahtSec: number; hoursOp: number;
-  shrinkage: number; occupancy: number; targetSL: number; asaSec: number;
-  channel?: ChannelKey; concurrency?: number;
-}
-interface FTEResult {
-  erlangs: number; rawAgents: number; fte: number; achievedSL: number; actualOcc: number;
-}
-interface WeekData {
-  week: string; label: string; baseVol: number; startDate: Date;
-}
-interface WeekResult extends WeekData, FTEResult {}
-interface DayResult extends FTEResult { day: string; vol: number; }
-interface ForecastRecord {
-  year_label: string; monthly_volumes: number[];
-  forecast_results: number[]; forecast_method?: string;
-}
-interface TrainingClass {
-  id: string; fte: number; live_date: string; ramp_weeks: number;
-}
-interface Scenario {
-  id: number; scenario_name: string; forecast_year: string;
-  aht: number; hours_op: number; work_days: number; day_pcts: number[];
-  shrinkage: number; occupancy: number; target_sl: number; asa: number;
-  selected_week: number;
-  actual_fte?: number; actual_fte_start_date?: string;
-  attrition_pct?: number; classes?: TrainingClass[];
-  channel?: ChannelKey;
-  created_at?: string; updated_at?: string;
+
+type ChannelKey = "voice" | "chat" | "email";
+
+interface PlanConfig {
+  planStartDate: string;
+  horizonWeeks: number;
+  attritionRateMonthly: number;
+  rampTrainingWeeks: number;
+  rampNestingWeeks: number;
+  rampNestingPct: number;
+  startingHc: number;
 }
 
-type ChannelKey = "voice" | "chat" | "email" | "cases";
+interface WeekInput {
+  plannedHires?: number;
+  knownExits?: number;
+  actualHc?: number | null;
+  actualAttrition?: number | null;
+  volVoice?: number | null;
+  volChat?: number | null;
+  volEmail?: number | null;
+  ahtVoice?: number | null;
+  ahtChat?: number | null;
+  ahtEmail?: number | null;
+}
+
+type WeekInputMap = Record<number, WeekInput>;
+
+interface WeekMeta { weekOffset: number; label: string; dateLabel: string; }
+
+interface WeekCalc extends WeekMeta {
+  autoVolVoice: number; autoVolChat: number; autoVolEmail: number;
+  effVolVoice: number; effVolChat: number; effVolEmail: number; effVolTotal: number;
+  autoAhtVoice: number; autoAhtChat: number; autoAhtEmail: number;
+  effAhtVoice: number; effAhtChat: number; effAhtEmail: number;
+  projOccupancyPct: number; projShrinkagePct: number;
+  requiredFTE: number;
+  plannedHires: number; effectiveNewHc: number; attritionDecay: number;
+  knownExits: number; projectedHc: number;
+  actualHc: number | null; actualAttrition: number | null;
+  gapSurplus: number; actualGapSurplus: number | null;
+}
+
+interface LobSettings {
+  lob_id: number; lob_name: string;
+  channels_enabled: Record<string, boolean>;
+  pooling_mode: string;
+  voice_aht?: number; chat_aht?: number; email_aht?: number;
+  chat_concurrency?: number; email_occupancy?: number;
+}
+
+interface DemandAssumptions {
+  voiceVolume?: number; chatVolume?: number; emailVolume?: number;
+  aht?: number; chatAht?: number; emailAht?: number;
+  shrinkage?: number; occupancy?: number;
+  operatingDaysPerWeek?: number; operatingHoursPerDay?: number;
+  growthRate?: number;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DEFAULT_CONFIG: PlanConfig = {
+  planStartDate: new Date().toISOString().split("T")[0],
+  horizonWeeks: 26,
+  attritionRateMonthly: 2,
+  rampTrainingWeeks: 4,
+  rampNestingWeeks: 2,
+  rampNestingPct: 50,
+  startingHc: 0,
+};
+
+const CHANNEL_LABELS: Record<ChannelKey, string> = { voice: "Voice", chat: "Chat", email: "Email" };
+const FIELD_MAP: Record<string, string> = {
+  volVoice: "vol_override_voice", volChat: "vol_override_chat", volEmail: "vol_override_email",
+  ahtVoice: "aht_override_voice", ahtChat: "aht_override_chat", ahtEmail: "aht_override_email",
+  plannedHires: "planned_hires", knownExits: "known_exits",
+  actualHc: "actual_hc", actualAttrition: "actual_attrition",
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const CHANNEL_OPTIONS: { value: ChannelKey; label: string }[] = [
-  { value: "voice", label: "Voice" },
-  { value: "chat", label: "Chat" },
-  { value: "email", label: "Email" },
-  { value: "cases", label: "Cases" },
-];
-const CHAT_DEFAULT_CONCURRENCY = 2;
 
-function isAsyncChannel(channel: ChannelKey): boolean {
-  return channel === "email" || channel === "cases";
-}
-
-function getChannelDefaults(channel: ChannelKey) {
-  switch (channel) {
-    case "chat":
-      return { aht: 450, occupancy: 85, targetSL: 80, asa: 30 };
-    case "email":
-      return { aht: 600, occupancy: 100, targetSL: 90, asa: 14400 };
-    case "cases":
-      return { aht: 900, occupancy: 100, targetSL: 90, asa: 14400 };
-    case "voice":
-    default:
-      return { aht: 320, occupancy: 85, targetSL: 80, asa: 20 };
-  }
-}
-
-function todayStr(): string { return new Date().toISOString().split("T")[0]; }
-function newId(): string { return Math.random().toString(36).slice(2, 9); }
+function fmtDate(d: Date): string { return `${MONTHS[d.getMonth()]} ${d.getDate()}`; }
+function roundTo(n: number, dp = 1) { return Math.round(n * 10 ** dp) / 10 ** dp; }
 
 function getMondayOf(date: Date): Date {
-  const d = new Date(date);
+  const d = new Date(date); d.setHours(0,0,0,0);
   const day = d.getDay();
   d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
-  d.setHours(0, 0, 0, 0);
   return d;
 }
-function fmt(d: Date): string { return `${MONTHS[d.getMonth()]} ${d.getDate()}`; }
 
-function getISOWeek(date: Date): number {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
-  const jan4 = new Date(d.getFullYear(), 0, 4);
-  return 1 + Math.round(((d.getTime() - jan4.getTime()) / 86400000 - 3 + ((jan4.getDay() + 6) % 7)) / 7);
-}
-
-function buildWeeksFromMonthly(monthlyVolumes: number[], startMonday: Date, workDays: number): WeekData[] {
-  const weeks: WeekData[] = [];
-  for (let w = 0; w < 52; w++) {
-    const monday = new Date(startMonday);
-    monday.setDate(monday.getDate() + w * 7);
-    const lastDay = new Date(monday);
-    lastDay.setDate(lastDay.getDate() + workDays - 1);
-    let weekVol = 0;
-    for (let d = 0; d < workDays; d++) {
-      const day = new Date(monday);
-      day.setDate(day.getDate() + d);
-      const monthIdx = day.getMonth();
-      const daysInMonth = new Date(day.getFullYear(), monthIdx + 1, 0).getDate();
-      const workdaysInMonth = Math.round(daysInMonth * workDays / 7);
-      weekVol += (monthlyVolumes[monthIdx] || 0) / workdaysInMonth;
-    }
-    weeks.push({ week: `Wk ${getISOWeek(monday)}`, label: `${fmt(monday)}–${fmt(lastDay)}`, baseVol: Math.round(weekVol), startDate: monday });
-  }
-  return weeks;
-}
-
-// ── Workforce: actual FTE decay + class additions ─────────────────────────────
-function computeActualFTEByWeek(
-  actualFTE: number, actualFTEStartDate: string,
-  attritionPct: number, classes: TrainingClass[], weeks: WeekData[]
-): number[] {
-  if (actualFTE <= 0 || !actualFTEStartDate || weeks.length === 0)
-    return Array(weeks.length).fill(0);
-
-  // monthly attrition → weekly retention rate (compound)
-  const weeklyRetention = attritionPct > 0
-    ? Math.pow(1 - attritionPct / 100, 1 / 4.333)
-    : 1;
-
-  // Find which week the start date falls in
-  const startMs = new Date(actualFTEStartDate + "T00:00:00").getTime();
-  let startWeekIdx = 0;
-  for (let i = 0; i < weeks.length; i++) {
-    const wEnd = new Date(weeks[i].startDate); wEnd.setDate(wEnd.getDate() + 6);
-    if (startMs <= wEnd.getTime()) { startWeekIdx = i; break; }
-    startWeekIdx = i;
-  }
-
-  // Precompute which week each class goes live
-  const classLiveWeeks: number[] = classes.map(cls => {
-    if (!cls.live_date) return -1;
-    const liveDt = new Date(cls.live_date + "T00:00:00").getTime();
-    for (let i = 0; i < weeks.length; i++) {
-      const wEnd = new Date(weeks[i].startDate); wEnd.setDate(wEnd.getDate() + 6);
-      if (liveDt <= wEnd.getTime()) return i;
-    }
-    return -1;
+function buildWeeks(planStartDate: string, horizonWeeks: number): WeekMeta[] {
+  const monday = getMondayOf(new Date(planStartDate + "T00:00:00"));
+  return Array.from({ length: horizonWeeks }, (_, i) => {
+    const start = new Date(monday); start.setDate(start.getDate() + i * 7);
+    const end = new Date(start); end.setDate(end.getDate() + 6);
+    return { weekOffset: i, label: `Wk ${i + 1}`, dateLabel: `${fmtDate(start)}–${fmtDate(end)}` };
   });
-
-  const result: number[] = [];
-  let current = actualFTE;
-
-  for (let i = 0; i < weeks.length; i++) {
-    if (i < startWeekIdx) { result.push(actualFTE); continue; }
-    if (i > startWeekIdx) current *= weeklyRetention;
-
-    // Class contributions
-    classes.forEach((cls, ci) => {
-      const liveWk = classLiveWeeks[ci];
-      if (liveWk < 0 || cls.fte <= 0) return;
-      const ramp = Math.max(cls.ramp_weeks || 0, 0);
-      if (ramp === 0) {
-        if (i === liveWk) current += cls.fte;
-      } else {
-        // Linear ramp: add fte/ramp_weeks per week for ramp_weeks weeks
-        if (i >= liveWk && i < liveWk + ramp) current += cls.fte / ramp;
-      }
-    });
-
-    result.push(Math.round(current * 10) / 10);
-  }
-  return result;
 }
 
-// ── Erlang C ──────────────────────────────────────────────────────────────────
-function erlangC(A: number, N: number): number {
-  const nInt = Math.floor(N);
-  if (nInt <= A) return 1;
-  let sumFact = 1, term = 1;
-  for (let i = 1; i < nInt; i++) { term *= A / i; sumFact += term; }
-  const lastTerm = term * A / nInt;
-  const X = lastTerm * nInt / (nInt - A);
-  return Math.min(1, Math.max(0, X / (sumFact + X)));
+function monthlyToWeekly(monthlyVol: number, growthPct: number, weekOffset: number): number {
+  const weekly = monthlyVol * (12 / 52);
+  const growth = Math.pow(1 + growthPct / 100, weekOffset / 52);
+  return Math.round(weekly * growth);
 }
-function computeServiceLevel(A: number, N: number, ahtSec: number, asaSec: number): number {
-  if (N <= A) return 0;
-  return 1 - erlangC(A, N) * Math.exp(-((N - A) * asaSec) / ahtSec);
-}
-function minAgentsForSL(A: number, ahtSec: number, asaSec: number, targetSL: number): number {
-  let N = Math.ceil(A) + 1;
-  for (let i = 0; i < 200; i++) { if (computeServiceLevel(A, N, ahtSec, asaSec) >= targetSL) return N; N++; }
-  return N;
-}
-function computeFTE({ callVolume, ahtSec, hoursOp, shrinkage, occupancy, targetSL, asaSec, channel = "voice", concurrency = CHAT_DEFAULT_CONCURRENCY }: FTEParams): FTEResult {
-  if (callVolume <= 0 || ahtSec <= 0 || hoursOp <= 0) {
-    return { erlangs: 0, rawAgents: 0, fte: 0, achievedSL: 0, actualOcc: 0 };
-  }
 
-  const shrinkageFactor = 1 - shrinkage / 100;
-  const occupancyFactor = occupancy / 100;
-  if (shrinkageFactor <= 0 || occupancyFactor <= 0) {
-    return { erlangs: 0, rawAgents: 0, fte: 9999.9, achievedSL: 0, actualOcc: 0 };
-  }
+function calcWeeklyRequiredFTE(
+  weeklyVolume: number, ahtSeconds: number,
+  daysPerWeek: number, hoursPerDay: number,
+  occupancyPct: number, shrinkagePct: number,
+): number {
+  if (weeklyVolume <= 0 || ahtSeconds <= 0 || daysPerWeek <= 0 || hoursPerDay <= 0) return 0;
+  const workloadHours = (weeklyVolume * ahtSeconds) / 3600;
+  const productiveHrsPerFTE = hoursPerDay * daysPerWeek * (occupancyPct / 100);
+  if (productiveHrsPerFTE <= 0) return 0;
+  const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
+  return roundTo(workloadHours / productiveHrsPerFTE / shrinkFactor);
+}
 
-  if (isAsyncChannel(channel)) {
-    const workloadSeconds = callVolume * ahtSec;
-    const staffedSecondsPerAgent = hoursOp * 3600 * occupancyFactor;
-    const rawAgents = Math.max(1, Math.ceil(workloadSeconds / staffedSecondsPerAgent));
-    const fte = +(rawAgents / shrinkageFactor).toFixed(1);
-    const actualOcc = +Math.min(100, (workloadSeconds / (rawAgents * hoursOp * 3600)) * 100).toFixed(1);
-    return {
-      erlangs: +(workloadSeconds / 3600).toFixed(2),
-      rawAgents,
-      fte,
-      achievedSL: 0,
-      actualOcc,
-    };
+function calcRampPct(ageWeeks: number, trainWks: number, nestWks: number, nestPct: number): number {
+  if (ageWeeks < trainWks) return 0;
+  if (ageWeeks < trainWks + nestWks) return nestPct / 100;
+  return 1;
+}
+
+function fmt1(n: number | null | undefined, fallback = "—"): string {
+  if (n == null || isNaN(n)) return fallback;
+  return n % 1 === 0 ? n.toLocaleString() : n.toFixed(1);
+}
+
+function fmtPct(n: number, dp = 1): string { return `${n.toFixed(dp)}%`; }
+
+// ── Sub-components ─────────────────────────────────────────────────────────────
+
+interface EditableCellProps {
+  value: number | null;
+  autoValue?: number | null;
+  isOverridden?: boolean;
+  onSave: (val: number | null) => void;
+  onReset?: () => void;
+  className?: string;
+  format?: (v: number) => string;
+  nullable?: boolean;
+}
+
+function EditableCell({ value, autoValue, isOverridden, onSave, onReset, className = "", format = fmt1, nullable = false }: EditableCellProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function startEdit() {
+    setDraft(value != null ? String(value) : "");
+    setEditing(true);
+    setTimeout(() => inputRef.current?.select(), 0);
   }
 
-  const effectiveVolume = channel === "chat" ? callVolume / Math.max(1, concurrency) : callVolume;
-  const A = (effectiveVolume / (hoursOp * 3600)) * ahtSec;
-  const rawAgents = minAgentsForSL(A, ahtSec, asaSec, targetSL / 100);
-  const actualOcc = A / rawAgents;
-  const cap = actualOcc > occupancyFactor ? Math.ceil(A / occupancyFactor) : rawAgents;
-  const sl = computeServiceLevel(A, cap, ahtSec, asaSec) * 100;
-  return { erlangs: +A.toFixed(2), rawAgents: cap, fte: +(cap / shrinkageFactor).toFixed(1), achievedSL: +sl.toFixed(1), actualOcc: +((A / cap) * 100).toFixed(1) };
-}
-
-// ── Sub-components ────────────────────────────────────────────────────────────
-function Sparkline({ values, color = "#f97316" }: { values: number[]; color?: string }) {
-  const max = Math.max(...values), min = Math.min(...values), range = max - min || 1;
-  const pts = values.map((v, i) => `${(i / (values.length - 1)) * 100},${30 - ((v - min) / range) * 26}`).join(" ");
-  return <svg viewBox="0 0 100 30" style={{ width: 80, height: 24 }}><polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>;
-}
-
-function Badge({ value, target, unit = "" }: { value: number; target: number; unit?: string }) {
-  const ok = value >= target;
-
-  return (
-    <span
-      style={{
-        fontSize: 15,      // ← increase this
-        fontWeight: 700,
-        padding: "6px 12px",
-        borderRadius: 999,
-        background: ok ? "#dcfce7" : "#fef9c3",
-        color: ok ? "#16a34a" : "#a16207",
-        display: "inline-block"
-      }}
-    >
-      {value}
-      {unit}
-    </span>
-  );
-}
-
-function GapBadge({ gap }: { gap: number }) {
-  const over = gap >= 0;
-  return (
-    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 99, background: over ? "#dcfce7" : "#fee2e2", color: over ? "#16a34a" : "#dc2626" }}>
-      {over ? "+" : ""}{Math.round(gap)}
-    </span>
-  );
-}
-
-function MetricCard({ label, value, sub, accent, borderColor }: { label: string; value: React.ReactNode; sub?: string; accent?: string; borderColor?: string }) {
-  return (
-    <div style={{
-      background: "#fff",
-      border: `1px solid ${borderColor || "#e5e7eb"}`,
-      borderRadius: 12,
-      padding: "16px",
-      width: 154,
-      height: 120,
-      display: "flex",
-      flexDirection: "column",
-      justifyContent: "space-between",
-      boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.05)",
-      transition: "all 0.2s"
-    }}>
-      <div style={{ fontSize: 10, color: "#6b7280", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", lineHeight: 1.2 }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 800, color: accent || "#111827", display: "flex", alignItems: "center" }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500, lineHeight: 1.2 }}>{sub}</div>}
-    </div>
-  );
-}
-
-function SliderInput({ label, value, min, max, step = 1, unit, onChange }: {
-  label: string; value: number; min: number; max: number; step?: number; unit: string; onChange: (v: number) => void;
-}) {
-  const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState(String(value));
-  const commit = () => {
-    const p = parseFloat(draft);
-    if (!isNaN(p)) onChange(Math.min(max, Math.max(min, p)));
-    else setDraft(String(value));
+  function commit() {
+    const trimmed = draft.trim();
+    if (trimmed === "" && nullable) { onSave(null); setEditing(false); return; }
+    const parsed = parseFloat(trimmed);
+    if (!isNaN(parsed)) onSave(parsed);
+    else if (trimmed === "" && autoValue != null) onReset?.();
     setEditing(false);
-  };
-  React.useEffect(() => { if (!editing) setDraft(String(value)); }, [value, editing]);
+  }
+
+  const displayVal = value != null ? format(value) : (autoValue != null ? format(autoValue) : "—");
+
+  if (editing) {
+    return (
+      <td className={`px-1 py-0.5 min-w-[72px] ${className}`}>
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
+          className="w-full text-right text-xs bg-blue-50 dark:bg-blue-950 border border-blue-400 rounded px-1 py-0.5 outline-none"
+        />
+      </td>
+    );
+  }
+
   return (
-    <div style={{ marginBottom: 18 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{label}</span>
-        {editing ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-            <input autoFocus type="number" min={min} max={max} step={step} value={draft}
-              onChange={e => setDraft(e.target.value)} onBlur={commit}
-              onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setDraft(String(value)); setEditing(false); } }}
-              style={{ width: 62, padding: "2px 6px", fontSize: 13, fontWeight: 700, color: "#f97316", background: "#fff7ed", border: "1px solid #f97316", borderRadius: 6, textAlign: "center", outline: "none" }} />
-            <span style={{ fontSize: 12, color: "#f97316", fontWeight: 600 }}>{unit}</span>
+    <td
+      className={`px-2 py-1 text-right text-xs cursor-pointer select-none whitespace-nowrap group relative
+        ${isOverridden ? "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400" : ""}
+        hover:bg-muted/50 transition-colors ${className}`}
+      onClick={startEdit}
+      title={isOverridden && autoValue != null ? `Auto: ${format(autoValue)} — click to edit, use ↺ to reset` : "Click to edit"}
+    >
+      <span>{displayVal}</span>
+      {isOverridden && onReset && (
+        <button
+          onClick={e => { e.stopPropagation(); onReset(); }}
+          className="ml-1 text-amber-500 hover:text-amber-700 opacity-70 hover:opacity-100"
+          title="Reset to auto value"
+        >
+          <RotateCcw className="inline size-2.5" />
+        </button>
+      )}
+    </td>
+  );
+}
+
+function ReadOnlyCell({ value, className = "", bold = false }: { value: string; className?: string; bold?: boolean }) {
+  return (
+    <td className={`px-2 py-1 text-right text-xs whitespace-nowrap ${bold ? "font-semibold" : ""} ${className}`}>
+      {value}
+    </td>
+  );
+}
+
+function InputCell({ value, onChange, onReset, placeholder = "", color = "default" }: {
+  value: number | undefined; onChange: (v: number | null) => void; onReset?: () => void;
+  placeholder?: string; color?: "blue" | "orange" | "green" | "default";
+}) {
+  const [draft, setDraft] = useState<string>("");
+  const [focused, setFocused] = useState(false);
+
+  const colorClass = {
+    blue: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800",
+    orange: "bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800",
+    green: "bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800",
+    default: "bg-muted/30 border-border",
+  }[color];
+
+  function commit(raw: string) {
+    const t = raw.trim();
+    if (t === "") { onChange(null); return; }
+    const n = parseFloat(t);
+    if (!isNaN(n)) onChange(n);
+  }
+
+  const displayVal = focused ? draft : (value != null ? String(value) : "");
+
+  return (
+    <td className="px-1 py-0.5 min-w-[72px]">
+      <input
+        value={displayVal}
+        placeholder={placeholder}
+        onFocus={() => { setDraft(value != null ? String(value) : ""); setFocused(true); }}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => { commit(draft); setFocused(false); }}
+        onKeyDown={e => { if (e.key === "Enter") { commit(draft); setFocused(false); (e.target as HTMLInputElement).blur(); } }}
+        className={`w-full text-right text-xs border rounded px-1 py-0.5 outline-none focus:ring-1 focus:ring-blue-400 ${colorClass}`}
+      />
+    </td>
+  );
+}
+
+interface SectionHeaderRowProps {
+  label: string; colSpan: number; collapsed: boolean;
+  onToggle: () => void; onReset?: () => void;
+  bg?: string;
+}
+
+function SectionHeaderRow({ label, colSpan, collapsed, onToggle, onReset, bg = "bg-muted/60 dark:bg-muted/30" }: SectionHeaderRowProps) {
+  return (
+    <tr className={bg}>
+      <td colSpan={colSpan} className="px-3 py-1.5 text-left">
+        <div className="flex items-center justify-between">
+          <button onClick={onToggle} className="flex items-center gap-1.5 text-xs font-semibold text-foreground/70 hover:text-foreground transition-colors">
+            {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            {label}
+          </button>
+          {onReset && (
+            <button onClick={onReset} className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 transition-colors">
+              <RotateCcw className="size-3" /> Reset all
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function RowLabel({ label, indent = false, bold = false, sub = false }: { label: string; indent?: boolean; bold?: boolean; sub?: boolean }) {
+  return (
+    <td className={`sticky left-0 z-10 bg-card border-r border-border px-3 py-1 text-xs whitespace-nowrap
+      ${indent ? "pl-6" : ""} ${bold ? "font-semibold" : ""} ${sub ? "text-muted-foreground" : "text-foreground/80"}`}>
+      {label}
+    </td>
+  );
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────────
+
+export function CapacityPlanning() {
+  const { lobs, activeLob, setActiveLob } = useLOB();
+
+  // ── Local state
+  const [config, setConfig] = useState<PlanConfig>(DEFAULT_CONFIG);
+  const [weeklyInputs, setWeeklyInputs] = useState<WeekInputMap>({});
+  const [demandAssumptions, setDemandAssumptions] = useState<DemandAssumptions | null>(null);
+  const [lobSettings, setLobSettings] = useState<LobSettings | null>(null);
+  const [hoursPerDay, setHoursPerDay] = useState(7.5);
+  const [activeChannel, setActiveChannel] = useState<ChannelKey>("voice");
+  const [assumptionsOpen, setAssumptionsOpen] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [collapsed, setCollapsed] = useState({ demand: false, staffing: false, hcPlan: false });
+  const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const configTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dataLoadedFor = useRef<string | null>(null);
+
+  // ── Derived
+  const isDedicated = lobSettings?.pooling_mode === "dedicated";
+  const enabledChannels = useMemo<ChannelKey[]>(() => {
+    if (!lobSettings?.channels_enabled) return ["voice"];
+    return (["voice", "chat", "email"] as ChannelKey[]).filter(c => lobSettings.channels_enabled[c]);
+  }, [lobSettings]);
+  const apiChannel = isDedicated ? activeChannel : "blended";
+
+  // ── Load data when LOB or channel changes
+  useEffect(() => {
+    if (!activeLob) return;
+    const key = `${activeLob.id}:${apiChannel}`;
+    if (dataLoadedFor.current === key) return;
+    dataLoadedFor.current = key;
+    loadAllData(activeLob.id, apiChannel);
+  }, [activeLob?.id, apiChannel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadAllData(lobId: number, channel: string) {
+    setLoading(true);
+    try {
+      const [configRes, inputsRes, demandRes, lobSettingsRes, shrinkageRes] = await Promise.all([
+        fetch(apiUrl(`/api/capacity-plan-config?lob_id=${lobId}&channel=${channel}`)),
+        fetch(apiUrl(`/api/capacity-plan-inputs?lob_id=${lobId}&channel=${channel}`)),
+        fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${lobId}`)),
+        fetch(apiUrl(`/api/lob-settings?lob_id=${lobId}`)),
+        fetch(apiUrl(`/api/shrinkage-plan?lob_id=${lobId}`)),
+      ]);
+
+      const [cfgData, inputsData, demandData, lsData, shrData] = await Promise.all([
+        configRes.json(), inputsRes.json(), demandRes.json(), lobSettingsRes.json(), shrinkageRes.json(),
+      ]);
+
+      if (cfgData) {
+        setConfig({
+          planStartDate: cfgData.plan_start_date?.split("T")[0] ?? DEFAULT_CONFIG.planStartDate,
+          horizonWeeks: cfgData.horizon_weeks ?? DEFAULT_CONFIG.horizonWeeks,
+          attritionRateMonthly: parseFloat(cfgData.attrition_rate_monthly) ?? DEFAULT_CONFIG.attritionRateMonthly,
+          rampTrainingWeeks: cfgData.ramp_training_weeks ?? DEFAULT_CONFIG.rampTrainingWeeks,
+          rampNestingWeeks: cfgData.ramp_nesting_weeks ?? DEFAULT_CONFIG.rampNestingWeeks,
+          rampNestingPct: parseFloat(cfgData.ramp_nesting_pct) ?? DEFAULT_CONFIG.rampNestingPct,
+          startingHc: parseFloat(cfgData.starting_hc) ?? DEFAULT_CONFIG.startingHc,
+        });
+      } else {
+        setConfig(DEFAULT_CONFIG);
+      }
+
+      if (Array.isArray(inputsData)) {
+        const map: WeekInputMap = {};
+        for (const row of inputsData) {
+          map[row.week_offset] = {
+            plannedHires: row.planned_hires != null ? parseFloat(row.planned_hires) : undefined,
+            knownExits: row.known_exits != null ? parseFloat(row.known_exits) : undefined,
+            actualHc: row.actual_hc != null ? parseFloat(row.actual_hc) : null,
+            actualAttrition: row.actual_attrition != null ? parseFloat(row.actual_attrition) : null,
+            volVoice: row.vol_override_voice != null ? parseFloat(row.vol_override_voice) : null,
+            volChat: row.vol_override_chat != null ? parseFloat(row.vol_override_chat) : null,
+            volEmail: row.vol_override_email != null ? parseFloat(row.vol_override_email) : null,
+            ahtVoice: row.aht_override_voice != null ? parseFloat(row.aht_override_voice) : null,
+            ahtChat: row.aht_override_chat != null ? parseFloat(row.aht_override_chat) : null,
+            ahtEmail: row.aht_override_email != null ? parseFloat(row.aht_override_email) : null,
+          };
+        }
+        setWeeklyInputs(map);
+      }
+
+      if (demandData?.assumptions) {
+        setDemandAssumptions(demandData.assumptions as DemandAssumptions);
+      } else {
+        setDemandAssumptions(null);
+      }
+
+      if (lsData) setLobSettings(lsData as LobSettings);
+
+      if (shrData?.hours_per_day) setHoursPerDay(parseFloat(shrData.hours_per_day));
+      else setHoursPerDay(7.5);
+
+    } catch (err) {
+      toast.error("Failed to load capacity plan data.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Save config (debounced 1.5s)
+  const saveConfig = useCallback((next: PlanConfig) => {
+    if (!activeLob) return;
+    if (configTimer.current) clearTimeout(configTimer.current);
+    configTimer.current = setTimeout(async () => {
+      try {
+        await fetch(apiUrl(`/api/capacity-plan-config?lob_id=${activeLob.id}&channel=${apiChannel}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            plan_start_date: next.planStartDate,
+            horizon_weeks: next.horizonWeeks,
+            attrition_rate_monthly: next.attritionRateMonthly,
+            ramp_training_weeks: next.rampTrainingWeeks,
+            ramp_nesting_weeks: next.rampNestingWeeks,
+            ramp_nesting_pct: next.rampNestingPct,
+            starting_hc: next.startingHc,
+          }),
+        });
+      } catch { toast.error("Failed to save plan config."); }
+    }, 1500);
+  }, [activeLob, apiChannel]);
+
+  function updateConfig(patch: Partial<PlanConfig>) {
+    const next = { ...config, ...patch };
+    setConfig(next);
+    saveConfig(next);
+  }
+
+  // ── Save individual cell input
+  function saveCell(weekOffset: number, field: keyof WeekInput, value: number | null) {
+    if (!activeLob) return;
+    const dbField = FIELD_MAP[field];
+    if (!dbField) return;
+    const timerKey = `${weekOffset}:${field}`;
+    const existing = saveTimers.current.get(timerKey);
+    if (existing) clearTimeout(existing);
+    const t = setTimeout(async () => {
+      try {
+        await fetch(apiUrl(`/api/capacity-plan-inputs?lob_id=${activeLob.id}&channel=${apiChannel}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ week_offset: weekOffset, field: dbField, value }),
+        });
+      } catch { toast.error("Failed to save."); }
+      saveTimers.current.delete(timerKey);
+    }, 400);
+    saveTimers.current.set(timerKey, t);
+  }
+
+  function setCellInput(weekOffset: number, field: keyof WeekInput, value: number | null) {
+    setWeeklyInputs(prev => ({
+      ...prev,
+      [weekOffset]: { ...(prev[weekOffset] ?? {}), [field]: value },
+    }));
+    saveCell(weekOffset, field, value);
+  }
+
+  function resetOverride(weekOffset: number, field: keyof WeekInput) {
+    setCellInput(weekOffset, field, null);
+  }
+
+  function resetDemandRow(volField: keyof WeekInput, ahtField: keyof WeekInput) {
+    const allWeeks = Object.keys(weeklyInputs).map(Number);
+    const updated = { ...weeklyInputs };
+    for (const w of allWeeks) {
+      if (updated[w]) {
+        updated[w] = { ...updated[w], [volField]: null, [ahtField]: null };
+        saveCell(w, volField, null);
+        saveCell(w, ahtField, null);
+      }
+    }
+    setWeeklyInputs(updated);
+  }
+
+  function resetAllDemandOverrides() {
+    const allWeeks = Object.keys(weeklyInputs).map(Number);
+    const updated = { ...weeklyInputs };
+    for (const w of allWeeks) {
+      if (updated[w]) {
+        const clean = { ...updated[w] };
+        for (const f of ["volVoice","volChat","volEmail","ahtVoice","ahtChat","ahtEmail"] as (keyof WeekInput)[]) {
+          clean[f] = null as never;
+          saveCell(w, f, null);
+        }
+        updated[w] = clean;
+      }
+    }
+    setWeeklyInputs(updated);
+  }
+
+  // ── Computed weeks
+  const weeks = useMemo(() => buildWeeks(config.planStartDate, config.horizonWeeks), [config.planStartDate, config.horizonWeeks]);
+
+  // ── Auto volumes from demand snapshot
+  const autoBaseVolumes = useMemo(() => {
+    const a = demandAssumptions;
+    const growthPct = a?.growthRate ?? 0;
+    return weeks.map(w => ({
+      voice: monthlyToWeekly(a?.voiceVolume ?? 0, growthPct, w.weekOffset),
+      chat: monthlyToWeekly(a?.chatVolume ?? 0, growthPct, w.weekOffset),
+      email: monthlyToWeekly(a?.emailVolume ?? 0, growthPct, w.weekOffset),
+    }));
+  }, [demandAssumptions, weeks]);
+
+  // ── Auto AHTs (from lob_settings, fall back to demand assumptions)
+  const autoAhts = useMemo(() => ({
+    voice: lobSettings?.voice_aht ?? demandAssumptions?.aht ?? 300,
+    chat: lobSettings?.chat_aht ?? demandAssumptions?.chatAht ?? 450,
+    email: lobSettings?.email_aht ?? demandAssumptions?.emailAht ?? 600,
+  }), [lobSettings, demandAssumptions]);
+
+  // ── Staffing params
+  const occupancyPct = demandAssumptions?.occupancy ?? (lobSettings?.email_occupancy ?? 85);
+  const shrinkagePct = demandAssumptions?.shrinkage ?? 20;
+  const daysPerWeek = demandAssumptions?.operatingDaysPerWeek ?? 5;
+
+  // ── Full computed calculations per week
+  const weekCalcs = useMemo<WeekCalc[]>(() => {
+    let projHC = config.startingHc;
+    const { attritionRateMonthly, rampTrainingWeeks, rampNestingWeeks, rampNestingPct } = config;
+    const weeklyAttritionRate = 1 - Math.pow(1 - attritionRateMonthly / 100, 12 / 52);
+
+    return weeks.map((wk, w) => {
+      const inp = weeklyInputs[w] ?? {};
+      const auto = autoBaseVolumes[w] ?? { voice: 0, chat: 0, email: 0 };
+
+      // Effective volumes (override or auto)
+      const effVolVoice = inp.volVoice != null ? inp.volVoice : auto.voice;
+      const effVolChat = inp.volChat != null ? inp.volChat : auto.chat;
+      const effVolEmail = inp.volEmail != null ? inp.volEmail : auto.email;
+
+      // Effective AHTs
+      const effAhtVoice = inp.ahtVoice != null ? inp.ahtVoice : autoAhts.voice;
+      const effAhtChat = inp.ahtChat != null ? inp.ahtChat : autoAhts.chat;
+      const effAhtEmail = inp.ahtEmail != null ? inp.ahtEmail : autoAhts.email;
+
+      // Required FTE — blended workload divided by combined productive capacity
+      let requiredFTE = 0;
+      if (isDedicated) {
+        const vol = activeChannel === "voice" ? effVolVoice : activeChannel === "chat" ? effVolChat : effVolEmail;
+        const aht = activeChannel === "voice" ? effAhtVoice : activeChannel === "chat" ? effAhtChat : effAhtEmail;
+        requiredFTE = calcWeeklyRequiredFTE(vol, aht, daysPerWeek, hoursPerDay, occupancyPct, shrinkagePct);
+      } else {
+        const wlVoice = (effVolVoice * effAhtVoice) / 3600;
+        const wlChat = (effVolChat * effAhtChat) / 3600;
+        const wlEmail = (effVolEmail * effAhtEmail) / 3600;
+        const totalWL = wlVoice + wlChat + wlEmail;
+        const productive = hoursPerDay * daysPerWeek * (occupancyPct / 100);
+        if (productive > 0) {
+          const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
+          requiredFTE = roundTo(totalWL / productive / shrinkFactor);
+        }
+      }
+
+      // Attrition decay
+      const attritionDecay = w > 0 ? roundTo(projHC * weeklyAttritionRate, 2) : 0;
+
+      // Effective new HC delta from ramp (all cohorts)
+      let effectiveNewHc = 0;
+      for (let h = 0; h <= w; h++) {
+        const cohort = weeklyInputs[h]?.plannedHires ?? 0;
+        if (cohort <= 0) continue;
+        const ageThis = w - h;
+        const agePrev = w - 1 - h;
+        const pctThis = calcRampPct(ageThis, rampTrainingWeeks, rampNestingWeeks, rampNestingPct);
+        const pctPrev = agePrev >= 0 ? calcRampPct(agePrev, rampTrainingWeeks, rampNestingWeeks, rampNestingPct) : 0;
+        effectiveNewHc += cohort * (pctThis - pctPrev);
+      }
+      effectiveNewHc = roundTo(effectiveNewHc, 1);
+
+      const plannedHires = inp.plannedHires ?? 0;
+      const knownExits = inp.knownExits ?? 0;
+      const actualHc = inp.actualHc ?? null;
+      const actualAttrition = inp.actualAttrition ?? null;
+
+      projHC = Math.max(0, roundTo(projHC + effectiveNewHc - attritionDecay - knownExits, 1));
+
+      const gapSurplus = roundTo(projHC - requiredFTE, 1);
+      const actualGapSurplus = actualHc != null ? roundTo(actualHc - requiredFTE, 1) : null;
+
+      return {
+        ...wk,
+        autoVolVoice: auto.voice, autoVolChat: auto.chat, autoVolEmail: auto.email,
+        effVolVoice, effVolChat, effVolEmail, effVolTotal: effVolVoice + effVolChat + effVolEmail,
+        autoAhtVoice: autoAhts.voice, autoAhtChat: autoAhts.chat, autoAhtEmail: autoAhts.email,
+        effAhtVoice, effAhtChat, effAhtEmail,
+        projOccupancyPct: occupancyPct, projShrinkagePct: shrinkagePct,
+        requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
+        knownExits, projectedHc: projHC, actualHc, actualAttrition,
+        gapSurplus, actualGapSurplus,
+      };
+    });
+  }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay, occupancyPct, shrinkagePct, daysPerWeek]);
+
+  // ── Attrition summary
+  const attritionSummary = useMemo(() => {
+    const totalExits = weekCalcs.reduce((s, w) => s + w.attritionDecay + w.knownExits, 0);
+    const annualizedPct = config.attritionRateMonthly * 12;
+    const totalActualAttrition = weekCalcs.reduce((s, w) => s + (w.actualAttrition ?? 0), 0);
+    return { totalExits: roundTo(totalExits), annualizedPct, totalActualAttrition };
+  }, [weekCalcs, config.attritionRateMonthly]);
+
+  // ── LOB switch resets channel tab
+  function handleLobSwitch(lobId: number) {
+    const lob = lobs.find(l => l.id === lobId);
+    if (!lob) return;
+    dataLoadedFor.current = null;
+    setActiveLob(lob);
+    setActiveChannel("voice");
+  }
+
+  function handleChannelSwitch(ch: ChannelKey) {
+    dataLoadedFor.current = null;
+    setActiveChannel(ch);
+  }
+
+  const colSpan = weeks.length + 1;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  return (
+    <PageLayout title="Capacity Planning">
+      {/* LOB Tabs */}
+      <div className="flex items-center gap-1 mb-4 flex-wrap">
+        {lobs.map(lob => (
+          <button
+            key={lob.id}
+            onClick={() => handleLobSwitch(lob.id)}
+            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors border ${
+              activeLob?.id === lob.id
+                ? "bg-primary text-primary-foreground border-primary"
+                : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
+            }`}
+          >
+            {lob.lob_name}
+          </button>
+        ))}
+      </div>
+
+      {/* Channel sub-tabs (dedicated LOBs only) */}
+      {isDedicated && enabledChannels.length > 1 && (
+        <div className="flex items-center gap-1 mb-4">
+          {enabledChannels.map(ch => (
+            <button
+              key={ch}
+              onClick={() => handleChannelSwitch(ch)}
+              className={`px-3 py-1 rounded text-xs font-medium transition-colors border ${
+                activeChannel === ch
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "border-border text-muted-foreground hover:border-blue-400 hover:text-foreground"
+              }`}
+            >
+              {CHANNEL_LABELS[ch]}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {loading && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
+          <Loader2 className="size-4 animate-spin" /> Loading plan…
+        </div>
+      )}
+
+      {/* ── Assumptions Panel */}
+      <Card className="mb-4">
+        <CardHeader className="py-3 px-4 cursor-pointer" onClick={() => setAssumptionsOpen(v => !v)}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Settings2 className="size-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-semibold">Plan Assumptions</CardTitle>
+            </div>
+            {assumptionsOpen ? <ChevronDown className="size-4 text-muted-foreground" /> : <ChevronRight className="size-4 text-muted-foreground" />}
           </div>
-        ) : (
-          <span onClick={() => { setDraft(String(value)); setEditing(true); }} title="Click to type"
-            style={{ fontSize: 13, fontWeight: 700, color: "#f97316", background: "#fff7ed", border: "1px solid #fed7aa", padding: "2px 8px", borderRadius: 6, cursor: "text", userSelect: "none", minWidth: 44, textAlign: "center" }}>
-            {value}{unit}
-          </span>
+        </CardHeader>
+        {assumptionsOpen && (
+          <CardContent className="pb-4 pt-0">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Plan Start Date</Label>
+                <Input type="date" value={config.planStartDate} onChange={e => updateConfig({ planStartDate: e.target.value })} className="h-8 text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Horizon (weeks)</Label>
+                <Input type="number" min={4} max={104} value={config.horizonWeeks} onChange={e => updateConfig({ horizonWeeks: parseInt(e.target.value) || 26 })} className="h-8 text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Starting HC</Label>
+                <Input type="number" min={0} value={config.startingHc} onChange={e => updateConfig({ startingHc: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Attrition Rate (%/mo)</Label>
+                <Input type="number" min={0} max={50} step={0.1} value={config.attritionRateMonthly} onChange={e => updateConfig({ attritionRateMonthly: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Training Weeks (0%)</Label>
+                <Input type="number" min={0} max={26} value={config.rampTrainingWeeks} onChange={e => updateConfig({ rampTrainingWeeks: parseInt(e.target.value) || 0 })} className="h-8 text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Nesting Weeks</Label>
+                <Input type="number" min={0} max={26} value={config.rampNestingWeeks} onChange={e => updateConfig({ rampNestingWeeks: parseInt(e.target.value) || 0 })} className="h-8 text-xs" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Nesting Productivity (%)</Label>
+                <Input type="number" min={0} max={100} value={config.rampNestingPct} onChange={e => updateConfig({ rampNestingPct: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-3">
+              Ramp: {config.rampTrainingWeeks}wk training (0%) → {config.rampNestingWeeks}wk nesting ({config.rampNestingPct}%) → full production (100%)
+            </p>
+          </CardContent>
+        )}
+      </Card>
+
+      {/* ── Attrition Summary */}
+      <div className="flex items-center gap-4 mb-4 flex-wrap text-xs">
+        <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
+          <TrendingDown className="size-3.5 text-red-500" />
+          <span className="text-muted-foreground">Annualized Attrition:</span>
+          <span className="font-semibold">{fmtPct(attritionSummary.annualizedPct)}</span>
+        </div>
+        <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
+          <AlertTriangle className="size-3.5 text-orange-500" />
+          <span className="text-muted-foreground">Projected Exits (period):</span>
+          <span className="font-semibold">{fmt1(attritionSummary.totalExits)}</span>
+        </div>
+        <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
+          <CheckCircle2 className="size-3.5 text-green-500" />
+          <span className="text-muted-foreground">Actual Attrition (recorded):</span>
+          <span className="font-semibold">{fmt1(attritionSummary.totalActualAttrition)}</span>
+        </div>
+        {demandAssumptions == null && (
+          <Badge variant="outline" className="text-amber-600 border-amber-400 text-xs">
+            No demand data — set up Demand Forecasting first
+          </Badge>
         )}
       </div>
-      <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)}
-        style={{ width: "100%", accentColor: "#f97316", height: 4, cursor: "pointer" }} />
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
-        <span style={{ fontSize: 10, color: "#9ca3af" }}>{min}{unit}</span>
-        <span style={{ fontSize: 10, color: "#9ca3af" }}>{max}{unit}</span>
-      </div>
-    </div>
-  );
-}
 
-// ── Main component ────────────────────────────────────────────────────────────
-export function CapacityPlanning() {
-  const navigate = useNavigate();
-  const { activeLob } = useLOB();
+      {/* ── Main Table */}
+      <div className="rounded-lg border border-border overflow-hidden">
+        <div className="overflow-auto" style={{ maxHeight: "calc(100vh - 320px)" }}>
+          <table className="border-collapse text-xs" style={{ minWidth: `${180 + weeks.length * 80}px` }}>
 
-  // Persist active scenario + channel cross-device
-  const [capPrefs, setCapPrefs] = usePagePreferences(
-    "capacity_planning",
-    { active_scenario_id: null as number | null, selected_channel: "voice" as ChannelKey },
-  );
-  const prefsLoaded = useRef(false);
-
-  const [selectedChannel, setSelectedChannel] = useState<ChannelKey>("voice");
-
-  // Planning parameters
-  const [aht, setAht] = useState<number>(320);
-  const [hoursOp, setHoursOp] = useState<number>(50);
-  const [workDays, setWorkDays] = useState<number>(5);
-  const [dayPcts, setDayPcts] = useState<number[]>([20, 20, 20, 20, 20]);
-  const [shrinkage, setShrinkage] = useState<number>(30);
-  const [occupancy, setOccupancy] = useState<number>(85);
-  const [targetSL, setTargetSL] = useState<number>(80);
-  const [asa, setAsa] = useState<number>(20);
-  const [selectedWeek, setSelectedWeek] = useState<number>(0);
-
-  // ── Workforce planning state ──
-  const [actualFTE, setActualFTE] = useState<number>(0);
-  const [actualFTEDate, setActualFTEDate] = useState<string>(todayStr());
-  const [attritionPct, setAttritionPct] = useState<number>(0);
-  const [classes, setClasses] = useState<TrainingClass[]>([]);
-
-  // Forecast
-  const [availableYears, setAvailableYears] = useState<string[]>([]);
-  const [selectedForecastYear, setSelectedForecastYear] = useState<string>("");
-  const [projectionVolumes, setProjectionVolumes] = useState<number[]>(Array(12).fill(0));
-  const [projectionLabel, setProjectionLabel] = useState<string>("");
-  const [forecastMethod, setForecastMethod] = useState<string>("");
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [loadError, setLoadError] = useState<string>("");
-
-  // Scenarios
-  const [scenarios, setScenarios] = useState<Scenario[]>([]);
-  const [activeScenarioId, setActiveScenarioId] = useState<number | null>(null);
-  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved" | "">("");
-  const [renamingId, setRenamingId] = useState<number | null>(null);
-  const [renameValue, setRenameValue] = useState<string>("");
-  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isLoadingScenario = useRef<boolean>(false);
-
-  const startMonday = useMemo(() => getMondayOf(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), []);
-  const isAsyncSelectedChannel = isAsyncChannel(selectedChannel);
-
-  useEffect(() => {
-    setSelectedForecastYear("");
-    setAvailableYears([]);
-    setProjectionVolumes(Array(12).fill(0));
-    setScenarios([]);
-    setActiveScenarioId(null);
-  }, [selectedChannel]);
-
-  useEffect(() => {
-    if (isLoadingScenario.current) return;
-    const even = Math.floor(100 / workDays), rem = 100 - even * workDays;
-    setDayPcts(Array.from({ length: workDays }, (_, i) => even + (i === 0 ? rem : 0)));
-  }, [workDays]);
-
-  const parseVolumes = (raw: unknown): number[] => {
-    if (Array.isArray(raw)) return raw as number[];
-    if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return Array(12).fill(0); } }
-    return Array(12).fill(0);
-  };
-  const parseClasses = (raw: unknown): TrainingClass[] => {
-    if (Array.isArray(raw)) return raw as TrainingClass[];
-    if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return []; } }
-    return [];
-  };
-  const getProjectionLabel = (yearLabel: string, allYears: string[]): string => {
-    const idx = allYears.indexOf(yearLabel);
-    return idx < 0 ? `${yearLabel} Projection` : `Year ${idx + 2} Projection`;
-  };
-
-  // Build save payload including new workforce fields
-  const buildPayload = useCallback((overrideName?: string) => ({
-    channel: selectedChannel,
-    lob_id: activeLob?.id,
-    scenario_name: overrideName ?? (scenarios.find(s => s.id === activeScenarioId)?.scenario_name ?? "Scenario 1"),
-    forecast_year: selectedForecastYear,
-    aht, hours_op: hoursOp, work_days: workDays, day_pcts: dayPcts,
-    shrinkage, occupancy, target_sl: targetSL, asa, selected_week: selectedWeek,
-    actual_fte: actualFTE, actual_fte_start_date: actualFTEDate,
-    attrition_pct: attritionPct, classes,
-  }), [selectedChannel, scenarios, activeScenarioId, selectedForecastYear, aht, hoursOp, workDays, dayPcts,
-       shrinkage, occupancy, targetSL, asa, selectedWeek, actualFTE, actualFTEDate, attritionPct, classes]);
-
-  const saveScenario = useCallback(async (id: number | null = activeScenarioId) => {
-    if (!id) return;
-    setSaveStatus("saving");
-    try {
-      await fetch(apiUrl(`/api/capacity-scenarios/${id}`), {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload()),
-      });
-      setSaveStatus("saved"); setTimeout(() => setSaveStatus(""), 2500);
-    } catch { setSaveStatus("unsaved"); }
-  }, [activeScenarioId, buildPayload]);
-
-  const triggerAutoSave = useCallback(() => {
-    if (isLoadingScenario.current || !activeScenarioId) return;
-    setSaveStatus("unsaved");
-    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-    autoSaveTimer.current = setTimeout(() => saveScenario(activeScenarioId), 1500);
-  }, [activeScenarioId, saveScenario]);
-
-  // Auto-save watches ALL planning + workforce fields
-  useEffect(() => { triggerAutoSave(); },
-    [aht, hoursOp, workDays, shrinkage, occupancy, targetSL, asa, selectedWeek,
-     selectedForecastYear, dayPcts, actualFTE, actualFTEDate, attritionPct, classes]);
-
-  const loadScenario = useCallback((s: Scenario) => {
-    isLoadingScenario.current = true;
-    setActiveScenarioId(s.id);
-    setAht(s.aht); setHoursOp(s.hours_op); setWorkDays(s.work_days);
-    setDayPcts(Array.isArray(s.day_pcts) ? s.day_pcts : JSON.parse(s.day_pcts as unknown as string));
-    setShrinkage(s.shrinkage); setOccupancy(s.occupancy); setTargetSL(s.target_sl);
-    setAsa(s.asa); setSelectedWeek(s.selected_week ?? 0);
-    if (s.forecast_year) setSelectedForecastYear(s.forecast_year);
-    setActualFTE(s.actual_fte ?? 0);
-    setActualFTEDate(s.actual_fte_start_date || todayStr());
-    setAttritionPct(s.attrition_pct ?? 0);
-    setClasses(parseClasses(s.classes));
-    setTimeout(() => { isLoadingScenario.current = false; }, 200);
-  }, []);
-
-  // Restore channel from prefs once (first time prefs arrive for this LOB)
-  useEffect(() => {
-    if (prefsLoaded.current) return;
-    if (capPrefs.selected_channel && capPrefs.selected_channel !== "voice") {
-      setSelectedChannel(capPrefs.selected_channel);
-    }
-    prefsLoaded.current = true;
-  }, [capPrefs]);
-
-  // Save channel + active scenario to prefs whenever they change
-  useEffect(() => {
-    if (!prefsLoaded.current) return;
-    setCapPrefs({ selected_channel: selectedChannel });
-  }, [selectedChannel]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!prefsLoaded.current || activeScenarioId === null) return;
-    setCapPrefs({ active_scenario_id: activeScenarioId });
-  }, [activeScenarioId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!activeLob) { setIsLoading(false); return; }
-    const fetchScenarios = async () => {
-      try {
-        const res = await fetch(apiUrl(`/api/capacity-scenarios?channel=${selectedChannel}&lob_id=${activeLob.id}`));
-        const data: Scenario[] = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
-          setScenarios(data);
-          // Restore last-active scenario if it exists in the fetched list
-          const savedId = capPrefs.active_scenario_id;
-          const saved = savedId ? data.find(s => s.id === savedId) : null;
-          loadScenario(saved ?? data[0]);
-        } else await createNewScenario("Scenario 1", true);
-      } catch { }
-    };
-    fetchScenarios();
-  }, [selectedChannel, activeLob?.id, loadScenario]);
-
-  useEffect(() => {
-    if (!activeLob) { setIsLoading(false); return; }
-    const fetchYears = async () => {
-      setIsLoading(true); setLoadError("");
-      try {
-        const res = await fetch(apiUrl(`/api/forecasts?channel=${selectedChannel}&lob_id=${activeLob.id}`));
-        if (!res.ok) throw new Error();
-        const data: ForecastRecord[] = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
-          const years = data.map(d => d.year_label);
-          setAvailableYears(years);
-          setSelectedForecastYear(prev => prev || years[0]);
-          const latest = data[data.length - 1];
-          setProjectionVolumes(parseVolumes(latest.forecast_results));
-          setProjectionLabel(getProjectionLabel(latest.year_label, years));
-          setForecastMethod(latest.forecast_method || "");
-        } else throw new Error();
-      } catch {
-        setLoadError("No forecast data found. Go to Forecasting and save a forecast first.");
-        setProjectionVolumes([61000,57000,65000,70000,74000,68000,72000,75000,71000,77000,83000,79000]);
-        setAvailableYears(["Sample"]); setSelectedForecastYear(prev => prev || "Sample");
-        setProjectionLabel("Year 2 Projection");
-      } finally { setIsLoading(false); }
-    };
-    fetchYears();
-  }, [selectedChannel, activeLob?.id]);
-
-  useEffect(() => {
-    if (!selectedForecastYear || selectedForecastYear === "Sample" || !activeLob) return;
-    const fetchProjection = async () => {
-      setIsLoading(true);
-      try {
-        const res = await fetch(apiUrl(`/api/forecasts/${encodeURIComponent(selectedForecastYear)}?channel=${selectedChannel}&lob_id=${activeLob.id}`));
-        if (!res.ok) throw new Error();
-        const data: ForecastRecord = await res.json();
-        if (data) {
-          const proj = parseVolumes(data.forecast_results);
-          setProjectionVolumes(proj); setProjectionLabel(getProjectionLabel(selectedForecastYear, availableYears));
-          setForecastMethod(data.forecast_method || ""); setLoadError("");
-          if (proj.every(v => v === 0)) setLoadError(`No projection for ${selectedForecastYear}. Generate & save in Forecasting first.`);
-        }
-      } catch { setLoadError(`Failed to load projection for ${selectedForecastYear}.`); }
-      finally { setIsLoading(false); }
-    };
-    fetchProjection();
-  }, [selectedForecastYear, availableYears, selectedChannel, activeLob?.id]);
-
-  const createNewScenario = async (name?: string, isFirst = false) => {
-    const newName = name ?? `Scenario ${scenarios.length + 1}`;
-    const defaults = getChannelDefaults(selectedChannel);
-    try {
-      const res = await fetch(apiUrl("/api/capacity-scenarios"), {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: selectedChannel,
-          lob_id: activeLob?.id,
-          scenario_name: newName, forecast_year: selectedForecastYear,
-          aht: isFirst ? defaults.aht : aht, hours_op: isFirst ? 50 : hoursOp,
-          work_days: isFirst ? 5 : workDays, day_pcts: isFirst ? [20,20,20,20,20] : dayPcts,
-          shrinkage: isFirst ? 30 : shrinkage, occupancy: isFirst ? defaults.occupancy : occupancy,
-          target_sl: isFirst ? defaults.targetSL : targetSL, asa: isFirst ? defaults.asa : asa, selected_week: 0,
-          actual_fte: isFirst ? 0 : actualFTE, actual_fte_start_date: isFirst ? todayStr() : actualFTEDate,
-          attrition_pct: isFirst ? 0 : attritionPct, classes: isFirst ? [] : classes,
-        }),
-      });
-      const created: Scenario = await res.json();
-      setScenarios(prev => [...prev, created]); loadScenario(created);
-    } catch {
-      const fake: Scenario = { id: Date.now(), scenario_name: newName, forecast_year: selectedForecastYear, channel: selectedChannel,
-        aht, hours_op: hoursOp, work_days: workDays, day_pcts: dayPcts, shrinkage, occupancy,
-        target_sl: targetSL, asa, selected_week: 0, actual_fte: actualFTE,
-        actual_fte_start_date: actualFTEDate, attrition_pct: attritionPct, classes };
-      setScenarios(prev => [...prev, fake]); setActiveScenarioId(fake.id);
-    }
-  };
-
-  const deleteScenario = async (id: number) => {
-    if (scenarios.length <= 1) return;
-    try { await fetch(apiUrl(`/api/capacity-scenarios/${id}?channel=${selectedChannel}`), { method: "DELETE" }); } catch { }
-    const remaining = scenarios.filter(s => s.id !== id);
-    setScenarios(remaining);
-    if (activeScenarioId === id) loadScenario(remaining[remaining.length - 1]);
-  };
-
-  const commitRename = async (id: number) => {
-    const trimmed = renameValue.trim();
-    if (!trimmed) { setRenamingId(null); return; }
-    setScenarios(prev => prev.map(s => s.id === id ? { ...s, scenario_name: trimmed } : s));
-    try {
-      await fetch(apiUrl(`/api/capacity-scenarios/${id}`), {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload(trimmed)),
-      });
-    } catch { }
-    setRenamingId(null);
-  };
-
-  // Class management
-  const addClass = () => setClasses(prev => [...prev, { id: newId(), fte: 10, live_date: todayStr(), ramp_weeks: 4 }]);
-  const updateClass = (id: string, field: keyof TrainingClass, value: string | number) =>
-    setClasses(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
-  const removeClass = (id: string) => setClasses(prev => prev.filter(c => c.id !== id));
-
-  // ── Computations ──────────────────────────────────────────────────────────
-  const weeks = useMemo<WeekData[]>(
-    () => buildWeeksFromMonthly(projectionVolumes, startMonday, workDays),
-    [projectionVolumes, startMonday, workDays]);
-
-  const weeklyResults = useMemo<WeekResult[]>(() =>
-    weeks.map(w => ({ ...w, ...computeFTE({ callVolume: w.baseVol, ahtSec: aht, hoursOp, shrinkage, occupancy, targetSL, asaSec: asa, channel: selectedChannel, concurrency: CHAT_DEFAULT_CONCURRENCY }) })),
-    [weeks, aht, hoursOp, shrinkage, occupancy, targetSL, asa, selectedChannel]);
-
-  const actualFTEByWeek = useMemo(() =>
-    computeActualFTEByWeek(actualFTE, actualFTEDate, attritionPct, classes, weeks),
-    [actualFTE, actualFTEDate, attritionPct, classes, weeks]);
-
-  const gapByWeek = useMemo(() =>
-    weeklyResults.map((w, i) => actualFTEByWeek[i] > 0 ? actualFTEByWeek[i] - w.fte : null),
-    [weeklyResults, actualFTEByWeek]);
-
-  const hasWorkforceData = actualFTE > 0;
-
-  const sel = weeklyResults[selectedWeek];
-  const selWeek = weeks[selectedWeek];
-  const selActualFTE = actualFTEByWeek[selectedWeek];
-  const selGap = gapByWeek[selectedWeek];
-  const ALL_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-  const dailyBreakdown = useMemo(() => {
-    const activeDays = ALL_DAY_NAMES.slice(0, workDays);
-    const totalPct = dayPcts.slice(0, workDays).reduce((a, b) => a + b, 0) || 100;
-    return activeDays.map((day, i) => {
-      const pct = (dayPcts[i] ?? 0) / totalPct;
-      const vol = Math.round((selWeek?.baseVol || 0) * pct);
-      return { day, vol, ...computeFTE({ callVolume: vol, ahtSec: aht, hoursOp: hoursOp / workDays, shrinkage, occupancy, targetSL, asaSec: asa, channel: selectedChannel, concurrency: CHAT_DEFAULT_CONCURRENCY }) };
-    });
-  }, [selWeek, aht, hoursOp, shrinkage, occupancy, targetSL, asa, workDays, dayPcts, selectedChannel]);
-
-  const selActualSL = useMemo(() => {
-    if (isAsyncSelectedChannel || !sel || !selActualFTE || selActualFTE <= 0) return 0;
-    // Raw agents = actual FTE * (1 - shrinkage%)
-    const rawAgents = selActualFTE * (1 - shrinkage / 100);
-    const A = sel.erlangs;
-    if (rawAgents <= A) return 0;
-    return computeServiceLevel(A, rawAgents, aht, asa) * 100;
-  }, [isAsyncSelectedChannel, sel, selActualFTE, shrinkage, aht, asa]);
-
-  const maxFTE = Math.max(...weeklyResults.map(w => w.fte), hasWorkforceData ? Math.max(...actualFTEByWeek) : 0, 1);
-  const maxProjectionVol = Math.max(...projectionVolumes, 1);
-  const activeScenario = scenarios.find(s => s.id === activeScenarioId);
-
-  // SVG actual FTE line points
-  const svgActualPoints = useMemo(() => {
-    if (!hasWorkforceData) return "";
-    return actualFTEByWeek.map((fte, i) => {
-      const x = i * 50 + 22;
-      const y = 120 - (fte / (maxFTE * 1.2)) * 120;
-      return `${x},${Math.max(2, Math.min(120, y))}`;
-    }).join(" ");
-  }, [actualFTEByWeek, maxFTE, hasWorkforceData]);
-
-  // ── Render ────────────────────────────────────────────────────────────────
-  return (
-    <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
-
-      {/* Header */}
-      <div style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "0 32px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <svg width="28" height="28" viewBox="0 0 28 28">
-            <circle cx="14" cy="14" r="13" fill="none" stroke="#f97316" strokeWidth="2.5"/>
-            <circle cx="14" cy="14" r="5" fill="#111827"/>
-            <line x1="14" y1="1" x2="14" y2="6" stroke="#f97316" strokeWidth="2.5" strokeLinecap="round"/>
-            <line x1="14" y1="22" x2="14" y2="27" stroke="#111827" strokeWidth="2.5" strokeLinecap="round"/>
-            <line x1="1" y1="14" x2="6" y2="14" stroke="#f97316" strokeWidth="2.5" strokeLinecap="round"/>
-            <line x1="22" y1="14" x2="27" y2="14" stroke="#111827" strokeWidth="2.5" strokeLinecap="round"/>
-          </svg>
-          <span style={{ fontWeight: 700, fontSize: 16, color: "#111827" }}>Exordium</span>
-        </div>
-        <nav style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <Link to="/wfm" style={{ fontSize: 13, color: "#6b7280", textDecoration: "none" }} onMouseEnter={e => (e.currentTarget.style.color = "#111827")} onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}>Workforce Management</Link>
-          <span style={{ color: "#d1d5db" }}>›</span>
-          <Link to="/wfm" style={{ fontSize: 13, color: "#6b7280", textDecoration: "none" }} onMouseEnter={e => (e.currentTarget.style.color = "#111827")} onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}>Workforce Planning</Link>
-          <span style={{ color: "#d1d5db" }}>›</span>
-          <span style={{ fontSize: 13, color: "#f97316", fontWeight: 600 }}>Capacity Planning</span>
-        </nav>
-        <button style={{ fontSize: 13, color: "#6b7280", background: "none", border: "none", cursor: "pointer" }} onClick={() => navigate("/")}>🏠 Home</button>
-      </div>
-
-      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "28px 32px" }}>
-
-        {/* Page title */}
-        <div style={{ marginBottom: 24 }}>
-          <button onClick={() => navigate("/wfm")} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#6b7280", background: "none", border: "none", cursor: "pointer", padding: "4px 0", marginBottom: 8 }} onMouseEnter={e => (e.currentTarget.style.color = "#f97316")} onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}>
-            ← Back to Workforce Management
-          </button>
-          <h1 style={{ fontSize: 26, fontWeight: 700, color: "#111827", margin: 0 }}>Capacity Planning</h1>
-          <p style={{ margin: "4px 0 0", fontSize: 14, color: "#6b7280" }}>52-week staffing forecast · Erlang C model · Workforce gap analysis</p>
-        </div>
-
-        {/* Scenario Bar */}
-        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "12px 20px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginRight: 4 }}>📋 What if ? Scenario:</span>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1 }}>
-            {scenarios.map(s => (
-              <div key={s.id} style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                {renamingId === s.id ? (
-                  <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)}
-                    onBlur={() => commitRename(s.id)}
-                    onKeyDown={e => { if (e.key === "Enter") commitRename(s.id); if (e.key === "Escape") setRenamingId(null); }}
-                    style={{ padding: "4px 10px", borderRadius: 6, fontSize: 13, fontWeight: 600, border: "2px solid #f97316", outline: "none", width: 130, background: "#fff7ed", color: "#111827" }} />
-                ) : (
-                  <button onClick={() => loadScenario(s)} onDoubleClick={() => { setRenamingId(s.id); setRenameValue(s.scenario_name); }}
-                    title="Click to switch · Double-click to rename"
-                    style={{ padding: "4px 12px", paddingRight: scenarios.length > 1 ? 28 : 12, borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "none", transition: "all .15s", background: activeScenarioId === s.id ? "#f97316" : "#f3f4f6", color: activeScenarioId === s.id ? "#fff" : "#374151", position: "relative" }}>
-                    {s.scenario_name}
-                    {scenarios.length > 1 && (
-                      <span onClick={e => { e.stopPropagation(); deleteScenario(s.id); }} title="Delete scenario"
-                        style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", fontSize: 10, lineHeight: 1, color: activeScenarioId === s.id ? "rgba(255,255,255,0.75)" : "#9ca3af", fontWeight: 700, cursor: "pointer" }}>✕</span>
-                    )}
-                  </button>
-                )}
-              </div>
-            ))}
-            <button onClick={() => createNewScenario()} title="Add new scenario"
-              style={{ padding: "4px 12px", borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: "pointer", border: "1px dashed #d1d5db", background: "#fff", color: "#9ca3af", transition: "all .15s" }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = "#f97316"; e.currentTarget.style.color = "#f97316"; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = "#d1d5db"; e.currentTarget.style.color = "#9ca3af"; }}>
-              + New
-            </button>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
-            {saveStatus === "saving" && <span style={{ fontSize: 12, color: "#9ca3af" }}>💾 Saving…</span>}
-            {saveStatus === "saved" && <span style={{ fontSize: 12, color: "#16a34a", fontWeight: 600 }}>✓ Saved</span>}
-            {saveStatus === "unsaved" && <span style={{ fontSize: 12, color: "#a16207" }}>● Unsaved changes</span>}
-            <button onClick={() => saveScenario()}
-              style={{ padding: "5px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "1px solid #f97316", background: "#fff7ed", color: "#f97316", transition: "all .15s" }}
-              onMouseEnter={e => { e.currentTarget.style.background = "#f97316"; e.currentTarget.style.color = "#fff"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "#fff7ed"; e.currentTarget.style.color = "#f97316"; }}>
-              💾 Save Now
-            </button>
-          </div>
-        </div>
-
-        {/* Forecast source bar */}
-        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "14px 20px", marginBottom: 16, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>📊 Forecast Source:</span>
-          {isLoading ? <span style={{ fontSize: 13, color: "#9ca3af" }}>Loading…</span> : (
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              {availableYears.map(y => (
-                <button key={y} onClick={() => setSelectedForecastYear(y)}
-                  style={{ padding: "4px 14px", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "none", transition: "all .15s", background: selectedForecastYear === y ? "#f97316" : "#f3f4f6", color: selectedForecastYear === y ? "#fff" : "#374151" }}>{y}</button>
-              ))}
-              {projectionLabel && <span style={{ fontSize: 12, color: "#6b7280", display: "flex", alignItems: "center", gap: 4 }}><span style={{ color: "#d1d5db" }}>→</span><span style={{ fontWeight: 600, color: "#f97316" }}>{projectionLabel}</span></span>}
-            </div>
-          )}
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 600 }}>Channel</span>
-            <select
-              value={selectedChannel}
-              onChange={e => setSelectedChannel(e.target.value as ChannelKey)}
-              style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, border: "1px solid #e5e7eb", background: "#fff", color: "#111827" }}
-            >
-              {CHANNEL_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
-          {forecastMethod && <span style={{ fontSize: 12, color: "#6b7280", padding: "3px 10px", background: "#f3f4f6", borderRadius: 99 }}>{forecastMethod.split("(")[0].trim()}</span>}
-          {loadError && <span style={{ fontSize: 12, color: "#b45309", background: "#fef9c3", padding: "4px 10px", borderRadius: 6 }}>⚠️ {loadError}</span>}
-          <Link to="/wfm/forecasting" style={{ marginLeft: "auto", fontSize: 12, color: "#f97316", textDecoration: "none", fontWeight: 600 }} onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")} onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}>↗ Edit in Forecasting</Link>
-        </div>
-
-        {/* Projection mini-chart */}
-        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "14px 20px", marginBottom: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", marginBottom: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>
-            {projectionLabel || "Projected Volume"} — from {selectedForecastYear}
-          </div>
-          <div style={{ display: "flex", gap: 4, alignItems: "flex-end", height: 64 }}>
-            {projectionVolumes.map((vol, i) => (
-              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                <div style={{ fontSize: 9, color: "#9ca3af", fontWeight: 600 }}>{vol >= 1000 ? `${(vol/1000).toFixed(0)}k` : vol || "—"}</div>
-                <div style={{ width: "100%", minHeight: 4, height: `${Math.max((vol / maxProjectionVol) * 44, 4)}px`, background: "#fed7aa", borderRadius: "3px 3px 0 0" }} />
-                <div style={{ fontSize: 9, color: "#9ca3af" }}>{MONTHS[i]}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
-
-          {/* ── LEFT PANEL ── */}
-          <div style={{ width: 280, flexShrink: 0, display: "flex", flexDirection: "column", gap: 16 }}>
-
-            {/* Planning Parameters */}
-            <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "20px 20px 10px" }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", marginBottom: 18, paddingBottom: 10, borderBottom: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span>⚙️ Planning Parameters</span>
-                {activeScenario && <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 400 }}>{activeScenario.scenario_name}</span>}
-              </div>
-              <SliderInput label="AHT (Avg Handle Time)" value={aht} min={60} max={900} step={10} unit="s" onChange={setAht} />
-              <SliderInput label="Operating Hours per Week" value={hoursOp} min={10} max={168} step={1} unit="h" onChange={setHoursOp} />
-              <SliderInput label="Working Days per Week" value={workDays} min={1} max={7} step={1} unit="d" onChange={setWorkDays} />
-              <SliderInput label="Shrinkage" value={shrinkage} min={5} max={50} unit="%" onChange={setShrinkage} />
-              <SliderInput label="Max Occupancy" value={occupancy} min={60} max={100} unit="%" onChange={setOccupancy} />
-              {!isAsyncSelectedChannel && <SliderInput label="Target Service Level" value={targetSL} min={50} max={99} unit="%" onChange={setTargetSL} />}
-              {!isAsyncSelectedChannel && <SliderInput label="Target ASA" value={asa} min={5} max={120} unit="s" onChange={setAsa} />}
-              <div style={{ background: "#fff7ed", borderRadius: 8, padding: "10px 12px", marginTop: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#c2410c", marginBottom: 4 }}>MODEL INFO</div>
-                <div style={{ fontSize: 11, color: "#9a3412", lineHeight: 1.5 }}>
-                  {selectedChannel === "voice" && <>Using <strong>Erlang C</strong> formula.<br />SL = {targetSL}% answered within {asa}s.<br /></>}
-                  {selectedChannel === "chat" && <>Using <strong>Erlang C</strong> formula with <strong>{CHAT_DEFAULT_CONCURRENCY} concurrent chats</strong> per agent.<br />SL = {targetSL}% connected within {asa}s.<br /></>}
-                  {isAsyncSelectedChannel && <>Using an <strong>async workload model</strong> based on total handling hours.<br />No strict ASA queue target is enforced for {selectedChannel}.<br /></>}
-                  ≈ <strong>{(hoursOp / workDays).toFixed(1)}h/day</strong> × {workDays}d/week
-                </div>
-              </div>
-            </div>
-
-            {/* ── Workforce Planning Card ── */}
-            <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "20px 20px 16px" }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", marginBottom: 16, paddingBottom: 10, borderBottom: "1px solid #f3f4f6" }}>
-                👥 Workforce Planning
-              </div>
-
-              {/* Actual FTE */}
-              <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Actual FTE Count</label>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input type="number" min={0} max={9999} value={actualFTE || ""}
-                    placeholder="0"
-                    onChange={e => setActualFTE(Math.max(0, parseInt(e.target.value) || 0))}
-                    style={{ width: 80, padding: "6px 10px", fontSize: 14, fontWeight: 700, border: "1px solid #e5e7eb", borderRadius: 8, color: "#111827", outline: "none", textAlign: "center", background: actualFTE > 0 ? "#f0f9ff" : "#fff" }} />
-                  <span style={{ fontSize: 11, color: "#6b7280" }}>FTE</span>
-                </div>
-              </div>
-
-              {/* As-of date */}
-              <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>As of Date</label>
-                <input type="date" value={actualFTEDate} onChange={e => setActualFTEDate(e.target.value)}
-                  style={{ width: "100%", padding: "6px 10px", fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 8, color: "#111827", outline: "none", boxSizing: "border-box" }} />
-              </div>
-
-              {/* Monthly Attrition */}
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>
-                  Monthly Attrition
-                  <span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 400, marginLeft: 6 }}>
-                    {attritionPct > 0 ? `≈ ${(attritionPct / 4.333).toFixed(2)}% / week` : ""}
-                  </span>
-                </label>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input type="number" min={0} max={50} step={0.1} value={attritionPct || ""}
-                    placeholder="0"
-                    onChange={e => setAttritionPct(Math.max(0, Math.min(50, parseFloat(e.target.value) || 0)))}
-                    style={{ width: 72, padding: "6px 10px", fontSize: 14, fontWeight: 700, border: "1px solid #e5e7eb", borderRadius: 8, color: "#ea580c", outline: "none", textAlign: "center", background: attritionPct > 0 ? "#fff7ed" : "#fff" }} />
-                  <span style={{ fontSize: 11, color: "#6b7280" }}>% / month</span>
-                </div>
-              </div>
-
-              {/* Training Classes */}
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>Training Classes</label>
-                  <button onClick={addClass}
-                    style={{ fontSize: 11, fontWeight: 700, color: "#f97316", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 6, padding: "3px 10px", cursor: "pointer" }}>
-                    + Add Class
-                  </button>
-                </div>
-
-                {classes.length === 0 && (
-                  <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "center", padding: "12px 0", border: "1px dashed #e5e7eb", borderRadius: 8 }}>
-                    No classes added yet
-                  </div>
-                )}
-
-                {classes.map((cls, ci) => (
-                  <div key={cls.id} style={{ background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 10, padding: "12px 12px 10px", marginBottom: 10, position: "relative" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#6b7280" }}>CLASS {ci + 1}</span>
-                      <button onClick={() => removeClass(cls.id)}
-                        style={{ fontSize: 11, color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 0, lineHeight: 1 }}>✕</button>
-                    </div>
-
-                    {/* FTE count */}
-                    <div style={{ marginBottom: 8 }}>
-                      <label style={{ fontSize: 10, color: "#6b7280", fontWeight: 600, display: "block", marginBottom: 3 }}>CLASS SIZE (FTE)</label>
-                      <input type="number" min={1} max={500} value={cls.fte || ""}
-                        onChange={e => updateClass(cls.id, "fte", parseInt(e.target.value) || 0)}
-                        style={{ width: "100%", padding: "5px 8px", fontSize: 13, fontWeight: 700, border: "1px solid #e5e7eb", borderRadius: 6, color: "#111827", outline: "none", boxSizing: "border-box", background: "#fff" }} />
-                    </div>
-
-                    {/* Live date */}
-                    <div style={{ marginBottom: 8 }}>
-                      <label style={{ fontSize: 10, color: "#6b7280", fontWeight: 600, display: "block", marginBottom: 3 }}>FLOOR DATE (LIVE)</label>
-                      <input type="date" value={cls.live_date}
-                        onChange={e => updateClass(cls.id, "live_date", e.target.value)}
-                        style={{ width: "100%", padding: "5px 8px", fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, color: "#111827", outline: "none", boxSizing: "border-box", background: "#fff" }} />
-                    </div>
-
-                    {/* Ramp weeks */}
-                    <div>
-                      <label style={{ fontSize: 10, color: "#6b7280", fontWeight: 600, display: "block", marginBottom: 3 }}>
-                        RAMP-UP WEEKS
-                        <span style={{ fontWeight: 400, marginLeft: 4 }}>(0 = full capacity on day 1)</span>
-                      </label>
-                      <input type="number" min={0} max={52} value={cls.ramp_weeks}
-                        onChange={e => updateClass(cls.id, "ramp_weeks", parseInt(e.target.value) || 0)}
-                        style={{ width: "100%", padding: "5px 8px", fontSize: 13, fontWeight: 600, border: "1px solid #e5e7eb", borderRadius: 6, color: "#6366f1", outline: "none", boxSizing: "border-box", background: "#fff" }} />
-                    </div>
-                  </div>
+            {/* Header Row */}
+            <thead>
+              <tr className="bg-card border-b border-border">
+                <th className="sticky left-0 top-0 z-20 bg-card border-r border-border px-3 py-2 text-left text-xs font-semibold text-muted-foreground w-44 min-w-44">
+                  {isDedicated ? `${activeLob?.lob_name} — ${CHANNEL_LABELS[activeChannel]}` : activeLob?.lob_name}
+                </th>
+                {weeks.map(w => (
+                  <th key={w.weekOffset} className="sticky top-0 z-10 bg-card border-b border-border px-2 py-1 text-right text-xs font-semibold min-w-[80px]">
+                    <div className="font-semibold">{w.label}</div>
+                    <div className="text-[10px] text-muted-foreground font-normal">{w.dateLabel}</div>
+                  </th>
                 ))}
-              </div>
+              </tr>
+            </thead>
 
-              {/* Workforce summary */}
-              {hasWorkforceData && (
-                <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "10px 12px", marginTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "#0369a1", marginBottom: 4 }}>WORKFORCE SUMMARY</div>
-                  <div style={{ fontSize: 11, color: "#0c4a6e", lineHeight: 1.6 }}>
-                    Starting FTE: <strong>{actualFTE}</strong><br />
-                    Weekly decay: <strong>~{attritionPct > 0 ? (attritionPct / 4.333).toFixed(2) : "0"}%</strong><br />
-                    Classes: <strong>{classes.length}</strong> ({classes.reduce((s, c) => s + c.fte, 0)} FTE total)
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+            <tbody>
+              {/* ── DEMAND SECTION */}
+              <SectionHeaderRow
+                label={`▼ DEMAND${!isDedicated ? " (All Channels)" : ` — ${CHANNEL_LABELS[activeChannel]}`}`}
+                colSpan={colSpan} collapsed={collapsed.demand}
+                onToggle={() => setCollapsed(s => ({ ...s, demand: !s.demand }))}
+                onReset={resetAllDemandOverrides}
+                bg="bg-blue-50/60 dark:bg-blue-950/20"
+              />
 
-          {/* ── RIGHT ── */}
-          <div style={{ flex: 1, minWidth: 0 }}>
-
-            {/* 52-week bar chart */}
-            <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "20px 24px", marginBottom: 20 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>52-Week FTE Requirement</div>
-                  <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }}>
-                    Click a week to drill down · Based on <span style={{ color: "#f97316", fontWeight: 600 }}>{projectionLabel || "forecast projection"}</span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "#6b7280" }}>Peak:</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#f97316" }}>{Math.round(maxFTE)} FTE</span>
-                  <Sparkline values={weeklyResults.map(w => w.fte)} />
-                </div>
-              </div>
-
-              {/* Legend */}
-              <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#6b7280", marginBottom: 12, flexWrap: "wrap" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <span style={{ width: 12, height: 12, background: "#fed7aa", borderRadius: 2, display: "inline-block" }} />Required FTE
-                </span>
-                {hasWorkforceData && <>
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span style={{ width: 20, height: 2, background: "#3b82f6", borderRadius: 1, display: "inline-block" }} />Actual FTE
-                  </span>
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span style={{ fontSize: 10, background: "#dcfce7", color: "#16a34a", padding: "1px 4px", borderRadius: 3, fontWeight: 700 }}>+N</span>Surplus
-                  </span>
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span style={{ fontSize: 10, background: "#fee2e2", color: "#dc2626", padding: "1px 4px", borderRadius: 3, fontWeight: 700 }}>−N</span>Deficit
-                  </span>
-                </>}
-              </div>
-
-              {/* Scrollable chart */}
-              <div style={{ overflowX: "auto", paddingBottom: 4 }}>
-                <div style={{ minWidth: 52 * 52 }}>
-
-                  {/* Bar chart with SVG overlay */}
-                  <div style={{ display: "flex", gap: 6, alignItems: "flex-end", height: 140, position: "relative" }}>
-
-                    {/* Actual FTE blue line SVG overlay */}
-                    {hasWorkforceData && (
-                      <svg
-                        style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 5 }}
-                        viewBox={`0 0 ${52 * 50 + 44} 140`}
-                        preserveAspectRatio="none"
-                      >
-                        <polyline points={svgActualPoints} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
-                        {actualFTEByWeek.map((fte, i) => {
-                          const x = i * 50 + 22;
-                          const y = Math.max(3, Math.min(137, 140 - (fte / (maxFTE * 1.2)) * 140));
-                          return <circle key={i} cx={x} cy={y} r="3" fill="#3b82f6" opacity="0.9" />;
-                        })}
-                      </svg>
-                    )}
-
-                    {weeklyResults.map((w, i) => {
-                      const pct = (w.fte / (maxFTE * 1.2)) * 100;
-                      const isSel = i === selectedWeek;
-                      return (
-                        <div key={i} style={{ width: 44, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer" }}
-                          onClick={() => setSelectedWeek(i)}>
-                          <div style={{ fontSize: 10, fontWeight: 700, color: isSel ? "#f97316" : "#6b7280", marginBottom: 4 }}>
-                            {Math.round(w.fte)}
-                          </div>
-                          <div style={{ width: "100%", height: `${pct}%`, minHeight: 8, background: isSel ? "#f97316" : "#fed7aa", borderRadius: "4px 4px 0 0", transition: "all .2s", border: isSel ? "2px solid #ea580c" : "2px solid transparent" }} />
-                          <div style={{ marginTop: 6, textAlign: "center" }}>
-                            <div style={{ fontSize: 10, fontWeight: isSel ? 700 : 500, color: isSel ? "#f97316" : "#374151", whiteSpace: "nowrap" }}>{w.week}</div>
-                            <div style={{ fontSize: 9, color: "#9ca3af", whiteSpace: "nowrap" }}>{w.label}</div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Gap row */}
-                  {hasWorkforceData && (
-                    <div style={{ display: "flex", gap: 6, marginTop: 6, paddingTop: 6, borderTop: "1px dashed #e5e7eb" }}>
-                      {gapByWeek.map((gap, i) => {
-                        if (gap === null) return <div key={i} style={{ width: 44, flexShrink: 0 }} />;
-                        const over = gap >= 0;
-                        const isSel = i === selectedWeek;
-                        return (
-                          <div key={i} style={{ width: 44, flexShrink: 0, textAlign: "center" }} onClick={() => setSelectedWeek(i)}>
-                            <div style={{
-                              fontSize: 9, fontWeight: 700, padding: "2px 0",
-                              borderRadius: 4, cursor: "pointer",
-                              background: isSel ? (over ? "#dcfce7" : "#fee2e2") : (over ? "#f0fdf4" : "#fef2f2"),
-                              color: over ? "#16a34a" : "#dc2626",
-                              border: isSel ? `1px solid ${over ? "#86efac" : "#fca5a5"}` : "1px solid transparent",
-                            }}>
-                              {over ? "+" : ""}{Math.round(gap)}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Metric cards */}
-              {sel && (
-                <div style={{ display: "flex", gap: 12, marginTop: 20, flexWrap: "wrap" }}>
-                  <MetricCard label="Total Volume" value={selWeek?.baseVol.toLocaleString() ?? "—"} sub={isAsyncSelectedChannel ? `${sel.erlangs} handling hrs` : `${sel.erlangs} Erlangs`} />
-                  <MetricCard label="Required FTE" value={sel.fte} sub={`${sel.rawAgents} base agents`} accent="#f97316" />
-                  
-                  {hasWorkforceData && selActualFTE > 0 && (
-                    <MetricCard label="Actual FTE" value={Math.round(selActualFTE)} sub={`After attrition & classes`} accent="#3b82f6" />
-                  )}
-
-                  {hasWorkforceData && selGap !== null && (
-                    <MetricCard 
-                      label="Headcount Gap" 
-                      value={`${selGap >= 0 ? "+" : ""}${Math.round(selGap)}`} 
-                      sub={selGap >= 0 ? "Surplus headcount" : "Headcount deficit"} 
-                      accent={selGap >= 0 ? "#16a34a" : "#dc2626"}
-                      borderColor={selGap >= 0 ? "#bbf7d0" : "#fecaca"}
-                    />
-                  )}
-
-                  {!isAsyncSelectedChannel && <MetricCard label="SL from Required" value={<Badge value={sel.achievedSL} target={targetSL} unit="%" />} sub={`Target: ${targetSL}%`} />}
-                  
-                  {!isAsyncSelectedChannel && hasWorkforceData && selActualFTE > 0 && (
-                    <MetricCard label="SL from Actual FTE" value={<Badge value={+selActualSL.toFixed(1)} target={targetSL} unit="%" />} sub={`Based on ${Math.round(selActualFTE)} FTE`} />
-                  )}
-
-                  <MetricCard label="Occupancy" value={<Badge value={sel.actualOcc} target={75} unit="%" />} sub={`Max: ${occupancy}%`} />
-                  <MetricCard label="Shrinkage" value={`${shrinkage}%`} sub={`+${(sel.rawAgents * shrinkage / (100 - shrinkage)).toFixed(0)} buffer`} />
-                </div>
-              )}
-            </div>
-
-            {/* Daily breakdown */}
-            {selWeek && sel && (
-              <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "20px 24px" }}>
-                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 12 }}>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>Daily Breakdown — {selWeek.week} ({selWeek.label})</div>
-                    <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }}>Edit the % column to set each day's share of weekly volume</div>
-                  </div>
-                  {(() => {
-                    const sum = dayPcts.slice(0, workDays).reduce((a, b) => a + b, 0);
-                    const off = Math.abs(sum - 100) > 0.5;
-                    return (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, background: off ? "#fef9c3" : "#f0fdf4", border: `1px solid ${off ? "#fde68a" : "#bbf7d0"}`, borderRadius: 8, padding: "6px 12px" }}>
-                        <span style={{ fontSize: 12, color: off ? "#92400e" : "#166534", fontWeight: 600 }}>{off ? "⚠️" : "✓"} Total: {sum.toFixed(1)}%</span>
-                        {off && (
-                          <button onClick={() => { const e = Math.floor(100/workDays), r = 100-e*workDays; setDayPcts(Array.from({length:workDays},(_,i)=>e+(i===0?r:0))); }}
-                            style={{ fontSize: 11, color: "#f97316", background: "none", border: "1px solid #f97316", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontWeight: 600 }}>Reset even</button>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                <div style={{ display: "flex", gap: 3, height: 10, borderRadius: 6, overflow: "hidden", marginBottom: 16, marginTop: 12 }}>
-                  {ALL_DAY_NAMES.slice(0, workDays).map((day, i) => {
-                    const total = dayPcts.slice(0, workDays).reduce((a, b) => a + b, 0) || 100;
-                    const pct = (dayPcts[i] ?? 0) / total * 100;
-                    const colors = ["#f97316","#fb923c","#fdba74","#fed7aa","#fef3c7","#fde68a","#fcd34d"];
-                    return <div key={day} style={{ flex: pct, background: colors[i % colors.length], transition: "flex .2s", minWidth: 2 }} title={`${day}: ${pct.toFixed(1)}%`} />;
-                  })}
-                </div>
-
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      {["Day", "% of Week", "Volume", isAsyncSelectedChannel ? "Workload Hrs" : "Erlangs (A)", "Base Agents", "Req. FTE", ...(isAsyncSelectedChannel ? [] : ["Svc Level"]), "Occupancy"].map(h => (
-                        <th key={h} style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textAlign: "left", padding: "0 10px 10px 0", textTransform: "uppercase", letterSpacing: ".04em" }}>{h}</th>
+              {!collapsed.demand && (
+                <>
+                  {/* Projected Volumes */}
+                  {(!isDedicated || activeChannel === "voice") && (
+                    <tr className="border-b border-border/40 hover:bg-muted/20">
+                      <RowLabel label="Proj. Volume — Voice" indent />
+                      {weekCalcs.map(wk => (
+                        <EditableCell key={wk.weekOffset}
+                          value={weeklyInputs[wk.weekOffset]?.volVoice ?? null}
+                          autoValue={wk.autoVolVoice}
+                          isOverridden={weeklyInputs[wk.weekOffset]?.volVoice != null}
+                          onSave={v => setCellInput(wk.weekOffset, "volVoice", v)}
+                          onReset={() => resetOverride(wk.weekOffset, "volVoice")}
+                          format={n => Math.round(n).toLocaleString()}
+                        />
                       ))}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {dailyBreakdown.map((d, i) => (
-                      <tr key={i} style={{ borderBottom: "1px solid #f9fafb" }}>
-                        <td style={{ padding: "8px 10px 8px 0", fontWeight: 600, fontSize: 13, color: "#111827" }}>{d.day}</td>
-                        <td style={{ padding: "8px 10px 8px 0" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            <input type="number" min={0} max={100} step={0.1} value={dayPcts[i] ?? 0}
-                              onChange={e => { const v = Math.max(0, Math.min(100, parseFloat(e.target.value)||0)); setDayPcts(prev => { const n=[...prev]; n[i]=v; return n; }); }}
-                              style={{ width: 56, padding: "3px 6px", fontSize: 13, fontWeight: 600, border: "1px solid #e5e7eb", borderRadius: 6, textAlign: "center", color: "#f97316", outline: "none", background: "#fff7ed" }} />
-                            <span style={{ fontSize: 12, color: "#9ca3af" }}>%</span>
-                          </div>
-                        </td>
-                        <td style={{ padding: "8px 10px 8px 0", fontSize: 13, color: "#374151" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <div style={{ height: 6, width: Math.max(Math.round((d.vol/(selWeek.baseVol||1))*60),4), background: "#fed7aa", borderRadius: 99 }} />
-                            {d.vol.toLocaleString()}
-                          </div>
-                        </td>
-                        <td style={{ padding: "8px 10px 8px 0", fontSize: 13, color: "#6b7280" }}>{d.erlangs}</td>
-                        <td style={{ padding: "8px 10px 8px 0", fontSize: 13, color: "#374151", fontWeight: 500 }}>{d.rawAgents}</td>
-                        <td style={{ padding: "8px 10px 8px 0", fontSize: 14, fontWeight: 700, color: "#f97316" }}>{d.fte}</td>
-                        {!isAsyncSelectedChannel && <td style={{ padding: "8px 10px 8px 0" }}><Badge value={d.achievedSL} target={targetSL} unit="%" /></td>}
-                        <td style={{ padding: "8px 10px 8px 0" }}><Badge value={d.actualOcc} target={75} unit="%" /></td>
-                      </tr>
-                    ))}
-                    <tr style={{ borderTop: "2px solid #e5e7eb", background: "#f9fafb" }}>
-                      <td style={{ padding: "10px 10px 10px 0", fontWeight: 700, fontSize: 13 }}>TOTAL</td>
-                      <td style={{ padding: "10px 10px 10px 0", fontSize: 12, fontWeight: 700, color: "#6b7280" }}>{dayPcts.slice(0,workDays).reduce((a,b)=>a+b,0).toFixed(1)}%</td>
-                      <td style={{ padding: "10px 10px 10px 0", fontWeight: 700, fontSize: 13 }}>{dailyBreakdown.reduce((a,d)=>a+d.vol,0).toLocaleString()}</td>
-                      <td colSpan={2} />
-                      <td style={{ padding: "10px 10px 10px 0", fontWeight: 700, fontSize: 14, color: "#f97316" }}>{sel.fte} avg</td>
-                      <td colSpan={isAsyncSelectedChannel ? 1 : 2} />
+                  )}
+                  {(!isDedicated || activeChannel === "chat") && (
+                    <tr className="border-b border-border/40 hover:bg-muted/20">
+                      <RowLabel label="Proj. Volume — Chat" indent />
+                      {weekCalcs.map(wk => (
+                        <EditableCell key={wk.weekOffset}
+                          value={weeklyInputs[wk.weekOffset]?.volChat ?? null}
+                          autoValue={wk.autoVolChat}
+                          isOverridden={weeklyInputs[wk.weekOffset]?.volChat != null}
+                          onSave={v => setCellInput(wk.weekOffset, "volChat", v)}
+                          onReset={() => resetOverride(wk.weekOffset, "volChat")}
+                          format={n => Math.round(n).toLocaleString()}
+                        />
+                      ))}
                     </tr>
-                  </tbody>
-                </table>
+                  )}
+                  {(!isDedicated || activeChannel === "email") && (
+                    <tr className="border-b border-border/40 hover:bg-muted/20">
+                      <RowLabel label="Proj. Volume — Email" indent />
+                      {weekCalcs.map(wk => (
+                        <EditableCell key={wk.weekOffset}
+                          value={weeklyInputs[wk.weekOffset]?.volEmail ?? null}
+                          autoValue={wk.autoVolEmail}
+                          isOverridden={weeklyInputs[wk.weekOffset]?.volEmail != null}
+                          onSave={v => setCellInput(wk.weekOffset, "volEmail", v)}
+                          onReset={() => resetOverride(wk.weekOffset, "volEmail")}
+                          format={n => Math.round(n).toLocaleString()}
+                        />
+                      ))}
+                    </tr>
+                  )}
+                  {!isDedicated && (
+                    <tr className="border-b border-border/40 bg-muted/10">
+                      <RowLabel label="Proj. Volume — Total" indent bold />
+                      {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={Math.round(wk.effVolTotal).toLocaleString()} bold />)}
+                    </tr>
+                  )}
 
-                <div style={{ marginTop: 20, background: "#f9fafb", borderRadius: 8, padding: "12px 16px", border: "1px solid #e5e7eb" }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#374151", marginBottom: 8 }}>📐 FTE CALCULATION LOGIC</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-                    {[
-                      { step: "1", label: "Traffic Intensity", formula: "A = (Weekly Volume × AHT) ÷ (Weekly Hours × 3600)" },
-                      { step: "2", label: "Erlang C", formula: "Min agents to hit SL at ASA target" },
-                      { step: "3", label: "Occupancy Cap", formula: "Agents ≥ A ÷ Max Occupancy" },
-                      { step: "4", label: "Shrinkage Gross-Up", formula: "FTE = Agents ÷ (1 − Shrinkage%)" },
-                    ].map(s => (
-                      <div key={s.step} style={{ flex: "1 1 180px" }}>
-                        <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: "#f97316", borderRadius: 99, padding: "1px 6px", marginRight: 6 }}>{s.step}</span>
-                        <span style={{ fontSize: 11, fontWeight: 600, color: "#374151" }}>{s.label}</span>
-                        <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{s.formula}</div>
-                      </div>
+                  {/* Projected AHTs */}
+                  {(!isDedicated || activeChannel === "voice") && (
+                    <tr className="border-b border-border/40 hover:bg-muted/20">
+                      <RowLabel label="Proj. AHT (s) — Voice" indent sub />
+                      {weekCalcs.map(wk => (
+                        <EditableCell key={wk.weekOffset}
+                          value={weeklyInputs[wk.weekOffset]?.ahtVoice ?? null}
+                          autoValue={wk.autoAhtVoice}
+                          isOverridden={weeklyInputs[wk.weekOffset]?.ahtVoice != null}
+                          onSave={v => setCellInput(wk.weekOffset, "ahtVoice", v)}
+                          onReset={() => resetOverride(wk.weekOffset, "ahtVoice")}
+                          format={n => Math.round(n).toLocaleString()}
+                        />
+                      ))}
+                    </tr>
+                  )}
+                  {(!isDedicated || activeChannel === "chat") && (
+                    <tr className="border-b border-border/40 hover:bg-muted/20">
+                      <RowLabel label="Proj. AHT (s) — Chat" indent sub />
+                      {weekCalcs.map(wk => (
+                        <EditableCell key={wk.weekOffset}
+                          value={weeklyInputs[wk.weekOffset]?.ahtChat ?? null}
+                          autoValue={wk.autoAhtChat}
+                          isOverridden={weeklyInputs[wk.weekOffset]?.ahtChat != null}
+                          onSave={v => setCellInput(wk.weekOffset, "ahtChat", v)}
+                          onReset={() => resetOverride(wk.weekOffset, "ahtChat")}
+                          format={n => Math.round(n).toLocaleString()}
+                        />
+                      ))}
+                    </tr>
+                  )}
+                  {(!isDedicated || activeChannel === "email") && (
+                    <tr className="border-b border-border/40 hover:bg-muted/20">
+                      <RowLabel label="Proj. AHT (s) — Email" indent sub />
+                      {weekCalcs.map(wk => (
+                        <EditableCell key={wk.weekOffset}
+                          value={weeklyInputs[wk.weekOffset]?.ahtEmail ?? null}
+                          autoValue={wk.autoAhtEmail}
+                          isOverridden={weeklyInputs[wk.weekOffset]?.ahtEmail != null}
+                          onSave={v => setCellInput(wk.weekOffset, "ahtEmail", v)}
+                          onReset={() => resetOverride(wk.weekOffset, "ahtEmail")}
+                          format={n => Math.round(n).toLocaleString()}
+                        />
+                      ))}
+                    </tr>
+                  )}
+
+                  {/* Actual volumes — roster integration coming; read-only for now */}
+                  {(!isDedicated || activeChannel === "voice") && (
+                    <tr className="border-b border-border/40 border-t-2 border-t-border/60">
+                      <RowLabel label="Actual Volume — Voice" indent sub />
+                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-muted-foreground/50 italic" />)}
+                    </tr>
+                  )}
+                  {(!isDedicated || activeChannel === "chat") && (
+                    <tr className="border-b border-border/40">
+                      <RowLabel label="Actual Volume — Chat" indent sub />
+                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-muted-foreground/50 italic" />)}
+                    </tr>
+                  )}
+                  {(!isDedicated || activeChannel === "email") && (
+                    <tr className="border-b border-border/40">
+                      <RowLabel label="Actual Volume — Email" indent sub />
+                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-muted-foreground/50 italic" />)}
+                    </tr>
+                  )}
+                </>
+              )}
+
+              {/* ── STAFFING REQUIREMENTS SECTION */}
+              <SectionHeaderRow
+                label="▼ STAFFING REQUIREMENTS"
+                colSpan={colSpan} collapsed={collapsed.staffing}
+                onToggle={() => setCollapsed(s => ({ ...s, staffing: !s.staffing }))}
+                bg="bg-purple-50/60 dark:bg-purple-950/20"
+              />
+              {!collapsed.staffing && (
+                <>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Proj. Occupancy %" indent sub />
+                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmtPct(wk.projOccupancyPct)} className="text-muted-foreground" />)}
+                  </tr>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Proj. Shrinkage %" indent sub />
+                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmtPct(wk.projShrinkagePct)} className="text-muted-foreground" />)}
+                  </tr>
+                  <tr className="border-b border-border bg-muted/10">
+                    <RowLabel label="Required FTE" bold />
+                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmt1(wk.requiredFTE)} bold />)}
+                  </tr>
+                </>
+              )}
+
+              {/* ── HEADCOUNT PLAN SECTION */}
+              <SectionHeaderRow
+                label="▼ HEADCOUNT PLAN"
+                colSpan={colSpan} collapsed={collapsed.hcPlan}
+                onToggle={() => setCollapsed(s => ({ ...s, hcPlan: !s.hcPlan }))}
+                bg="bg-green-50/60 dark:bg-green-950/20"
+              />
+              {!collapsed.hcPlan && (
+                <>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Planned Hires" indent />
+                    {weekCalcs.map(wk => (
+                      <InputCell key={wk.weekOffset}
+                        value={weeklyInputs[wk.weekOffset]?.plannedHires}
+                        onChange={v => setCellInput(wk.weekOffset, "plannedHires", v ?? 0)}
+                        placeholder="0" color="blue"
+                      />
                     ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+                  </tr>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Effective New HC" indent sub />
+                    {weekCalcs.map(wk => (
+                      <ReadOnlyCell key={wk.weekOffset}
+                        value={wk.effectiveNewHc > 0 ? `+${fmt1(wk.effectiveNewHc)}` : fmt1(wk.effectiveNewHc)}
+                        className={wk.effectiveNewHc > 0 ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"}
+                      />
+                    ))}
+                  </tr>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Attrition Decay" indent sub />
+                    {weekCalcs.map(wk => (
+                      <ReadOnlyCell key={wk.weekOffset}
+                        value={wk.attritionDecay > 0 ? `-${fmt1(wk.attritionDecay)}` : "—"}
+                        className="text-red-500/70"
+                      />
+                    ))}
+                  </tr>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Known Exits" indent />
+                    {weekCalcs.map(wk => (
+                      <InputCell key={wk.weekOffset}
+                        value={weeklyInputs[wk.weekOffset]?.knownExits}
+                        onChange={v => setCellInput(wk.weekOffset, "knownExits", v ?? 0)}
+                        placeholder="0" color="orange"
+                      />
+                    ))}
+                  </tr>
+                  <tr className="border-b border-border bg-muted/10">
+                    <RowLabel label="Projected HC" bold />
+                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmt1(wk.projectedHc)} bold />)}
+                  </tr>
+                  <tr className="border-b border-border/40 hover:bg-muted/20 border-t-2 border-t-border/60">
+                    <RowLabel label="Actual HC" indent />
+                    {weekCalcs.map(wk => (
+                      <InputCell key={wk.weekOffset}
+                        value={weeklyInputs[wk.weekOffset]?.actualHc ?? undefined}
+                        onChange={v => setCellInput(wk.weekOffset, "actualHc", v)}
+                        placeholder="—" color="green"
+                      />
+                    ))}
+                  </tr>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Actual Attrition" indent sub />
+                    {weekCalcs.map(wk => (
+                      <InputCell key={wk.weekOffset}
+                        value={weeklyInputs[wk.weekOffset]?.actualAttrition ?? undefined}
+                        onChange={v => setCellInput(wk.weekOffset, "actualAttrition", v)}
+                        placeholder="0" color="default"
+                      />
+                    ))}
+                  </tr>
+                </>
+              )}
+
+              {/* ── GAP / SURPLUS — always visible */}
+              <tr className="border-t-2 border-border bg-muted/20">
+                <td colSpan={colSpan} className="px-3 py-1 text-xs font-semibold text-foreground/60 sticky left-0">
+                  GAP / SURPLUS
+                </td>
+              </tr>
+              <tr className="border-b border-border/60">
+                <RowLabel label="Proj. Gap / Surplus" bold />
+                {weekCalcs.map(wk => {
+                  const v = wk.gapSurplus;
+                  const color = v >= 0
+                    ? "text-green-600 dark:text-green-400"
+                    : "text-red-600 dark:text-red-400";
+                  return (
+                    <td key={wk.weekOffset} className={`px-2 py-1.5 text-right text-xs font-semibold whitespace-nowrap ${color} ${Math.abs(v) >= 3 ? "font-bold" : ""}`}>
+                      {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+              <tr className="border-b border-border/40">
+                <RowLabel label="Actual Gap / Surplus" indent sub />
+                {weekCalcs.map(wk => {
+                  const v = wk.actualGapSurplus;
+                  if (v == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-muted-foreground" />;
+                  const color = v >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+                  return (
+                    <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
+                      {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+
+            </tbody>
+          </table>
         </div>
       </div>
-    </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 mt-3 flex-wrap text-[11px] text-muted-foreground">
+        <span className="flex items-center gap-1"><span className="inline-block size-3 rounded bg-amber-100 dark:bg-amber-950/40 border border-amber-300" /> Manually overridden (click ↺ to restore auto)</span>
+        <span className="flex items-center gap-1"><span className="inline-block size-3 rounded bg-blue-100 dark:bg-blue-950/40 border border-blue-300" /> Planned Hires</span>
+        <span className="flex items-center gap-1"><span className="inline-block size-3 rounded bg-orange-100 dark:bg-orange-950/40 border border-orange-300" /> Known Exits</span>
+        <span className="flex items-center gap-1"><span className="inline-block size-3 rounded bg-green-100 dark:bg-green-950/40 border border-green-300" /> Actual HC</span>
+      </div>
+    </PageLayout>
   );
 }
