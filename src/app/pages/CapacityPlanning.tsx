@@ -140,11 +140,17 @@ function calcRampPct(ageWeeks: number, trainWks: number, nestWks: number, nestPc
 }
 
 function fmt1(n: number | null | undefined, fallback = "—"): string {
-  if (n == null || isNaN(n)) return fallback;
-  return n % 1 === 0 ? n.toLocaleString() : n.toFixed(1);
+  if (n == null) return fallback;
+  const num = Number(n);
+  if (isNaN(num)) return fallback;
+  return num % 1 === 0 ? num.toLocaleString() : num.toFixed(1);
 }
 
-function fmtPct(n: number, dp = 1): string { return `${n.toFixed(dp)}%`; }
+function fmtPct(n: number | string | null | undefined, dp = 1): string {
+  const num = Number(n);
+  if (isNaN(num)) return "—";
+  return `${num.toFixed(dp)}%`;
+}
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -514,8 +520,8 @@ export function CapacityPlanning() {
   }), [lobSettings, demandAssumptions]);
 
   // ── Staffing params
-  const occupancyPct = demandAssumptions?.occupancy ?? (lobSettings?.email_occupancy ?? 85);
-  const shrinkagePct = demandAssumptions?.shrinkage ?? 20;
+  const occupancyPct = Number(demandAssumptions?.occupancy ?? lobSettings?.email_occupancy ?? 85) || 85;
+  const shrinkagePct = Number(demandAssumptions?.shrinkage ?? 20) || 20;
   const daysPerWeek = demandAssumptions?.operatingDaysPerWeek ?? 5;
 
   // ── Full computed calculations per week
