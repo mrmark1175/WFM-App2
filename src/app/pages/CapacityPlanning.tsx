@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
+import { getCalculatedVolumes, Assumptions } from "./forecasting-logic";
 import { PageLayout } from "../components/PageLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -70,6 +71,17 @@ interface DemandAssumptions {
   shrinkage?: number; occupancy?: number;
   operatingDaysPerWeek?: number; operatingHoursPerDay?: number;
   growthRate?: number;
+}
+
+interface CapacityPlannerSnapshot {
+  assumptions: Assumptions;
+  forecastMethod: string;
+  hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number };
+  arimaParams: { p: number; d: number; q: number };
+  decompParams: { trendStrength: number; seasonalityStrength: number };
+  channelHistoricalApiData?: Partial<Record<string, number[]>>;
+  channelHistoricalOverrides?: Partial<Record<string, Record<number, string>>>;
+  recutVolumesByChannel?: Partial<Record<string, number[]>> | null;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -314,6 +326,7 @@ export function CapacityPlanning() {
   const [config, setConfig] = useState<PlanConfig>(DEFAULT_CONFIG);
   const [weeklyInputs, setWeeklyInputs] = useState<WeekInputMap>({});
   const [demandAssumptions, setDemandAssumptions] = useState<DemandAssumptions | null>(null);
+  const [plannerSnapshot, setPlannerSnapshot] = useState<CapacityPlannerSnapshot | null>(null);
   const [lobSettings, setLobSettings] = useState<LobSettings | null>(null);
   const [hoursPerDay, setHoursPerDay] = useState(7.5);
   const [activeChannel, setActiveChannel] = useState<ChannelKey>("voice");
@@ -389,10 +402,13 @@ export function CapacityPlanning() {
         setWeeklyInputs(map);
       }
 
-      if (demandData?.assumptions) {
-        setDemandAssumptions(demandData.assumptions as DemandAssumptions);
+      const snap = demandData?.plannerSnapshot ?? null;
+      if (snap?.assumptions) {
+        setDemandAssumptions(snap.assumptions as DemandAssumptions);
+        setPlannerSnapshot(snap as CapacityPlannerSnapshot);
       } else {
         setDemandAssumptions(null);
+        setPlannerSnapshot(null);
       }
 
       if (lsData) setLobSettings(lsData as LobSettings);
@@ -501,16 +517,73 @@ export function CapacityPlanning() {
   // ── Computed weeks
   const weeks = useMemo(() => buildWeeks(config.planStartDate, config.horizonWeeks), [config.planStartDate, config.horizonWeeks]);
 
+  // ── Monthly forecast arrays from demand planner snapshot (captures seasonality)
+  const forecastedMonthlyVols = useMemo<{ voice: number[]; chat: number[]; email: number[] } | null>(() => {
+    if (!plannerSnapshot) return null;
+    const recut = plannerSnapshot.recutVolumesByChannel;
+    if (recut?.voice?.length && recut?.chat?.length && recut?.email?.length) {
+      return { voice: recut.voice as number[], chat: recut.chat as number[], email: recut.email as number[] };
+    }
+    const { forecastMethod, hwParams, arimaParams, decompParams, assumptions } = plannerSnapshot;
+    const apiData = plannerSnapshot.channelHistoricalApiData ?? {};
+    const overrides = plannerSnapshot.channelHistoricalOverrides ?? {};
+    function applyOv(data: number[], ov: Record<number, string>): number[] {
+      const len = Math.max(data.length, ...Object.keys(ov).map(Number).map(k => k + 1), 0);
+      return Array.from({ length: len }, (_, i) => {
+        const base = data[i] ?? 0;
+        const o = ov[i];
+        if (!o) return base;
+        const p = parseInt(o, 10);
+        return Number.isFinite(p) && p > 0 ? p : base;
+      });
+    }
+    const voiceH = applyOv(apiData.voice ?? [], overrides.voice ?? {});
+    const chatH = applyOv(apiData.chat ?? [], overrides.chat ?? {});
+    const emailH = applyOv(apiData.email ?? [], overrides.email ?? {});
+    const voice = getCalculatedVolumes(voiceH, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
+    const chat = chatH.length > 0
+      ? getCalculatedVolumes(chatH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      : voice.map(v => Math.round(v * 0.3));
+    const email = emailH.length > 0
+      ? getCalculatedVolumes(emailH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      : voice.map(v => Math.round(v * 0.2));
+    return { voice, chat, email };
+  }, [plannerSnapshot]);
+
   // ── Auto volumes from demand snapshot
   const autoBaseVolumes = useMemo(() => {
-    const a = demandAssumptions;
-    const growthPct = a?.growthRate ?? 0;
-    return weeks.map(w => ({
-      voice: monthlyToWeekly(a?.voiceVolume ?? 0, growthPct, w.weekOffset),
-      chat: monthlyToWeekly(a?.chatVolume ?? 0, growthPct, w.weekOffset),
-      email: monthlyToWeekly(a?.emailVolume ?? 0, growthPct, w.weekOffset),
-    }));
-  }, [demandAssumptions, weeks]);
+    const forecastStart = plannerSnapshot?.assumptions?.startDate;
+    const growthPct = demandAssumptions?.growthRate ?? 0;
+    const monday = getMondayOf(new Date(config.planStartDate + "T00:00:00"));
+
+    return weeks.map(w => {
+      if (forecastedMonthlyVols && forecastStart) {
+        const weekStart = new Date(monday);
+        weekStart.setDate(weekStart.getDate() + w.weekOffset * 7);
+        const midWeek = new Date(weekStart);
+        midWeek.setDate(midWeek.getDate() + 3);
+        const start = new Date(forecastStart + "T00:00:00");
+        const monthOffset = (midWeek.getFullYear() - start.getFullYear()) * 12
+          + (midWeek.getMonth() - start.getMonth());
+        if (monthOffset >= 0 && monthOffset < forecastedMonthlyVols.voice.length) {
+          const daysInMonth = new Date(midWeek.getFullYear(), midWeek.getMonth() + 1, 0).getDate();
+          const f = 7 / daysInMonth;
+          return {
+            voice: Math.round(forecastedMonthlyVols.voice[monthOffset] * f),
+            chat: Math.round(forecastedMonthlyVols.chat[monthOffset] * f),
+            email: Math.round(forecastedMonthlyVols.email[monthOffset] * f),
+          };
+        }
+      }
+      // Fallback: flat conversion from base monthly volumes
+      const a = demandAssumptions;
+      return {
+        voice: monthlyToWeekly(a?.voiceVolume ?? 0, growthPct, w.weekOffset),
+        chat: monthlyToWeekly(a?.chatVolume ?? 0, growthPct, w.weekOffset),
+        email: monthlyToWeekly(a?.emailVolume ?? 0, growthPct, w.weekOffset),
+      };
+    });
+  }, [demandAssumptions, weeks, forecastedMonthlyVols, plannerSnapshot, config.planStartDate]);
 
   // ── Auto AHTs (from lob_settings, fall back to demand assumptions)
   const autoAhts = useMemo(() => ({
