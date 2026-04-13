@@ -8,9 +8,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar } from "lucide-react";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
+import { WeeklyScheduleGrid } from "../components/schedule/WeeklyScheduleGrid";
 import { Assignment } from "../components/schedule/ShiftBlock";
 import { Activity, ActivityType } from "../components/schedule/ActivityBlock";
 
@@ -90,7 +91,7 @@ interface ClipboardShift {
 type UndoAction =
   | { type: "add"; assignmentId: number }
   | { type: "delete"; assignment: Assignment }
-  | { type: "move"; assignmentId: number; prevStart: string; prevEnd: string; prevAgentId: number }
+  | { type: "move"; assignmentId: number; prevStart: string; prevEnd: string; prevAgentId: number; prevWorkDate: string; prevActivities: Activity[] }
   | { type: "addActivity"; activityId: number; assignmentId: number }
   | { type: "updateActivity"; activityId: number; prevFields: Partial<Activity> };
 
@@ -244,10 +245,18 @@ export function ScheduleEditor() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [requiredFte, setRequiredFte] = useState<number[] | undefined>(undefined);
 
+  const [viewMode, setViewMode]       = useState<"daily" | "weekly">("daily");
   const [loading, setLoading]         = useState(true);
   const [addOpen, setAddOpen]         = useState(false);
   const [prefillAgent, setPrefillAgent] = useState<number | undefined>();
   const [prefillStart, setPrefillStart] = useState<string | undefined>();
+  const [prefillDate, setPrefillDate]   = useState<string | undefined>();
+
+  // Local-first: dirty tracking + publish
+  const [isDirty, setIsDirty]         = useState(false);
+  const [publishing, setPublishing]   = useState(false);
+  const tempIdRef = useRef(-1);
+  const nextTempId = useCallback(() => { const id = tempIdRef.current; tempIdRef.current -= 1; return id; }, []);
 
   // Selection, clipboard, undo
   const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
@@ -289,7 +298,13 @@ export function ScheduleEditor() {
     setLoading(true);
     fetch(apiUrl(`/api/scheduling/assignments?lob_id=${activeLob.id}&date_start=${dateStart}&date_end=${dateEnd}`))
       .then(r => r.json())
-      .then(rows => { if (Array.isArray(rows)) setAssignments(rows); })
+      .then(rows => {
+        if (Array.isArray(rows)) {
+          setAssignments(rows);
+          setIsDirty(false);
+          setUndoStack([]);
+        }
+      })
       .catch(() => toast.error("Failed to load schedule"))
       .finally(() => setLoading(false));
   }, [activeLob, dateStart, dateEnd]);
@@ -314,78 +329,87 @@ export function ScheduleEditor() {
       .catch(() => {});
   }, [activeLob]);
 
-  // ── Mutations ─────────────────────────────────────────────────────────────
+  // ── Local-only mutations (no API calls) ──────────────────────────────────
 
-  const addShift = useCallback(async (fields: {
+  const addShift = useCallback((fields: {
     agent_id: number;
     shift_template_id: number | null;
     start_time: string;
     end_time: string;
     channel: string;
     notes: string;
+    work_date?: string;
   }) => {
     if (!activeLob) return;
-    try {
-      const res = await fetch(apiUrl("/api/scheduling/assignments"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...fields, lob_id: activeLob.id, work_date: activeDate }),
+
+    const agent = agents.find(a => a.id === fields.agent_id);
+    const tmpl = templates.find(t => t.id === fields.shift_template_id);
+    const assignmentId = nextTempId();
+
+    const enriched: Assignment = {
+      id: assignmentId,
+      agent_id: fields.agent_id,
+      agent_name: agent?.full_name ?? "",
+      skill_voice: agent?.skill_voice ?? false,
+      skill_chat: agent?.skill_chat ?? false,
+      skill_email: agent?.skill_email ?? false,
+      shift_template_id: fields.shift_template_id,
+      template_name: tmpl?.name ?? null,
+      template_color: tmpl?.color ?? null,
+      work_date: fields.work_date ?? activeDate,
+      start_time: fields.start_time,
+      end_time: fields.end_time,
+      is_overnight: false,
+      channel: fields.channel,
+      notes: fields.notes || null,
+      activities: [],
+    };
+
+    // Create default activities from template break_rules or default 9h pattern
+    const shiftStartMins = timeToMins(fields.start_time);
+    const breakRules = tmpl?.break_rules?.length
+      ? tmpl.break_rules
+      : [
+          { name: "Break", duration_minutes: 15, after_hours: 2, is_paid: true },
+          { name: "Lunch", duration_minutes: 60, after_hours: 4, is_paid: false },
+          { name: "Break", duration_minutes: 15, after_hours: 6, is_paid: true },
+        ];
+
+    for (const rule of breakRules) {
+      const breakStartMins = shiftStartMins + rule.after_hours * 60;
+      const breakEndMins = breakStartMins + rule.duration_minutes;
+      enriched.activities.push({
+        id: nextTempId(),
+        assignment_id: assignmentId,
+        activity_type: rule.duration_minutes >= 30 ? "meal" : "break",
+        start_time: toTime(breakStartMins),
+        end_time: toTime(breakEndMins),
+        is_paid: rule.is_paid,
+        notes: rule.name,
       });
-      const row: Assignment = await res.json();
-      const agent = agents.find(a => a.id === row.agent_id);
-      const tmpl = templates.find(t => t.id === row.shift_template_id);
-      const enriched: Assignment = {
-        ...row,
-        agent_name: agent?.full_name ?? "",
-        skill_voice: agent?.skill_voice ?? false,
-        skill_chat: agent?.skill_chat ?? false,
-        skill_email: agent?.skill_email ?? false,
-        template_name: tmpl?.name ?? null,
-        template_color: tmpl?.color ?? null,
-        activities: [],
-      };
+    }
 
-      // Create default activities: from template break_rules or default 9h pattern
-      const shiftStartMins = timeToMins(fields.start_time);
-      const breakRules = tmpl?.break_rules?.length
-        ? tmpl.break_rules
-        : [
-            { name: "Break", duration_minutes: 15, after_hours: 2, is_paid: true },
-            { name: "Lunch", duration_minutes: 60, after_hours: 4, is_paid: false },
-            { name: "Break", duration_minutes: 15, after_hours: 6, is_paid: true },
-          ];
+    setAssignments(prev => [...prev, enriched]);
+    pushUndo({ type: "add", assignmentId: enriched.id });
+    setIsDirty(true);
+  }, [activeLob, activeDate, agents, templates, pushUndo, nextTempId]);
 
-      for (const rule of breakRules) {
-        const breakStartMins = shiftStartMins + rule.after_hours * 60;
-        const breakEndMins = breakStartMins + rule.duration_minutes;
-        try {
-          const actRes = await fetch(apiUrl("/api/scheduling/activities"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              assignment_id: enriched.id,
-              activity_type: rule.duration_minutes >= 30 ? "meal" : "break",
-              start_time: toTime(breakStartMins),
-              end_time: toTime(breakEndMins),
-              is_paid: rule.is_paid,
-              notes: rule.name,
-            }),
-          });
-          const act = await actRes.json();
-          enriched.activities.push(act);
-        } catch {}
-      }
-
-      setAssignments(prev => [...prev, enriched]);
-      pushUndo({ type: "add", assignmentId: enriched.id });
-    } catch { toast.error("Failed to add shift"); }
-  }, [activeLob, activeDate, agents, templates, pushUndo]);
-
-  const moveShift = useCallback(async (id: number, newStart: string, newEnd: string, newAgentId?: number) => {
+  const moveShift = useCallback((id: number, newStart: string, newEnd: string, newAgentId?: number, newWorkDate?: string) => {
     const prev = assignmentsRef.current.find(a => a.id === id);
     if (!prev) return;
 
-    pushUndo({ type: "move", assignmentId: id, prevStart: prev.start_time, prevEnd: prev.end_time, prevAgentId: prev.agent_id });
+    pushUndo({
+      type: "move",
+      assignmentId: id,
+      prevStart: prev.start_time,
+      prevEnd: prev.end_time,
+      prevAgentId: prev.agent_id,
+      prevWorkDate: prev.work_date,
+      prevActivities: prev.activities.map(a => ({ ...a })),
+    });
+
+    // Compute time delta to shift activities along with the shift
+    const deltaMins = timeToMins(newStart) - timeToMins(prev.start_time);
 
     const updatedAgent = newAgentId ? agents.find(a => a.id === newAgentId) : null;
     setAssignments(all => all.map(a => a.id === id ? {
@@ -393,59 +417,42 @@ export function ScheduleEditor() {
       start_time: newStart,
       end_time: newEnd,
       ...(newAgentId ? { agent_id: newAgentId, agent_name: updatedAgent?.full_name ?? a.agent_name } : {}),
+      ...(newWorkDate ? { work_date: newWorkDate } : {}),
+      // Shift all activities by the same time delta
+      activities: deltaMins !== 0 ? a.activities.map(act => ({
+        ...act,
+        start_time: toTime(timeToMins(act.start_time) + deltaMins),
+        end_time: toTime(timeToMins(act.end_time) + deltaMins),
+      })) : a.activities,
     } : a));
 
-    try {
-      await fetch(apiUrl(`/api/scheduling/assignments/${id}`), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          start_time: newStart,
-          end_time: newEnd,
-          is_overnight: prev.is_overnight,
-          channel: prev.channel,
-          notes: prev.notes,
-          shift_template_id: prev.shift_template_id,
-          ...(newAgentId ? { agent_id: newAgentId } : {}),
-        }),
-      });
-    } catch {
-      setAssignments(all => all.map(a => a.id === id ? prev : a));
-      toast.error("Failed to save shift move");
-    }
+    setIsDirty(true);
   }, [agents, pushUndo]);
 
-  const updateTimes = useCallback(async (id: number, start: string, end: string) => {
-    await moveShift(id, start, end);
+  const updateTimes = useCallback((id: number, start: string, end: string) => {
+    moveShift(id, start, end);
   }, [moveShift]);
 
-  const deleteShift = useCallback(async (id: number) => {
+  const deleteShift = useCallback((id: number) => {
     const prev = assignmentsRef.current.find(a => a.id === id);
     if (prev) pushUndo({ type: "delete", assignment: prev });
 
     setAssignments(prev => prev.filter(a => a.id !== id));
     if (selectedShiftId === id) setSelectedShiftId(null);
-    try {
-      await fetch(apiUrl(`/api/scheduling/assignments/${id}`), { method: "DELETE" });
-    } catch { toast.error("Failed to delete shift"); }
+    setIsDirty(true);
   }, [selectedShiftId, pushUndo]);
 
-  const addActivity = useCallback(async (assignmentId: number, act: Omit<Activity, "id" | "assignment_id">) => {
-    try {
-      const res = await fetch(apiUrl("/api/scheduling/activities"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assignment_id: assignmentId, ...act }),
-      });
-      const newAct: Activity = await res.json();
-      setAssignments(prev => prev.map(a =>
-        a.id === assignmentId ? { ...a, activities: [...a.activities, newAct] } : a
-      ));
-      pushUndo({ type: "addActivity", activityId: newAct.id, assignmentId });
-    } catch { toast.error("Failed to add activity"); }
-  }, [pushUndo]);
+  const addActivity = useCallback((assignmentId: number, act: Omit<Activity, "id" | "assignment_id">) => {
+    const actId = nextTempId();
+    const newAct: Activity = { id: actId, assignment_id: assignmentId, ...act };
+    setAssignments(prev => prev.map(a =>
+      a.id === assignmentId ? { ...a, activities: [...a.activities, newAct] } : a
+    ));
+    pushUndo({ type: "addActivity", activityId: actId, assignmentId });
+    setIsDirty(true);
+  }, [pushUndo, nextTempId]);
 
-  const updateActivity = useCallback(async (id: number, fields: Partial<Activity>) => {
+  const updateActivity = useCallback((id: number, fields: Partial<Activity>) => {
     const existing = assignmentsRef.current.flatMap(a => a.activities).find(act => act.id === id);
     if (existing) {
       pushUndo({ type: "updateActivity", activityId: id, prevFields: { start_time: existing.start_time, end_time: existing.end_time, activity_type: existing.activity_type } });
@@ -455,30 +462,67 @@ export function ScheduleEditor() {
       ...a,
       activities: a.activities.map(act => act.id === id ? { ...act, ...fields } : act),
     })));
-    try {
-      if (!existing) return;
-      await fetch(apiUrl(`/api/scheduling/activities/${id}`), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...existing, ...fields }),
-      });
-    } catch { toast.error("Failed to update activity"); }
+    setIsDirty(true);
   }, [pushUndo]);
 
-  const deleteActivity = useCallback(async (assignmentId: number, activityId: number) => {
+  const deleteActivity = useCallback((assignmentId: number, activityId: number) => {
     setAssignments(prev => prev.map(a =>
       a.id === assignmentId ? { ...a, activities: a.activities.filter(act => act.id !== activityId) } : a
     ));
-    try {
-      await fetch(apiUrl(`/api/scheduling/activities/${activityId}`), { method: "DELETE" });
-    } catch { toast.error("Failed to delete activity"); }
+    setIsDirty(true);
   }, []);
 
-  const handleGridAddShift = useCallback((agentId: number, startTime: string) => {
+  const handleGridAddShift = useCallback((agentId: number, startTime: string, workDate?: string) => {
     setPrefillAgent(agentId);
     setPrefillStart(startTime);
+    setPrefillDate(workDate);
     setAddOpen(true);
   }, []);
+
+  // ── Publish (batch save to DB) ──────────────────────────────────────────
+
+  const publish = useCallback(async () => {
+    if (!activeLob) return;
+    setPublishing(true);
+    try {
+      const res = await fetch(apiUrl("/api/scheduling/assignments/bulk"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lob_id: activeLob.id,
+          date_start: dateStart,
+          date_end: dateEnd,
+          assignments: assignments.map(a => ({
+            agent_id: a.agent_id,
+            shift_template_id: a.shift_template_id,
+            work_date: a.work_date,
+            start_time: a.start_time,
+            end_time: a.end_time,
+            is_overnight: a.is_overnight,
+            channel: a.channel,
+            notes: a.notes,
+            activities: a.activities.map(act => ({
+              activity_type: act.activity_type,
+              start_time: act.start_time,
+              end_time: act.end_time,
+              is_paid: act.is_paid,
+              notes: act.notes,
+            })),
+          })),
+        }),
+      });
+      if (!res.ok) throw new Error("Publish failed");
+      const rows: Assignment[] = await res.json();
+      setAssignments(rows);
+      setIsDirty(false);
+      setUndoStack([]);
+      toast.success("Schedule published successfully");
+    } catch {
+      toast.error("Failed to publish schedule");
+    } finally {
+      setPublishing(false);
+    }
+  }, [activeLob, dateStart, dateEnd, assignments]);
 
   // ── Selection handlers ───────────────────────────────────────────────────
 
@@ -559,62 +603,37 @@ export function ScheduleEditor() {
         setUndoStack(prev => prev.slice(0, -1));
 
         if (last.type === "add") {
-          // Undo add = delete
           setAssignments(prev => prev.filter(a => a.id !== last.assignmentId));
-          fetch(apiUrl(`/api/scheduling/assignments/${last.assignmentId}`), { method: "DELETE" }).catch(() => {});
           toast("Undone: shift removed");
         } else if (last.type === "delete") {
-          // Undo delete = re-add (optimistic — re-insert without re-creating on server for simplicity)
           setAssignments(prev => [...prev, last.assignment]);
           toast("Undone: shift restored");
         } else if (last.type === "move") {
-          // Undo move = move back
-          const prev = assignmentsRef.current.find(a => a.id === last.assignmentId);
-          if (prev) {
-            const agent = agents.find(a => a.id === last.prevAgentId);
-            setAssignments(all => all.map(a => a.id === last.assignmentId ? {
-              ...a,
-              start_time: last.prevStart,
-              end_time: last.prevEnd,
-              agent_id: last.prevAgentId,
-              agent_name: agent?.full_name ?? a.agent_name,
-            } : a));
-            fetch(apiUrl(`/api/scheduling/assignments/${last.assignmentId}`), {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                start_time: last.prevStart,
-                end_time: last.prevEnd,
-                agent_id: last.prevAgentId,
-                is_overnight: prev.is_overnight,
-                channel: prev.channel,
-                notes: prev.notes,
-                shift_template_id: prev.shift_template_id,
-              }),
-            }).catch(() => {});
-            toast("Undone: shift moved back");
-          }
+          const agent = agents.find(a => a.id === last.prevAgentId);
+          setAssignments(all => all.map(a => a.id === last.assignmentId ? {
+            ...a,
+            start_time: last.prevStart,
+            end_time: last.prevEnd,
+            agent_id: last.prevAgentId,
+            agent_name: agent?.full_name ?? a.agent_name,
+            work_date: last.prevWorkDate,
+            activities: last.prevActivities,
+          } : a));
+          toast("Undone: shift moved back");
         } else if (last.type === "addActivity") {
           setAssignments(prev => prev.map(a =>
             a.id === last.assignmentId ? { ...a, activities: a.activities.filter(act => act.id !== last.activityId) } : a
           ));
-          fetch(apiUrl(`/api/scheduling/activities/${last.activityId}`), { method: "DELETE" }).catch(() => {});
           toast("Undone: activity removed");
         } else if (last.type === "updateActivity") {
           setAssignments(prev => prev.map(a => ({
             ...a,
             activities: a.activities.map(act => act.id === last.activityId ? { ...act, ...last.prevFields } : act),
           })));
-          const existing = assignmentsRef.current.flatMap(a => a.activities).find(act => act.id === last.activityId);
-          if (existing) {
-            fetch(apiUrl(`/api/scheduling/activities/${last.activityId}`), {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ...existing, ...last.prevFields }),
-            }).catch(() => {});
-          }
           toast("Undone: activity reverted");
         }
+
+        setIsDirty(true);
       }
     };
 
@@ -708,6 +727,30 @@ export function ScheduleEditor() {
             Today
           </button>
 
+          {/* Daily / Weekly toggle */}
+          <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setViewMode("daily")}
+              className={`flex items-center gap-1 h-8 px-2.5 text-[11px] font-semibold transition-colors ${
+                viewMode === "daily" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+              }`}
+            >
+              <Calendar className="size-3" />
+              Day
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("weekly")}
+              className={`flex items-center gap-1 h-8 px-2.5 text-[11px] font-semibold transition-colors ${
+                viewMode === "weekly" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+              }`}
+            >
+              <CalendarDays className="size-3" />
+              Week
+            </button>
+          </div>
+
           <div className="hidden sm:flex items-center gap-2 ml-1">
             <div className="h-4 w-px bg-slate-200" />
             <span className="text-sm font-bold text-slate-800">Schedule Editor</span>
@@ -737,6 +780,18 @@ export function ScheduleEditor() {
 
           <div className="h-5 w-px bg-slate-200 hidden md:block" />
 
+          {/* Publish button */}
+          <Button
+            size="sm"
+            variant={isDirty ? "default" : "outline"}
+            className={`h-8 gap-1.5 ${isDirty ? "bg-emerald-600 text-white hover:bg-emerald-700" : "text-slate-500"}`}
+            disabled={!isDirty || publishing}
+            onClick={publish}
+          >
+            {publishing ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+            <span className="hidden sm:inline">{publishing ? "Publishing…" : "Publish"}</span>
+          </Button>
+
           <Button
             size="sm"
             className="h-8 gap-1.5 bg-slate-900 text-white hover:bg-slate-800"
@@ -746,6 +801,14 @@ export function ScheduleEditor() {
             <span className="hidden sm:inline">Add Shift</span>
           </Button>
         </div>
+
+        {/* ── Unsaved changes banner ─────────────────────────────────────── */}
+        {isDirty && (
+          <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs font-medium">
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+            You have unsaved changes. Click <strong>Publish</strong> to save to the database.
+          </div>
+        )}
 
         {/* ── Search + skill filter row ────────────────────────────────────── */}
         <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50/40 px-4 h-[40px]">
@@ -783,51 +846,65 @@ export function ScheduleEditor() {
           </span>
         </div>
 
-        {/* ── Day tabs ────────────────────────────────────────────────────── */}
-        <div className="flex items-stretch border-b border-slate-200 bg-white overflow-x-auto">
-          {DAY_LABELS.map((label, i) => {
-            const dayDate = weekDates[i];
-            const dayStr = toDateStr(dayDate);
-            const count = assignments.filter(a => a.work_date?.startsWith(dayStr)).length;
-            const isToday = dayStr === todayStr;
-            const active = activeDayIdx === i;
-            return (
-              <button
-                key={label}
-                type="button"
-                onClick={() => setActiveDayIdx(i)}
-                className={`relative flex flex-col items-center justify-center gap-0 px-5 py-2.5 text-center min-w-[80px] transition-colors border-b-2 ${
-                  active
-                    ? "border-blue-600 bg-white text-blue-600"
-                    : "border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50"
-                }`}
-              >
-                <span className={`text-[10px] font-black uppercase tracking-[0.2em] ${active ? "text-blue-500" : "text-slate-400"}`}>
-                  {label}
-                </span>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <span className={`text-sm font-bold ${active ? "text-blue-700" : "text-slate-700"}`}>
-                    {dayDate.getDate()}
+        {/* ── Day tabs (daily mode only) ────────────────────────────────── */}
+        {viewMode === "daily" && (
+          <div className="flex items-stretch border-b border-slate-200 bg-white overflow-x-auto">
+            {DAY_LABELS.map((label, i) => {
+              const dayDate = weekDates[i];
+              const dayStr = toDateStr(dayDate);
+              const count = assignments.filter(a => a.work_date?.startsWith(dayStr)).length;
+              const isToday = dayStr === todayStr;
+              const active = activeDayIdx === i;
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setActiveDayIdx(i)}
+                  className={`relative flex flex-col items-center justify-center gap-0 px-5 py-2.5 text-center min-w-[80px] transition-colors border-b-2 ${
+                    active
+                      ? "border-blue-600 bg-white text-blue-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50"
+                  }`}
+                >
+                  <span className={`text-[10px] font-black uppercase tracking-[0.2em] ${active ? "text-blue-500" : "text-slate-400"}`}>
+                    {label}
                   </span>
-                  {isToday && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className={`text-sm font-bold ${active ? "text-blue-700" : "text-slate-700"}`}>
+                      {dayDate.getDate()}
+                    </span>
+                    {isToday && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                    )}
+                  </div>
+                  {count > 0 && (
+                    <span className={`text-[10px] font-black mt-0.5 ${active ? "text-blue-400" : "text-slate-400"}`}>
+                      {count} shift{count !== 1 ? "s" : ""}
+                    </span>
                   )}
-                </div>
-                {count > 0 && (
-                  <span className={`text-[10px] font-black mt-0.5 ${active ? "text-blue-400" : "text-slate-400"}`}>
-                    {count} shift{count !== 1 ? "s" : ""}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+                </button>
+              );
+            })}
 
-          <div className="flex items-center ml-auto px-4 shrink-0">
-            <span className="text-[11px] text-slate-400 font-medium hidden lg:block">
-              {formatFullDate(weekDates[activeDayIdx])}
+            <div className="flex items-center ml-auto px-4 shrink-0">
+              <span className="text-[11px] text-slate-400 font-medium hidden lg:block">
+                {formatFullDate(weekDates[activeDayIdx])}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ── Week header (weekly mode only) ──────────────────────────────── */}
+        {viewMode === "weekly" && (
+          <div className="flex items-center gap-2 px-4 py-1.5 border-b border-slate-200 bg-white">
+            <span className="text-xs font-semibold text-slate-600">
+              {formatShortDate(weekDates[0])} — {formatShortDate(weekDates[6])}
+            </span>
+            <span className="text-[10px] text-slate-400">
+              ({assignments.length} shift{assignments.length !== 1 ? "s" : ""} this week)
             </span>
           </div>
-        </div>
+        )}
 
         {/* ── Schedule content ─────────────────────────────────────────────── */}
         <div className="flex-1 p-4 bg-slate-50/30">
@@ -858,13 +935,30 @@ export function ScheduleEditor() {
                 Clear filters
               </button>
             </div>
-          ) : (
+          ) : viewMode === "daily" ? (
             <ScheduleGrid
               agents={visibleAgents}
               assignments={assignments}
               allWeekAssignments={assignments}
               activeDate={activeDate}
               requiredFte={requiredFte}
+              selectedShiftId={selectedShiftId}
+              selectedAgentIds={selectedAgentIds}
+              onShiftMove={moveShift}
+              onShiftDelete={deleteShift}
+              onAddShift={handleGridAddShift}
+              onAddActivity={addActivity}
+              onUpdateActivity={updateActivity}
+              onDeleteActivity={deleteActivity}
+              onUpdateTimes={updateTimes}
+              onSelectShift={handleSelectShift}
+              onSelectAgent={handleSelectAgent}
+            />
+          ) : (
+            <WeeklyScheduleGrid
+              agents={visibleAgents}
+              assignments={assignments}
+              weekDates={weekDates.map(d => toDateStr(d))}
               selectedShiftId={selectedShiftId}
               selectedAgentIds={selectedAgentIds}
               onShiftMove={moveShift}
@@ -890,7 +984,7 @@ export function ScheduleEditor() {
         templates={templates}
         prefillAgentId={prefillAgent}
         prefillStart={prefillStart}
-        onSave={addShift}
+        onSave={(fields) => addShift({ ...fields, work_date: prefillDate })}
       />
     </PageLayout>
   );

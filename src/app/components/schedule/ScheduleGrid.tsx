@@ -18,16 +18,16 @@ import { Plus } from "lucide-react";
 export const COL_W   = 14;   // px per 15-min column
 export const ROW_H   = 30;   // px per agent row (thin Genesys style)
 export const AGENT_W = 260;  // px for the sticky name column (includes paid hours)
-const TOTAL_COLS     = 96;   // 24h × 4
+export const TOTAL_COLS = 96;   // 24h × 4
 
 // Coverage row height
 const COV_ROW_H = 24;
 
-function snapToGrid(px: number): number {
+export function snapToGrid(px: number): number {
   return Math.round(px / COL_W) * COL_W;
 }
 
-function pxToTime(px: number): string {
+export function pxToTime(px: number): string {
   const slot = Math.round(px / COL_W);
   const clamped = Math.max(0, Math.min(95, slot));
   const h = Math.floor((clamped * 15) / 60);
@@ -35,16 +35,16 @@ function pxToTime(px: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-function timeToMins(t: string): number {
+export function timeToMins(t: string): number {
   const [h, m] = t.split(":").map(Number);
   return h * 60 + m;
 }
 
-function timeToPx(t: string): number {
+export function timeToPx(t: string): number {
   return (timeToMins(t) / 15) * COL_W;
 }
 
-function fmt12(t: string): string {
+export function fmt12(t: string): string {
   const [h, m] = t.split(":").map(Number);
   const ampm = h >= 12 ? "PM" : "AM";
   const h12 = h % 12 || 12;
@@ -52,7 +52,7 @@ function fmt12(t: string): string {
 }
 
 // Build time header labels
-const TIME_LABELS: Array<{ slot: number; label: string }> = Array.from(
+export const TIME_LABELS: Array<{ slot: number; label: string }> = Array.from(
   { length: TOTAL_COLS },
   (_, slot) => {
     const mins = slot * 15;
@@ -437,16 +437,17 @@ export function ScheduleGrid({
             </div>
 
             {/* Required row */}
-            {requiredFte && (
-              <div className="flex border-b border-slate-200">
-                <div
-                  className="flex items-center px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
-                  style={{ width: AGENT_W, height: COV_ROW_H, background: "#f1f5f9" }}
-                >
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Required</span>
-                </div>
-                <div className="flex" style={{ height: COV_ROW_H }}>
-                  {requiredFte.map((val, slot) => (
+            <div className="flex border-b border-slate-200">
+              <div
+                className="flex items-center px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
+                style={{ width: AGENT_W, height: COV_ROW_H, background: "#f1f5f9" }}
+              >
+                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Required</span>
+              </div>
+              <div className="flex" style={{ height: COV_ROW_H }}>
+                {Array.from({ length: 96 }, (_, slot) => {
+                  const val = requiredFte?.[slot] ?? 0;
+                  return (
                     <div
                       key={slot}
                       className="flex items-center justify-center text-[8px] font-semibold border-r border-slate-100/50"
@@ -459,42 +460,42 @@ export function ScheduleGrid({
                     >
                       {val > 0 ? Math.round(val) : ""}
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
-            )}
+            </div>
 
             {/* OU (Over/Under) row */}
-            {requiredFte && (
-              <div className="flex">
-                <div
-                  className="flex items-center px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
-                  style={{ width: AGENT_W, height: COV_ROW_H, background: "#f1f5f9" }}
-                >
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">OU</span>
-                </div>
-                <div className="flex" style={{ height: COV_ROW_H }}>
-                  {requiredFte.map((req, slot) => {
-                    const diff = scheduledPerSlot[slot] - Math.ceil(req);
-                    const isOver = diff >= 0;
-                    return (
-                      <div
-                        key={slot}
-                        className="flex items-center justify-center text-[8px] font-bold border-r border-slate-100/50"
-                        style={{
-                          width: COL_W,
-                          height: COV_ROW_H,
-                          backgroundColor: req > 0 ? (isOver ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)") : "transparent",
-                          color: req > 0 ? (isOver ? "#16a34a" : "#dc2626") : "#94a3b8",
-                        }}
-                      >
-                        {req > 0 ? (diff >= 0 ? `+${diff}` : diff) : ""}
-                      </div>
-                    );
-                  })}
-                </div>
+            <div className="flex">
+              <div
+                className="flex items-center px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
+                style={{ width: AGENT_W, height: COV_ROW_H, background: "#f1f5f9" }}
+              >
+                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Over/Under</span>
               </div>
-            )}
+              <div className="flex" style={{ height: COV_ROW_H }}>
+                {Array.from({ length: 96 }, (_, slot) => {
+                  const req = requiredFte?.[slot] ?? 0;
+                  const diff = scheduledPerSlot[slot] - Math.ceil(req);
+                  const hasData = req > 0 || scheduledPerSlot[slot] > 0;
+                  const isOver = diff >= 0;
+                  return (
+                    <div
+                      key={slot}
+                      className="flex items-center justify-center text-[8px] font-bold border-r border-slate-100/50"
+                      style={{
+                        width: COL_W,
+                        height: COV_ROW_H,
+                        backgroundColor: hasData ? (isOver ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)") : "transparent",
+                        color: hasData ? (isOver ? "#16a34a" : "#dc2626") : "#94a3b8",
+                      }}
+                    >
+                      {hasData ? (diff >= 0 ? `+${diff}` : diff) : ""}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
       </div>

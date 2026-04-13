@@ -1767,6 +1767,83 @@ app.delete('/api/scheduling/activities/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Scheduling: Bulk publish (local-first → DB) ─────────────────────────────
+app.put('/api/scheduling/assignments/bulk', async (req, res) => {
+  const { lob_id, date_start, date_end, assignments } = req.body;
+  if (!lob_id || !date_start || !date_end || !Array.isArray(assignments)) {
+    return res.status(400).json({ error: 'lob_id, date_start, date_end, and assignments[] are required' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Find existing assignment IDs in this date range
+    const existing = await client.query(
+      `SELECT id FROM schedule_assignments WHERE organization_id=1 AND lob_id=$1 AND work_date >= $2 AND work_date <= $3`,
+      [lob_id, date_start, date_end]
+    );
+    const existingIds = existing.rows.map(r => r.id);
+
+    // Delete activities then assignments for existing
+    if (existingIds.length > 0) {
+      await client.query(`DELETE FROM shift_activities WHERE assignment_id = ANY($1)`, [existingIds]);
+      await client.query(`DELETE FROM schedule_assignments WHERE id = ANY($1)`, [existingIds]);
+    }
+
+    // Re-create all assignments with their activities
+    for (const a of assignments) {
+      const { rows } = await client.query(
+        `INSERT INTO schedule_assignments (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time, is_overnight, channel, notes)
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+        [lob_id, a.agent_id, a.shift_template_id || null, a.work_date, a.start_time, a.end_time, a.is_overnight || false, a.channel || 'voice', a.notes || null]
+      );
+      const newId = rows[0].id;
+
+      for (const act of (a.activities || [])) {
+        await client.query(
+          `INSERT INTO shift_activities (assignment_id, activity_type, start_time, end_time, is_paid, notes)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [newId, act.activity_type, act.start_time, act.end_time, act.is_paid || false, act.notes || null]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+
+    // Re-fetch the full enriched data for the client
+    const refreshSql = `
+      SELECT sa.*,
+        json_agg(
+          json_build_object(
+            'id', act.id,
+            'activity_type', act.activity_type,
+            'start_time', act.start_time::text,
+            'end_time', act.end_time::text,
+            'is_paid', act.is_paid,
+            'notes', act.notes
+          ) ORDER BY act.start_time
+        ) FILTER (WHERE act.id IS NOT NULL) AS activities,
+        ag.full_name AS agent_name,
+        ag.skill_voice, ag.skill_chat, ag.skill_email,
+        st.name AS template_name, st.color AS template_color
+      FROM schedule_assignments sa
+      LEFT JOIN shift_activities act ON act.assignment_id = sa.id
+      LEFT JOIN scheduling_agents ag ON ag.id = sa.agent_id
+      LEFT JOIN scheduling_shift_templates st ON st.id = sa.shift_template_id
+      WHERE sa.organization_id = 1 AND sa.lob_id = $1 AND sa.work_date >= $2 AND sa.work_date <= $3
+      GROUP BY sa.id, ag.full_name, ag.skill_voice, ag.skill_chat, ag.skill_email, st.name, st.color
+      ORDER BY sa.work_date, sa.start_time`;
+    const { rows: refreshed } = await client.query(refreshSql, [lob_id, date_start, date_end]);
+    const result = refreshed.map(r => ({ ...r, activities: r.activities || [] }));
+    res.json(result);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // ── Capacity Plan Config ──────────────────────────────────────────────────────
 app.get('/api/capacity-plan-config', async (req, res) => {
   const user = getCurrentUser(req);
