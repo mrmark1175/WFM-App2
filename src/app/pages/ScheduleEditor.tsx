@@ -311,20 +311,14 @@ export function ScheduleEditor() {
 
   useEffect(() => {
     if (!activeLob) return;
-    fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`))
-      .then(r => r.json())
+    fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`))
+      .then(r => r.ok ? r.json() : null)
       .then(data => {
-        const snap = data?.state_value?.plannerSnapshot;
-        if (!snap?.fteTable) return;
-        const days = Object.values(snap.fteTable) as Array<Array<{ fte: number }>>;
-        if (!days.length) return;
-        const slots = days[0].length;
-        const avgFte = Array.from({ length: Math.min(slots, 96) }, (_, i) => {
-          const sum = days.reduce((acc, d) => acc + (d[i]?.fte ?? 0), 0);
-          return sum / days.length;
-        });
-        while (avgFte.length < 96) avgFte.push(0);
-        setRequiredFte(avgFte);
+        const slots = data?.slots as number[] | undefined;
+        if (!slots?.length) return;
+        const padded = [...slots];
+        while (padded.length < 96) padded.push(0);
+        setRequiredFte(padded.slice(0, 96));
       })
       .catch(() => {});
   }, [activeLob]);

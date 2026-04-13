@@ -488,6 +488,25 @@ export const IntradayForecast = () => {
     });
   }, [fteTable, smoothFTE, smoothWindow]);
 
+  // Persist FTE averages to user_preferences so ScheduleEditor can read them.
+  useEffect(() => {
+    if (!smoothedFteTable || !activeLob) return;
+    const numSlots = smoothedFteTable[0]?.length ?? 0;
+    if (!numSlots) return;
+    const avgFte = Array.from({ length: Math.min(numSlots, 96) }, (_, i) => {
+      const sum = smoothedFteTable.reduce((acc, day) => acc + (day[i]?.fte ?? 0), 0);
+      return sum / smoothedFteTable.length;
+    });
+    while (avgFte.length < 96) avgFte.push(0);
+    fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        preferences: { slots: avgFte, channel: selectedChannel, grain },
+      }),
+    }).catch(() => {});
+  }, [smoothedFteTable, activeLob?.id, selectedChannel, grain]);
+
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
   // Sorted date keys for the inline grid columns
   const gridDates = useMemo(() => Object.keys(rawData).sort(), [rawData]);
