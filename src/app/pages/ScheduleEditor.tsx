@@ -485,7 +485,7 @@ export function ScheduleEditor() {
     if (!activeLob) return;
     setPublishing(true);
     try {
-      const res = await fetch(apiUrl("/api/scheduling/assignments/bulk"), {
+      const res = await fetch(apiUrl("/api/scheduling/assignments-publish"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

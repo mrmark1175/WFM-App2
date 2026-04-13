@@ -439,14 +439,19 @@ export function ScheduleGrid({
             {/* Required row */}
             <div className="flex border-b border-slate-200">
               <div
-                className="flex items-center px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
+                className="flex items-center gap-1.5 px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
                 style={{ width: AGENT_W, height: COV_ROW_H, background: "#f1f5f9" }}
               >
                 <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Required</span>
+                {!requiredFte && (
+                  <span className="text-[8px] text-slate-400 italic normal-case">no demand plan</span>
+                )}
               </div>
               <div className="flex" style={{ height: COV_ROW_H }}>
                 {Array.from({ length: 96 }, (_, slot) => {
                   const val = requiredFte?.[slot] ?? 0;
+                  // Show hourly tick marks even when no data so row is visually present
+                  const isHour = slot % 4 === 0;
                   return (
                     <div
                       key={slot}
@@ -454,11 +459,13 @@ export function ScheduleGrid({
                       style={{
                         width: COL_W,
                         height: COV_ROW_H,
-                        backgroundColor: val > 0 ? "rgba(100,116,139,0.1)" : "transparent",
-                        color: val > 0 ? "#64748b" : "#94a3b8",
+                        backgroundColor: val > 0
+                          ? "rgba(100,116,139,0.12)"
+                          : "rgba(100,116,139,0.03)",
+                        color: val > 0 ? "#64748b" : "#cbd5e1",
                       }}
                     >
-                      {val > 0 ? Math.round(val) : ""}
+                      {val > 0 ? Math.round(val) : (isHour ? "·" : "")}
                     </div>
                   );
                 })}

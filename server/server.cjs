@@ -1768,7 +1768,7 @@ app.delete('/api/scheduling/activities/:id', async (req, res) => {
 });
 
 // ── Scheduling: Bulk publish (local-first → DB) ─────────────────────────────
-app.put('/api/scheduling/assignments/bulk', async (req, res) => {
+app.put('/api/scheduling/assignments-publish', async (req, res) => {
   const { lob_id, date_start, date_end, assignments } = req.body;
   if (!lob_id || !date_start || !date_end || !Array.isArray(assignments)) {
     return res.status(400).json({ error: 'lob_id, date_start, date_end, and assignments[] are required' });
