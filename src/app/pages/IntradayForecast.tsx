@@ -150,6 +150,8 @@ export const IntradayForecast = () => {
   const [showMedianTable, setShowMedianTable] = useState(false);
   const [showDistributionTable, setShowDistributionTable] = useState(false);
   const [shrinkageHoursPerDay, setShrinkageHoursPerDay] = useState<number>(7.5);
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [commitStatus, setCommitStatus] = useState<"idle" | "saving" | "saved">("idle");
 
   // Virtual scroll for weight editor
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -488,26 +490,41 @@ export const IntradayForecast = () => {
     });
   }, [fteTable, smoothFTE, smoothWindow]);
 
-  // Persist FTE averages to user_preferences so ScheduleEditor can read them.
-  // Always upsample to 96 slots (15-min resolution) regardless of display grain.
-  useEffect(() => {
+  // Commit FTE to scheduling — called by the "Commit to Scheduling" button.
+  // If grain !== 15, the dialog confirms first; this function runs after confirmation.
+  async function saveCommitToScheduling(targetGrain: 15 | 30 | 60) {
     if (!smoothedFteTable || !activeLob) return;
-    const numSlots = smoothedFteTable[0]?.length ?? 0;
-    if (!numSlots) return;
-    const grainFactor = grain === 15 ? 1 : grain === 30 ? 2 : 4; // slots per 15-min bucket
+    const grainFactor = targetGrain === 15 ? 1 : targetGrain === 30 ? 2 : 4;
     const avgFte = Array.from({ length: 96 }, (_, i) => {
       const slotIdx = Math.floor(i / grainFactor);
       const sum = smoothedFteTable.reduce((acc, day) => acc + (day[slotIdx]?.fte ?? 0), 0);
       return sum / smoothedFteTable.length;
     });
-    fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        preferences: { slots: avgFte, channel: selectedChannel, grain },
-      }),
-    }).catch(() => {});
-  }, [smoothedFteTable, activeLob?.id, selectedChannel, grain]);
+    setCommitStatus("saving");
+    try {
+      await fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          preferences: { slots: avgFte, channel: selectedChannel, grain: 15 },
+        }),
+        credentials: "include",
+      });
+      setCommitStatus("saved");
+      setTimeout(() => setCommitStatus("idle"), 3000);
+    } catch {
+      setCommitStatus("idle");
+    }
+  }
+
+  function handleCommitClick() {
+    if (!smoothedFteTable) return;
+    if (grain === 15) {
+      saveCommitToScheduling(15);
+    } else {
+      setCommitDialogOpen(true);
+    }
+  }
 
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
   // Sorted date keys for the inline grid columns
@@ -1504,7 +1521,7 @@ export const IntradayForecast = () => {
                       ? "Chat: Erlang C with concurrency-adjusted demand"
                       : "Voice: Erlang C queuing model"}
                   </span>
-                  {/* Smooth toggle + window slider */}
+                  {/* Smooth toggle + window slider + Commit button */}
                   <div className="ml-auto flex items-center gap-2">
                     <button
                       onClick={() => setPrefs({ smoothFTE: !smoothFTE })}
@@ -1533,6 +1550,29 @@ export const IntradayForecast = () => {
                         </span>
                       </div>
                     )}
+                    <div className="h-4 w-px bg-border" />
+                    <button
+                      onClick={handleCommitClick}
+                      disabled={commitStatus === "saving"}
+                      className={`flex items-center gap-1 px-2.5 py-0.5 rounded border text-xs font-medium transition-colors ${
+                        commitStatus === "saved"
+                          ? "bg-emerald-100 border-emerald-300 text-emerald-700"
+                          : commitStatus === "saving"
+                          ? "opacity-60 cursor-not-allowed border-border text-muted-foreground"
+                          : grain !== 15
+                          ? "bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100"
+                          : "bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
+                      }`}
+                      title="Save this FTE plan to the Schedule Editor's Required row"
+                    >
+                      {commitStatus === "saved" ? (
+                        <><Save className="h-3 w-3" /> Committed</>
+                      ) : commitStatus === "saving" ? (
+                        <><RotateCcw className="h-3 w-3 animate-spin" /> Saving…</>
+                      ) : (
+                        <><Save className="h-3 w-3" /> Commit to Scheduling{grain !== 15 ? " ⚠" : ""}</>
+                      )}
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -2061,6 +2101,57 @@ export const IntradayForecast = () => {
           )}
         </div>
       </section>
+
+      {/* ── Commit to Scheduling — grain warning dialog ── */}
+      <Dialog open={commitDialogOpen} onOpenChange={setCommitDialogOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              Not on 15-min view
+            </DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-muted-foreground space-y-3 pt-1">
+            <p>
+              You're currently on the <strong>{grain}-min</strong> grain view. For the most accurate Required FTE
+              in the Schedule Editor, commit at <strong>15-min</strong> resolution.
+            </p>
+            <p>
+              You can switch to 15-min now (recommended), or commit as-is — the {grain}-min values will be
+              stepped out to fill each 15-min slot.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 pt-2">
+            <button
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors"
+              onClick={() => {
+                setCommitDialogOpen(false);
+                setPrefs({ grain: 15 });
+                // grain state update is async; wait a tick then save using grain=15 factor
+                setTimeout(() => saveCommitToScheduling(15), 50);
+              }}
+            >
+              <Save className="h-3.5 w-3.5" />
+              Switch to 15-min &amp; Commit
+            </button>
+            <button
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-amber-300 bg-amber-50 text-amber-700 text-sm hover:bg-amber-100 transition-colors"
+              onClick={() => {
+                setCommitDialogOpen(false);
+                saveCommitToScheduling(grain);
+              }}
+            >
+              Commit as-is ({grain}-min, upsampled)
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setCommitDialogOpen(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Save Profile Dialog ── */}
       <Dialog open={saveModalOpen} onOpenChange={setSaveModalOpen}>
