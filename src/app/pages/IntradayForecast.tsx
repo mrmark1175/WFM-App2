@@ -491,13 +491,19 @@ export const IntradayForecast = () => {
   }, [fteTable, smoothFTE, smoothWindow]);
 
   // Commit FTE to scheduling — called by the "Commit to Scheduling" button.
-  // Saves per-date FTE arrays (one 96-slot array per day of the baseline week)
+  // Saves per-date FTE arrays (one 96-slot array per day of the target week)
   // so the Schedule Editor can show date-specific Required FTE rows.
   async function saveCommitToScheduling(targetGrain: 15 | 30 | 60) {
-    if (!smoothedFteTable || !activeLob) return;
+    if (!smoothedFteTable || !activeLob || !targetWeekStart) return;
     const grainFactor = targetGrain === 15 ? 1 : targetGrain === 30 ? 2 : 4;
     // Build per-date FTE: smoothedFteTable[0]=Mon, [1]=Tue, …, [6]=Sun
-    const weekDates = getWeekDateStrings(baselineYear, baselineStartWeek);
+    // Key by the TARGET week dates (the week being scheduled), not the baseline week
+    const twMon = new Date(targetWeekStart + "T12:00:00");
+    const weekDates = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(twMon);
+      d.setDate(d.getDate() + i);
+      return d.toISOString().slice(0, 10);
+    });
     const dates: Record<string, number[]> = {};
     for (let d = 0; d < 7; d++) {
       const dayData = smoothedFteTable[d];

@@ -651,10 +651,21 @@ export function ScheduleEditor() {
   }, [selectedShiftId, clipboard, selectedAgentIds, agents, addShift]);
 
   // ── Required FTE for the active day (derived from per-date map) ──────────
-  const requiredFte = useMemo(() =>
-    (requiredFteByDate[activeDate] ?? requiredFteByDate["*"]) as number[] | undefined,
-    [requiredFteByDate, activeDate]
-  );
+  // Exact date match first, then fall back to same day-of-week from committed
+  // baseline week (IntradayForecast commits Mon–Sun keyed by baseline dates,
+  // which won't match the schedule editor's current week).
+  const requiredFte = useMemo(() => {
+    if (requiredFteByDate[activeDate]) return requiredFteByDate[activeDate];
+    if (requiredFteByDate["*"]) return requiredFteByDate["*"];
+    // Day-of-week fallback: find a committed date with the same weekday
+    const targetDow = new Date(activeDate + "T12:00:00").getDay(); // 0=Sun..6=Sat
+    for (const [dateStr, slots] of Object.entries(requiredFteByDate)) {
+      if (dateStr === "*") continue;
+      const dow = new Date(dateStr + "T12:00:00").getDay();
+      if (dow === targetDow) return slots;
+    }
+    return undefined;
+  }, [requiredFteByDate, activeDate]);
 
   // ── Derived counts ────────────────────────────────────────────────────────
 
