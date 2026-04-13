@@ -293,7 +293,7 @@ export function ScheduleGrid({
                 <div
                   key={slot}
                   className="absolute text-[9px] text-slate-500 select-none"
-                  style={{ left: slot * COL_W, top: 8, transform: "translateX(-50%)" }}
+                  style={{ left: slot * COL_W, top: 8 }}
                 >
                   {label}
                 </div>
