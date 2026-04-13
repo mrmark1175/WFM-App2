@@ -489,15 +489,17 @@ export const IntradayForecast = () => {
   }, [fteTable, smoothFTE, smoothWindow]);
 
   // Persist FTE averages to user_preferences so ScheduleEditor can read them.
+  // Always upsample to 96 slots (15-min resolution) regardless of display grain.
   useEffect(() => {
     if (!smoothedFteTable || !activeLob) return;
     const numSlots = smoothedFteTable[0]?.length ?? 0;
     if (!numSlots) return;
-    const avgFte = Array.from({ length: Math.min(numSlots, 96) }, (_, i) => {
-      const sum = smoothedFteTable.reduce((acc, day) => acc + (day[i]?.fte ?? 0), 0);
+    const grainFactor = grain === 15 ? 1 : grain === 30 ? 2 : 4; // slots per 15-min bucket
+    const avgFte = Array.from({ length: 96 }, (_, i) => {
+      const slotIdx = Math.floor(i / grainFactor);
+      const sum = smoothedFteTable.reduce((acc, day) => acc + (day[slotIdx]?.fte ?? 0), 0);
       return sum / smoothedFteTable.length;
     });
-    while (avgFte.length < 96) avgFte.push(0);
     fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
