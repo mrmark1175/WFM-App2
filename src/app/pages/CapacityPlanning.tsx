@@ -56,6 +56,7 @@ interface WeekCalc extends WeekMeta {
   knownExits: number; projectedHc: number;
   actualHc: number | null; actualAttrition: number | null;
   gapSurplus: number; actualGapSurplus: number | null;
+  achievedSLAProj: number | null;   // Erlang C SLA% at projected HC; null for email
   achievedSLAActual: number | null; // Erlang C SLA% at actual HC; null if no actual HC or email
 }
 
@@ -721,33 +722,35 @@ export function CapacityPlanning() {
       const gapSurplus = roundTo(projHC - requiredFTE, 1);
       const actualGapSurplus = actualHc != null ? roundTo(actualHc - requiredFTE, 1) : null;
 
-      // Achieved SLA at actual HC — forward Erlang C (null if no actual HC or email-only)
-      let achievedSLAActual: number | null = null;
-      if (actualHc != null) {
+      // Helper: compute achieved SLA% from a given FTE headcount
+      function achievedSLFor(hc: number): number | null {
         if (isDedicated) {
-          if (activeChannel !== "email") {
-            const vol = activeChannel === "voice" ? effVolVoice : effVolChat;
-            const aht = activeChannel === "voice" ? effAhtVoice : effAhtChat;
-            const sec = activeChannel === "voice" ? slaVoiceSec : slaChatSec;
-            const conc = activeChannel === "chat" ? chatConcurrency : 1;
-            achievedSLAActual = computeAchievedSLFromFTE(
-              vol, aht, actualHc, daysPerWeek, operatingHoursPerDay, hoursPerDay, sec, shrinkagePct, activeChannel, conc,
-            );
-          }
+          if (activeChannel === "email") return null;
+          const vol = activeChannel === "voice" ? effVolVoice : effVolChat;
+          const aht = activeChannel === "voice" ? effAhtVoice : effAhtChat;
+          const sec = activeChannel === "voice" ? slaVoiceSec : slaChatSec;
+          const conc = activeChannel === "chat" ? chatConcurrency : 1;
+          return computeAchievedSLFromFTE(vol, aht, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, sec, shrinkagePct, activeChannel, conc);
         } else {
           // Blended: volume-weighted average SLA across non-email enabled channels
           let weightedSL = 0, totalVol = 0;
           if (enabledChannels.includes("voice") && effVolVoice > 0) {
-            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, actualHc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice");
+            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice");
             if (sl != null) { weightedSL += sl * effVolVoice; totalVol += effVolVoice; }
           }
           if (enabledChannels.includes("chat") && effVolChat > 0) {
-            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, actualHc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency);
+            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency);
             if (sl != null) { weightedSL += sl * effVolChat; totalVol += effVolChat; }
           }
-          achievedSLAActual = totalVol > 0 ? +(weightedSL / totalVol).toFixed(1) : null;
+          return totalVol > 0 ? +(weightedSL / totalVol).toFixed(1) : null;
         }
       }
+
+      // Projected SLA — always computed from projected HC
+      const achievedSLAProj = projHC > 0 ? achievedSLFor(projHC) : null;
+
+      // Achieved SLA at actual HC — only when actual HC is entered
+      const achievedSLAActual = actualHc != null ? achievedSLFor(actualHc) : null;
 
       return {
         ...wk,
@@ -758,7 +761,7 @@ export function CapacityPlanning() {
         projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
         knownExits, projectedHc: projHC, actualHc, actualAttrition,
-        gapSurplus, actualGapSurplus, achievedSLAActual,
+        gapSurplus, actualGapSurplus, achievedSLAProj, achievedSLAActual,
       };
     });
   }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay,
@@ -1191,6 +1194,25 @@ export function CapacityPlanning() {
                   return (
                     <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
                       {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+              <tr className="border-b border-border/40">
+                <RowLabel label="Projected SLA (Proj. HC)" indent sub />
+                {weekCalcs.map(wk => {
+                  const sl = wk.achievedSLAProj;
+                  if (isDedicated && activeChannel === "email") {
+                    return <ReadOnlyCell key={wk.weekOffset} value="N/A" className="text-muted-foreground/50 italic" />;
+                  }
+                  if (sl == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-muted-foreground" />;
+                  const slaTarget = isDedicated
+                    ? (activeChannel === "voice" ? slaVoiceTarget : slaChatTarget)
+                    : slaVoiceTarget;
+                  const color = sl >= slaTarget ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+                  return (
+                    <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
+                      {fmtPct(sl)}
                     </td>
                   );
                 })}
