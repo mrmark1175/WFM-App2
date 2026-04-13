@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
+const crypto = require('crypto');
 const { getCurrentUser } = require('./auth.cjs');
 const { pool } = require('./db.cjs');
 
@@ -9,6 +10,75 @@ const distPath = path.resolve(__dirname, '../dist');
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// ── Admin Auth helpers ────────────────────────────────────────────────────────
+const SESSION_SECRET = process.env.SESSION_SECRET || (() => {
+  const s = crypto.randomBytes(32).toString('hex');
+  console.warn('[auth] SESSION_SECRET not set — sessions will reset on every restart. Add SESSION_SECRET to .env for persistence.');
+  return s;
+})();
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+function hashPw(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString('hex');
+}
+function storePw(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return `${salt}:${hashPw(password, salt)}`;
+}
+function checkPw(password, stored) {
+  try {
+    const [salt, hash] = stored.split(':');
+    const computed = hashPw(password, salt);
+    return computed.length === hash.length &&
+      crypto.timingSafeEqual(Buffer.from(computed, 'hex'), Buffer.from(hash, 'hex'));
+  } catch { return false; }
+}
+
+function signToken(payload) {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, iat: Date.now() })).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(`${header}.${body}`).digest('base64url');
+  return `${header}.${body}.${sig}`;
+}
+function verifyToken(token) {
+  if (!token) return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [header, body, sig] = parts;
+    const expected = crypto.createHmac('sha256', SESSION_SECRET).update(`${header}.${body}`).digest('base64url');
+    if (sig.length !== expected.length) return null;
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
+    if (Date.now() - payload.iat > TOKEN_TTL_MS) return null;
+    return payload;
+  } catch { return null; }
+}
+function parseCookies(cookieHeader) {
+  if (!cookieHeader) return {};
+  return Object.fromEntries(cookieHeader.split(';').map(c => {
+    const [k, ...v] = c.trim().split('=');
+    return [k.trim(), decodeURIComponent(v.join('='))];
+  }));
+}
+function requireAuth(req, res, next) {
+  const token = parseCookies(req.headers.cookie).wfm_token;
+  if (!verifyToken(token)) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+}
+function setAuthCookie(res, token) {
+  res.setHeader('Set-Cookie',
+    `wfm_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${12 * 3600}${IS_PROD ? '; Secure' : ''}`
+  );
+}
+
+// Protect all /api/* routes except /api/auth/*
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/auth/')) return next();
+  requireAuth(req, res, next);
+});
 
 async function ensureAppTables() {
   // ── Existing app tables ──────────────────────────────────────────────────────
@@ -477,7 +547,105 @@ async function ensureAppTables() {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // ── Admin auth ────────────────────────────────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_auth (
+      id              SERIAL PRIMARY KEY,
+      password_hash   TEXT NOT NULL,
+      recovery_key_hash TEXT NOT NULL,
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
+
+async function ensureAdminAuth() {
+  const existing = await pool.query('SELECT id FROM admin_auth LIMIT 1');
+  if (existing.rows.length > 0) return;
+  const defaultPassword = process.env.ADMIN_PASSWORD || 'admin123';
+  const recoveryKey = crypto.randomBytes(16).toString('hex');
+  await pool.query(
+    'INSERT INTO admin_auth (password_hash, recovery_key_hash) VALUES ($1, $2)',
+    [storePw(defaultPassword), storePw(recoveryKey)]
+  );
+  console.log('\n' + '═'.repeat(60));
+  console.log('  Admin auth initialized for the first time.');
+  console.log(`  Default password : ${defaultPassword}`);
+  console.log(`  Recovery key     : ${recoveryKey}`);
+  console.log('  Please change the password after your first login.');
+  console.log('  (Recovery key is also used if you forget your password.)');
+  console.log('═'.repeat(60) + '\n');
+}
+
+// ── Auth endpoints ────────────────────────────────────────────────────────────
+
+app.get('/api/auth/status', (req, res) => {
+  const token = parseCookies(req.headers.cookie).wfm_token;
+  res.json({ authenticated: !!verifyToken(token) });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { password } = req.body || {};
+  if (!password) return res.status(400).json({ error: 'Password required' });
+  try {
+    const result = await pool.query('SELECT password_hash FROM admin_auth LIMIT 1');
+    if (!result.rows[0]) return res.status(500).json({ error: 'Auth not initialized' });
+    if (!checkPw(password, result.rows[0].password_hash)) {
+      return res.status(401).json({ error: 'Incorrect password' });
+    }
+    setAuthCookie(res, signToken({ auth: true }));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  res.setHeader('Set-Cookie', 'wfm_token=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+  res.json({ ok: true });
+});
+
+app.post('/api/auth/change-password', requireAuth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 6)
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  try {
+    const result = await pool.query('SELECT password_hash FROM admin_auth LIMIT 1');
+    if (!checkPw(currentPassword, result.rows[0].password_hash))
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    await pool.query('UPDATE admin_auth SET password_hash = $1, updated_at = NOW()', [storePw(newPassword)]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Change password error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/auth/recover', async (req, res) => {
+  const { recoveryKey, newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 6)
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  try {
+    const result = await pool.query('SELECT recovery_key_hash FROM admin_auth LIMIT 1');
+    if (!result.rows[0] || !checkPw(recoveryKey, result.rows[0].recovery_key_hash))
+      return res.status(401).json({ error: 'Invalid recovery key' });
+    const newRecoveryKey = crypto.randomBytes(16).toString('hex');
+    await pool.query(
+      'UPDATE admin_auth SET password_hash = $1, recovery_key_hash = $2, updated_at = NOW()',
+      [storePw(newPassword), storePw(newRecoveryKey)]
+    );
+    console.log('\n' + '═'.repeat(60));
+    console.log('  Password recovered via recovery key.');
+    console.log(`  New recovery key : ${newRecoveryKey}`);
+    console.log('  Save this key somewhere safe!');
+    console.log('═'.repeat(60) + '\n');
+    res.json({ ok: true, newRecoveryKey });
+  } catch (err) {
+    console.error('Recover error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 // ── LOB helper ────────────────────────────────────────────────────────────────
 async function getDefaultLobId(organizationId) {
@@ -1953,6 +2121,7 @@ app.get('/{*splat}', (req, res) => {
 });
 
 ensureAppTables()
+  .then(() => ensureAdminAuth())
   .then(() => {
     app.listen(process.env.PORT || 5000, () => {
       console.log(`Backend Server is running on http://localhost:${process.env.PORT || 5000}`);

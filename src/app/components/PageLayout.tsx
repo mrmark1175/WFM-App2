@@ -20,6 +20,10 @@ import {
   Building2,
   PanelLeftOpen,
   PanelLeftClose,
+  LogOut,
+  KeyRound,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import logo from "../../assets/logo.svg";
 import React, { useState } from "react";
@@ -31,6 +35,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "./ui/tooltip";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "./ui/dialog";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { apiUrl } from "../lib/api";
+import { toast } from "sonner";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -171,6 +181,48 @@ export function PageLayout({ children, title }: PageLayoutProps) {
     const stored = localStorage.getItem(SIDEBAR_KEY);
     return stored === null ? true : stored === "true";
   });
+
+  // ── Account menu state ───────────────────────────────────────────────────────
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [changePwOpen, setChangePwOpen] = useState(false);
+  const [curPw, setCurPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [showCur, setShowCur] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [pwError, setPwError] = useState("");
+  const [pwLoading, setPwLoading] = useState(false);
+
+  function openChangePw() { setChangePwOpen(true); setAccountOpen(false); setCurPw(""); setNewPw(""); setConfirmPw(""); setPwError(""); }
+
+  async function handleChangePw(e: React.FormEvent) {
+    e.preventDefault();
+    setPwError("");
+    if (newPw !== confirmPw) { setPwError("Passwords do not match"); return; }
+    if (newPw.length < 6) { setPwError("Password must be at least 6 characters"); return; }
+    setPwLoading(true);
+    try {
+      const res = await fetch(apiUrl("/api/auth/change-password"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: curPw, newPassword: newPw }),
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) { setPwError(data.error || "Failed to change password"); return; }
+      setChangePwOpen(false);
+      toast.success("Password changed successfully");
+    } catch {
+      setPwError("Could not reach server");
+    } finally {
+      setPwLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    await fetch(apiUrl("/api/auth/logout"), { method: "POST", credentials: "include" });
+    window.location.reload();
+  }
 
   const toggle = () => {
     setExpanded((v) => {
@@ -317,8 +369,111 @@ export function PageLayout({ children, title }: PageLayoutProps) {
 
             <div className="flex items-center gap-3 shrink-0 ml-4">
               <LOBSelector />
+
+              {/* Account dropdown trigger */}
+              <div className="relative">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => setAccountOpen(v => !v)}
+                      className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+                    >
+                      <User className="size-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Account</TooltipContent>
+                </Tooltip>
+
+                {accountOpen && (
+                  <>
+                    {/* Backdrop */}
+                    <div className="fixed inset-0 z-40" onClick={() => setAccountOpen(false)} />
+                    {/* Dropdown */}
+                    <div className="absolute right-0 top-full mt-1 w-44 bg-popover border border-border rounded-lg shadow-lg z-50 py-1 overflow-hidden">
+                      <button
+                        onClick={openChangePw}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
+                      >
+                        <KeyRound className="size-3.5 text-muted-foreground" />
+                        Change password
+                      </button>
+                      <div className="h-px bg-border mx-2 my-1" />
+                      <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left text-destructive"
+                      >
+                        <LogOut className="size-3.5" />
+                        Sign out
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </header>
+
+          {/* Change Password dialog */}
+          <Dialog open={changePwOpen} onOpenChange={setChangePwOpen}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <KeyRound className="size-4 text-muted-foreground" />
+                  Change password
+                </DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleChangePw} className="space-y-4 py-2">
+                <div className="space-y-1.5">
+                  <Label>Current password</Label>
+                  <div className="relative">
+                    <Input
+                      type={showCur ? "text" : "password"}
+                      value={curPw}
+                      onChange={e => setCurPw(e.target.value)}
+                      placeholder="Current password"
+                      className="pr-10"
+                      required
+                    />
+                    <button type="button" onClick={() => setShowCur(v => !v)} className="absolute inset-y-0 right-2.5 flex items-center text-muted-foreground hover:text-foreground" tabIndex={-1}>
+                      {showCur ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>New password</Label>
+                  <div className="relative">
+                    <Input
+                      type={showNew ? "text" : "password"}
+                      value={newPw}
+                      onChange={e => setNewPw(e.target.value)}
+                      placeholder="New password (min 6 chars)"
+                      className="pr-10"
+                      required
+                    />
+                    <button type="button" onClick={() => setShowNew(v => !v)} className="absolute inset-y-0 right-2.5 flex items-center text-muted-foreground hover:text-foreground" tabIndex={-1}>
+                      {showNew ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Confirm new password</Label>
+                  <Input
+                    type="password"
+                    value={confirmPw}
+                    onChange={e => setConfirmPw(e.target.value)}
+                    placeholder="Confirm new password"
+                    required
+                  />
+                </div>
+                {pwError && <p className="text-sm text-destructive">{pwError}</p>}
+                <DialogFooter>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setChangePwOpen(false)}>Cancel</Button>
+                  <Button type="submit" size="sm" disabled={pwLoading}>
+                    {pwLoading ? "Saving…" : "Save"}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
 
           {/* Page content */}
           <main className="flex-1 w-full max-w-[1920px] mx-auto px-8 py-8">
