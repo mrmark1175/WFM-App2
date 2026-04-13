@@ -674,7 +674,7 @@ export function ScheduleEditor() {
 
   return (
     <PageLayout title="Schedule Editor">
-      <div className="flex flex-col bg-white min-h-screen">
+      <div className="flex flex-col bg-white">
 
         {/* ── Primary toolbar ─────────────────────────────────────────────── */}
         <div className="sticky top-0 z-30 flex items-center gap-2 border-b border-slate-200 bg-white px-4 h-[52px]">
@@ -901,7 +901,7 @@ export function ScheduleEditor() {
         )}
 
         {/* ── Schedule content ─────────────────────────────────────────────── */}
-        <div className="flex-1 p-4 bg-slate-50/30">
+        <div className="flex-1 p-2 bg-slate-50/30">
           {loading ? (
             <div className="flex items-center justify-center py-24 text-slate-400 gap-2">
               <Loader2 className="animate-spin size-5" />

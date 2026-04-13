@@ -15,13 +15,13 @@ import { Activity } from "./ActivityBlock";
 import { Plus } from "lucide-react";
 
 // Grid constants
-export const COL_W   = 14;   // px per 15-min column
+export const COL_W   = 11;   // px per 15-min column
 export const ROW_H   = 30;   // px per agent row (thin Genesys style)
-export const AGENT_W = 260;  // px for the sticky name column (includes paid hours)
+export const AGENT_W = 240;  // px for the sticky name column (includes paid hours)
 export const TOTAL_COLS = 96;   // 24h × 4
 
 // Coverage row height
-const COV_ROW_H = 24;
+const COV_ROW_H = 26;
 
 export function snapToGrid(px: number): number {
   return Math.round(px / COL_W) * COL_W;
@@ -273,7 +273,7 @@ export function ScheduleGrid({
       <div
         ref={gridRef}
         className="overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm"
-        style={{ maxHeight: "65vh" }}
+        style={{ maxHeight: "70vh" }}
       >
         <div style={{ width: gridWidth, minWidth: gridWidth }}>
 
@@ -416,18 +416,18 @@ export function ScheduleGrid({
                 className="flex items-center px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
                 style={{ width: AGENT_W, height: COV_ROW_H, background: "#f1f5f9" }}
               >
-                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Scheduled</span>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-700">Scheduled</span>
               </div>
               <div className="flex" style={{ height: COV_ROW_H }}>
                 {scheduledPerSlot.map((val, slot) => (
                   <div
                     key={slot}
-                    className="flex items-center justify-center text-[8px] font-semibold border-r border-slate-100/50"
+                    className="flex items-center justify-center text-[9px] font-bold border-r border-slate-100/50 tabular-nums"
                     style={{
                       width: COL_W,
                       height: COV_ROW_H,
-                      backgroundColor: val > 0 ? "rgba(59,130,246,0.12)" : "transparent",
-                      color: val > 0 ? "#2563eb" : "#94a3b8",
+                      backgroundColor: val > 0 ? "rgba(37,99,235,0.16)" : "transparent",
+                      color: val > 0 ? "#1d4ed8" : "#94a3b8",
                     }}
                   >
                     {val > 0 ? val : ""}
@@ -442,9 +442,9 @@ export function ScheduleGrid({
                 className="flex items-center gap-1.5 px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
                 style={{ width: AGENT_W, height: COV_ROW_H, background: "#f1f5f9" }}
               >
-                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Required</span>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-700">Required</span>
                 {!requiredFte && (
-                  <span className="text-[8px] text-slate-400 italic normal-case">no demand plan</span>
+                  <span className="text-[8px] text-slate-500 italic normal-case">no demand plan</span>
                 )}
               </div>
               <div className="flex" style={{ height: COV_ROW_H }}>
@@ -455,14 +455,14 @@ export function ScheduleGrid({
                   return (
                     <div
                       key={slot}
-                      className="flex items-center justify-center text-[8px] font-semibold border-r border-slate-100/50"
+                      className="flex items-center justify-center text-[9px] font-bold border-r border-slate-100/50 tabular-nums"
                       style={{
                         width: COL_W,
                         height: COV_ROW_H,
                         backgroundColor: val > 0
-                          ? "rgba(100,116,139,0.12)"
+                          ? "rgba(30,41,59,0.1)"
                           : "rgba(100,116,139,0.03)",
-                        color: val > 0 ? "#64748b" : "#cbd5e1",
+                        color: val > 0 ? "#1e293b" : "#cbd5e1",
                       }}
                     >
                       {val > 0 ? Math.round(val) : (isHour ? "·" : "")}
@@ -478,7 +478,7 @@ export function ScheduleGrid({
                 className="flex items-center px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
                 style={{ width: AGENT_W, height: COV_ROW_H, background: "#f1f5f9" }}
               >
-                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Over/Under</span>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-700">Over/Under</span>
               </div>
               <div className="flex" style={{ height: COV_ROW_H }}>
                 {Array.from({ length: 96 }, (_, slot) => {
@@ -489,12 +489,12 @@ export function ScheduleGrid({
                   return (
                     <div
                       key={slot}
-                      className="flex items-center justify-center text-[8px] font-bold border-r border-slate-100/50"
+                      className="flex items-center justify-center text-[9px] font-bold border-r border-slate-100/50 tabular-nums"
                       style={{
                         width: COL_W,
                         height: COV_ROW_H,
-                        backgroundColor: hasData ? (isOver ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)") : "transparent",
-                        color: hasData ? (isOver ? "#16a34a" : "#dc2626") : "#94a3b8",
+                        backgroundColor: hasData ? (isOver ? "rgba(22,163,74,0.2)" : "rgba(220,38,38,0.2)") : "transparent",
+                        color: hasData ? (isOver ? "#14532d" : "#7f1d1d") : "#94a3b8",
                       }}
                     >
                       {hasData ? (diff >= 0 ? `+${diff}` : diff) : ""}
