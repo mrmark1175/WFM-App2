@@ -491,22 +491,29 @@ export const IntradayForecast = () => {
   }, [fteTable, smoothFTE, smoothWindow]);
 
   // Commit FTE to scheduling — called by the "Commit to Scheduling" button.
-  // If grain !== 15, the dialog confirms first; this function runs after confirmation.
+  // Saves per-date FTE arrays (one 96-slot array per day of the baseline week)
+  // so the Schedule Editor can show date-specific Required FTE rows.
   async function saveCommitToScheduling(targetGrain: 15 | 30 | 60) {
     if (!smoothedFteTable || !activeLob) return;
     const grainFactor = targetGrain === 15 ? 1 : targetGrain === 30 ? 2 : 4;
-    const avgFte = Array.from({ length: 96 }, (_, i) => {
-      const slotIdx = Math.floor(i / grainFactor);
-      const sum = smoothedFteTable.reduce((acc, day) => acc + (day[slotIdx]?.fte ?? 0), 0);
-      return sum / smoothedFteTable.length;
-    });
+    // Build per-date FTE: smoothedFteTable[0]=Mon, [1]=Tue, …, [6]=Sun
+    const weekDates = getWeekDateStrings(baselineYear, baselineStartWeek);
+    const dates: Record<string, number[]> = {};
+    for (let d = 0; d < 7; d++) {
+      const dayData = smoothedFteTable[d];
+      if (!dayData) continue;
+      dates[weekDates[d]] = Array.from({ length: 96 }, (_, i) => {
+        const slotIdx = Math.floor(i / grainFactor);
+        return dayData[slotIdx]?.fte ?? 0;
+      });
+    }
     setCommitStatus("saving");
     try {
       await fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          preferences: { slots: avgFte, channel: selectedChannel, grain: 15 },
+          preferences: { dates, channel: selectedChannel, grain: 15 },
         }),
         credentials: "include",
       });

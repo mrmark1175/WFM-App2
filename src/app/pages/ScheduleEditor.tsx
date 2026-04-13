@@ -243,7 +243,7 @@ export function ScheduleEditor() {
   const [agents, setAgents]           = useState<Agent[]>([]);
   const [templates, setTemplates]     = useState<ShiftTemplate[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [requiredFte, setRequiredFte] = useState<number[] | undefined>(undefined);
+  const [requiredFteByDate, setRequiredFteByDate] = useState<Record<string, number[]>>({});
 
   const [viewMode, setViewMode]       = useState<"daily" | "weekly">("daily");
   const [loading, setLoading]         = useState(true);
@@ -314,11 +314,26 @@ export function ScheduleEditor() {
     fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`))
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        const slots = data?.slots as number[] | undefined;
+        if (!data) return;
+        // New format: { dates: { "YYYY-MM-DD": [96 numbers], ... } }
+        if (data.dates && typeof data.dates === "object") {
+          const byDate: Record<string, number[]> = {};
+          for (const [dateStr, slots] of Object.entries(data.dates)) {
+            if (!Array.isArray(slots)) continue;
+            const padded = [...(slots as number[])];
+            while (padded.length < 96) padded.push(0);
+            byDate[dateStr] = padded.slice(0, 96);
+          }
+          setRequiredFteByDate(byDate);
+          return;
+        }
+        // Legacy format: { slots: [96 numbers] } — store under a wildcard key "*"
+        // that the derived requiredFte memo will pick up as a fallback for any date
+        const slots = data.slots as number[] | undefined;
         if (!slots?.length) return;
         const padded = [...slots];
         while (padded.length < 96) padded.push(0);
-        setRequiredFte(padded.slice(0, 96));
+        setRequiredFteByDate({ "*": padded.slice(0, 96) });
       })
       .catch(() => {});
   }, [activeLob]);
@@ -634,6 +649,12 @@ export function ScheduleEditor() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [selectedShiftId, clipboard, selectedAgentIds, agents, addShift]);
+
+  // ── Required FTE for the active day (derived from per-date map) ──────────
+  const requiredFte = useMemo(() =>
+    (requiredFteByDate[activeDate] ?? requiredFteByDate["*"]) as number[] | undefined,
+    [requiredFteByDate, activeDate]
+  );
 
   // ── Derived counts ────────────────────────────────────────────────────────
 
