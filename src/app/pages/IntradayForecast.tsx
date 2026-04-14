@@ -441,6 +441,15 @@ export const IntradayForecast = () => {
     }
   }
 
+  // ── Distribution computation ───────────────────────────────────────────────
+  // Must be declared BEFORE forecastedWeekVolume which reads distributionWeights.dayWeights.
+  // useMemo callbacks run synchronously on first render; forward references cause TDZ errors.
+  const medianPattern = useMemo(() => computeMedianPattern(rawData), [rawData]);
+  const distributionWeights = useMemo(
+    () => computeDistributionWeights(medianPattern.medians),
+    [medianPattern]
+  );
+
   // Compute the forecasted weekly volume
   const forecastedWeekVolume = useMemo(() => {
     if (targetMonthlyVolume === 0 || !targetWeekStart) return 0;
@@ -490,13 +499,6 @@ export const IntradayForecast = () => {
     return weeksInMonth.length > 0 ? targetMonthlyVolume / weeksInMonth.length : 0;
   }, [targetMonthlyVolume, targetWeekStart, weekBuckets, manualWeeklyVolumes, dataSource,
       weeksInMonth, distributionWeights.dayWeights, targetYear, targetMonthIndex]);
-
-  // ── Distribution computation ───────────────────────────────────────────────
-  const medianPattern = useMemo(() => computeMedianPattern(rawData), [rawData]);
-  const distributionWeights = useMemo(
-    () => computeDistributionWeights(medianPattern.medians),
-    [medianPattern]
-  );
   const activeIntervalWeights = editableWeights ?? distributionWeights.intervalWeights;
 
   // Distribute the forecasted week volume to interval-level
