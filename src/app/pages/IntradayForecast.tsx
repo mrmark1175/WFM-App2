@@ -510,6 +510,10 @@ export const IntradayForecast = () => {
       if (!dayData) continue;
       dates[weekDates[d]] = Array.from({ length: 96 }, (_, i) => {
         const slotIdx = Math.floor(i / grainFactor);
+        // Zero out FTE for slots where call volume is 0 — prevents smoothing
+        // boundary bleed (e.g. 2:45 AM getting a small FTE from the 3:00 AM peak)
+        // from showing up as required staffing in the Schedule Editor.
+        if ((displayForecast[d]?.[slotIdx] ?? 0) === 0) return 0;
         return dayData[slotIdx]?.fte ?? 0;
       });
     }
