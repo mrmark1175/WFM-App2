@@ -5,6 +5,7 @@ import { useLOB } from "../lib/lobContext";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "../components/ui/alert-dialog";
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
@@ -262,6 +263,7 @@ export function ScheduleEditor() {
   const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<number>>(new Set());
   const [clipboard, setClipboard] = useState<ClipboardShift | null>(null);
+  const [pendingPasteAgents, setPendingPasteAgents] = useState<number[] | null>(null);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
 
   const undoStackRef = useRef(undoStack);
@@ -451,6 +453,33 @@ export function ScheduleEditor() {
     setIsDirty(true);
   }, [selectedShiftId, pushUndo]);
 
+  // Executes a clipboard paste for the given agent IDs, removing any existing
+  // shifts for those agents on the active date first.
+  const executePaste = useCallback((targetAgents: number[]) => {
+    if (!clipboard) return;
+    for (const agentId of targetAgents) {
+      const existing = assignmentsRef.current.filter(
+        a => a.agent_id === agentId && a.work_date?.startsWith(activeDate)
+      );
+      for (const a of existing) {
+        const prev = a;
+        setAssignments(p => p.filter(x => x.id !== prev.id));
+        setIsDirty(true);
+      }
+    }
+    for (const agentId of targetAgents) {
+      addShift({
+        agent_id: agentId,
+        shift_template_id: clipboard.shift_template_id,
+        start_time: clipboard.start_time,
+        end_time: clipboard.end_time,
+        channel: clipboard.channel,
+        notes: "",
+      });
+    }
+    toast.success(`Pasted shift to ${targetAgents.length} agent${targetAgents.length > 1 ? "s" : ""}`);
+  }, [clipboard, activeDate, addShift]);
+
   const addActivity = useCallback((assignmentId: number, act: Omit<Activity, "id" | "assignment_id">) => {
     const actId = nextTempId();
     const newAct: Activity = { id: actId, assignment_id: assignmentId, ...act };
@@ -591,17 +620,14 @@ export function ScheduleEditor() {
           toast.error("Select an agent row first (click agent name)");
           return;
         }
-        for (const agentId of targetAgents) {
-          addShift({
-            agent_id: agentId,
-            shift_template_id: clipboard.shift_template_id,
-            start_time: clipboard.start_time,
-            end_time: clipboard.end_time,
-            channel: clipboard.channel,
-            notes: "",
-          });
+        const hasConflict = targetAgents.some(agentId =>
+          assignmentsRef.current.some(a => a.agent_id === agentId && a.work_date?.startsWith(activeDate))
+        );
+        if (hasConflict) {
+          setPendingPasteAgents(targetAgents);
+        } else {
+          executePaste(targetAgents);
         }
-        toast.success(`Pasted shift to ${targetAgents.length} agent${targetAgents.length > 1 ? "s" : ""}`);
       }
 
       if (e.ctrlKey && e.key === "z") {
@@ -648,7 +674,7 @@ export function ScheduleEditor() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedShiftId, clipboard, selectedAgentIds, agents, addShift]);
+  }, [selectedShiftId, clipboard, selectedAgentIds, agents, addShift, activeDate, executePaste]);
 
   // ── Required FTE for the active day (derived from per-date map) ──────────
   // Exact date match first, then fall back to same day-of-week from committed
@@ -1012,6 +1038,36 @@ export function ScheduleEditor() {
         prefillStart={prefillStart}
         onSave={(fields) => addShift({ ...fields, work_date: prefillDate })}
       />
+
+      {/* Overwrite confirmation dialog */}
+      <AlertDialog
+        open={pendingPasteAgents !== null}
+        onOpenChange={(open) => { if (!open) setPendingPasteAgents(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Overwrite existing schedule?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingPasteAgents && pendingPasteAgents.length === 1
+                ? "This agent already has a shift scheduled on this day. Pasting will replace it."
+                : `${pendingPasteAgents?.length} agents already have shifts scheduled on this day. Pasting will replace them.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPendingPasteAgents(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingPasteAgents) {
+                  executePaste(pendingPasteAgents);
+                  setPendingPasteAgents(null);
+                }
+              }}
+            >
+              OK
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   );
 }
