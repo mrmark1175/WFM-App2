@@ -415,6 +415,95 @@ export function distributeMonthlyToTargetWeek(
   return monthlyVolume / Math.max(1, avgByPosition.size);
 }
 
+// ── Monthly → Weekly via DOW daily expansion ─────────────────────────────────
+// Better than the positional-average method because it handles variable month
+// composition (e.g. 5 Mondays) and doesn't contaminate estimates with holiday
+// weeks or outages in the historical data.
+//
+// Algorithm:
+//   1. Compute each calendar day's expected volume = monthlyVol × (DOW weight /
+//      sum of DOW weights for all days in the month).
+//   2. Sum the 7 days of the target week (using the month's DOW weight basis
+//      even for days that straddle into an adjacent month — acceptable
+//      approximation, same monthly rate applied to all 7 days).
+export function distributeMonthlyToWeekViaDailyDOW(
+  monthlyVolume: number,
+  year: number,
+  month: number,        // 0-based (0 = Jan)
+  targetWeekStart: string, // YYYY-MM-DD (Monday)
+  dayWeights: number[], // [Mon=0 … Sun=6], raw or normalised
+): number {
+  if (monthlyVolume === 0) return 0;
+
+  const totalDOWWeight = dayWeights.reduce((a, b) => a + b, 0);
+  // Uniform fallback when no DOW pattern exists yet
+  const w = (dowIdx: number) =>
+    totalDOWWeight > 0 ? dayWeights[dowIdx] : 1;
+
+  // Sum DOW weights across every calendar day in the month
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  let monthWeightSum = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const jsDay = new Date(year, month, d, 12, 0, 0).getDay(); // 0=Sun
+    const dowIdx = jsDay === 0 ? 6 : jsDay - 1;                // Mon=0..Sun=6
+    monthWeightSum += w(dowIdx);
+  }
+  if (monthWeightSum === 0) return monthlyVolume / 4.33; // should never happen
+
+  // Sum DOW weights for the 7 days of the target week
+  const twMon = new Date(targetWeekStart + "T12:00:00");
+  let weekWeightSum = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(twMon);
+    d.setDate(d.getDate() + i);
+    const jsDay = d.getDay();
+    const dowIdx = jsDay === 0 ? 6 : jsDay - 1;
+    weekWeightSum += w(dowIdx);
+  }
+
+  return monthlyVolume * (weekWeightSum / monthWeightSum);
+}
+
+// ── Statistical outlier fence for week buckets ────────────────────────────────
+// Uses the Poisson noise model: for a process with mean λ, σ = √λ.
+// A week is flagged when its volume falls outside μ ± 2√μ relative to other
+// historical weeks at the same week-of-month position.
+// Requires at least 2 data points per position to compute a fence.
+
+export interface WeekOutlierAnalysis {
+  /** weekStart strings for weeks flagged as statistical outliers */
+  outlierSet: Set<string>;
+  /** Poisson fence stats per week-of-month position (0 = first week of month) */
+  fenceByPosition: Map<number, { mean: number; lower: number; upper: number; n: number }>;
+}
+
+export function computeWeekOutlierFence(weekBuckets: WeekBucket[]): WeekOutlierAnalysis {
+  const byPosition = new Map<number, WeekBucket[]>();
+  for (const bucket of weekBuckets) {
+    const pos = getWeekOfMonth(bucket.weekStart);
+    if (!byPosition.has(pos)) byPosition.set(pos, []);
+    byPosition.get(pos)!.push(bucket);
+  }
+
+  const fenceByPosition = new Map<number, { mean: number; lower: number; upper: number; n: number }>();
+  const outlierSet = new Set<string>();
+
+  for (const [pos, buckets] of byPosition) {
+    if (buckets.length < 2) continue; // need ≥ 2 to establish a baseline
+    const volumes = buckets.map(b => b.volume);
+    const mean = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+    const sigma = Math.sqrt(Math.max(mean, 1)); // Poisson: σ = √λ
+    const lower = Math.max(0, mean - 2 * sigma);
+    const upper = mean + 2 * sigma;
+    fenceByPosition.set(pos, { mean, lower, upper, n: buckets.length });
+    for (const b of buckets) {
+      if (b.volume < lower || b.volume > upper) outlierSet.add(b.weekStart);
+    }
+  }
+
+  return { outlierSet, fenceByPosition };
+}
+
 // ── Step C (Updated) ─────────────────────────────────────────────────────────
 // Distribute a weekly forecast volume into interval-level volumes for each day.
 // Formula:

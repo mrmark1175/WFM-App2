@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { BarChart2, Download, Edit2, Eye, EyeOff, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2, SlidersHorizontal } from "lucide-react";
+import { BarChart2, Download, Edit2, Eye, EyeOff, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2, SlidersHorizontal, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
@@ -11,6 +11,7 @@ import {
   GridData, DOW_LABELS, SLOT_COUNT,
   computeMedianPattern, computeDistributionWeights,
   distributeWeeklyVolumeToIntervals, distributeMonthlyToTargetWeek,
+  distributeMonthlyToWeekViaDailyDOW, computeWeekOutlierFence, WeekOutlierAnalysis,
   computeWeeklyBuckets,
   aggregateTo30Min, aggregateTo60Min, buildChartData, generateMonthLabels, monthFromOffset,
   makeIntervals, getWeeksInMonth, parseExcelPaste, parseIntervalGridPaste,
@@ -366,8 +367,79 @@ export const IntradayForecast = () => {
 
   // ── Weekly distribution from historical data ───────────────────────────────
   const weekBuckets = useMemo(() => computeWeeklyBuckets(rawData), [rawData]);
+  const weekOutlierFence = useMemo(() => computeWeekOutlierFence(weekBuckets), [weekBuckets]);
 
   const hasEnoughWeeklyData = weekBuckets.length >= 4;
+
+  // ── Manual volume outlier stats ────────────────────────────────────────────
+  // Poisson self-referential fence: flag entries that deviate > 2σ from the
+  // mean of all entered manual volumes (σ = √mean by Poisson assumption).
+  const manualOutlierStats = useMemo(() => {
+    const filled = manualWeeklyVolumes.filter(v => v > 0);
+    if (filled.length < 4) return null;
+    const mean = filled.reduce((a, b) => a + b, 0) / filled.length;
+    const sigma = Math.sqrt(Math.max(mean, 1));
+    return { mean, sigma, lower: Math.max(0, mean - 2 * sigma), upper: mean + 2 * sigma };
+  }, [manualWeeklyVolumes]);
+
+  // ── AI normalization state ─────────────────────────────────────────────────
+  type AISuggestion = { weekIndex: number; suggestedVolume: number; reason: string; confidence: string };
+  const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  async function requestAiNormalization(mode: "historical" | "manual") {
+    setAiLoading(true);
+    setAiSuggestions([]);
+    try {
+      const body = mode === "historical"
+        ? {
+            mode: "historical",
+            channel: selectedChannel,
+            monthlyForecast: targetMonthlyVolume,
+            weeks: weekBuckets.map((w, i) => ({
+              index: i,
+              weekStart: w.weekStart,
+              volume: w.volume,
+              isOutlier: weekOutlierFence.outlierSet.has(w.weekStart),
+            })),
+          }
+        : {
+            mode: "manual",
+            channel: selectedChannel,
+            monthlyForecast: targetMonthlyVolume,
+            weeks: manualWeeklyVolumes.map((v, i) => ({
+              index: i,
+              volume: v,
+              isOutlier: manualOutlierStats !== null && v > 0 &&
+                (v < manualOutlierStats.lower || v > manualOutlierStats.upper),
+            })).filter(w => w.volume > 0),
+          };
+
+      const res = await fetch(apiUrl("/api/ai/normalize-week"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setAiSuggestions(data.suggestions ?? []);
+    } catch (err) {
+      toast.error("AI suggestion failed — ensure ANTHROPIC_API_KEY is set in .env");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  function applyAiSuggestion(s: AISuggestion, mode: "manual") {
+    if (mode === "manual") {
+      const next = [...(manualWeeklyVolumes ?? [])];
+      next[s.weekIndex] = s.suggestedVolume;
+      setPrefs({ manualWeeklyVolumes: next });
+      setAiSuggestions(prev => prev.filter(x => x.weekIndex !== s.weekIndex));
+      toast.success(`Week ${s.weekIndex + 1} updated to ${s.suggestedVolume.toLocaleString()}`);
+    }
+  }
 
   // Compute the forecasted weekly volume
   const forecastedWeekVolume = useMemo(() => {
@@ -399,13 +471,25 @@ export const IntradayForecast = () => {
       return targetMonthlyVolume * pct;
     }
 
-    if (dataSource === "api" && weekBuckets.length > 0) {
-      return distributeMonthlyToTargetWeek(targetMonthlyVolume, weekBuckets, targetWeekStart);
+    if (dataSource === "api") {
+      // Use DOW-based daily expansion when we have pattern weights (most accurate).
+      // Falls back to positional-average when no baseline data is loaded yet.
+      const dw = distributionWeights.dayWeights;
+      const hasDOWWeights = dw.some(w => w > 0);
+      if (hasDOWWeights) {
+        return distributeMonthlyToWeekViaDailyDOW(
+          targetMonthlyVolume, targetYear, targetMonthIndex, targetWeekStart, dw
+        );
+      }
+      if (weekBuckets.length > 0) {
+        return distributeMonthlyToTargetWeek(targetMonthlyVolume, weekBuckets, targetWeekStart);
+      }
     }
 
     // Fallback: simple division by weeks in month
     return weeksInMonth.length > 0 ? targetMonthlyVolume / weeksInMonth.length : 0;
-  }, [targetMonthlyVolume, targetWeekStart, weekBuckets, manualWeeklyVolumes, dataSource, weeksInMonth]);
+  }, [targetMonthlyVolume, targetWeekStart, weekBuckets, manualWeeklyVolumes, dataSource,
+      weeksInMonth, distributionWeights.dayWeights, targetYear, targetMonthIndex]);
 
   // ── Distribution computation ───────────────────────────────────────────────
   const medianPattern = useMemo(() => computeMedianPattern(rawData), [rawData]);
@@ -976,16 +1060,31 @@ export const IntradayForecast = () => {
               <div className="flex flex-wrap gap-3">
                 {weekBuckets.map((wb, i) => {
                   const isSelected = wb.weekStart === targetWeekStart;
+                  const isOutlier = weekOutlierFence.outlierSet.has(wb.weekStart);
+                  const pos = Array.from(weekOutlierFence.fenceByPosition.entries())
+                    .find(([, v]) => v !== undefined) && (() => {
+                      // find fence for this week's position — imported getWeekOfMonth not available
+                      // use the fenceByPosition map keyed by position; just show global stats
+                      return null;
+                    })();
                   return (
                     <button
                       key={wb.weekStart}
-                      className={`text-left p-2 rounded-md border text-xs transition-colors ${
+                      className={`relative text-left p-2 rounded-md border text-xs transition-colors ${
                         isSelected
-                          ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
-                          : "border-border hover:border-blue-300 bg-background"
+                          ? isOutlier
+                            ? "border-amber-500 bg-amber-50 dark:bg-amber-950/30"
+                            : "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
+                          : isOutlier
+                            ? "border-amber-300 hover:border-amber-400 bg-amber-50/50"
+                            : "border-border hover:border-blue-300 bg-background"
                       }`}
                       onClick={() => setPrefs({ targetWeekStart: wb.weekStart })}
+                      title={isOutlier ? `Statistical outlier — volume ${wb.volume.toLocaleString()} is outside the expected Poisson range for this week-of-month position` : undefined}
                     >
+                      {isOutlier && (
+                        <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-white text-[8px] font-bold">!</span>
+                      )}
                       <div className="font-medium">Wk {i + 1}: {wb.weekStart}</div>
                       <div className="text-muted-foreground">
                         {wb.volume.toLocaleString()} vol &middot; {(wb.pct * 100).toFixed(1)}%
@@ -994,6 +1093,15 @@ export const IntradayForecast = () => {
                   );
                 })}
               </div>
+              {/* Outlier explanation bar */}
+              {weekOutlierFence.outlierSet.size > 0 && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    <strong>{weekOutlierFence.outlierSet.size} week{weekOutlierFence.outlierSet.size > 1 ? "s" : ""}</strong> in your history are statistical outliers (Poisson ±2σ). They may reflect holidays or outages and could distort your pattern weights.
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -1039,26 +1147,55 @@ export const IntradayForecast = () => {
                   const inputCount = Math.min(Math.max(4, filledCount + 1), 52);
                   return (
                     <div className="flex flex-wrap gap-3 items-end">
-                      {Array.from({ length: inputCount }, (_, i) => (
-                        <div key={i} className="flex flex-col gap-1">
-                          <label className="text-xs font-semibold text-foreground">
-                            Week {i + 1}{i === inputCount - 1 && filledCount >= inputCount - 1 ? " (most recent)" : ""}
-                          </label>
-                          <Input
-                            type="number"
-                            min="0"
-                            placeholder="0"
-                            value={manualWeeklyVolumes[i] ?? ""}
-                            onChange={(e) => {
-                              const val = parseFloat(e.target.value) || 0;
-                              const next = [...(manualWeeklyVolumes ?? [])];
-                              next[i] = val;
-                              setPrefs({ manualWeeklyVolumes: next });
-                            }}
-                            className="w-28 h-8 text-sm"
-                          />
-                        </div>
-                      ))}
+                      {Array.from({ length: inputCount }, (_, i) => {
+                        const vol = manualWeeklyVolumes[i] ?? 0;
+                        const isOutlier = manualOutlierStats !== null && vol > 0 &&
+                          (vol < manualOutlierStats.lower || vol > manualOutlierStats.upper);
+                        const direction = isOutlier
+                          ? vol > (manualOutlierStats?.upper ?? Infinity) ? "high" : "low"
+                          : null;
+                        const aiSugg = aiSuggestions.find(s => s.weekIndex === i);
+                        return (
+                          <div key={i} className="flex flex-col gap-1">
+                            <div className="flex items-center gap-1">
+                              <label className={`text-xs font-semibold ${isOutlier ? "text-amber-700" : "text-foreground"}`}>
+                                Week {i + 1}{i === inputCount - 1 && filledCount >= inputCount - 1 ? " (most recent)" : ""}
+                              </label>
+                              {isOutlier && (
+                                <span title={`${direction === "high" ? "Unusually high" : "Unusually low"} — expected range ${Math.round(manualOutlierStats!.lower).toLocaleString()}–${Math.round(manualOutlierStats!.upper).toLocaleString()}`}>
+                                  {direction === "high"
+                                    ? <TrendingUp className="h-3 w-3 text-amber-600" />
+                                    : <TrendingDown className="h-3 w-3 text-amber-600" />}
+                                </span>
+                              )}
+                            </div>
+                            <Input
+                              type="number"
+                              min="0"
+                              placeholder="0"
+                              value={vol || ""}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value) || 0;
+                                const next = [...(manualWeeklyVolumes ?? [])];
+                                next[i] = val;
+                                setPrefs({ manualWeeklyVolumes: next });
+                              }}
+                              className={`w-28 h-8 text-sm ${isOutlier ? "border-amber-400 focus-visible:ring-amber-400" : ""}`}
+                            />
+                            {/* AI suggestion chip */}
+                            {aiSugg && (
+                              <div className="w-28 rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-[10px]">
+                                <div className="font-semibold text-emerald-700">AI: {aiSugg.suggestedVolume.toLocaleString()}</div>
+                                <div className="text-emerald-600 truncate" title={aiSugg.reason}>{aiSugg.reason}</div>
+                                <button
+                                  onClick={() => applyAiSuggestion(aiSugg, "manual")}
+                                  className="mt-0.5 text-emerald-700 underline font-medium hover:text-emerald-900"
+                                >Apply</button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                       <div className="flex flex-col gap-1">
                         <label className="text-xs font-medium text-muted-foreground invisible">or</label>
                         <Button variant="outline" size="sm" onClick={() => setPasteModalOpen(true)}>
@@ -1104,6 +1241,29 @@ export const IntradayForecast = () => {
                   <div className="flex items-center gap-2 text-amber-600 text-xs">
                     <AlertTriangle className="h-3.5 w-3.5" />
                     Enter at least 4 weeks to enable the weekly distribution calculation.
+                  </div>
+                )}
+                {/* AI normalization — appears when outliers are detected */}
+                {manualOutlierStats !== null && manualWeeklyVolumes.some((v, i) =>
+                  v > 0 && (v < manualOutlierStats.lower || v > manualOutlierStats.upper)
+                ) && (
+                  <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-600 mt-0.5 shrink-0" />
+                    <div className="flex-1">
+                      <span className="font-semibold text-amber-800">Outlier weeks detected</span>
+                      <span className="text-amber-700"> — expected range {Math.round(manualOutlierStats.lower).toLocaleString()}–{Math.round(manualOutlierStats.upper).toLocaleString()} (Poisson ±2σ, mean {Math.round(manualOutlierStats.mean).toLocaleString()}). These may reflect holidays or campaigns.</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="shrink-0 h-7 text-xs border-amber-400 text-amber-700 hover:bg-amber-100"
+                      onClick={() => requestAiNormalization("manual")}
+                      disabled={aiLoading}
+                    >
+                      {aiLoading
+                        ? <><RotateCcw className="h-3 w-3 mr-1 animate-spin" />Thinking…</>
+                        : <><Sparkles className="h-3 w-3 mr-1" />Normalize with AI</>}
+                    </Button>
                   </div>
                 )}
               </div>

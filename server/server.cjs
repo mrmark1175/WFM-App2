@@ -2116,6 +2116,84 @@ app.put('/api/capacity-plan-inputs', async (req, res) => {
 
 app.use(express.static(distPath));
 
+// ── AI: normalize outlier week volumes ────────────────────────────────────────
+// Uses Anthropic claude-haiku to suggest corrected volumes for weeks that are
+// outside the Poisson ±2σ fence.  Requires ANTHROPIC_API_KEY in .env.
+app.post('/api/ai/normalize-week', async (req, res) => {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return res.status(503).json({ error: 'ANTHROPIC_API_KEY not configured in .env' });
+  }
+
+  const { mode, channel, monthlyForecast, weeks } = req.body;
+  if (!weeks?.length) return res.status(400).json({ error: 'No weeks provided' });
+
+  const outlierWeeks = weeks.filter(w => w.isOutlier);
+  if (!outlierWeeks.length) return res.json({ suggestions: [] });
+
+  const allVolumes = weeks.map(w => w.volume).filter(v => v > 0);
+  const mean = allVolumes.reduce((a, b) => a + b, 0) / (allVolumes.length || 1);
+  const sigma = Math.sqrt(Math.max(mean, 1));
+  const lower = Math.max(0, mean - 2 * sigma);
+  const upper = mean + 2 * sigma;
+
+  const weeksSummary = weeks
+    .filter(w => w.volume > 0)
+    .map(w => `  Week ${w.index + 1}${w.weekStart ? ` (${w.weekStart})` : ''}: ${Math.round(w.volume).toLocaleString()} calls${w.isOutlier ? ' ⚠ OUTLIER' : ''}`)
+    .join('\n');
+
+  const prompt = `You are a WFM (Workforce Management) analyst reviewing weekly call volume data for ${channel} channel.
+
+Monthly forecast target: ${Math.round(monthlyForecast).toLocaleString()} calls
+Historical weekly volumes provided (${mode === 'manual' ? 'manually entered' : 'from system'}):
+${weeksSummary}
+
+Statistical baseline: mean = ${Math.round(mean).toLocaleString()}, expected range = ${Math.round(lower).toLocaleString()}–${Math.round(upper).toLocaleString()} (Poisson ±2σ)
+
+The weeks marked ⚠ OUTLIER fall outside the statistical range and need normalization.
+For each outlier week, suggest a corrected volume and provide a brief reason (max 12 words).
+
+Respond ONLY with valid JSON in this exact shape — no markdown, no explanation outside the JSON:
+{
+  "suggestions": [
+    { "weekIndex": 0, "suggestedVolume": 1250, "reason": "Holiday week — normalized to seasonal baseline", "confidence": "High" }
+  ]
+}`;
+
+  try {
+    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 400,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+
+    if (!anthropicRes.ok) {
+      const err = await anthropicRes.text();
+      console.error('Anthropic API error:', err);
+      return res.status(502).json({ error: 'Anthropic API error', detail: err });
+    }
+
+    const data = await anthropicRes.json();
+    const text = data?.content?.[0]?.text ?? '{}';
+
+    // Strip any accidental markdown fences
+    const cleaned = text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+    const parsed = JSON.parse(cleaned);
+    res.json(parsed);
+  } catch (err) {
+    console.error('normalize-week error:', err);
+    res.status(500).json({ error: 'Failed to get AI suggestion', detail: String(err) });
+  }
+});
+
 app.get('/{*splat}', (req, res) => {
   res.sendFile(path.join(distPath, 'index.html'));
 });
