@@ -425,7 +425,7 @@ export const IntradayForecast = () => {
       const data = await res.json();
       setAiSuggestions(data.suggestions ?? []);
     } catch (err) {
-      toast.error("AI suggestion failed — ensure ANTHROPIC_API_KEY is set in .env");
+      toast.error("Normalization failed — check server connection");
     } finally {
       setAiLoading(false);
     }
