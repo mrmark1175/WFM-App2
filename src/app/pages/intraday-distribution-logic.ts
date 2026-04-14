@@ -30,12 +30,116 @@ function minAgentsForSL(A: number, ahtSec: number, asaSec: number, targetSL: num
   return N;
 }
 
+// ── Erlang A (M/M/N+M) — Palm's model with customer abandonment ───────────────
+//
+// Extends Erlang C by adding exponential customer patience (θ = 1/patienceSec).
+// Customers who have waited longer than their patience abandon the queue.
+// This produces a lower (more realistic) staffing requirement at high occupancy
+// because abandonments self-regulate congestion.
+//
+// Key output: abandonRate — fraction of all arrivals that leave before being served.
+// A 5% abandon rate threshold is the typical industry warning level.
+//
+// Implementation: truncated stationary distribution via forward recursion.
+// For k < N servers: π[k+1] = A · π[k] / (k+1)          (pure Poisson birth)
+// For k ≥ N servers: π[k+1] = A · π[k] / (N + (k−N+1)·β)  (service + abandon drain)
+// where β = AHT / patience (dimensionless ratio of service time to patience time).
+//
+// Falls back to Erlang C when patienceSec ≤ 0 (infinite patience).
+function erlangAMetrics(
+  A: number,           // offered traffic in Erlangs (= λ × AHT)
+  N: number,           // number of concurrent agents
+  patienceSec: number, // mean customer patience in seconds (exponential distribution)
+  ahtSec: number,      // mean handle time in seconds
+): {
+  pWait: number;        // probability an arriving customer must wait (all N servers busy)
+  abandonRate: number;  // fraction of arrivals that abandon before being served (0–1)
+  slFn: (T: number) => number; // service-level function: P(answered within T seconds)
+} {
+  const nInt = Math.floor(N);
+
+  if (patienceSec <= 0) {
+    // Infinite patience → pure Erlang C
+    const pWait = erlangC(A, nInt);
+    return {
+      pWait,
+      abandonRate: 0,
+      slFn: (T) => erlangServiceLevel(A, nInt, ahtSec, T),
+    };
+  }
+
+  // β = AHT / patience: how many "patience units" fit in one service time.
+  // High β (AHT >> patience) → large abandonment drain → lower congestion.
+  const beta = ahtSec / patienceSec;
+
+  // Truncate the state space where terms become negligible.
+  const K_max = Math.max(nInt + 300, Math.ceil(A * 3) + 200);
+  const pi: number[] = new Array(K_max + 1).fill(0);
+  pi[0] = 1;
+
+  for (let k = 0; k < K_max; k++) {
+    if (k < nInt) {
+      pi[k + 1] = (A * pi[k]) / (k + 1);
+    } else {
+      pi[k + 1] = (A * pi[k]) / (nInt + (k - nInt + 1) * beta);
+    }
+    if (!isFinite(pi[k + 1]) || pi[k + 1] < 1e-12) break;
+  }
+
+  const total = pi.reduce((s, v) => s + v, 0);
+  if (total === 0) return { pWait: 0, abandonRate: 0, slFn: () => 1 };
+  const piNorm = pi.map(v => v / total);
+
+  // P(wait) = Σ π[k] for k ≥ N
+  let pWait = 0;
+  for (let k = nInt; k < piNorm.length; k++) pWait += piNorm[k];
+  pWait = Math.min(1, Math.max(0, pWait));
+
+  // E[queue length] = Σ (k − N) · π[k] for k > N
+  let eQueue = 0;
+  for (let k = nInt + 1; k < piNorm.length; k++) eQueue += (k - nInt) * piNorm[k];
+
+  // P(abandon) = ν · E[queue] / λ = (ahtSec/patienceSec) · E[queue] / A = β · E[queue] / A
+  const abandonRate = A > 0 ? Math.min(1, (beta * eQueue) / A) : 0;
+
+  // SL(T): 1 − P(wait) · exp(−drainRate · T)
+  // The effective queue drain rate combines excess service capacity and abandonment:
+  //   excessCapacity = max(0, N − A_eff) / ahtSec  [agents/s draining the queue]
+  //   nuRate         = 1 / patienceSec              [abandonment drain]
+  const A_eff = A * (1 - abandonRate);
+  const excessCapacity = Math.max(0, nInt - A_eff) / ahtSec;
+  const nuRate = 1 / patienceSec;
+  const drainRate = excessCapacity + nuRate;
+
+  const slFn = (T: number): number => {
+    if (nInt <= A_eff) return 0; // under-staffed even after abandonments
+    return Math.min(1, Math.max(0, 1 - pWait * Math.exp(-drainRate * T)));
+  };
+
+  return { pWait, abandonRate, slFn };
+}
+
+/** Minimum integer agents such that Erlang A SL(slaSec) ≥ targetSL. */
+function minAgentsForSL_A(
+  A: number, ahtSec: number, slaSec: number, targetSL: number, patienceSec: number,
+): number {
+  // Start below Erlang C floor — Erlang A can achieve target at fewer agents
+  let N = Math.max(1, Math.floor(A));
+  for (let i = 0; i < 500; i++) {
+    const { slFn } = erlangAMetrics(A, N, patienceSec, ahtSec);
+    if (slFn(slaSec) >= targetSL) return N;
+    N++;
+  }
+  return N;
+}
+
 export interface IntervalFTEResult {
   rawAgents: number;   // concurrent agents on the phones needed this interval
   fte: number;         // rawAgents grossed up for shrinkage (schedule this many)
   achievedSL: number;  // % SL at rawAgents (0 for email — no queue model)
   erlangs: number;     // traffic intensity A = effectiveCalls × AHT / intervalSeconds
-  occupancy: number;   // Erlang C output: A / rawAgents × 100 (NOT an input constraint)
+  occupancy: number;   // output: A / rawAgents × 100 (NOT an input constraint)
+  abandonRate: number; // Erlang A: fraction of arrivals that abandon (0 when patience=0)
 }
 
 /**
@@ -49,15 +153,16 @@ export interface IntervalFTEResult {
  *   For email, occupancy IS used as the utilisation target since there is no
  *   queue — it simply caps how much work each agent-second is filled.
  *
- * @param callsPerInterval  Forecast volume for this interval (grain-aggregated)
- * @param grainMinutes      Interval width: 15, 30, or 60
- * @param ahtSec            Average Handle Time in seconds
- * @param slaTarget         Service level target, 0–100 (e.g. 80)
- * @param slaSec            Speed-of-answer threshold in seconds (e.g. 20)
- * @param emailOccupancy    Used ONLY for email workload model (0–100); ignored for voice/chat
- * @param shrinkage         Shrinkage %, 0–100; grosses rawAgents up to schedulable FTE
- * @param channel           "voice" | "chat" | "email" | "cases"
- * @param concurrency       Chat only: simultaneous sessions per agent (default 1)
+ * @param callsPerInterval     Forecast volume for this interval (grain-aggregated)
+ * @param grainMinutes         Interval width: 15, 30, or 60
+ * @param ahtSec               Average Handle Time in seconds
+ * @param slaTarget            Service level target, 0–100 (e.g. 80)
+ * @param slaSec               Speed-of-answer threshold in seconds (e.g. 20)
+ * @param emailOccupancy       Used ONLY for email workload model (0–100); ignored for voice/chat
+ * @param shrinkage            Shrinkage %, 0–100; grosses rawAgents up to schedulable FTE
+ * @param channel              "voice" | "chat" | "email" | "cases"
+ * @param concurrency          Chat only: simultaneous sessions per agent (default 1)
+ * @param avgPatienceSeconds   Erlang A: mean customer patience in seconds (0 = Erlang C fallback)
  */
 export function computeIntervalFTE(
   callsPerInterval: number,
@@ -69,8 +174,9 @@ export function computeIntervalFTE(
   shrinkage: number,
   channel: "voice" | "chat" | "email" | "cases",
   concurrency = 1,
+  avgPatienceSeconds = 0,
 ): IntervalFTEResult {
-  const zero: IntervalFTEResult = { rawAgents: 0, fte: 0, achievedSL: 0, erlangs: 0, occupancy: 0 };
+  const zero: IntervalFTEResult = { rawAgents: 0, fte: 0, achievedSL: 0, erlangs: 0, occupancy: 0, abandonRate: 0 };
   if (callsPerInterval <= 0 || ahtSec <= 0) return zero;
 
   const intervalSeconds = grainMinutes * 60;
@@ -89,19 +195,35 @@ export function computeIntervalFTE(
       achievedSL: 0,
       erlangs: +(workloadSec / intervalSeconds).toFixed(3),
       occupancy: +occ.toFixed(1),
+      abandonRate: 0,
     };
   }
 
-  // Voice / Chat — pure Erlang C
+  // Voice / Chat — Erlang A when patience configured, Erlang C otherwise.
   // Occupancy is strictly an OUTPUT here; SLA alone drives the agent count.
   // For chat, one agent handles `concurrency` simultaneous sessions, so the
   // equivalent single-stream demand is volume / concurrency.
   const effectiveCalls = channel === "chat" ? callsPerInterval / Math.max(1, concurrency) : callsPerInterval;
   const A = (effectiveCalls * ahtSec) / intervalSeconds;
 
-  const rawAgents = minAgentsForSL(A, ahtSec, slaSec, slaTarget / 100);
-  const achievedSL = rawAgents > 0 ? erlangServiceLevel(A, rawAgents, ahtSec, slaSec) * 100 : 0;
-  const occupancy  = rawAgents > 0 ? (A / rawAgents) * 100 : 0;
+  let rawAgents: number;
+  let achievedSL: number;
+  let abandonRate: number;
+
+  if (avgPatienceSeconds > 0) {
+    // Erlang A path
+    rawAgents = minAgentsForSL_A(A, ahtSec, slaSec, slaTarget / 100, avgPatienceSeconds);
+    const metrics = erlangAMetrics(A, rawAgents, avgPatienceSeconds, ahtSec);
+    achievedSL = metrics.slFn(slaSec) * 100;
+    abandonRate = metrics.abandonRate;
+  } else {
+    // Erlang C path (pure, no patience)
+    rawAgents = minAgentsForSL(A, ahtSec, slaSec, slaTarget / 100);
+    achievedSL = rawAgents > 0 ? erlangServiceLevel(A, rawAgents, ahtSec, slaSec) * 100 : 0;
+    abandonRate = 0;
+  }
+
+  const occupancy = rawAgents > 0 ? (A / rawAgents) * 100 : 0;
 
   return {
     rawAgents,
@@ -109,6 +231,7 @@ export function computeIntervalFTE(
     achievedSL: +achievedSL.toFixed(1),
     erlangs: +A.toFixed(3),
     occupancy: +occupancy.toFixed(1),
+    abandonRate: +abandonRate.toFixed(4),
   };
 }
 
@@ -132,6 +255,7 @@ export function computeAchievedSLFromFTE(
   shrinkagePct: number,
   channel: "voice" | "chat" | "email",
   concurrency = 1,
+  avgPatienceSeconds = 0,
 ): number | null {
   if (channel === "email") return null;
   if (weeklyVolume <= 0 || ahtSec <= 0 || actualFTE <= 0 || daysPerWeek <= 0 || operatingHoursPerDay <= 0) return null;
@@ -146,6 +270,11 @@ export function computeAchievedSLFromFTE(
   const callsPerInterval = weeklyVolume / daysPerWeek / (operatingHoursPerDay * 2);
   const effectiveCalls = channel === "chat" ? callsPerInterval / Math.max(1, concurrency) : callsPerInterval;
   const A = (effectiveCalls * ahtSec) / 1800; // 1800s = 30-min interval
+
+  if (avgPatienceSeconds > 0) {
+    const { slFn } = erlangAMetrics(A, rawAgents, avgPatienceSeconds, ahtSec);
+    return +(slFn(slaSec) * 100).toFixed(1);
+  }
 
   if (rawAgents <= A) return 0; // under-staffed: everyone waits
   return +(erlangServiceLevel(A, rawAgents, ahtSec, slaSec) * 100).toFixed(1);

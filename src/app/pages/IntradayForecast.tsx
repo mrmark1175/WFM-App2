@@ -536,11 +536,15 @@ export const IntradayForecast = () => {
       ahtSec:       ch === "voice" ? a.aht    : ch === "chat" ? a.chatAht  : a.emailAht,
       slaTarget:    ch === "voice" ? a.voiceSlaTarget : ch === "chat" ? a.chatSlaTarget : a.emailSlaTarget,
       slaSec:       ch === "voice" ? a.voiceSlaAnswerSeconds : ch === "chat" ? a.chatSlaAnswerSeconds : a.emailSlaAnswerSeconds,
-      // occupancy is NOT a staffing input for voice/chat Erlang C — it is an output.
+      // occupancy is NOT a staffing input for voice/chat Erlang A/C — it is an output.
       // We pass it only for the email-style workload model which needs a utilisation target.
       emailOccupancy: a.occupancy,
       shrinkage:    a.shrinkage,
       concurrency:  ch === "chat" ? Math.max(1, a.chatConcurrency ?? 1) : 1,
+      // Erlang A: mean patience in seconds; 0 = fall back to pure Erlang C
+      avgPatienceSeconds: ch === "voice" ? (a.voiceAvgPatienceSeconds ?? 120)
+                        : ch === "chat"  ? (a.chatAvgPatienceSeconds  ?? 60)
+                        : 0,
     };
   }, [plannerSnapshot, selectedChannel]);
 
@@ -558,6 +562,7 @@ export const IntradayForecast = () => {
           fteParams.shrinkage,
           selectedChannel,
           fteParams.concurrency,
+          fteParams.avgPatienceSeconds,
         )
       )
     );
@@ -1690,6 +1695,9 @@ export const IntradayForecast = () => {
                   {selectedChannel === "chat" && (
                     <span><span className="font-semibold text-foreground">Concurrency</span> {fteParams.concurrency}</span>
                   )}
+                  {(selectedChannel === "voice" || selectedChannel === "chat") && fteParams.avgPatienceSeconds > 0 && (
+                    <span title="Erlang A: average seconds before a customer abandons the queue"><span className="font-semibold text-foreground">Patience</span> {fteParams.avgPatienceSeconds}s</span>
+                  )}
                   <span><span className="font-semibold text-foreground">FTE hrs/day</span> {shrinkageHoursPerDay}h</span>
                   <span className="text-[10px] italic">
                     {selectedChannel === "email" || selectedChannel === "cases"
@@ -1880,6 +1888,39 @@ export const IntradayForecast = () => {
                         );
                       })}
                     </TableRow>
+                    {/* Abandon % row — Erlang A only, voice and chat */}
+                    {(selectedChannel === "voice" || selectedChannel === "chat") && fteParams && fteParams.avgPatienceSeconds > 0 && (
+                    <TableRow className="bg-red-50 dark:bg-red-950/20">
+                      <TableCell
+                        className="text-xs font-semibold py-2 sticky left-0 bg-red-50 dark:bg-red-950/20 text-red-700 whitespace-nowrap"
+                        title="Volume-weighted average abandonment rate (Erlang A). Red when > 5% — industry warning threshold."
+                      >
+                        Abandon %
+                      </TableCell>
+                      {DOW_LABELS.map((_, d) => {
+                        let weightedAbandon = 0, totalCalls = 0;
+                        intervals.forEach((_, idx) => {
+                          if (hideBlankRows && blankIntervalSet.has(idx)) return;
+                          const calls = displayForecast[d]?.[idx] ?? 0;
+                          const ab = smoothedFteTable[d]?.[idx]?.abandonRate ?? 0;
+                          weightedAbandon += ab * calls;
+                          totalCalls += calls;
+                        });
+                        const expAbandon = totalCalls > 0 ? (weightedAbandon / totalCalls) * 100 : 0;
+                        const isHigh = expAbandon > 5;
+                        return (
+                          <TableCell
+                            key={d}
+                            className="text-xs text-right py-2 font-mono font-semibold"
+                            style={{ color: expAbandon > 0 ? (isHigh ? "#dc2626" : "#16a34a") : undefined }}
+                            title={isHigh ? "Above 5% threshold — consider adding agents or adjusting patience parameter" : undefined}
+                          >
+                            {expAbandon > 0 ? `${expAbandon.toFixed(1)}%` : "—"}
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               )}

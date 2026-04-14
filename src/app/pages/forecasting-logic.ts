@@ -315,6 +315,8 @@ export interface Assumptions {
   chatSlaTarget: number;
   chatSlaAnswerSeconds: number;
   chatAsaTargetSeconds: number;
+  voiceAvgPatienceSeconds?: number; // Erlang A: mean customer patience for voice (seconds); 0 = Erlang C
+  chatAvgPatienceSeconds?: number;  // Erlang A: mean customer patience for chat (seconds); 0 = Erlang C
   occupancy: number;
   growthRate: number;
   safetyMargin: number;

@@ -260,6 +260,8 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   chatSlaTarget: 80,
   chatSlaAnswerSeconds: 30,
   chatAsaTargetSeconds: 20,
+  voiceAvgPatienceSeconds: 120,
+  chatAvgPatienceSeconds: 60,
   occupancy: 85,
   growthRate: 5,
   safetyMargin: 5,
@@ -3025,18 +3027,20 @@ export default function LongTermForecastingDemand() {
                       <div className="px-4 pb-4 space-y-3">
                         <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
                           <p className="text-[10px] font-black uppercase tracking-wider text-sky-700">Voice SLA</p>
-                          <div className="grid grid-cols-3 gap-2">
+                          <div className="grid grid-cols-4 gap-2">
                             <div className="space-y-1"><Label htmlFor="voiceSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
                             <div className="space-y-1"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
                             <div className="space-y-1"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs text-[#4d4d4d]">ASA (s)</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
+                            <div className="space-y-1"><Label htmlFor="voiceAvgPatienceSeconds" className="text-xs text-[#4d4d4d]">Patience (s)</Label><Input id="voiceAvgPatienceSeconds" type="number" value={assumptions.voiceAvgPatienceSeconds ?? 120} onChange={(event) => setAssumptions({ ...assumptions, voiceAvgPatienceSeconds: validateInput(Number(event.target.value), 0, 3600) })} className="h-8 text-xs font-semibold" title="Erlang A: avg seconds before a customer abandons the queue (0 = use Erlang C)" /></div>
                           </div>
                         </div>
                         <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
                           <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Chat SLA</p>
-                          <div className="grid grid-cols-3 gap-2">
+                          <div className="grid grid-cols-4 gap-2">
                             <div className="space-y-1"><Label htmlFor="chatSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
                             <div className="space-y-1"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
                             <div className="space-y-1"><Label htmlFor="chatAsaTargetSeconds" className="text-xs text-[#4d4d4d]">ASA (s)</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
+                            <div className="space-y-1"><Label htmlFor="chatAvgPatienceSeconds" className="text-xs text-[#4d4d4d]">Patience (s)</Label><Input id="chatAvgPatienceSeconds" type="number" value={assumptions.chatAvgPatienceSeconds ?? 60} onChange={(event) => setAssumptions({ ...assumptions, chatAvgPatienceSeconds: validateInput(Number(event.target.value), 0, 3600) })} className="h-8 text-xs font-semibold" title="Erlang A: avg seconds before a chat customer abandons (0 = use Erlang C)" /></div>
                           </div>
                         </div>
                         <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">

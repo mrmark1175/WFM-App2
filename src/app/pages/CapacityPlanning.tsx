@@ -644,6 +644,9 @@ export function CapacityPlanning() {
   const slaEmailSec    = Number(lobSettings?.email_sla_seconds ?? snap?.emailSlaAnswerSeconds ?? 14400);
   const emailOccupancy = Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85;
   const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 1));
+  // Erlang A patience — sourced from demand assumptions; 0 falls back to Erlang C
+  const voiceAvgPatienceSec = Number(snap?.voiceAvgPatienceSeconds ?? 120);
+  const chatAvgPatienceSec  = Number(snap?.chatAvgPatienceSeconds  ?? 60);
 
   // ── Full computed calculations per week
   const weekCalcs = useMemo<WeekCalc[]>(() => {
@@ -722,7 +725,7 @@ export function CapacityPlanning() {
       const gapSurplus = roundTo(projHC - requiredFTE, 1);
       const actualGapSurplus = actualHc != null ? roundTo(actualHc - requiredFTE, 1) : null;
 
-      // Helper: compute achieved SLA% from a given FTE headcount
+      // Helper: compute achieved SLA% from a given FTE headcount (Erlang A when patience > 0)
       function achievedSLFor(hc: number): number | null {
         if (isDedicated) {
           if (activeChannel === "email") return null;
@@ -730,16 +733,17 @@ export function CapacityPlanning() {
           const aht = activeChannel === "voice" ? effAhtVoice : effAhtChat;
           const sec = activeChannel === "voice" ? slaVoiceSec : slaChatSec;
           const conc = activeChannel === "chat" ? chatConcurrency : 1;
-          return computeAchievedSLFromFTE(vol, aht, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, sec, shrinkagePct, activeChannel, conc);
+          const patience = activeChannel === "voice" ? voiceAvgPatienceSec : chatAvgPatienceSec;
+          return computeAchievedSLFromFTE(vol, aht, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, sec, shrinkagePct, activeChannel, conc, patience);
         } else {
           // Blended: volume-weighted average SLA across non-email enabled channels
           let weightedSL = 0, totalVol = 0;
           if (enabledChannels.includes("voice") && effVolVoice > 0) {
-            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice");
+            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice", 1, voiceAvgPatienceSec);
             if (sl != null) { weightedSL += sl * effVolVoice; totalVol += effVolVoice; }
           }
           if (enabledChannels.includes("chat") && effVolChat > 0) {
-            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency);
+            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency, chatAvgPatienceSec);
             if (sl != null) { weightedSL += sl * effVolChat; totalVol += effVolChat; }
           }
           return totalVol > 0 ? +(weightedSL / totalVol).toFixed(1) : null;
