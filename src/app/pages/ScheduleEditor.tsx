@@ -264,6 +264,7 @@ export function ScheduleEditor() {
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<number>>(new Set());
   const [clipboard, setClipboard] = useState<ClipboardShift | null>(null);
   const [pendingPasteAgents, setPendingPasteAgents] = useState<number[] | null>(null);
+  const [pendingPasteDate, setPendingPasteDate] = useState<string | null>(null);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
 
   const undoStackRef = useRef(undoStack);
@@ -453,13 +454,14 @@ export function ScheduleEditor() {
     setIsDirty(true);
   }, [selectedShiftId, pushUndo]);
 
-  // Executes a clipboard paste for the given agent IDs, removing any existing
-  // shifts for those agents on the active date first.
-  const executePaste = useCallback((targetAgents: number[]) => {
+  // Executes a clipboard paste for the given agent IDs on the given date,
+  // removing any existing shifts for those agents on that date first.
+  const executePaste = useCallback((targetAgents: number[], targetDate?: string) => {
     if (!clipboard) return;
+    const pasteDate = targetDate ?? activeDate;
     for (const agentId of targetAgents) {
       const existing = assignmentsRef.current.filter(
-        a => a.agent_id === agentId && a.work_date?.startsWith(activeDate)
+        a => a.agent_id === agentId && a.work_date?.startsWith(pasteDate)
       );
       for (const a of existing) {
         const prev = a;
@@ -475,10 +477,26 @@ export function ScheduleEditor() {
         end_time: clipboard.end_time,
         channel: clipboard.channel,
         notes: "",
+        work_date: pasteDate,
       });
     }
     toast.success(`Pasted shift to ${targetAgents.length} agent${targetAgents.length > 1 ? "s" : ""}`);
   }, [clipboard, activeDate, addShift]);
+
+  // Called from WeeklyScheduleGrid when the user clicks a day cell while a
+  // shift is on the clipboard — pastes to that specific agent + date.
+  const handleWeeklyPaste = useCallback((agentId: number, dateStr: string) => {
+    if (!clipboard) return;
+    const hasConflict = assignmentsRef.current.some(
+      a => a.agent_id === agentId && a.work_date?.startsWith(dateStr)
+    );
+    if (hasConflict) {
+      setPendingPasteAgents([agentId]);
+      setPendingPasteDate(dateStr);
+    } else {
+      executePaste([agentId], dateStr);
+    }
+  }, [clipboard, executePaste]);
 
   const addActivity = useCallback((assignmentId: number, act: Omit<Activity, "id" | "assignment_id">) => {
     const actId = nextTempId();
@@ -1013,6 +1031,7 @@ export function ScheduleEditor() {
               weekDates={weekDates.map(d => toDateStr(d))}
               selectedShiftId={selectedShiftId}
               selectedAgentIds={selectedAgentIds}
+              hasClipboard={!!clipboard}
               onShiftMove={moveShift}
               onShiftDelete={deleteShift}
               onAddShift={handleGridAddShift}
@@ -1022,6 +1041,7 @@ export function ScheduleEditor() {
               onUpdateTimes={updateTimes}
               onSelectShift={handleSelectShift}
               onSelectAgent={handleSelectAgent}
+              onPaste={handleWeeklyPaste}
             />
           )}
         </div>
@@ -1054,12 +1074,13 @@ export function ScheduleEditor() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setPendingPasteAgents(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => { setPendingPasteAgents(null); setPendingPasteDate(null); }}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 if (pendingPasteAgents) {
-                  executePaste(pendingPasteAgents);
+                  executePaste(pendingPasteAgents, pendingPasteDate ?? undefined);
                   setPendingPasteAgents(null);
+                  setPendingPasteDate(null);
                 }
               }}
             >

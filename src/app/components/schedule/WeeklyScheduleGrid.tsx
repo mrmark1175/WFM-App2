@@ -39,6 +39,7 @@ interface WeeklyScheduleGridProps {
   weekDates: string[];       // 7 date strings [Mon..Sun]
   selectedShiftId?: number | null;
   selectedAgentIds?: Set<number>;
+  hasClipboard?: boolean;
   onShiftMove: (id: number, newStart: string, newEnd: string, newAgentId?: number, newWorkDate?: string) => void;
   onShiftDelete: (id: number) => void;
   onAddShift: (agentId: number, startTime: string, workDate: string) => void;
@@ -48,6 +49,7 @@ interface WeeklyScheduleGridProps {
   onUpdateTimes: (id: number, start: string, end: string) => void;
   onSelectShift?: (id: number, shiftHeld: boolean) => void;
   onSelectAgent?: (id: number, shiftHeld: boolean) => void;
+  onPaste?: (agentId: number, dateStr: string) => void;
 }
 
 export function WeeklyScheduleGrid({
@@ -56,6 +58,7 @@ export function WeeklyScheduleGrid({
   weekDates,
   selectedShiftId,
   selectedAgentIds,
+  hasClipboard,
   onShiftMove,
   onShiftDelete,
   onAddShift,
@@ -65,6 +68,7 @@ export function WeeklyScheduleGrid({
   onUpdateTimes,
   onSelectShift,
   onSelectAgent,
+  onPaste,
 }: WeeklyScheduleGridProps) {
   const [expandedAgents, setExpandedAgents] = useState<Set<number>>(new Set());
   const [activeShift, setActiveShift] = useState<Assignment | null>(null);
@@ -253,11 +257,15 @@ export function WeeklyScheduleGrid({
   }, [onShiftMove, onUpdateActivity, assignments, rowMap, expandedAgents]);
 
   const handleCellClick = useCallback((agentId: number, dateStr: string, e: React.MouseEvent<HTMLDivElement>) => {
+    if (hasClipboard && onPaste) {
+      onPaste(agentId, dateStr);
+      return;
+    }
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const snapped = snapToGrid(clickX);
     onAddShift(agentId, pxToTime(snapped), dateStr);
-  }, [onAddShift]);
+  }, [hasClipboard, onPaste, onAddShift]);
 
   const gridWidth = AGENT_W + TOTAL_COLS * COL_W;
 
@@ -444,10 +452,14 @@ export function WeeklyScheduleGrid({
 
                         {/* Grid row with shift blocks */}
                         <div
-                          className="relative cursor-pointer hover:bg-slate-50/50 transition-colors"
+                          className={`relative transition-colors ${
+                            hasClipboard
+                              ? "cursor-copy hover:bg-blue-50/40"
+                              : "cursor-pointer hover:bg-slate-50/50"
+                          }`}
                           style={{ width: TOTAL_COLS * COL_W, height: ROW_H }}
                           onClick={(e) => handleCellClick(agent.id, dateStr, e)}
-                          title="Click to add a shift"
+                          title={hasClipboard ? "Click to paste copied shift" : "Click to add a shift"}
                         >
                           {/* Hour grid lines */}
                           {TIME_LABELS.filter(t => t.label).map(({ slot }) => (
@@ -486,9 +498,13 @@ export function WeeklyScheduleGrid({
 
                           {dayAssignments.length === 0 && (
                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                              <span className="flex items-center gap-1 text-[9px] text-slate-300">
-                                <Plus className="size-2.5" />click to add
-                              </span>
+                              {hasClipboard ? (
+                                <span className="text-[9px] text-blue-300 font-medium">click to paste</span>
+                              ) : (
+                                <span className="flex items-center gap-1 text-[9px] text-slate-300">
+                                  <Plus className="size-2.5" />click to add
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
