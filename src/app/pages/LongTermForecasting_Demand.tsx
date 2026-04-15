@@ -203,11 +203,6 @@ const FORECAST_MODEL_COPY = {
     badge: "CBE",
   },
 } as const;
-const FORECAST_METHODS = [
-  { key: "holtwinters", label: "Holt-Winters (Seasonal Trend)" },
-  { key: "arima", label: "ARIMA" },
-  { key: "decomposition", label: "Decomposition" },
-];
 // ── LOB Settings → Assumptions helpers ───────────────────────────────────────
 function deriveOperatingDaysPerWeek(schedule?: Record<string, { enabled: boolean }>): number {
   if (!schedule) return 5;
@@ -917,7 +912,7 @@ export default function LongTermForecastingDemand() {
   const [poolingMode, setPoolingMode] = useState<PoolingMode>("blended");
   const [selectedScenarioId, setSelectedScenarioId] = useState("base");
   const [loading, setLoading] = useState(true);
-  const [forecastMethod, setForecastMethod] = useState("holtwinters");
+  const forecastMethod = "holtwinters";
   const [hwParams, setHwParams] = useState({ alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 });
   const [arimaParams, setArimaParams] = useState({ p: 1, d: 1, q: 1 });
   const [decompParams, setDecompParams] = useState({ trendStrength: 1, seasonalityStrength: 1 });
@@ -1821,12 +1816,7 @@ export default function LongTermForecastingDemand() {
     const totalVol = chanVols.reduce((s, c) => s + c.avg, 0);
     const channelMix = chanVols.map((c) => ({ ...c, pct: totalVol > 0 ? Math.round((c.avg / totalVol) * 100) : 0 })).sort((a, b) => b.pct - a.pct);
     // Method label
-    const methodLabels: Record<string, string> = {
-      holtwinters: FORECAST_MODEL_COPY.holtwinters.label,
-      arima: FORECAST_MODEL_COPY.arima.label,
-      decomposition: FORECAST_MODEL_COPY.decomposition.label,
-    };
-    const methodLabel = methodLabels[forecastMethod] ?? forecastMethod;
+    const methodLabel = FORECAST_MODEL_COPY.holtwinters.label;
     // Growth
     const growthRate = assumptions.growthRate ?? 0;
     const lastRow = futureData[n - 1];
@@ -2920,70 +2910,35 @@ export default function LongTermForecastingDemand() {
                   {/* ── Group: Forecast Model ── */}
                   <div>
                     <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbForecast(v => !v)}>
-                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Forecast Model</span>
+                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Forecast Parameters</span>
                       {sbForecast ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
                     </button>
                     {sbForecast && (
                       <div className="px-4 pb-4 space-y-3">
-                        <Select value={forecastMethod} onValueChange={setForecastMethod}>
-                          <SelectTrigger className="h-10 font-semibold"><SelectValue placeholder="Choose forecast method..." /></SelectTrigger>
-                          <SelectContent>{FORECAST_METHODS.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}</SelectContent>
-                        </Select>
-                        {forecastMethod === "holtwinters" && (
-                          <div className="space-y-3 rounded-xl border border-border/60 bg-[#fafafa] p-4">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs font-semibold text-[#4d4d4d]">Holt-Winters parameters</span>
-                                <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.holtwinters.description}</p></TooltipContent></UITooltip>
-                              </div>
-                              <Badge className="bg-amber-500 font-black tracking-tight">{FORECAST_MODEL_COPY.holtwinters.badge}</Badge>
+                        <div className="space-y-3 rounded-xl border border-border/60 bg-[#fafafa] p-4">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-semibold text-[#4d4d4d]">Smoothing parameters</span>
+                            <UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[260px]"><p className="text-xs">{FORECAST_MODEL_COPY.holtwinters.description}</p></TooltipContent></UITooltip>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Alpha (α)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Level smoothing. Higher = reacts faster to recent data. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
+                              <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.alpha} onChange={(e) => setHwParams({ ...hwParams, alpha: Number(e.target.value) })} className="h-8 text-xs" />
                             </div>
-                            <div className="grid grid-cols-2 gap-3">
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Alpha (α)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Level smoothing. Higher = reacts faster to recent data. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
-                                <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.alpha} onChange={(e) => setHwParams({ ...hwParams, alpha: Number(e.target.value) })} className="h-8 text-xs" />
-                              </div>
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Beta (β)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Trend smoothing. Lower = stable persistent trend. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
-                                <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.beta} onChange={(e) => setHwParams({ ...hwParams, beta: Number(e.target.value) })} className="h-8 text-xs" />
-                              </div>
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Gamma (γ)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Seasonality smoothing. Higher = seasonal pattern adapts quickly. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
-                                <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.gamma} onChange={(e) => setHwParams({ ...hwParams, gamma: Number(e.target.value) })} className="h-8 text-xs" />
-                              </div>
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Season Length</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Periods per seasonal cycle. 12 for monthly/annual.</p></TooltipContent></UITooltip></div>
-                                <Input type="number" min="2" max="24" value={hwParams.seasonLength} onChange={(e) => setHwParams({ ...hwParams, seasonLength: Number(e.target.value) })} className="h-8 text-xs" />
-                              </div>
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Beta (β)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Trend smoothing. Lower = stable persistent trend. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
+                              <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.beta} onChange={(e) => setHwParams({ ...hwParams, beta: Number(e.target.value) })} className="h-8 text-xs" />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Gamma (γ)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Seasonality smoothing. Higher = seasonal pattern adapts quickly. Range: 0.01–0.99.</p></TooltipContent></UITooltip></div>
+                              <Input type="number" step="0.05" min="0.01" max="0.99" value={hwParams.gamma} onChange={(e) => setHwParams({ ...hwParams, gamma: Number(e.target.value) })} className="h-8 text-xs" />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Season Length</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[220px]"><p className="text-xs">Periods per seasonal cycle. 12 for monthly/annual.</p></TooltipContent></UITooltip></div>
+                              <Input type="number" min="2" max="24" value={hwParams.seasonLength} onChange={(e) => setHwParams({ ...hwParams, seasonLength: Number(e.target.value) })} className="h-8 text-xs" />
                             </div>
                           </div>
-                        )}
-                        {forecastMethod === "arima" && (
-                          <div className="space-y-3 rounded-xl border border-border/60 bg-[#fafafa] p-4">
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="text-xs font-semibold text-[#4d4d4d]">ARIMA parameters</span>
-                              <Badge className="bg-emerald-500 font-black tracking-tight">{FORECAST_MODEL_COPY.arima.badge}</Badge>
-                            </div>
-                            <div className="grid grid-cols-3 gap-3">
-                              <div className="space-y-1"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">p (AR)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">Autoregressive order — how many past periods drive predictions. Typical: 1–3.</p></TooltipContent></UITooltip></div><Input type="number" min="0" max="6" value={arimaParams.p} onChange={(e) => setArimaParams({ ...arimaParams, p: Number(e.target.value) })} className="h-8 text-xs" /></div>
-                              <div className="space-y-1"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">d (diff)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">Differencing order. 1 removes a linear trend. Start with d=1.</p></TooltipContent></UITooltip></div><Input type="number" min="0" max="2" value={arimaParams.d} onChange={(e) => setArimaParams({ ...arimaParams, d: Number(e.target.value) })} className="h-8 text-xs" /></div>
-                              <div className="space-y-1"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">q (MA)</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">Moving average order. Corrects for recent forecast error. Typical: 1–2.</p></TooltipContent></UITooltip></div><Input type="number" min="0" max="6" value={arimaParams.q} onChange={(e) => setArimaParams({ ...arimaParams, q: Number(e.target.value) })} className="h-8 text-xs" /></div>
-                            </div>
-                            <p className="text-[11px] text-[#4d4d4d]">Recommended start: p=1, d=1, q=1.</p>
-                          </div>
-                        )}
-                        {forecastMethod === "decomposition" && (
-                          <div className="space-y-3 rounded-xl border border-border/60 bg-[#fafafa] p-4">
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="text-xs font-semibold text-[#4d4d4d]">Decomposition parameters</span>
-                              <Badge className="bg-blue-500 font-black tracking-tight">{FORECAST_MODEL_COPY.decomposition.badge}</Badge>
-                            </div>
-                            <div className="space-y-3">
-                              <div className="space-y-1"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Trend Strength</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">1.0 = project observed trend as-is. &lt;1 = conservative. &gt;1 = optimistic growth.</p></TooltipContent></UITooltip></div><span className="text-xs font-bold">{decompParams.trendStrength}×</span></div><Input type="number" step="0.1" min="0" max="3" value={decompParams.trendStrength} onChange={(e) => setDecompParams({ ...decompParams, trendStrength: Number(e.target.value) })} className="h-8 text-xs" /></div>
-                              <div className="space-y-1"><div className="flex items-center justify-between"><div className="flex items-center gap-1"><Label className="text-xs font-medium text-[#4d4d4d]">Seasonality Strength</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent className="max-w-[240px]"><p className="text-xs">1.0 = apply observed seasonality in full. &lt;1 = flatten swings. &gt;1 = amplify swings.</p></TooltipContent></UITooltip></div><span className="text-xs font-bold">{decompParams.seasonalityStrength}×</span></div><Input type="number" step="0.1" min="0" max="3" value={decompParams.seasonalityStrength} onChange={(e) => setDecompParams({ ...decompParams, seasonalityStrength: Number(e.target.value) })} className="h-8 text-xs" /></div>
-                            </div>
-                          </div>
-                        )}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -3139,7 +3094,7 @@ export default function LongTermForecastingDemand() {
                         </div>
                         <Input id="growthRate" type="number" value={assumptions.growthRate} onChange={(event) => setAssumptions({ ...assumptions, growthRate: validateInput(Number(event.target.value), -100, 500) })} className={`h-9 font-bold ${assumptions.growthRate >= 0 ? "border-emerald-200" : "border-rose-200"}`} />
                         {assumptions.growthRate !== 0 && (
-                          <p className="text-[11px] text-[#4d4d4d]">×{(1 + assumptions.growthRate / 100).toFixed(3)} multiplier after {FORECAST_METHODS.find((m) => m.key === forecastMethod)?.label ?? forecastMethod}.</p>
+                          <p className="text-[11px] text-[#4d4d4d]">×{(1 + assumptions.growthRate / 100).toFixed(3)} multiplier applied to the forecast output.</p>
                         )}
                       </div>
                     )}

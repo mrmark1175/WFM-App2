@@ -903,11 +903,6 @@ export const IntradayForecast = () => {
   }, [distributionWeights.intervalWeights, grain]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  const forecastMethodLabel = plannerSnapshot?.forecastMethod
-    ? { holtwinters: "Holt-Winters", arima: "ARIMA", decomposition: "Decomposition",
-        ma: "Moving Average", yoy: "Year-over-Year", regression: "Linear Regression",
-        genesys: "Genesys Sync" }[plannerSnapshot.forecastMethod] ?? plannerSnapshot.forecastMethod
-    : null;
 
   // Interval pattern data (for intraday shape) always requires baseline
   const canGenerateForecast = targetMonthlyVolume > 0 && baselineDataCount > 0 && forecastedWeekVolume > 0;
@@ -1039,7 +1034,7 @@ export const IntradayForecast = () => {
                 <Badge variant="secondary" className="h-8 px-3 text-xs">Loading...</Badge>
               ) : plannerSnapshot ? (
                 <Badge variant="default" className="h-8 px-3 text-xs bg-green-600 hover:bg-green-600">
-                  Demand Planner{forecastMethodLabel ? ` \u00b7 ${forecastMethodLabel}` : ""}
+                  Demand Planner
                 </Badge>
               ) : (
                 <Badge variant="destructive" className="h-8 px-3 text-xs">
