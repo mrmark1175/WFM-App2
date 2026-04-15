@@ -12,6 +12,7 @@ import { Badge } from "../components/ui/badge";
 import { toast } from "sonner";
 import {
   ChevronDown, ChevronRight, RotateCcw, Settings2, TrendingDown, AlertTriangle, CheckCircle2, Loader2,
+  Users, UserPlus,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -781,6 +782,17 @@ export function CapacityPlanning() {
     return { totalExits: roundTo(totalExits), annualizedPct, totalActualAttrition };
   }, [weekCalcs, config.attritionRateMonthly]);
 
+  // ── Hiring need summary
+  // Peak Required HC: the highest requiredFTE across the horizon — the roster ceiling.
+  // Gross Hiring Need: seats Recruitment must fill = gap to close (start → peak) + attrition replacements.
+  const hiringNeed = useMemo(() => {
+    if (weekCalcs.length === 0) return { peakRequired: 0, grossHireNeed: 0 };
+    const peakRequired = Math.ceil(Math.max(...weekCalcs.map(w => w.requiredFTE)));
+    const gapToClose = Math.max(0, peakRequired - config.startingHc);
+    const grossHireNeed = gapToClose + Math.ceil(attritionSummary.totalExits);
+    return { peakRequired, grossHireNeed };
+  }, [weekCalcs, config.startingHc, attritionSummary.totalExits]);
+
   // ── LOB switch resets channel tab
   function handleLobSwitch(lobId: number) {
     const lob = lobs.find(l => l.id === lobId);
@@ -893,13 +905,39 @@ export function CapacityPlanning() {
         )}
       </Card>
 
-      {/* ── Attrition Summary */}
+      {/* ── Attrition & Hiring Summary */}
       <div className="flex items-center gap-4 mb-4 flex-wrap text-xs">
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <TrendingDown className="size-3.5 text-red-500" />
           <span className="text-muted-foreground">Annualized Attrition:</span>
           <span className="font-semibold">{fmtPct(attritionSummary.annualizedPct)}</span>
         </div>
+
+        {/* Peak Required HC — the roster ceiling the manager must build toward */}
+        <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-1.5">
+          <Users className="size-3.5 text-blue-600" />
+          <span className="text-muted-foreground">Peak Required HC</span>
+          <Badge variant="outline" className="text-[10px] py-0 px-1 border-blue-300 text-blue-500">{config.horizonWeeks}wk</Badge>
+          <span className="text-muted-foreground">:</span>
+          <span className="font-semibold text-blue-700 dark:text-blue-400">
+            {hiringNeed.peakRequired > 0 ? hiringNeed.peakRequired : "—"}
+          </span>
+        </div>
+
+        {/* Gross Hiring Need — total hires Recruitment must execute to reach peak and replace attrition */}
+        <div
+          className="flex items-center gap-1.5 bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 rounded-lg px-3 py-1.5"
+          title={`Gap to close: ${Math.max(0, hiringNeed.peakRequired - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
+        >
+          <UserPlus className="size-3.5 text-violet-600" />
+          <span className="text-muted-foreground">Gross Hiring Need</span>
+          <Badge variant="outline" className="text-[10px] py-0 px-1 border-violet-300 text-violet-500">{config.horizonWeeks}wk</Badge>
+          <span className="text-muted-foreground">:</span>
+          <span className="font-semibold text-violet-700 dark:text-violet-400">
+            {hiringNeed.grossHireNeed > 0 ? hiringNeed.grossHireNeed : "—"}
+          </span>
+        </div>
+
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <AlertTriangle className="size-3.5 text-orange-500" />
           <span className="text-muted-foreground">Projected Exits (period):</span>
