@@ -1,6 +1,7 @@
 
 :root {
   --font-size: 16px;
+  --font-weight-semibold: 600;
   --background: var(--bg-app);
   --foreground: #0f172a;
   --card: #ffffff;
@@ -136,7 +137,7 @@ html.dark {
 
   h1 {
     font-size: var(--text-2xl);
-    font-weight: var(--font-weight-medium);
+    font-weight: var(--font-weight-semibold);
     line-height: 1.5;
   }
 

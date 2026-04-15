@@ -12,8 +12,8 @@ export function Home() {
       path: "/my-account",
     },
     {
-      title: "WFM",
-      description: "Workforce management, scheduling, and forecasting tools",
+      title: "Workforce Management",
+      description: "Forecasting, capacity planning, scheduling, and analytics tools",
       icon: Users,
       path: "/wfm",
     },
@@ -30,7 +30,7 @@ export function Home() {
       <div className="container mx-auto px-6 py-16">
         {/* Header */}
         <div className="text-center mb-16">
-          <div className="inline-block mb-5">
+          <div className="inline-block mb-6">
             <img src={logo} alt="Exordium WFM" className="h-32 w-auto" />
           </div>
           <p className="text-xs font-bold tracking-[0.4em] uppercase text-muted-foreground">
@@ -44,7 +44,7 @@ export function Home() {
             <Link
               key={card.path}
               to={card.path}
-              className="group relative bg-card border border-border rounded-lg p-8 hover:shadow-lg hover:border-primary/30 transition-all cursor-pointer"
+              className="group relative bg-card border border-border rounded-lg p-8 hover:shadow-lg hover:border-primary/30 transition-[box-shadow,border-color,background-color,color] cursor-pointer"
             >
               {/* Icon Container */}
               <div className="bg-primary/10 group-hover:bg-primary/20 w-14 h-14 rounded-lg flex items-center justify-center mb-6 transition-colors">
@@ -69,12 +69,6 @@ export function Home() {
           ))}
         </div>
 
-        {/* Footer Info */}
-        <div className="text-center mt-16">
-          <p className="text-sm text-muted-foreground">
-            Select a module to get started
-          </p>
-        </div>
       </div>
 
       {/* Copyright */}

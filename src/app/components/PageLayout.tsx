@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import {
   Home,
   ChevronRight,
+  Loader2,
   LineChart,
   Layers,
   TrendingUp,
@@ -146,8 +147,8 @@ function SideNavItem({
   const linkClass = [
     "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium transition-colors",
     active
-      ? "bg-primary/10 text-primary"
-      : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+      : "text-sidebar-foreground/60 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
     !expanded && "justify-center",
   ]
     .filter(Boolean)
@@ -157,7 +158,7 @@ function SideNavItem({
     <Tooltip>
       <TooltipTrigger asChild>
         <Link to={item.path} className={linkClass}>
-          <span className="flex items-center justify-center size-6 rounded-md bg-blue-700 dark:bg-blue-600 shrink-0">
+          <span className="flex items-center justify-center size-6 rounded-md bg-accent shrink-0">
             <Icon className="size-3.5 text-white" />
           </span>
           {expanded && <span className="truncate leading-none">{item.label}</span>}
@@ -245,31 +246,31 @@ export function PageLayout({ children, title }: PageLayoutProps) {
         {/* ── Sidebar ─────────────────────────────────────────────────────── */}
         <aside
           className={[
-            "fixed top-0 left-0 h-full z-40 bg-card border-r border-border",
+            "fixed top-0 left-0 h-full z-40 bg-sidebar border-r border-sidebar-border",
             "flex flex-col overflow-hidden",
             "transition-[width] duration-300 ease-in-out",
             expanded ? "w-60" : "w-14",
           ].join(" ")}
         >
           {/* Header: logo + toggle */}
-          <div className="flex items-center h-16 px-3 border-b border-border shrink-0 gap-2">
+          <div className="flex items-center h-16 px-3 border-b border-sidebar-border shrink-0 gap-2">
             {expanded && (
               <Link to="/" className="flex-1 min-w-0">
-                <img src={logo} alt="Exordium WFM" className="h-10 w-auto" />
+                <img src={logo} alt="Exordium WFM" className="h-10 w-auto brightness-0 invert" />
               </Link>
             )}
             <button
               onClick={toggle}
               className={[
-                "p-1.5 rounded-md hover:bg-accent transition-colors shrink-0",
+                "p-1.5 rounded-md hover:bg-sidebar-accent/60 transition-colors shrink-0",
                 !expanded && "mx-auto",
               ].join(" ")}
               aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
             >
               {expanded ? (
-                <PanelLeftClose className="size-4 text-muted-foreground" />
+                <PanelLeftClose className="size-4 text-sidebar-foreground/60" />
               ) : (
-                <PanelLeftOpen className="size-4 text-muted-foreground" />
+                <PanelLeftOpen className="size-4 text-sidebar-foreground/60" />
               )}
             </button>
           </div>
@@ -283,12 +284,12 @@ export function PageLayout({ children, title }: PageLayoutProps) {
                   className={[
                     "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium transition-colors",
                     location.pathname === "/"
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-sidebar-foreground/60 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
                     !expanded && "justify-center",
                   ].join(" ")}
                 >
-                  <span className="flex items-center justify-center size-6 rounded-md bg-blue-700 dark:bg-blue-600 shrink-0">
+                  <span className="flex items-center justify-center size-6 rounded-md bg-accent shrink-0">
                     <Home className="size-3.5 text-white" />
                   </span>
                   {expanded && <span className="truncate leading-none">Home</span>}
@@ -305,12 +306,12 @@ export function PageLayout({ children, title }: PageLayoutProps) {
             {NAV_GROUPS.map((group) => (
               <div key={group.label}>
                 {expanded && (
-                  <p className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 select-none">
+                  <p className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/50 select-none">
                     {group.label}
                   </p>
                 )}
                 {!expanded && (
-                  <div className="my-1 border-t border-border/60" />
+                  <div className="my-1 border-t border-sidebar-border" />
                 )}
                 <div className="space-y-0.5">
                   {group.items.map((item) => (
@@ -468,6 +469,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
                 <DialogFooter>
                   <Button type="button" variant="outline" size="sm" onClick={() => setChangePwOpen(false)}>Cancel</Button>
                   <Button type="submit" size="sm" disabled={pwLoading}>
+                    {pwLoading && <Loader2 className="size-3.5 animate-spin" />}
                     {pwLoading ? "Saving…" : "Save"}
                   </Button>
                 </DialogFooter>
@@ -477,7 +479,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
 
           {/* Page content */}
           <main className="flex-1 w-full max-w-[1920px] mx-auto px-8 py-8">
-            <h1 className="text-3xl mb-8 text-foreground font-bold tracking-tight">
+            <h1 className="text-2xl mb-8 text-foreground font-semibold tracking-tight">
               {title}
             </h1>
             {children}

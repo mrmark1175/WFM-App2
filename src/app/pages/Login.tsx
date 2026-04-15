@@ -4,7 +4,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
-import { Eye, EyeOff, KeyRound, Lock, ShieldCheck } from "lucide-react";
+import { Eye, EyeOff, KeyRound, Loader2, Lock, ShieldCheck } from "lucide-react";
 import logo from "../../assets/logo.svg";
 
 type View = "login" | "recover" | "recover-done";
@@ -77,7 +77,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6">
         {/* Logo / branding */}
         <div className="flex flex-col items-center gap-3">
@@ -87,7 +87,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
 
         {/* ── Login form ───────────────────────────────────────── */}
         {view === "login" && (
-          <Card className="shadow-lg border-0">
+          <Card>
             <CardHeader className="pb-4">
               <CardTitle className="text-lg flex items-center gap-2">
                 <Lock className="size-4 text-muted-foreground" />
@@ -124,6 +124,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                   <p className="text-sm text-destructive">{loginError}</p>
                 )}
                 <Button type="submit" className="w-full" disabled={loginLoading}>
+                  {loginLoading && <Loader2 className="size-4 animate-spin" />}
                   {loginLoading ? "Signing in…" : "Sign in"}
                 </Button>
               </form>
@@ -142,7 +143,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
 
         {/* ── Recovery form ────────────────────────────────────── */}
         {view === "recover" && (
-          <Card className="shadow-lg border-0">
+          <Card>
             <CardHeader className="pb-4">
               <CardTitle className="text-lg flex items-center gap-2">
                 <KeyRound className="size-4 text-muted-foreground" />
@@ -207,6 +208,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                     Back
                   </Button>
                   <Button type="submit" className="flex-1" disabled={recoverLoading}>
+                    {recoverLoading && <Loader2 className="size-4 animate-spin" />}
                     {recoverLoading ? "Recovering…" : "Reset password"}
                   </Button>
                 </div>
@@ -217,7 +219,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
 
         {/* ── Recovery success ──────────────────────────────────── */}
         {view === "recover-done" && (
-          <Card className="shadow-lg border-0">
+          <Card>
             <CardHeader className="pb-4">
               <CardTitle className="text-lg flex items-center gap-2">
                 <ShieldCheck className="size-4 text-emerald-600" />
