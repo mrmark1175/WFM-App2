@@ -1250,29 +1250,44 @@ export const IntradayForecast = () => {
                     Enter at least 4 weeks to enable the weekly distribution calculation.
                   </div>
                 )}
-                {/* AI normalization — appears when outliers are detected */}
-                {manualOutlierStats !== null && manualWeeklyVolumes.some((v, i) =>
-                  v > 0 && (v < manualOutlierStats.lower || v > manualOutlierStats.upper)
-                ) && (
-                  <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
-                    <AlertTriangle className="h-3.5 w-3.5 text-amber-600 mt-0.5 shrink-0" />
-                    <div className="flex-1">
-                      <span className="font-semibold text-amber-800">Outlier weeks detected</span>
-                      <span className="text-amber-700"> — expected range {Math.round(manualOutlierStats.lower).toLocaleString()}–{Math.round(manualOutlierStats.upper).toLocaleString()} (Poisson ±2σ, mean {Math.round(manualOutlierStats.mean).toLocaleString()}). These may reflect holidays or campaigns.</span>
+                {/* AI normalization — always visible in manual mode */}
+                {(() => {
+                  const hasOutliers = manualOutlierStats !== null && manualWeeklyVolumes.some(
+                    v => v > 0 && (v < manualOutlierStats.lower || v > manualOutlierStats.upper)
+                  );
+                  return (
+                    <div className={`flex items-start gap-3 rounded-md border px-3 py-2 text-xs ${
+                      hasOutliers ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"
+                    }`}>
+                      {hasOutliers
+                        ? <AlertTriangle className="h-3.5 w-3.5 text-amber-600 mt-0.5 shrink-0" />
+                        : <Sparkles className="h-3.5 w-3.5 text-slate-400 mt-0.5 shrink-0" />}
+                      <div className="flex-1">
+                        {hasOutliers ? (
+                          <>
+                            <span className="font-semibold text-amber-800">Outlier weeks detected</span>
+                            <span className="text-amber-700"> — expected range {Math.round(manualOutlierStats!.lower).toLocaleString()}–{Math.round(manualOutlierStats!.upper).toLocaleString()} (Poisson ±2σ, mean {Math.round(manualOutlierStats!.mean).toLocaleString()}). These may reflect holidays or campaigns.</span>
+                          </>
+                        ) : manualOutlierStats === null ? (
+                          <span className="text-muted-foreground">Enter at least 4 weeks to enable AI normalization.</span>
+                        ) : (
+                          <span className="text-muted-foreground">All weeks are within the expected range — normalization available if needed.</span>
+                        )}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className={`shrink-0 h-7 text-xs ${hasOutliers ? "border-amber-400 text-amber-700 hover:bg-amber-100" : ""}`}
+                        onClick={() => requestAiNormalization("manual")}
+                        disabled={aiLoading || manualOutlierStats === null}
+                      >
+                        {aiLoading
+                          ? <><RotateCcw className="h-3 w-3 mr-1 animate-spin" />Thinking…</>
+                          : <><Sparkles className="h-3 w-3 mr-1" />Normalize with AI</>}
+                      </Button>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="shrink-0 h-7 text-xs border-amber-400 text-amber-700 hover:bg-amber-100"
-                      onClick={() => requestAiNormalization("manual")}
-                      disabled={aiLoading}
-                    >
-                      {aiLoading
-                        ? <><RotateCcw className="h-3 w-3 mr-1 animate-spin" />Thinking…</>
-                        : <><Sparkles className="h-3 w-3 mr-1" />Normalize with AI</>}
-                    </Button>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             ) : (
               <div className="text-xs text-muted-foreground">
