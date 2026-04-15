@@ -158,7 +158,7 @@ function SideNavItem({
     <Tooltip>
       <TooltipTrigger asChild>
         <Link to={item.path} className={linkClass}>
-          <span className="flex items-center justify-center size-6 rounded-md bg-accent shrink-0">
+          <span className="flex items-center justify-center size-6 rounded-md bg-primary/80 shrink-0">
             <Icon className="size-3.5 text-white" />
           </span>
           {expanded && <span className="truncate leading-none">{item.label}</span>}
@@ -256,7 +256,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           <div className="flex items-center h-16 px-3 border-b border-sidebar-border shrink-0 gap-2">
             {expanded && (
               <Link to="/" className="flex-1 min-w-0">
-                <img src={logo} alt="Exordium WFM" className="h-10 w-auto brightness-0 invert" />
+                <img src={logo} alt="Exordium WFM" className="h-10 w-auto" />
               </Link>
             )}
             <button
@@ -289,7 +289,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
                     !expanded && "justify-center",
                   ].join(" ")}
                 >
-                  <span className="flex items-center justify-center size-6 rounded-md bg-accent shrink-0">
+                  <span className="flex items-center justify-center size-6 rounded-md bg-primary/80 shrink-0">
                     <Home className="size-3.5 text-white" />
                   </span>
                   {expanded && <span className="truncate leading-none">Home</span>}
@@ -337,12 +337,12 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           ].join(" ")}
         >
           {/* Top bar */}
-          <header className="sticky top-0 z-30 bg-card border-b border-border px-6 h-16 flex items-center justify-between shrink-0">
+          <header className="sticky top-0 z-30 bg-[#3813f0] px-6 h-16 flex items-center justify-between shrink-0">
             {/* Breadcrumbs */}
-            <nav className="flex items-center gap-1.5 text-sm text-muted-foreground min-w-0">
+            <nav className="flex items-center gap-1.5 text-sm text-white/70 min-w-0">
               <Link
                 to="/"
-                className="hover:text-primary flex items-center gap-1 transition-colors shrink-0"
+                className="hover:text-white flex items-center gap-1 transition-colors shrink-0"
               >
                 <Home className="size-3.5" />
                 <span>Home</span>
@@ -355,11 +355,11 @@ export function PageLayout({ children, title }: PageLayoutProps) {
                   value.charAt(0).toUpperCase() + value.slice(1);
                 return (
                   <React.Fragment key={to}>
-                    <ChevronRight className="size-3.5 opacity-40 shrink-0" />
+                    <ChevronRight className="size-3.5 opacity-50 shrink-0" />
                     {last ? (
-                      <span className="font-medium text-foreground truncate">{name}</span>
+                      <span className="font-medium text-white truncate">{name}</span>
                     ) : (
-                      <Link to={to} className="hover:text-primary transition-colors shrink-0">
+                      <Link to={to} className="hover:text-white transition-colors shrink-0">
                         {name}
                       </Link>
                     )}
@@ -369,7 +369,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
             </nav>
 
             <div className="flex items-center gap-3 shrink-0 ml-4">
-              <LOBSelector />
+              <LOBSelector className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" />
 
               {/* Account dropdown trigger */}
               <div className="relative">
@@ -377,7 +377,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
                   <TooltipTrigger asChild>
                     <button
                       onClick={() => setAccountOpen(v => !v)}
-                      className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+                      className="p-1.5 rounded-md hover:bg-white/15 transition-colors text-white/80 hover:text-white"
                     >
                       <User className="size-4" />
                     </button>

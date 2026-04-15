@@ -8,12 +8,12 @@ import {
 } from "@/app/components/ui/dropdown-menu";
 import { Button } from "@/app/components/ui/button";
 
-export function LOBSelector() {
+export function LOBSelector({ className }: { className?: string }) {
   const { lobs, activeLob, setActiveLob, isLoading } = useLOB();
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-card text-sm text-muted-foreground animate-pulse">
+      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-card text-sm text-muted-foreground animate-pulse ${className ?? ""}`}>
         <Building2 className="size-4" />
         <span>Loading...</span>
       </div>
@@ -23,10 +23,10 @@ export function LOBSelector() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" className="flex items-center gap-2 max-w-[220px]">
-          <Building2 className="size-4 shrink-0 text-muted-foreground" />
+        <Button variant="outline" className={`flex items-center gap-2 max-w-[220px] ${className ?? ""}`}>
+          <Building2 className="size-4 shrink-0 opacity-70" />
           <span className="truncate font-medium">{activeLob?.lob_name ?? "Select LOB"}</span>
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground ml-auto" />
+          <ChevronDown className="size-3.5 shrink-0 opacity-70 ml-auto" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
