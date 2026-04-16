@@ -1313,7 +1313,11 @@ export default function LongTermForecastingDemand() {
   const runOutlierAnalysis = () => {
     setIsAnalyzing(true);
     setTimeout(() => {
-      const rows = historicalSourceRows;
+      // In manual mode, skip empty slots (finalVolume === 0) so unentered months
+      // don't get flagged as anomalies. In API mode, include all rows as before.
+      const rows = dataSourceMode === "manual"
+        ? historicalSourceRows.filter((r) => r.finalVolume > 0)
+        : historicalSourceRows;
       const volumes = rows.map((r) => r.finalVolume);
       if (volumes.length < 4) {
         setOutlierResults([]);
@@ -2466,8 +2470,24 @@ export default function LongTermForecastingDemand() {
                     );
                   })()}
 
-                  {/* ── API Outlier Panel (API mode only) ───────────────── */}
-                  {dataSourceMode === "api" && outlierResults !== null && (
+                  {/* ── Detect Outliers button for Manual mode ───────────── */}
+                  {dataSourceMode === "manual" && (
+                    <div className="flex items-center gap-3">
+                      <Button
+                        size="sm"
+                        className="gap-2 bg-violet-600 hover:bg-violet-700 text-white border-0"
+                        onClick={runOutlierAnalysis}
+                        disabled={isAnalyzing || Object.values(visibleHistoricalOverrides).filter((v) => v && parseInt(v, 10) > 0).length < 4}
+                      >
+                        {isAnalyzing ? <Loader2 className="size-4 animate-spin" /> : <BrainCircuit className="size-4" />}
+                        {isAnalyzing ? "Analyzing…" : "Detect Outliers"}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">Checks entered values for statistical anomalies</span>
+                    </div>
+                  )}
+
+                  {/* ── Outlier Analysis Panel (both modes) ─────────────── */}
+                  {outlierResults !== null && (
                     <div className="rounded-xl border border-violet-200/70 dark:border-violet-800/40 bg-violet-50/60 dark:bg-violet-950/20 overflow-hidden">
                       <button
                         type="button"
@@ -2495,7 +2515,7 @@ export default function LongTermForecastingDemand() {
                           {outlierResults.length === 0 ? (
                             <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-400 font-medium py-1">
                               <CheckCircle2 className="size-4 shrink-0" />
-                              All {historicalSourceRows.length} months are within normal statistical range. No normalization needed.
+                              All {dataSourceMode === "manual" ? historicalSourceRows.filter((r) => r.finalVolume > 0).length : historicalSourceRows.length} months are within normal statistical range. No normalization needed.
                             </div>
                           ) : (
                             <>
