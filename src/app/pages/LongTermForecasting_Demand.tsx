@@ -1447,6 +1447,48 @@ export default function LongTermForecastingDemand() {
     setHistoricalOverridesByChannel((current) => ({ ...current, [historicalChannelView]: {} }));
     toast.success(`All ${CHANNEL_ASSUMPTION_META[historicalChannelView].label.toLowerCase()} historical overrides reset`);
   };
+  // Paste handler for the manual 2-year grid.
+  // Supports:
+  //   • Single value: "1234" or "1,234" — sets that cell only.
+  //   • Excel column (newline-separated): pastes from the clicked cell downward
+  //     within the same year block (up to 12 - monthIdx remaining months).
+  //     Takes only the first tab-separated column so copying a multi-column
+  //     Excel selection still works (only the first column is used).
+  const handleManualGridPaste = (startIdx: number, monthIdx: number, event: React.ClipboardEvent<HTMLInputElement>) => {
+    const raw = event.clipboardData.getData("text");
+    if (!raw) return;
+
+    // Split into lines, take only the first tab-delimited column of each line,
+    // strip everything that isn't a digit (handles "1,234", currency symbols, etc.)
+    const lines = raw
+      .split(/[\r\n]+/)
+      .map((line) => line.split("\t")[0].replace(/[^0-9]/g, "").trim())
+      .filter((val) => val !== "");
+
+    if (lines.length === 0) return;
+    event.preventDefault();
+
+    const maxFill = 12 - monthIdx; // don't overflow beyond the 12 months of this year block
+    const toPaste = lines.slice(0, maxFill);
+
+    setHistoricalOverridesByChannel((current) => {
+      const nextChannelOverrides = { ...current[historicalChannelView] };
+      let filled = 0;
+      toPaste.forEach((val, offset) => {
+        const n = parseInt(val, 10);
+        if (Number.isFinite(n) && n > 0) {
+          nextChannelOverrides[startIdx + monthIdx + offset] = String(n);
+          filled++;
+        }
+      });
+      if (filled === 0) return current;
+      return { ...current, [historicalChannelView]: nextChannelOverrides };
+    });
+
+    if (toPaste.length > 1) {
+      toast.success(`Pasted ${toPaste.length} month${toPaste.length > 1 ? "s" : ""} of data`);
+    }
+  };
   const handleClearApiData = () => {
     const historyLength = getChannelHistoryLength(visibleHistoricalApiData, visibleHistoricalOverrides);
     setHistoricalApiDataByChannel((current) => ({
@@ -2471,6 +2513,7 @@ export default function LongTermForecastingDemand() {
                                     value={visibleHistoricalOverrides[startIdx + i] ?? ""}
                                     onChange={(e) => handleOverrideChange(startIdx + i, e.target.value)}
                                     onBlur={() => handleOverrideBlur(startIdx + i)}
+                                    onPaste={(e) => handleManualGridPaste(startIdx, i, e)}
                                     placeholder="—"
                                     className="h-7 text-center font-mono tabular-nums text-xs px-1"
                                   />
