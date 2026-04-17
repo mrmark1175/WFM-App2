@@ -933,6 +933,8 @@ export default function LongTermForecastingDemand() {
   const [historicalApiDataByChannel, setHistoricalApiDataByChannel] = useState<Record<ChannelKey, number[]>>(EMPTY_CHANNEL_DATA);
   const [syncedHistoricalApiDataByChannel, setSyncedHistoricalApiDataByChannel] = useState<Record<ChannelKey, number[]>>(EMPTY_CHANNEL_DATA);
   const [historicalOverridesByChannel, setHistoricalOverridesByChannel] = useState<Record<ChannelKey, Record<number, string>>>(EMPTY_CHANNEL_OVERRIDES);
+  // Debounced copy used exclusively for forecast computation — prevents per-keystroke Holt-Winters re-runs
+  const [debouncedOverridesByChannel, setDebouncedOverridesByChannel] = useState<Record<ChannelKey, Record<number, string>>>(EMPTY_CHANNEL_OVERRIDES);
   const [recutVolumesByChannel, setRecutVolumesByChannel] = useState<Record<ChannelKey, number[]> | null>(null);
   // Re-cut actuals state
   const [detailChannel, setDetailChannel] = useState<ChannelKey>("voice");
@@ -973,12 +975,14 @@ export default function LongTermForecastingDemand() {
       chat: [...(snapshot.channelHistoricalApiData?.chat || [])],
       cases: [...(snapshot.channelHistoricalApiData?.cases || [])],
     });
-    setHistoricalOverridesByChannel({
+    const nextOverrides = {
       voice: { ...(snapshot.channelHistoricalOverrides?.voice || snapshot.historicalOverrides || {}) },
       email: { ...(snapshot.channelHistoricalOverrides?.email || {}) },
       chat: { ...(snapshot.channelHistoricalOverrides?.chat || {}) },
       cases: { ...(snapshot.channelHistoricalOverrides?.cases || {}) },
-    });
+    };
+    setHistoricalOverridesByChannel(nextOverrides);
+    setDebouncedOverridesByChannel(nextOverrides);
     setSelectedChannels(normalizeSelectedChannels(snapshot.selectedChannels));
     setPoolingMode(snapshot.poolingMode === "dedicated" ? "dedicated" : "blended");
     setIsHistoricalSourceOpen(snapshot.isHistoricalSourceOpen);
@@ -1115,13 +1119,20 @@ export default function LongTermForecastingDemand() {
 
     hydratePlanner();
   }, [activeLob?.id]);
+  // Debounce: update debouncedOverridesByChannel 400ms after the last keystroke.
+  // All forecast memos depend on this — prevents per-keystroke Holt-Winters / Erlang C recomputation.
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedOverridesByChannel(historicalOverridesByChannel), 400);
+    return () => clearTimeout(id);
+  }, [historicalOverridesByChannel]);
+
   useEffect(() => {
     if (!hasHydratedRef.current) return;
     persistActiveState({
       selectedScenarioId,
       plannerSnapshot: getCurrentPlannerSnapshot(),
     });
-  }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, historicalOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, dataSourceMode, selectedScenarioId]);
+  }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, debouncedOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, dataSourceMode, selectedScenarioId]);
 
   // Sync shrinkage from Shrinkage Planner when planner source is selected
   useEffect(() => {
@@ -1535,32 +1546,37 @@ export default function LongTermForecastingDemand() {
     toast.success("Re-cut cleared — Intraday reverts to original forecast");
   };
 
-  const finalHistoricalData = useMemo(() => buildChannelHistoricalData(historicalApiData, historicalOverrides), [historicalApiData, historicalOverrides]);
+  const finalHistoricalData = useMemo(() => buildChannelHistoricalData(historicalApiData, debouncedOverridesByChannel.voice), [historicalApiData, debouncedOverridesByChannel]);
   // Per-channel final historical data (applies each channel's own overrides)
   const finalHistoricalDataByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
-    const applyOverrides = (channel: ChannelKey) => buildChannelHistoricalData(historicalApiDataByChannel[channel], historicalOverridesByChannel[channel]);
+    const applyOverrides = (channel: ChannelKey) => buildChannelHistoricalData(historicalApiDataByChannel[channel], debouncedOverridesByChannel[channel]);
     return { voice: finalHistoricalData, email: applyOverrides("email"), chat: applyOverrides("chat"), cases: applyOverrides("cases") };
-  }, [finalHistoricalData, historicalApiDataByChannel, historicalOverridesByChannel]);
+  }, [finalHistoricalData, historicalApiDataByChannel, debouncedOverridesByChannel]);
   const hasExplicitHistoryByChannel = useMemo<Record<ChannelKey, boolean>>(() => ({
-    voice: historicalApiDataByChannel.voice.length > 0 || Object.keys(historicalOverridesByChannel.voice).length > 0,
-    email: historicalApiDataByChannel.email.length > 0 || Object.keys(historicalOverridesByChannel.email).length > 0,
-    chat: historicalApiDataByChannel.chat.length > 0 || Object.keys(historicalOverridesByChannel.chat).length > 0,
-    cases: historicalApiDataByChannel.cases.length > 0 || Object.keys(historicalOverridesByChannel.cases).length > 0,
-  }), [historicalApiDataByChannel, historicalOverridesByChannel]);
-  // Manual mode: build history from overrides only (ignores API data), trimming trailing zeros for partial data
+    voice: historicalApiDataByChannel.voice.length > 0 || Object.keys(debouncedOverridesByChannel.voice).length > 0,
+    email: historicalApiDataByChannel.email.length > 0 || Object.keys(debouncedOverridesByChannel.email).length > 0,
+    chat: historicalApiDataByChannel.chat.length > 0 || Object.keys(debouncedOverridesByChannel.chat).length > 0,
+    cases: historicalApiDataByChannel.cases.length > 0 || Object.keys(debouncedOverridesByChannel.cases).length > 0,
+  }), [historicalApiDataByChannel, debouncedOverridesByChannel]);
+  // Manual mode: build history from overrides only (ignores API data).
+  // Zero values mean "not entered" (handleOverrideBlur deletes ≤0 overrides), so we
+  // filter them out entirely rather than trimming only trailing zeros. This prevents
+  // middle-gap zeros from distorting linear regression when a user enters
+  // e.g. Jan 2024 and then Jan–Feb 2025 but leaves Feb–Dec 2024 blank.
   const manualFinalHistoricalDataByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     const build = (channel: ChannelKey): number[] => {
-      const overrides = historicalOverridesByChannel[channel];
-      const raw = Array.from({ length: 24 }, (_, i) => {
+      const overrides = debouncedOverridesByChannel[channel];
+      const values: number[] = [];
+      for (let i = 0; i < 24; i++) {
         const v = overrides[i];
-        if (!v || v === "") return 0;
+        if (!v || v === "") continue;
         const n = parseInt(v, 10);
-        return Number.isFinite(n) && n > 0 ? n : 0;
-      });
-      return trimTrailingZeros(raw);
+        if (Number.isFinite(n) && n > 0) values.push(n);
+      }
+      return values;
     };
     return { voice: build("voice"), email: build("email"), chat: build("chat"), cases: build("cases") };
-  }, [historicalOverridesByChannel]);
+  }, [debouncedOverridesByChannel]);
   // Effective historical data: manual overrides-only in manual mode, API+overrides in API mode
   const effectiveFinalHistoricalDataByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     if (dataSourceMode === "manual") return manualFinalHistoricalDataByChannel;
@@ -1914,7 +1930,7 @@ export default function LongTermForecastingDemand() {
       const snapLegacyBlendState = getBlendStateFromLegacyPreset(normalizeBlendPreset(snap.activeBlendPreset));
       const activeSelectedChannels = scenario.id === selectedScenarioId ? selectedChannels : normalizeSelectedChannels(snap.selectedChannels || snapLegacyBlendState.selectedChannels);
       const activePoolingMode = scenario.id === selectedScenarioId ? poolingMode : (snap.poolingMode === "dedicated" ? "dedicated" : snapLegacyBlendState.poolingMode);
-      const activeOverrides = scenario.id === selectedScenarioId ? historicalOverridesByChannel : snap.channelHistoricalOverrides;
+      const activeOverrides = scenario.id === selectedScenarioId ? debouncedOverridesByChannel : snap.channelHistoricalOverrides;
       // Apply each scenario's own overrides to the current API data per channel
       const buildSnapHistory = (channel: ChannelKey) =>
         historicalApiDataByChannel[channel].map((v, i) => {
@@ -1923,7 +1939,8 @@ export default function LongTermForecastingDemand() {
           const parsed = parseInt(ov, 10);
           return Number.isFinite(parsed) && parsed > 0 ? parsed : v;
         });
-      const snapVoiceHistory = buildSnapHistory("voice").length > 0 ? buildSnapHistory("voice") : finalHistoricalData;
+      const _snapVoiceRaw = buildSnapHistory("voice");
+      const snapVoiceHistory = _snapVoiceRaw.length > 0 ? _snapVoiceRaw : finalHistoricalData;
       const snapEmailHistory = buildSnapHistory("email");
       const snapChatHistory = buildSnapHistory("chat");
       const snapCasesHistory = buildSnapHistory("cases");
@@ -1971,7 +1988,7 @@ export default function LongTermForecastingDemand() {
       scenarioForecasts.forEach(({ scenario, forecast }) => { point[scenario.id] = forecast[index]?.totalRequiredFTE ?? 0; });
       return point;
     });
-  }, [scenarios, selectedScenarioId, assumptions, forecastMethod, hwParams, arimaParams, decompParams, selectedChannels, poolingMode, historicalOverridesByChannel, historicalApiDataByChannel, finalHistoricalData]);
+  }, [scenarios, selectedScenarioId, assumptions, forecastMethod, hwParams, arimaParams, decompParams, selectedChannels, poolingMode, debouncedOverridesByChannel, historicalApiDataByChannel, finalHistoricalData]);
   const scenarioColors = ["#2563eb", "#f59e0b", "#10b981", "#7c3aed", "#ef4444", "#0f766e"];
   const poolExplainability = useMemo(() => selectedBlendConfig.pools.map((channels, index) => ({
     poolName: `Pool ${String.fromCharCode(65 + index)}`,
