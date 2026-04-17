@@ -2376,7 +2376,7 @@ export default function LongTermForecastingDemand() {
                   <div className="flex flex-wrap gap-3 items-end">
                     <div className="w-[200px]">
                       <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Channel</Label>
-                      <Select value={historicalChannelView} onValueChange={(value) => setHistoricalChannelView(value as ChannelKey)}>
+                      <Select value={historicalChannelView} onValueChange={(value) => { setHistoricalChannelView(value as ChannelKey); setDetailChannel(value as ChannelKey); }}>
                         <SelectTrigger className="mt-2 h-9 font-semibold">
                           <SelectValue placeholder="Select channel" />
                         </SelectTrigger>
