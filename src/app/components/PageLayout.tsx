@@ -3,7 +3,7 @@ import { Home, ChevronRight, Search, Bell, Share2, User, Settings, LayoutDashboa
 import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
-import logo from "../../assets/logo.png";
+import logo from "../../assets/logo.svg";
 
 interface PageLayoutProps {
   children: React.ReactNode;
@@ -120,7 +120,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
       </header>
 
       <div className={`grid min-h-[calc(100vh-44px)] ${collapsed ? "grid-cols-[56px_1fr]" : "grid-cols-[220px_1fr]"} transition-[grid-template-columns]`}>
-        <aside className="bg-shell text-[#a8a79b] border-r border-black py-3 px-2 overflow-auto">
+        <aside className="sticky top-11 h-[calc(100vh-44px)] bg-shell text-[#a8a79b] border-r border-black py-3 px-2 overflow-y-auto self-start">
           {NAV.map(g => (
             <div key={g.group} className="mt-3 first:mt-0">
               <div className={`font-mono text-[10px] text-[#55574f] uppercase tracking-[.14em] px-2.5 pb-1.5 ${collapsed ? "invisible h-0 p-0" : ""}`}>{g.group}</div>
