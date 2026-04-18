@@ -1050,7 +1050,7 @@ export function CapacityPlanning() {
             <Target className="size-3" /> Current Gap (W1)
           </div>
           <div className={`text-2xl font-bold mt-1 leading-none ${
-            currentGap >= 0 ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300"
+            currentGap >= 0 ? "text-green-900 dark:text-green-200" : "text-red-700 dark:text-red-300"
           }`}>
             {currentGap >= 0 ? `+${fmt1(currentGap)}` : fmt1(currentGap)}
           </div>
@@ -1082,7 +1082,7 @@ export function CapacityPlanning() {
             <Activity className="size-3" /> Plan Health
           </div>
           <div className={`text-2xl font-bold mt-1 leading-none ${
-            planHealth >= 80 ? "text-green-700 dark:text-green-300"
+            planHealth >= 80 ? "text-green-900 dark:text-green-200"
               : planHealth >= 50 ? "text-amber-700 dark:text-amber-300"
               : "text-red-700 dark:text-red-300"
           }`}>
@@ -1107,7 +1107,7 @@ export function CapacityPlanning() {
           <span className="font-semibold">{fmt1(attritionSummary.totalExits)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
-          <CheckCircle2 className="size-3.5 text-green-500" />
+          <CheckCircle2 className="size-3.5 text-green-700" />
           <span className="text-foreground/70">Actual Attrition:</span>
           <span className="font-semibold">{fmt1(attritionSummary.totalActualAttrition)}</span>
         </div>
@@ -1410,7 +1410,7 @@ export function CapacityPlanning() {
                 {weekCalcs.map(wk => {
                   const v = wk.actualGapSurplus;
                   if (v == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-muted-foreground" />;
-                  const color = v >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+                  const color = v >= 0 ? "text-green-900 dark:text-green-200" : "text-red-600 dark:text-red-400";
                   return (
                     <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
                       {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
@@ -1429,7 +1429,7 @@ export function CapacityPlanning() {
                   const slaTarget = isDedicated
                     ? (activeChannel === "voice" ? slaVoiceTarget : slaChatTarget)
                     : slaVoiceTarget;
-                  const color = sl >= slaTarget ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+                  const color = sl >= slaTarget ? "text-green-900 dark:text-green-200" : "text-red-600 dark:text-red-400";
                   return (
                     <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
                       {fmtPct(sl)}
@@ -1448,7 +1448,7 @@ export function CapacityPlanning() {
                   const slaTarget = isDedicated
                     ? (activeChannel === "voice" ? slaVoiceTarget : slaChatTarget)
                     : slaVoiceTarget;
-                  const color = sl >= slaTarget ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+                  const color = sl >= slaTarget ? "text-green-900 dark:text-green-200" : "text-red-600 dark:text-red-400";
                   return (
                     <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
                       {fmtPct(sl)}
@@ -1489,7 +1489,7 @@ export function CapacityPlanning() {
                 </td>
                 {weekCalcs.map(wk => {
                   const v = wk.gapSurplus;
-                  const color = v >= 0 ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300";
+                  const color = v >= 0 ? "text-green-900 dark:text-green-200" : "text-red-700 dark:text-red-300";
                   return (
                     <td
                       key={wk.weekOffset}
