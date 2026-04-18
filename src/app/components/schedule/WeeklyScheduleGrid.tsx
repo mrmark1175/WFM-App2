@@ -24,6 +24,7 @@ import {
   timeToMins,
   fmt12,
   TIME_LABELS,
+  effectiveEndPx,
 } from "./ScheduleGrid";
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -131,8 +132,11 @@ export function WeeklyScheduleGrid({
   const weeklyPaidHours = useMemo(() => {
     const map = new Map<number, number>();
     for (const a of assignments) {
-      const shiftMins = (timeToMins(a.end_time) || 1440) - timeToMins(a.start_time);
-      const actMins = a.activities.reduce((s, act) => s + (timeToMins(act.end_time) - timeToMins(act.start_time)), 0);
+      const s = timeToMins(a.start_time);
+      let e = timeToMins(a.end_time) || 1440;
+      if (a.is_overnight && e <= s) e += 1440;
+      const shiftMins = e - s;
+      const actMins = a.activities.reduce((sum, act) => sum + (timeToMins(act.end_time) - timeToMins(act.start_time)), 0);
       map.set(a.agent_id, (map.get(a.agent_id) ?? 0) + Math.max(0, shiftMins - actMins));
     }
     return map;
@@ -166,7 +170,8 @@ export function WeeklyScheduleGrid({
     if (data.type === "shift") {
       const assignment: Assignment = data.assignment;
       const startMins = timeToMins(assignment.start_time);
-      const endMins = timeToMins(assignment.end_time) || 24 * 60;
+      let endMins = timeToMins(assignment.end_time) || 24 * 60;
+      if (assignment.is_overnight && endMins <= startMins) endMins += 24 * 60;
       const duration = endMins - startMins;
 
       const newStartPx = Math.max(0, timeToPx(assignment.start_time) + snappedDeltaX);
@@ -229,13 +234,11 @@ export function WeeklyScheduleGrid({
       const assignment: Assignment = data.assignment;
       if (snappedDeltaX === 0) return;
       const startMins = timeToMins(assignment.start_time);
-      const newEndPx = timeToPx(assignment.end_time) + snappedDeltaX;
-      const newEnd = pxToTime(Math.max(0, newEndPx));
-      const newEndMins = timeToMins(newEnd);
-      const latestActEnd = assignment.activities.length > 0
-        ? Math.max(...assignment.activities.map(a => timeToMins(a.end_time)))
-        : startMins;
-      if (newEndMins <= startMins + 15 || newEndMins < latestActEnd) return;
+      const endPx = effectiveEndPx(assignment.start_time, assignment.end_time, assignment.is_overnight);
+      const newEndPxClamped = Math.max(0, endPx + snappedDeltaX);
+      const newEnd = pxToTime(newEndPxClamped);
+      const newRawMins = Math.round(newEndPxClamped / COL_W) * 15;
+      if (newRawMins - startMins < 15) return;
       onShiftMove(assignment.id, assignment.start_time, newEnd);
     } else if (data.type === "activity") {
       const activity: Activity = data.activity;
@@ -311,10 +314,12 @@ export function WeeklyScheduleGrid({
               </div>
             </div>
             <div className="relative" style={{ width: TOTAL_COLS * COL_W, height: 28 }}>
-              {TIME_LABELS.filter(t => t.label).map(({ slot, label }) => (
+              {/* Next-day zone tint */}
+              <div className="absolute pointer-events-none" style={{ left: 96 * COL_W, top: 0, width: 48 * COL_W, height: 28, backgroundColor: "rgba(99,102,241,0.07)" }} />
+              {TIME_LABELS.filter(t => t.label).map(({ slot, label, nextDay }) => (
                 <div
                   key={slot}
-                  className="absolute text-[9px] text-slate-500 select-none"
+                  className={`absolute text-[9px] select-none ${nextDay ? "text-indigo-400/90" : "text-slate-500"}`}
                   style={{ left: slot * COL_W, top: 8, transform: "translateX(-50%)" }}
                 >
                   {label}
@@ -323,7 +328,7 @@ export function WeeklyScheduleGrid({
               {TIME_LABELS.filter(t => t.label).map(({ slot }) => (
                 <div
                   key={`vl-${slot}`}
-                  className="absolute border-l border-slate-200/80"
+                  className={`absolute ${slot === 96 ? "border-l-2 border-indigo-300/70" : "border-l border-slate-200/80"}`}
                   style={{ left: slot * COL_W, top: 0, height: 28 }}
                 />
               ))}
@@ -461,16 +466,18 @@ export function WeeklyScheduleGrid({
                           onClick={(e) => handleCellClick(agent.id, dateStr, e)}
                           title={hasClipboard ? "Click to paste copied shift" : "Click to add a shift"}
                         >
+                          {/* Next-day zone tint */}
+                          <div className="absolute pointer-events-none" style={{ left: 96 * COL_W, top: 0, width: 48 * COL_W, height: ROW_H, backgroundColor: "rgba(99,102,241,0.04)" }} />
                           {/* Hour grid lines */}
                           {TIME_LABELS.filter(t => t.label).map(({ slot }) => (
                             <div
                               key={`gl-${slot}`}
-                              className="absolute border-l border-slate-200/60 pointer-events-none"
+                              className={`absolute pointer-events-none ${slot === 96 ? "border-l-2 border-indigo-300/50" : "border-l border-slate-200/60"}`}
                               style={{ left: slot * COL_W, top: 0, height: ROW_H }}
                             />
                           ))}
                           {/* 30-min lighter lines */}
-                          {Array.from({ length: 48 }, (_, i) => i * 2).map(slot => (
+                          {Array.from({ length: 72 }, (_, i) => i * 2).map(slot => (
                             <div
                               key={`hl-${slot}`}
                               className="absolute border-l border-slate-200/25 pointer-events-none"
@@ -524,7 +531,7 @@ export function WeeklyScheduleGrid({
           <div
             style={{
               width: Math.max(
-                ((timeToMins(activeShift.end_time) || 24 * 60) - timeToMins(activeShift.start_time)) / 15 * COL_W,
+                effectiveEndPx(activeShift.start_time, activeShift.end_time, activeShift.is_overnight) - timeToPx(activeShift.start_time),
                 COL_W * 2
               ),
               height: ROW_H - 6,

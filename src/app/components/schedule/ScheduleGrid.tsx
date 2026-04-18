@@ -18,7 +18,7 @@ import { Plus } from "lucide-react";
 export const COL_W   = 11;   // px per 15-min column
 export const ROW_H   = 30;   // px per agent row (thin Genesys style)
 export const AGENT_W = 240;  // px for the sticky name column (includes paid hours)
-export const TOTAL_COLS = 96;   // 24h × 4
+export const TOTAL_COLS = 144;  // 36h × 4 — extends to noon next day for overnight shifts
 
 // Coverage row height
 const COV_ROW_H = 26;
@@ -29,10 +29,19 @@ export function snapToGrid(px: number): number {
 
 export function pxToTime(px: number): string {
   const slot = Math.round(px / COL_W);
-  const clamped = Math.max(0, Math.min(95, slot));
-  const h = Math.floor((clamped * 15) / 60);
-  const m = (clamped * 15) % 60;
+  const clamped = Math.max(0, Math.min(143, slot));
+  const wrappedMins = (clamped * 15) % (24 * 60);
+  const h = Math.floor(wrappedMins / 60);
+  const m = wrappedMins % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+// Pixel position of a shift's end time, accounting for is_overnight extension
+export function effectiveEndPx(startTime: string, endTime: string, isOvernight: boolean): number {
+  const startMins = timeToMins(startTime);
+  let endMins = timeToMins(endTime) || 24 * 60;
+  if (isOvernight && endMins <= startMins) endMins += 24 * 60;
+  return (endMins / 15) * COL_W;
 }
 
 export function timeToMins(t: string): number {
@@ -51,17 +60,21 @@ export function fmt12(t: string): string {
   return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
-// Build time header labels
-export const TIME_LABELS: Array<{ slot: number; label: string }> = Array.from(
+// Build time header labels — 144 slots (36h), slots ≥ 96 are "next day"
+export const TIME_LABELS: Array<{ slot: number; label: string; nextDay?: boolean }> = Array.from(
   { length: TOTAL_COLS },
   (_, slot) => {
-    const mins = slot * 15;
-    if (mins % 60 !== 0) return { slot, label: "" };
-    const h = Math.floor(mins / 60);
-    return {
-      slot,
-      label: h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`,
-    };
+    const totalMins = slot * 15;
+    const nextDay = slot >= 96;
+    if (totalMins % 60 !== 0) return { slot, label: "", nextDay };
+    const wrappedMins = totalMins % (24 * 60);
+    const h = Math.floor(wrappedMins / 60);
+    let label: string;
+    if (h === 0) label = nextDay ? "12 AM ▸" : "12 AM";
+    else if (h < 12) label = `${h} AM`;
+    else if (h === 12) label = "12 PM";
+    else label = `${h - 12} PM`;
+    return { slot, label, nextDay };
   }
 );
 
@@ -139,7 +152,8 @@ export function ScheduleGrid({
     if (data.type === "shift") {
       const assignment: Assignment = data.assignment;
       const startMins = timeToMins(assignment.start_time);
-      const endMins = timeToMins(assignment.end_time) || 24 * 60;
+      let endMins = timeToMins(assignment.end_time) || 24 * 60;
+      if (assignment.is_overnight && endMins <= startMins) endMins += 24 * 60;
       const duration = endMins - startMins;
 
       const newStartPx = Math.max(0, timeToPx(assignment.start_time) + snappedDeltaX);
@@ -181,14 +195,11 @@ export function ScheduleGrid({
       const assignment: Assignment = data.assignment;
       if (snappedDeltaX === 0) return;
       const startMins = timeToMins(assignment.start_time);
-      const newEndPx = timeToPx(assignment.end_time) + snappedDeltaX;
-      const newEnd = pxToTime(Math.max(0, newEndPx));
-      const newEndMins = timeToMins(newEnd);
-      // Clamp: can't go before latest activity end or before start
-      const latestActEnd = assignment.activities.length > 0
-        ? Math.max(...assignment.activities.map(a => timeToMins(a.end_time)))
-        : startMins;
-      if (newEndMins <= startMins + 15 || newEndMins < latestActEnd) return;
+      const endPx = effectiveEndPx(assignment.start_time, assignment.end_time, assignment.is_overnight);
+      const newEndPxClamped = Math.max(0, endPx + snappedDeltaX);
+      const newEnd = pxToTime(newEndPxClamped);
+      const newRawMins = Math.round(newEndPxClamped / COL_W) * 15;
+      if (newRawMins - startMins < 15) return;
       onShiftMove(assignment.id, assignment.start_time, newEnd);
     } else if (data.type === "activity") {
       const activity: Activity = data.activity;
@@ -222,17 +233,20 @@ export function ScheduleGrid({
   // ── Per-slot scheduled headcount (excludes ALL activity types) ──────
   const scheduledPerSlot = useMemo(() => {
     const dayAssignments = assignments.filter(a => a.work_date?.startsWith(activeDate));
-    return Array.from({ length: 96 }, (_, slot) => {
+    return Array.from({ length: 144 }, (_, slot) => {
       const slotMins = slot * 15;
       return dayAssignments.filter(a => {
         const startMins = timeToMins(a.start_time);
         let endMins = timeToMins(a.end_time);
         if (endMins === 0) endMins = 24 * 60;
+        if (a.is_overnight && endMins <= startMins) endMins += 24 * 60;
         if (slotMins < startMins || slotMins >= endMins) return false;
-        // Exclude if on ANY activity during this slot
-        const onActivity = a.activities.some(act =>
-          slotMins >= timeToMins(act.start_time) && slotMins < timeToMins(act.end_time)
-        );
+        const onActivity = a.activities.some(act => {
+          let aStart = timeToMins(act.start_time);
+          let aEnd = timeToMins(act.end_time);
+          if (a.is_overnight && aStart < startMins) { aStart += 24 * 60; aEnd += 24 * 60; }
+          return slotMins >= aStart && slotMins < aEnd;
+        });
         return !onActivity;
       }).length;
     });
@@ -243,8 +257,11 @@ export function ScheduleGrid({
     const map = new Map<number, number>();
     const dayAssigns = assignments.filter(a => a.work_date?.startsWith(activeDate));
     for (const a of dayAssigns) {
-      const shiftMins = (timeToMins(a.end_time) || 1440) - timeToMins(a.start_time);
-      const actMins = a.activities.reduce((s, act) => s + (timeToMins(act.end_time) - timeToMins(act.start_time)), 0);
+      const s = timeToMins(a.start_time);
+      let e = timeToMins(a.end_time) || 1440;
+      if (a.is_overnight && e <= s) e += 1440;
+      const shiftMins = e - s;
+      const actMins = a.activities.reduce((sum, act) => sum + (timeToMins(act.end_time) - timeToMins(act.start_time)), 0);
       map.set(a.agent_id, (map.get(a.agent_id) ?? 0) + Math.max(0, shiftMins - actMins));
     }
     return map;
@@ -254,8 +271,11 @@ export function ScheduleGrid({
     const map = new Map<number, number>();
     const weekAssigns = allWeekAssignments ?? assignments;
     for (const a of weekAssigns) {
-      const shiftMins = (timeToMins(a.end_time) || 1440) - timeToMins(a.start_time);
-      const actMins = a.activities.reduce((s, act) => s + (timeToMins(act.end_time) - timeToMins(act.start_time)), 0);
+      const s = timeToMins(a.start_time);
+      let e = timeToMins(a.end_time) || 1440;
+      if (a.is_overnight && e <= s) e += 1440;
+      const shiftMins = e - s;
+      const actMins = a.activities.reduce((sum, act) => sum + (timeToMins(act.end_time) - timeToMins(act.start_time)), 0);
       map.set(a.agent_id, (map.get(a.agent_id) ?? 0) + Math.max(0, shiftMins - actMins));
     }
     return map;
@@ -289,19 +309,21 @@ export function ScheduleGrid({
               <span className="text-[9px] font-semibold text-slate-400 text-center" style={{ width: 52 }}>Week</span>
             </div>
             <div className="relative" style={{ width: TOTAL_COLS * COL_W, height: 28 }}>
-              {TIME_LABELS.filter(t => t.label).map(({ slot, label }) => (
+              {/* Next-day zone tint */}
+              <div className="absolute pointer-events-none" style={{ left: 96 * COL_W, top: 0, width: 48 * COL_W, height: 28, backgroundColor: "rgba(99,102,241,0.07)" }} />
+              {TIME_LABELS.filter(t => t.label).map(({ slot, label, nextDay }) => (
                 <div
                   key={slot}
-                  className="absolute text-[9px] text-slate-500 select-none"
+                  className={`absolute text-[9px] select-none ${nextDay ? "text-indigo-400/90" : "text-slate-500"}`}
                   style={{ left: slot * COL_W, top: 8 }}
                 >
                   {label}
                 </div>
               ))}
-              {TIME_LABELS.filter(t => t.label).map(({ slot }) => (
+              {TIME_LABELS.filter(t => t.label).map(({ slot, nextDay }) => (
                 <div
                   key={`vl-${slot}`}
-                  className="absolute border-l border-slate-200/80"
+                  className={`absolute ${slot === 96 ? "border-l-2 border-indigo-300/70" : "border-l border-slate-200/80"}`}
                   style={{ left: slot * COL_W, top: 0, height: 28 }}
                 />
               ))}
@@ -359,16 +381,18 @@ export function ScheduleGrid({
                     onClick={(e) => handleCellClick(agent.id, e)}
                     title="Click to add a shift"
                   >
+                    {/* Next-day zone tint */}
+                    <div className="absolute pointer-events-none" style={{ left: 96 * COL_W, top: 0, width: 48 * COL_W, height: ROW_H, backgroundColor: "rgba(99,102,241,0.04)" }} />
                     {/* Hour grid lines */}
                     {TIME_LABELS.filter(t => t.label).map(({ slot }) => (
                       <div
                         key={`gl-${slot}`}
-                        className="absolute border-l border-slate-200/60 pointer-events-none"
+                        className={`absolute pointer-events-none ${slot === 96 ? "border-l-2 border-indigo-300/50" : "border-l border-slate-200/60"}`}
                         style={{ left: slot * COL_W, top: 0, height: ROW_H }}
                       />
                     ))}
                     {/* 30-min lighter lines */}
-                    {Array.from({ length: 48 }, (_, i) => i * 2).map(slot => (
+                    {Array.from({ length: 72 }, (_, i) => i * 2).map(slot => (
                       <div
                         key={`hl-${slot}`}
                         className="absolute border-l border-slate-200/25 pointer-events-none"
@@ -448,10 +472,10 @@ export function ScheduleGrid({
                 )}
               </div>
               <div className="flex" style={{ height: COV_ROW_H }}>
-                {Array.from({ length: 96 }, (_, slot) => {
-                  const val = requiredFte?.[slot] ?? 0;
-                  // Show hourly tick marks even when no data so row is visually present
+                {Array.from({ length: 144 }, (_, slot) => {
+                  const val = slot < 96 ? (requiredFte?.[slot] ?? 0) : 0;
                   const isHour = slot % 4 === 0;
+                  const isNextDay = slot >= 96;
                   return (
                     <div
                       key={slot}
@@ -459,13 +483,13 @@ export function ScheduleGrid({
                       style={{
                         width: COL_W,
                         height: COV_ROW_H,
-                        backgroundColor: val > 0
-                          ? "rgba(30,41,59,0.1)"
-                          : "rgba(100,116,139,0.03)",
+                        backgroundColor: isNextDay
+                          ? "rgba(99,102,241,0.05)"
+                          : val > 0 ? "rgba(30,41,59,0.1)" : "rgba(100,116,139,0.03)",
                         color: val > 0 ? "#1e293b" : "#cbd5e1",
                       }}
                     >
-                      {val > 0 ? Math.round(val) : (isHour ? "·" : "")}
+                      {val > 0 ? Math.round(val) : (isHour && !isNextDay ? "·" : "")}
                     </div>
                   );
                 })}
@@ -481,11 +505,12 @@ export function ScheduleGrid({
                 <span className="text-[9px] font-bold uppercase tracking-wider text-slate-700">Over/Under</span>
               </div>
               <div className="flex" style={{ height: COV_ROW_H }}>
-                {Array.from({ length: 96 }, (_, slot) => {
-                  const req = requiredFte?.[slot] ?? 0;
+                {Array.from({ length: 144 }, (_, slot) => {
+                  const req = slot < 96 ? (requiredFte?.[slot] ?? 0) : 0;
                   const diff = scheduledPerSlot[slot] - Math.ceil(req);
                   const hasData = req > 0 || scheduledPerSlot[slot] > 0;
                   const isOver = diff >= 0;
+                  const isNextDay = slot >= 96;
                   return (
                     <div
                       key={slot}
@@ -493,7 +518,9 @@ export function ScheduleGrid({
                       style={{
                         width: COL_W,
                         height: COV_ROW_H,
-                        backgroundColor: hasData ? (isOver ? "rgba(22,163,74,0.2)" : "rgba(220,38,38,0.2)") : "transparent",
+                        backgroundColor: isNextDay && !hasData
+                          ? "rgba(99,102,241,0.05)"
+                          : hasData ? (isOver ? "rgba(22,163,74,0.2)" : "rgba(220,38,38,0.2)") : "transparent",
                         color: hasData ? (isOver ? "#14532d" : "#7f1d1d") : "#94a3b8",
                       }}
                     >
@@ -513,7 +540,7 @@ export function ScheduleGrid({
           <div
             style={{
               width: Math.max(
-                ((timeToMins(activeShift.end_time) || 24 * 60) - timeToMins(activeShift.start_time)) / 15 * COL_W,
+                effectiveEndPx(activeShift.start_time, activeShift.end_time, activeShift.is_overnight) - timeToPx(activeShift.start_time),
                 COL_W * 2
               ),
               height: ROW_H - 6,

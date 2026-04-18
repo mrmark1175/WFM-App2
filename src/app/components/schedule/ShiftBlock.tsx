@@ -57,13 +57,21 @@ interface Segment {
 }
 
 function buildSegments(activities: Activity[], shiftStartMins: number, shiftEndMins: number): Segment[] {
-  const sorted = [...activities].sort((a, b) => timeToMins(a.start_time) - timeToMins(b.start_time));
+  const isOvernight = shiftEndMins > 24 * 60;
+  const sorted = [...activities].sort((a, b) => {
+    let aStart = timeToMins(a.start_time);
+    let bStart = timeToMins(b.start_time);
+    if (isOvernight && aStart < shiftStartMins) aStart += 24 * 60;
+    if (isOvernight && bStart < shiftStartMins) bStart += 24 * 60;
+    return aStart - bStart;
+  });
   const segments: Segment[] = [];
   let cursor = shiftStartMins;
 
   for (const act of sorted) {
-    const actStart = timeToMins(act.start_time);
-    const actEnd = timeToMins(act.end_time);
+    let actStart = timeToMins(act.start_time);
+    let actEnd = timeToMins(act.end_time);
+    if (isOvernight && actStart < shiftStartMins) { actStart += 24 * 60; actEnd += 24 * 60; }
     if (actStart < shiftStartMins || actEnd > shiftEndMins) continue;
 
     // Gap before this activity = On Queue
@@ -146,7 +154,8 @@ export function ShiftBlock({
   });
 
   const startMins = timeToMins(assignment.start_time);
-  const endMins = timeToMins(assignment.end_time) || 24 * 60;
+  let endMins = timeToMins(assignment.end_time) || 24 * 60;
+  if (assignment.is_overnight && endMins <= startMins) endMins += 24 * 60;
   const durationMins = endMins - startMins;
 
   const left = (startMins / 15) * colW;
