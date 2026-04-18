@@ -136,6 +136,11 @@ function hoursFromSchedule(
   };
 }
 function roundTo(n: number, dp = 1) { return Math.round(n * 10 ** dp) / 10 ** dp; }
+function fmtSeconds(s: number): string {
+  if (s >= 3600) return `${roundTo(s / 3600, 1)}h`;
+  if (s >= 60) return `${Math.round(s / 60)}m`;
+  return `${s}s`;
+}
 
 function getMondayOf(date: Date): Date {
   const d = new Date(date); d.setHours(0,0,0,0);
@@ -944,6 +949,45 @@ export function CapacityPlanning() {
             <p className="text-xs text-muted-foreground mt-3">
               Ramp: {config.rampTrainingWeeks}wk training (0%) → {config.rampNestingWeeks}wk nesting ({config.rampNestingPct}%) → full production (100%)
             </p>
+
+            {/* ── Staffing Parameters (read-only, sourced from LOB Settings & Shrinkage) */}
+            <div className="mt-4 pt-3 border-t border-border">
+              <p className="text-xs font-semibold text-foreground/60 mb-2">
+                FTE Model Parameters
+                <span className="font-normal text-muted-foreground"> — read-only, edit in LOB Settings &amp; Shrinkage Planning</span>
+              </p>
+              <div className="flex flex-wrap gap-x-5 gap-y-1.5 mb-2.5">
+                {[
+                  { label: "Op. Hrs/Day", value: `${operatingHoursPerDay}h` },
+                  { label: "Days/Week", value: `${daysPerWeek}d` },
+                  { label: "FTE Hrs/Day", value: `${hoursPerDay}h` },
+                  { label: "Shrinkage", value: `${shrinkagePct}%` },
+                ].map(p => (
+                  <div key={p.label} className="flex items-center gap-1 text-xs">
+                    <span className="text-muted-foreground">{p.label}:</span>
+                    <span className="font-medium">{p.value}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {(isDedicated ? [activeChannel] : enabledChannels).map(ch => {
+                  const slaTarget = ch === "voice" ? slaVoiceTarget : ch === "chat" ? slaChatTarget : slaEmailTarget;
+                  const slaSec   = ch === "voice" ? slaVoiceSec    : ch === "chat" ? slaChatSec    : slaEmailSec;
+                  return (
+                    <div key={ch} className="flex items-center gap-2 bg-muted/40 rounded-md px-2.5 py-1 text-xs">
+                      <span className="font-semibold text-foreground/70">{CHANNEL_LABELS[ch]}</span>
+                      <span className="text-muted-foreground">SLA {slaTarget}% in {fmtSeconds(slaSec)}</span>
+                      {ch === "chat" && (
+                        <span className="text-muted-foreground">· {chatConcurrency}× concurrency</span>
+                      )}
+                      {ch === "email" && (
+                        <span className="text-muted-foreground">· {emailOccupancy}% utilisation</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </CardContent>
         )}
       </Card>
