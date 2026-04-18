@@ -298,7 +298,7 @@ function EditableCell({ value, autoValue, isOverridden, onSave, onReset, classNa
   return (
     <td
       className={`px-2 py-1 text-right text-xs cursor-pointer select-none whitespace-nowrap group relative
-        ${isOverridden ? "bg-slate-200 dark:bg-slate-700/40 text-slate-900 dark:text-slate-100" : ""}
+        ${isOverridden ? "bg-slate-200 dark:bg-slate-700/40 text-black dark:text-black" : ""}
         hover:bg-muted/50 transition-colors ${className}`}
       onClick={startEdit}
       title={isOverridden && autoValue != null ? `Auto: ${format(autoValue)} — click to edit, use ↺ to reset` : "Click to edit"}
@@ -307,7 +307,7 @@ function EditableCell({ value, autoValue, isOverridden, onSave, onReset, classNa
       {isOverridden && onReset && (
         <button
           onClick={e => { e.stopPropagation(); onReset(); }}
-          className="ml-1 text-slate-700 hover:text-slate-900 opacity-70 hover:opacity-100"
+          className="ml-1 text-black hover:text-black opacity-70 hover:opacity-100"
           title="Reset to auto value"
         >
           <RotateCcw className="inline size-2.5" />
@@ -374,12 +374,12 @@ function SectionHeaderRow({ label, colSpan, collapsed, onToggle, onReset, bg = "
     <tr className={bg}>
       <td colSpan={colSpan} className="px-3 py-1.5 text-left">
         <div className="flex items-center justify-between">
-          <button onClick={onToggle} className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 hover:text-slate-900 transition-colors">
+          <button onClick={onToggle} className="flex items-center gap-1.5 text-xs font-semibold text-black hover:text-black transition-colors">
             {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
             {label}
           </button>
           {onReset && (
-            <button onClick={onReset} className="flex items-center gap-1 text-xs text-slate-700 hover:text-slate-900 transition-colors">
+            <button onClick={onReset} className="flex items-center gap-1 text-xs text-black hover:text-black transition-colors">
               <RotateCcw className="size-3" /> Reset all
             </button>
           )}
@@ -392,7 +392,7 @@ function SectionHeaderRow({ label, colSpan, collapsed, onToggle, onReset, bg = "
 function RowLabel({ label, indent = false, bold = false, sub = false }: { label: string; indent?: boolean; bold?: boolean; sub?: boolean }) {
   return (
     <td className={`sticky left-0 z-10 bg-card border-r border-border px-3 py-1 text-xs whitespace-nowrap
-      ${indent ? "pl-6" : ""} ${bold ? "font-semibold" : ""} ${sub ? "text-slate-700" : "text-slate-900"}`}>
+      ${indent ? "pl-6" : ""} ${bold ? "font-semibold" : ""} ${sub ? "text-black" : "text-black"}`}>
       {label}
     </td>
   );
@@ -904,8 +904,8 @@ export function CapacityPlanning() {
             onClick={() => handleLobSwitch(lob.id)}
             className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors border ${
               activeLob?.id === lob.id
-                ? "bg-slate-200 text-slate-900 border-slate-300"
-                : "border-border text-slate-900 hover:border-primary/50 hover:text-slate-900"
+                ? "bg-slate-200 text-black border-slate-300"
+                : "border-border text-black hover:border-primary/50 hover:text-black"
             }`}
           >
             {lob.lob_name}
@@ -922,8 +922,8 @@ export function CapacityPlanning() {
               onClick={() => handleChannelSwitch(ch)}
               className={`px-3 py-1 rounded text-xs font-medium transition-colors border ${
                 activeChannel === ch
-                  ? "bg-slate-200 text-slate-900 border-slate-300"
-                  : "border-border text-slate-900 hover:border-blue-400 hover:text-slate-900"
+                  ? "bg-slate-200 text-black border-slate-300"
+                  : "border-border text-black hover:border-blue-400 hover:text-black"
               }`}
             >
               {CHANNEL_LABELS[ch]}
@@ -933,7 +933,7 @@ export function CapacityPlanning() {
       )}
 
       {loading && (
-        <div className="flex items-center gap-2 text-sm text-slate-800 mb-4">
+        <div className="flex items-center gap-2 text-sm text-black mb-4">
           <Loader2 className="size-4 animate-spin" /> Loading plan…
         </div>
       )}
@@ -943,53 +943,53 @@ export function CapacityPlanning() {
         <CardHeader className="py-3 px-4 cursor-pointer" onClick={() => setAssumptionsOpen(v => !v)}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Settings2 className="size-4 text-slate-800" />
+              <Settings2 className="size-4 text-black" />
               <CardTitle className="text-sm font-semibold">Plan Assumptions</CardTitle>
             </div>
-            {assumptionsOpen ? <ChevronDown className="size-4 text-slate-800" /> : <ChevronRight className="size-4 text-slate-800" />}
+            {assumptionsOpen ? <ChevronDown className="size-4 text-black" /> : <ChevronRight className="size-4 text-black" />}
           </div>
         </CardHeader>
         {assumptionsOpen && (
           <CardContent className="pb-4 pt-0">
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
               <div className="space-y-1">
-                <Label className="text-xs text-slate-900">Plan Start Date</Label>
+                <Label className="text-xs text-black">Plan Start Date</Label>
                 <Input type="date" value={config.planStartDate} onChange={e => updateConfig({ planStartDate: e.target.value })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-slate-900">Horizon (weeks)</Label>
+                <Label className="text-xs text-black">Horizon (weeks)</Label>
                 <Input type="number" min={4} max={104} value={config.horizonWeeks} onChange={e => updateConfig({ horizonWeeks: parseInt(e.target.value) || 26 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-slate-900">Starting HC</Label>
+                <Label className="text-xs text-black">Starting HC</Label>
                 <Input type="number" min={0} value={config.startingHc} onChange={e => updateConfig({ startingHc: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-slate-900">Attrition Rate (%/mo)</Label>
+                <Label className="text-xs text-black">Attrition Rate (%/mo)</Label>
                 <Input type="number" min={0} max={50} step={0.1} value={config.attritionRateMonthly} onChange={e => updateConfig({ attritionRateMonthly: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-slate-900">Training Weeks (0%)</Label>
+                <Label className="text-xs text-black">Training Weeks (0%)</Label>
                 <Input type="number" min={0} max={26} value={config.rampTrainingWeeks} onChange={e => updateConfig({ rampTrainingWeeks: parseInt(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-slate-900">Nesting Weeks</Label>
+                <Label className="text-xs text-black">Nesting Weeks</Label>
                 <Input type="number" min={0} max={26} value={config.rampNestingWeeks} onChange={e => updateConfig({ rampNestingWeeks: parseInt(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-slate-900">Nesting Productivity (%)</Label>
+                <Label className="text-xs text-black">Nesting Productivity (%)</Label>
                 <Input type="number" min={0} max={100} value={config.rampNestingPct} onChange={e => updateConfig({ rampNestingPct: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
             </div>
-            <p className="text-xs text-slate-800 mt-3">
+            <p className="text-xs text-black mt-3">
               Ramp: {config.rampTrainingWeeks}wk training (0%) → {config.rampNestingWeeks}wk nesting ({config.rampNestingPct}%) → full production (100%)
             </p>
 
             {/* ── Staffing Parameters (read-only, sourced from LOB Settings & Shrinkage) */}
             <div className="mt-4 pt-3 border-t border-border">
-              <p className="text-xs font-semibold text-slate-800 mb-2">
+              <p className="text-xs font-semibold text-black mb-2">
                 FTE Model Parameters
-                <span className="font-normal text-slate-800"> — read-only, edit in LOB Settings &amp; Shrinkage Planning</span>
+                <span className="font-normal text-black"> — read-only, edit in LOB Settings &amp; Shrinkage Planning</span>
               </p>
               <div className="flex flex-wrap gap-x-5 gap-y-1.5 mb-2.5">
                 {[
@@ -999,7 +999,7 @@ export function CapacityPlanning() {
                   { label: "Shrinkage", value: `${shrinkagePct}%` },
                 ].map(p => (
                   <div key={p.label} className="flex items-center gap-1 text-xs">
-                    <span className="text-slate-800">{p.label}:</span>
+                    <span className="text-black">{p.label}:</span>
                     <span className="font-medium">{p.value}</span>
                   </div>
                 ))}
@@ -1010,13 +1010,13 @@ export function CapacityPlanning() {
                   const slaSec   = ch === "voice" ? slaVoiceSec    : ch === "chat" ? slaChatSec    : slaEmailSec;
                   return (
                     <div key={ch} className="flex items-center gap-2 bg-muted/40 rounded-md px-2.5 py-1 text-xs">
-                      <span className="font-semibold text-slate-800">{CHANNEL_LABELS[ch]}</span>
-                      <span className="text-slate-800">SLA {slaTarget}% in {fmtSeconds(slaSec)}</span>
+                      <span className="font-semibold text-black">{CHANNEL_LABELS[ch]}</span>
+                      <span className="text-black">SLA {slaTarget}% in {fmtSeconds(slaSec)}</span>
                       {ch === "chat" && (
-                        <span className="text-slate-800">· {chatConcurrency}× concurrency</span>
+                        <span className="text-black">· {chatConcurrency}× concurrency</span>
                       )}
                       {ch === "email" && (
-                        <span className="text-slate-800">· {emailOccupancy}% utilisation</span>
+                        <span className="text-black">· {emailOccupancy}% utilisation</span>
                       )}
                     </div>
                   );
@@ -1031,13 +1031,13 @@ export function CapacityPlanning() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-4">
         {/* Peak Required FTE */}
         <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-blue-500">
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-900 uppercase tracking-wide">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
             <Users className="size-3" /> Peak Required FTE
           </div>
-          <div className="text-2xl font-bold mt-1 text-slate-900 dark:text-slate-100 leading-none">
+          <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
             {hiringNeed.peakRequired > 0 ? hiringNeed.peakRequired : "—"}
           </div>
-          <div className="text-[10px] text-slate-800 mt-1">
+          <div className="text-[10px] text-black mt-1">
             roster ceiling over {config.horizonWeeks} wks
           </div>
         </div>
@@ -1046,15 +1046,15 @@ export function CapacityPlanning() {
         <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${
           currentGap >= 0 ? "border-l-green-500" : "border-l-red-500"
         }`}>
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-900 uppercase tracking-wide">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
             <Target className="size-3" /> Current Gap (W1)
           </div>
           <div className={`text-2xl font-bold mt-1 leading-none ${
-            currentGap >= 0 ? "text-slate-900 dark:text-slate-100" : "text-slate-700 dark:text-slate-200"
+            currentGap >= 0 ? "text-black dark:text-black" : "text-black dark:text-black"
           }`}>
             {currentGap >= 0 ? `+${fmt1(currentGap)}` : fmt1(currentGap)}
           </div>
-          <div className="text-[10px] text-slate-800 mt-1">
+          <div className="text-[10px] text-black mt-1">
             {currentGap >= 0 ? "surplus vs. required" : "understaffed vs. required"}
           </div>
         </div>
@@ -1063,13 +1063,13 @@ export function CapacityPlanning() {
         <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-violet-500"
           title={`Gap to close: ${Math.max(0, hiringNeed.peakRequired - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
         >
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-900 uppercase tracking-wide">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
             <UserPlus className="size-3" /> Gross Hiring Need
           </div>
-          <div className="text-2xl font-bold mt-1 text-slate-900 dark:text-slate-100 leading-none">
+          <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
             {hiringNeed.grossHireNeed > 0 ? hiringNeed.grossHireNeed : "—"}
           </div>
-          <div className="text-[10px] text-slate-800 mt-1">
+          <div className="text-[10px] text-black mt-1">
             hires for peak + attrition
           </div>
         </div>
@@ -1078,17 +1078,17 @@ export function CapacityPlanning() {
         <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${
           planHealth >= 80 ? "border-l-green-500" : planHealth >= 50 ? "border-l-amber-500" : "border-l-red-500"
         }`}>
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-900 uppercase tracking-wide">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
             <Activity className="size-3" /> Plan Health
           </div>
           <div className={`text-2xl font-bold mt-1 leading-none ${
-            planHealth >= 80 ? "text-slate-900 dark:text-slate-100"
-              : planHealth >= 50 ? "text-slate-800 dark:text-slate-200"
-              : "text-slate-700 dark:text-slate-200"
+            planHealth >= 80 ? "text-black dark:text-black"
+              : planHealth >= 50 ? "text-black dark:text-black"
+              : "text-black dark:text-black"
           }`}>
             {planHealth}%
           </div>
-          <div className="text-[10px] text-slate-800 mt-1">
+          <div className="text-[10px] text-black mt-1">
             weeks at-or-above required
           </div>
         </div>
@@ -1097,22 +1097,22 @@ export function CapacityPlanning() {
       {/* ── Secondary metrics strip */}
       <div className="flex items-center gap-3 mb-4 flex-wrap text-xs">
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
-          <TrendingDown className="size-3.5 text-slate-700" />
-          <span className="text-slate-800">Annualized Attrition:</span>
+          <TrendingDown className="size-3.5 text-black" />
+          <span className="text-black">Annualized Attrition:</span>
           <span className="font-semibold">{fmtPct(attritionSummary.annualizedPct)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
-          <AlertTriangle className="size-3.5 text-slate-700" />
-          <span className="text-slate-800">Projected Exits:</span>
+          <AlertTriangle className="size-3.5 text-black" />
+          <span className="text-black">Projected Exits:</span>
           <span className="font-semibold">{fmt1(attritionSummary.totalExits)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
-          <CheckCircle2 className="size-3.5 text-slate-700" />
-          <span className="text-slate-800">Actual Attrition:</span>
+          <CheckCircle2 className="size-3.5 text-black" />
+          <span className="text-black">Actual Attrition:</span>
           <span className="font-semibold">{fmt1(attritionSummary.totalActualAttrition)}</span>
         </div>
         {demandAssumptions == null && (
-          <Badge variant="outline" className="text-slate-800 border-slate-400 text-xs">
+          <Badge variant="outline" className="text-black border-slate-400 text-xs">
             No demand data — set up Demand Forecasting first
           </Badge>
         )}
@@ -1123,10 +1123,10 @@ export function CapacityPlanning() {
         <Card className="mb-4">
           <CardContent className="py-3 px-4">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-semibold text-slate-800">
+              <div className="text-xs font-semibold text-black">
                 Headcount Trajectory — {isDedicated ? CHANNEL_LABELS[activeChannel] : "All Channels"}
               </div>
-              <div className="text-[10px] text-slate-700">
+              <div className="text-[10px] text-black">
                 Required vs. plan — gap is where the red line sits above the dashed blue
               </div>
             </div>
@@ -1158,13 +1158,13 @@ export function CapacityPlanning() {
             {/* Header Row */}
             <thead>
               <tr className="bg-card border-b border-border">
-                <th className="sticky left-0 top-0 z-20 bg-card border-r border-border px-3 py-2 text-left text-xs font-semibold text-slate-700 w-44 min-w-44">
+                <th className="sticky left-0 top-0 z-20 bg-card border-r border-border px-3 py-2 text-left text-xs font-semibold text-black w-44 min-w-44">
                   {isDedicated ? `${activeLob?.lob_name} — ${CHANNEL_LABELS[activeChannel]}` : activeLob?.lob_name}
                 </th>
                 {weeks.map(w => (
                   <th key={w.weekOffset} className="sticky top-0 z-10 bg-card border-b border-border px-2 py-1 text-right text-xs font-semibold min-w-[80px]">
                     <div className="font-semibold">{w.label}</div>
-                    <div className="text-[10px] text-slate-700 font-normal">{w.dateLabel}</div>
+                    <div className="text-[10px] text-black font-normal">{w.dateLabel}</div>
                   </th>
                 ))}
               </tr>
@@ -1286,19 +1286,19 @@ export function CapacityPlanning() {
                   {(!isDedicated ? enabledChannels.includes("voice") : activeChannel === "voice") && (
                     <tr className="border-b border-border/40 border-t-2 border-t-border/60">
                       <RowLabel label="Actual Volume — Voice" indent sub />
-                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-slate-600 italic" />)}
+                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-black italic" />)}
                     </tr>
                   )}
                   {(!isDedicated ? enabledChannels.includes("chat") : activeChannel === "chat") && (
                     <tr className="border-b border-border/40">
                       <RowLabel label="Actual Volume — Chat" indent sub />
-                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-slate-600 italic" />)}
+                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-black italic" />)}
                     </tr>
                   )}
                   {(!isDedicated ? enabledChannels.includes("email") : activeChannel === "email") && (
                     <tr className="border-b border-border/40">
                       <RowLabel label="Actual Volume — Email" indent sub />
-                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-slate-600 italic" />)}
+                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-black italic" />)}
                     </tr>
                   )}
                 </>
@@ -1315,11 +1315,11 @@ export function CapacityPlanning() {
                 <>
                   <tr className="border-b border-border/40 hover:bg-muted/20">
                     <RowLabel label="Proj. Occupancy %" indent sub />
-                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmtPct(wk.projOccupancyPct)} className="text-slate-700" />)}
+                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmtPct(wk.projOccupancyPct)} className="text-black" />)}
                   </tr>
                   <tr className="border-b border-border/40 hover:bg-muted/20">
                     <RowLabel label="Proj. Shrinkage %" indent sub />
-                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmtPct(wk.projShrinkagePct)} className="text-slate-700" />)}
+                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmtPct(wk.projShrinkagePct)} className="text-black" />)}
                   </tr>
                   {/* Required FTE lives in the sticky footer so it's always visible */}
                 </>
@@ -1349,7 +1349,7 @@ export function CapacityPlanning() {
                     {weekCalcs.map(wk => (
                       <ReadOnlyCell key={wk.weekOffset}
                         value={wk.effectiveNewHc > 0 ? `+${fmt1(wk.effectiveNewHc)}` : fmt1(wk.effectiveNewHc)}
-                        className={wk.effectiveNewHc > 0 ? "text-slate-900 dark:text-slate-100" : "text-slate-700"}
+                        className={wk.effectiveNewHc > 0 ? "text-black dark:text-black" : "text-black"}
                       />
                     ))}
                   </tr>
@@ -1358,7 +1358,7 @@ export function CapacityPlanning() {
                     {weekCalcs.map(wk => (
                       <ReadOnlyCell key={wk.weekOffset}
                         value={wk.attritionDecay > 0 ? `-${fmt1(wk.attritionDecay)}` : "—"}
-                        className="text-slate-700"
+                        className="text-black"
                       />
                     ))}
                   </tr>
@@ -1401,7 +1401,7 @@ export function CapacityPlanning() {
 
               {/* ── PERFORMANCE INSIGHTS — Actual Gap & SLA context (not sticky) */}
               <tr className="border-t-2 border-border bg-muted/20">
-                <td colSpan={colSpan} className="px-3 py-1 text-xs font-semibold text-slate-800 sticky left-0 bg-muted/20 dark:bg-muted/30">
+                <td colSpan={colSpan} className="px-3 py-1 text-xs font-semibold text-black sticky left-0 bg-muted/20 dark:bg-muted/30">
                   PERFORMANCE INSIGHTS
                 </td>
               </tr>
@@ -1409,8 +1409,8 @@ export function CapacityPlanning() {
                 <RowLabel label="Actual Gap / Surplus" indent sub />
                 {weekCalcs.map(wk => {
                   const v = wk.actualGapSurplus;
-                  if (v == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-slate-700" />;
-                  const color = v >= 0 ? "text-slate-900 dark:text-slate-100" : "text-slate-700 dark:text-slate-200";
+                  if (v == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-black" />;
+                  const color = v >= 0 ? "text-black dark:text-black" : "text-black dark:text-black";
                   return (
                     <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
                       {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
@@ -1423,13 +1423,13 @@ export function CapacityPlanning() {
                 {weekCalcs.map(wk => {
                   const sl = wk.achievedSLAProj;
                   if (isDedicated && activeChannel === "email") {
-                    return <ReadOnlyCell key={wk.weekOffset} value="N/A" className="text-slate-600 italic" />;
+                    return <ReadOnlyCell key={wk.weekOffset} value="N/A" className="text-black italic" />;
                   }
-                  if (sl == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-slate-700" />;
+                  if (sl == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-black" />;
                   const slaTarget = isDedicated
                     ? (activeChannel === "voice" ? slaVoiceTarget : slaChatTarget)
                     : slaVoiceTarget;
-                  const color = sl >= slaTarget ? "text-slate-900 dark:text-slate-100" : "text-slate-700 dark:text-slate-200";
+                  const color = sl >= slaTarget ? "text-black dark:text-black" : "text-black dark:text-black";
                   return (
                     <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
                       {fmtPct(sl)}
@@ -1442,13 +1442,13 @@ export function CapacityPlanning() {
                 {weekCalcs.map(wk => {
                   const sl = wk.achievedSLAActual;
                   if (sl == null && isDedicated && activeChannel === "email") {
-                    return <ReadOnlyCell key={wk.weekOffset} value="N/A" className="text-slate-600 italic" />;
+                    return <ReadOnlyCell key={wk.weekOffset} value="N/A" className="text-black italic" />;
                   }
-                  if (sl == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-slate-700" />;
+                  if (sl == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-black" />;
                   const slaTarget = isDedicated
                     ? (activeChannel === "voice" ? slaVoiceTarget : slaChatTarget)
                     : slaVoiceTarget;
-                  const color = sl >= slaTarget ? "text-slate-900 dark:text-slate-100" : "text-slate-700 dark:text-slate-200";
+                  const color = sl >= slaTarget ? "text-black dark:text-black" : "text-black dark:text-black";
                   return (
                     <td key={wk.weekOffset} className={`px-2 py-1 text-right text-xs font-semibold whitespace-nowrap ${color}`}>
                       {fmtPct(sl)}
@@ -1464,7 +1464,7 @@ export function CapacityPlanning() {
               {/* Required FTE — the number every manager is actually trying to hit */}
               <tr>
                 <td
-                  className="z-30 border-r border-border bg-card border-t-2 border-t-primary px-3 py-2 text-xs font-bold whitespace-nowrap text-slate-900"
+                  className="z-30 border-r border-border bg-card border-t-2 border-t-primary px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
                   style={{ position: "sticky", left: 0, bottom: 36 }}
                 >
                   Required FTE
@@ -1472,7 +1472,7 @@ export function CapacityPlanning() {
                 {weekCalcs.map(wk => (
                   <td
                     key={wk.weekOffset}
-                    className="z-20 bg-card border-t-2 border-t-primary px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-slate-900"
+                    className="z-20 bg-card border-t-2 border-t-primary px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
                     style={{ position: "sticky", bottom: 36 }}
                   >
                     {fmt1(wk.requiredFTE)}
@@ -1482,14 +1482,14 @@ export function CapacityPlanning() {
               {/* Proj. Gap / Surplus — the manager's scorecard, heat-mapped by magnitude */}
               <tr>
                 <td
-                  className="z-30 border-r border-border bg-card px-3 py-2 text-xs font-bold whitespace-nowrap text-slate-900"
+                  className="z-30 border-r border-border bg-card px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
                   style={{ position: "sticky", left: 0, bottom: 0 }}
                 >
                   Proj. Gap / Surplus
                 </td>
                 {weekCalcs.map(wk => {
                   const v = wk.gapSurplus;
-                  const color = v >= 0 ? "text-slate-900 dark:text-slate-100" : "text-slate-700 dark:text-slate-200";
+                  const color = v >= 0 ? "text-black dark:text-black" : "text-black dark:text-black";
                   return (
                     <td
                       key={wk.weekOffset}
@@ -1507,7 +1507,7 @@ export function CapacityPlanning() {
       </div>
 
       {/* Legend */}
-      <div className="flex items-center gap-4 mt-3 flex-wrap text-[11px] text-slate-700">
+      <div className="flex items-center gap-4 mt-3 flex-wrap text-[11px] text-black">
         <span className="flex items-center gap-1"><span className="inline-block size-3 rounded bg-amber-100 dark:bg-amber-950/40 border border-amber-300" /> Manually overridden (click ↺ to restore auto)</span>
         <span className="flex items-center gap-1"><span className="inline-block size-3 rounded bg-blue-100 dark:bg-blue-950/40 border border-blue-300" /> Planned Hires</span>
         <span className="flex items-center gap-1"><span className="inline-block size-3 rounded bg-orange-100 dark:bg-orange-950/40 border border-orange-300" /> Known Exits</span>
@@ -1516,4 +1516,5 @@ export function CapacityPlanning() {
     </PageLayout>
   );
 }
+
 
