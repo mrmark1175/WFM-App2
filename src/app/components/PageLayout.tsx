@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Home, ChevronRight, Search, Bell, Share2, User, Settings, LayoutDashboard, TrendingUp, Calendar, Users, Clock, Database, Phone, Building2, Activity, ChevronLeft, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart2, BarChart3, UserCog } from "lucide-react";
+import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock, Phone, Building2, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart2, BarChart3, UserCog } from "lucide-react";
 import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
@@ -76,7 +76,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
       {/* ── Topbar (44px, near-black) ── */}
       <header className="sticky top-0 z-40 h-11 bg-shell text-[#dedbcf] border-b border-black flex items-center px-3 gap-3">
         <div className={`flex items-center ${collapsed ? "w-[52px]" : "w-[208px]"} transition-[width] overflow-hidden`}>
-          <img src={logo} alt="Exordium WFM" className="h-[29px] w-auto shrink-0" />
+          <img src={logo} alt="Exordium WFM" className="h-[38px] w-auto shrink-0" />
         </div>
 
         <nav className="flex items-center gap-1.5 text-[12px] text-[#b6b3a8]">
@@ -98,19 +98,6 @@ export function PageLayout({ children, title }: PageLayoutProps) {
         </nav>
 
         <LOBSelector className="ml-auto" />
-
-        <div className="flex items-center gap-1">
-          <div className="font-mono text-[10.5px] tracking-wider uppercase text-[#c3b36a] border border-[#3d381e] bg-[#1b1811] px-1.5 py-0.5 rounded">
-            Tier 1 · Prod
-          </div>
-          <button className="h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-[#cfccbf] hover:bg-[#1a1c20] hover:text-[#f1eede]">
-            <Search className="size-3.5" /> Search
-            <span className="font-mono text-[11px] text-[#7c7d7a] border border-[#2a2c30] px-1 h-[22px] leading-[22px] rounded ml-1">⌘K</span>
-          </button>
-          <button className="h-[26px] px-2.5 rounded inline-flex items-center text-[#cfccbf] hover:bg-[#1a1c20]"><Bell className="size-3.5"/></button>
-          <button className="h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-[#cfccbf] hover:bg-[#1a1c20]"><Share2 className="size-3.5"/> Share</button>
-          <div className="size-6 rounded-full bg-gradient-to-br from-[#b8b5a6] to-[#6e6b5f] text-[#0c0d10] text-[10.5px] font-semibold grid place-items-center ml-1">MK</div>
-        </div>
       </header>
 
       <div className={`grid min-h-[calc(100vh-44px)] ${collapsed ? "grid-cols-[56px_1fr]" : "grid-cols-[220px_1fr]"} transition-[grid-template-columns]`}>
