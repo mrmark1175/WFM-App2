@@ -74,24 +74,24 @@ export function PageLayout({ children, title }: PageLayoutProps) {
       <Toaster richColors position="top-right" />
 
       {/* ── Topbar (44px, near-black) ── */}
-      <header className="sticky top-0 z-40 h-11 bg-shell text-[#dedbcf] border-b border-black flex items-center px-3 gap-3">
+      <header className="sticky top-0 z-40 h-11 bg-[#1111D4] text-white border-b border-[#0a0aa8] flex items-center px-3 gap-3">
         <div className={`flex items-center ${collapsed ? "w-[52px]" : "w-[208px]"} transition-[width] overflow-hidden`}>
           <img src={logo} alt="Exordium WFM" className="h-[38px] w-auto shrink-0" />
         </div>
 
-        <nav className="flex items-center gap-1.5 text-[12px] text-[#b6b3a8]">
-          <Home className="size-3.5 opacity-75" />
-          <Link to="/" className="hover:text-[#ede9dc]">Home</Link>
+        <nav className="flex items-center gap-1.5 text-[12px] text-white/85">
+          <Home className="size-3.5 opacity-85" />
+          <Link to="/" className="hover:text-white">Home</Link>
           {pathnames.map((seg, i) => {
             const last = i === pathnames.length - 1;
             const to = "/" + pathnames.slice(0, i + 1).join("/");
             const name = CRUMB_NAMES[seg] || seg;
             return (
               <React.Fragment key={to}>
-                <ChevronRight className="size-3 text-[#4a4c50]" />
+                <ChevronRight className="size-3 text-white/60" />
                 {last
-                  ? <span className="text-[#ede9dc] font-medium">{name}</span>
-                  : <Link to={to} className="hover:text-[#ede9dc]">{name}</Link>}
+                  ? <span className="text-white font-medium">{name}</span>
+                  : <Link to={to} className="hover:text-white">{name}</Link>}
               </React.Fragment>
             );
           })}
@@ -101,22 +101,22 @@ export function PageLayout({ children, title }: PageLayoutProps) {
       </header>
 
       <div className={`grid min-h-[calc(100vh-44px)] ${collapsed ? "grid-cols-[56px_1fr]" : "grid-cols-[220px_1fr]"} transition-[grid-template-columns]`}>
-        <aside className="sticky top-11 h-[calc(100vh-44px)] bg-shell text-[#a8a79b] border-r border-black py-3 px-2 overflow-y-auto self-start">
+        <aside className="sticky top-11 h-[calc(100vh-44px)] bg-[#1111D4] text-white border-r border-[#0a0aa8] py-3 px-2 overflow-y-auto self-start">
           {NAV.map(g => (
             <div key={g.group} className="mt-3 first:mt-0">
-              <div className={`font-mono text-[10px] text-[#55574f] uppercase tracking-[.14em] px-2.5 pb-1.5 ${collapsed ? "invisible h-0 p-0" : ""}`}>{g.group}</div>
+              <div className={`font-mono text-[10px] text-white/70 uppercase tracking-[.14em] px-2.5 pb-1.5 ${collapsed ? "invisible h-0 p-0" : ""}`}>{g.group}</div>
               {g.items.map(it => {
                 const Icon = it.icon;
                 const active = location.pathname === it.to;
                 return (
                   <Link key={it.to} to={it.to}
                     className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded text-[12.5px] ${active
-                      ? "bg-[#1c1e22] text-[#ede9dc] shadow-[inset_2px_0_0_var(--indigo)]"
-                      : "text-[#b5b3a5] hover:bg-[#17181c] hover:text-[#efecdf]"}`}>
+                      ? "bg-white/20 text-white shadow-[inset_2px_0_0_#ffffff]"
+                      : "text-white/85 hover:bg-white/12 hover:text-white"}`}>
                     <Icon className="size-3.5 shrink-0 opacity-85" />
                     {!collapsed && <span>{it.label}</span>}
                     {!collapsed && it.badge && (
-                      <span className="ml-auto font-mono text-[10px] text-[#6e6f68] bg-[#17181c] border border-[#23252a] px-1.5 py-[1px] rounded">{it.badge}</span>
+                      <span className="ml-auto font-mono text-[10px] text-white/90 bg-white/15 border border-white/25 px-1.5 py-[1px] rounded">{it.badge}</span>
                     )}
                   </Link>
                 );
@@ -124,7 +124,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
             </div>
           ))}
           <button onClick={() => setCollapsed(!collapsed)}
-            className="mt-2 w-full h-[22px] flex items-center justify-center text-[#55574f] font-mono text-[10px] border border-dashed border-[#23252a] rounded hover:text-[#a8a79b] tracking-wider">
+            className="mt-2 w-full h-[22px] flex items-center justify-center text-white/80 font-mono text-[10px] border border-dashed border-white/40 rounded hover:text-white tracking-wider">
             {collapsed ? "»" : "« collapse"}
           </button>
         </aside>

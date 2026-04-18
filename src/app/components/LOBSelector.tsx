@@ -12,9 +12,9 @@ export function LOBSelector({ className }: { className?: string }) {
 
   if (isLoading) {
     return (
-      <div className={`h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-[#cfccbf] bg-[#1a1c20] animate-pulse ${className ?? ""}`}>
-        <Building2 className="size-3.5 opacity-60" />
-        <span className="w-20 h-2.5 bg-[#2a2c30] rounded" />
+      <div className={`h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-white/85 bg-white/12 border border-white/25 animate-pulse ${className ?? ""}`}>
+        <Building2 className="size-3.5 opacity-80" />
+        <span className="w-20 h-2.5 bg-white/35 rounded" />
       </div>
     );
   }
@@ -22,10 +22,10 @@ export function LOBSelector({ className }: { className?: string }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className={`h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-[#cfccbf] hover:bg-[#1a1c20] hover:text-[#f1eede] border border-[#2a2c30] max-w-[200px] ${className ?? ""}`}>
-          <Building2 className="size-3.5 shrink-0 opacity-70" />
+        <button className={`h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-white/90 hover:bg-white/15 hover:text-white border border-white/30 max-w-[200px] ${className ?? ""}`}>
+          <Building2 className="size-3.5 shrink-0 opacity-85" />
           <span className="truncate">{activeLob?.lob_name ?? "Select LOB"}</span>
-          <ChevronDown className="size-3 shrink-0 opacity-60 ml-0.5" />
+          <ChevronDown className="size-3 shrink-0 opacity-80 ml-0.5" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-52">
