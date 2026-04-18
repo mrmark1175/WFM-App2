@@ -55,7 +55,12 @@ function timeToMins(t: string): number {
 }
 
 function toTime(m: number): string {
-  return `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const wrapped = ((m % 1440) + 1440) % 1440;
+  return `${String(Math.floor(wrapped / 60)).padStart(2, "0")}:${String(wrapped % 60).padStart(2, "0")}`;
+}
+
+function isOvernightTimes(start: string, end: string): boolean {
+  return end !== start && timeToMins(end) <= timeToMins(start);
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -371,7 +376,7 @@ export function ScheduleEditor() {
       work_date: fields.work_date ?? activeDate,
       start_time: fields.start_time,
       end_time: fields.end_time,
-      is_overnight: false,
+      is_overnight: isOvernightTimes(fields.start_time, fields.end_time),
       channel: fields.channel,
       notes: fields.notes || null,
       activities: [],
@@ -428,6 +433,7 @@ export function ScheduleEditor() {
       ...a,
       start_time: newStart,
       end_time: newEnd,
+      is_overnight: isOvernightTimes(newStart, newEnd),
       ...(newAgentId ? { agent_id: newAgentId, agent_name: updatedAgent?.full_name ?? a.agent_name } : {}),
       ...(newWorkDate ? { work_date: newWorkDate } : {}),
       // Shift all activities by the same time delta
