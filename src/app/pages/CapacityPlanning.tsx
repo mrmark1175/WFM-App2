@@ -905,7 +905,7 @@ export function CapacityPlanning() {
             className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors border ${
               activeLob?.id === lob.id
                 ? "bg-primary text-primary-foreground border-primary"
-                : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                : "border-border text-foreground/75 hover:border-primary/50 hover:text-foreground"
             }`}
           >
             {lob.lob_name}
@@ -923,7 +923,7 @@ export function CapacityPlanning() {
               className={`px-3 py-1 rounded text-xs font-medium transition-colors border ${
                 activeChannel === ch
                   ? "bg-blue-600 text-white border-blue-600"
-                  : "border-border text-muted-foreground hover:border-blue-400 hover:text-foreground"
+                  : "border-border text-foreground/75 hover:border-blue-400 hover:text-foreground"
               }`}
             >
               {CHANNEL_LABELS[ch]}
@@ -933,7 +933,7 @@ export function CapacityPlanning() {
       )}
 
       {loading && (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
+        <div className="flex items-center gap-2 text-sm text-foreground/70 mb-4">
           <Loader2 className="size-4 animate-spin" /> Loading plan…
         </div>
       )}
@@ -943,45 +943,45 @@ export function CapacityPlanning() {
         <CardHeader className="py-3 px-4 cursor-pointer" onClick={() => setAssumptionsOpen(v => !v)}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Settings2 className="size-4 text-muted-foreground" />
+              <Settings2 className="size-4 text-foreground/70" />
               <CardTitle className="text-sm font-semibold">Plan Assumptions</CardTitle>
             </div>
-            {assumptionsOpen ? <ChevronDown className="size-4 text-muted-foreground" /> : <ChevronRight className="size-4 text-muted-foreground" />}
+            {assumptionsOpen ? <ChevronDown className="size-4 text-foreground/70" /> : <ChevronRight className="size-4 text-foreground/70" />}
           </div>
         </CardHeader>
         {assumptionsOpen && (
           <CardContent className="pb-4 pt-0">
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Plan Start Date</Label>
+                <Label className="text-xs text-foreground/75">Plan Start Date</Label>
                 <Input type="date" value={config.planStartDate} onChange={e => updateConfig({ planStartDate: e.target.value })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Horizon (weeks)</Label>
+                <Label className="text-xs text-foreground/75">Horizon (weeks)</Label>
                 <Input type="number" min={4} max={104} value={config.horizonWeeks} onChange={e => updateConfig({ horizonWeeks: parseInt(e.target.value) || 26 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Starting HC</Label>
+                <Label className="text-xs text-foreground/75">Starting HC</Label>
                 <Input type="number" min={0} value={config.startingHc} onChange={e => updateConfig({ startingHc: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Attrition Rate (%/mo)</Label>
+                <Label className="text-xs text-foreground/75">Attrition Rate (%/mo)</Label>
                 <Input type="number" min={0} max={50} step={0.1} value={config.attritionRateMonthly} onChange={e => updateConfig({ attritionRateMonthly: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Training Weeks (0%)</Label>
+                <Label className="text-xs text-foreground/75">Training Weeks (0%)</Label>
                 <Input type="number" min={0} max={26} value={config.rampTrainingWeeks} onChange={e => updateConfig({ rampTrainingWeeks: parseInt(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Nesting Weeks</Label>
+                <Label className="text-xs text-foreground/75">Nesting Weeks</Label>
                 <Input type="number" min={0} max={26} value={config.rampNestingWeeks} onChange={e => updateConfig({ rampNestingWeeks: parseInt(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Nesting Productivity (%)</Label>
+                <Label className="text-xs text-foreground/75">Nesting Productivity (%)</Label>
                 <Input type="number" min={0} max={100} value={config.rampNestingPct} onChange={e => updateConfig({ rampNestingPct: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
             </div>
-            <p className="text-xs text-muted-foreground mt-3">
+            <p className="text-xs text-foreground/70 mt-3">
               Ramp: {config.rampTrainingWeeks}wk training (0%) → {config.rampNestingWeeks}wk nesting ({config.rampNestingPct}%) → full production (100%)
             </p>
 
@@ -989,7 +989,7 @@ export function CapacityPlanning() {
             <div className="mt-4 pt-3 border-t border-border">
               <p className="text-xs font-semibold text-foreground/60 mb-2">
                 FTE Model Parameters
-                <span className="font-normal text-muted-foreground"> — read-only, edit in LOB Settings &amp; Shrinkage Planning</span>
+                <span className="font-normal text-foreground/70"> — read-only, edit in LOB Settings &amp; Shrinkage Planning</span>
               </p>
               <div className="flex flex-wrap gap-x-5 gap-y-1.5 mb-2.5">
                 {[
@@ -999,7 +999,7 @@ export function CapacityPlanning() {
                   { label: "Shrinkage", value: `${shrinkagePct}%` },
                 ].map(p => (
                   <div key={p.label} className="flex items-center gap-1 text-xs">
-                    <span className="text-muted-foreground">{p.label}:</span>
+                    <span className="text-foreground/70">{p.label}:</span>
                     <span className="font-medium">{p.value}</span>
                   </div>
                 ))}
@@ -1011,12 +1011,12 @@ export function CapacityPlanning() {
                   return (
                     <div key={ch} className="flex items-center gap-2 bg-muted/40 rounded-md px-2.5 py-1 text-xs">
                       <span className="font-semibold text-foreground/70">{CHANNEL_LABELS[ch]}</span>
-                      <span className="text-muted-foreground">SLA {slaTarget}% in {fmtSeconds(slaSec)}</span>
+                      <span className="text-foreground/70">SLA {slaTarget}% in {fmtSeconds(slaSec)}</span>
                       {ch === "chat" && (
-                        <span className="text-muted-foreground">· {chatConcurrency}× concurrency</span>
+                        <span className="text-foreground/70">· {chatConcurrency}× concurrency</span>
                       )}
                       {ch === "email" && (
-                        <span className="text-muted-foreground">· {emailOccupancy}% utilisation</span>
+                        <span className="text-foreground/70">· {emailOccupancy}% utilisation</span>
                       )}
                     </div>
                   );
@@ -1028,67 +1028,67 @@ export function CapacityPlanning() {
       </Card>
 
       {/* ── Hero Strip — the bottom-line metrics, always the first thing a manager sees */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-4">
         {/* Peak Required FTE */}
-        <div className="bg-card border border-border rounded-lg p-4 shadow-sm border-l-4 border-l-blue-500">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-            <Users className="size-3.5" /> Peak Required FTE
+        <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-blue-500">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-foreground/75 uppercase tracking-wide">
+            <Users className="size-3" /> Peak Required FTE
           </div>
-          <div className="text-3xl font-bold mt-1.5 text-blue-600 dark:text-blue-400 leading-none">
+          <div className="text-2xl font-bold mt-1 text-blue-700 dark:text-blue-300 leading-none">
             {hiringNeed.peakRequired > 0 ? hiringNeed.peakRequired : "—"}
           </div>
-          <div className="text-[11px] text-muted-foreground mt-1.5">
+          <div className="text-[10px] text-foreground/70 mt-1">
             roster ceiling over {config.horizonWeeks} wks
           </div>
         </div>
 
         {/* Current Gap (W1) — the most visceral metric */}
-        <div className={`bg-card border border-border rounded-lg p-4 shadow-sm border-l-4 ${
+        <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${
           currentGap >= 0 ? "border-l-green-500" : "border-l-red-500"
         }`}>
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-            <Target className="size-3.5" /> Current Gap (W1)
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-foreground/75 uppercase tracking-wide">
+            <Target className="size-3" /> Current Gap (W1)
           </div>
-          <div className={`text-3xl font-bold mt-1.5 leading-none ${
-            currentGap >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+          <div className={`text-2xl font-bold mt-1 leading-none ${
+            currentGap >= 0 ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300"
           }`}>
             {currentGap >= 0 ? `+${fmt1(currentGap)}` : fmt1(currentGap)}
           </div>
-          <div className="text-[11px] text-muted-foreground mt-1.5">
+          <div className="text-[10px] text-foreground/70 mt-1">
             {currentGap >= 0 ? "surplus vs. required" : "understaffed vs. required"}
           </div>
         </div>
 
         {/* Gross Hiring Need */}
-        <div className="bg-card border border-border rounded-lg p-4 shadow-sm border-l-4 border-l-violet-500"
+        <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-violet-500"
           title={`Gap to close: ${Math.max(0, hiringNeed.peakRequired - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
         >
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-            <UserPlus className="size-3.5" /> Gross Hiring Need
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-foreground/75 uppercase tracking-wide">
+            <UserPlus className="size-3" /> Gross Hiring Need
           </div>
-          <div className="text-3xl font-bold mt-1.5 text-violet-600 dark:text-violet-400 leading-none">
+          <div className="text-2xl font-bold mt-1 text-violet-700 dark:text-violet-300 leading-none">
             {hiringNeed.grossHireNeed > 0 ? hiringNeed.grossHireNeed : "—"}
           </div>
-          <div className="text-[11px] text-muted-foreground mt-1.5">
+          <div className="text-[10px] text-foreground/70 mt-1">
             hires for peak + attrition
           </div>
         </div>
 
         {/* Plan Health */}
-        <div className={`bg-card border border-border rounded-lg p-4 shadow-sm border-l-4 ${
+        <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${
           planHealth >= 80 ? "border-l-green-500" : planHealth >= 50 ? "border-l-amber-500" : "border-l-red-500"
         }`}>
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-            <Activity className="size-3.5" /> Plan Health
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-foreground/75 uppercase tracking-wide">
+            <Activity className="size-3" /> Plan Health
           </div>
-          <div className={`text-3xl font-bold mt-1.5 leading-none ${
-            planHealth >= 80 ? "text-green-600 dark:text-green-400"
-              : planHealth >= 50 ? "text-amber-600 dark:text-amber-400"
-              : "text-red-600 dark:text-red-400"
+          <div className={`text-2xl font-bold mt-1 leading-none ${
+            planHealth >= 80 ? "text-green-700 dark:text-green-300"
+              : planHealth >= 50 ? "text-amber-700 dark:text-amber-300"
+              : "text-red-700 dark:text-red-300"
           }`}>
             {planHealth}%
           </div>
-          <div className="text-[11px] text-muted-foreground mt-1.5">
+          <div className="text-[10px] text-foreground/70 mt-1">
             weeks at-or-above required
           </div>
         </div>
@@ -1098,17 +1098,17 @@ export function CapacityPlanning() {
       <div className="flex items-center gap-3 mb-4 flex-wrap text-xs">
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <TrendingDown className="size-3.5 text-red-500" />
-          <span className="text-muted-foreground">Annualized Attrition:</span>
+          <span className="text-foreground/70">Annualized Attrition:</span>
           <span className="font-semibold">{fmtPct(attritionSummary.annualizedPct)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <AlertTriangle className="size-3.5 text-orange-500" />
-          <span className="text-muted-foreground">Projected Exits:</span>
+          <span className="text-foreground/70">Projected Exits:</span>
           <span className="font-semibold">{fmt1(attritionSummary.totalExits)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <CheckCircle2 className="size-3.5 text-green-500" />
-          <span className="text-muted-foreground">Actual Attrition:</span>
+          <span className="text-foreground/70">Actual Attrition:</span>
           <span className="font-semibold">{fmt1(attritionSummary.totalActualAttrition)}</span>
         </div>
         {demandAssumptions == null && (
