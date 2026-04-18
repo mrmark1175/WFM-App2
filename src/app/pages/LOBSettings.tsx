@@ -128,7 +128,11 @@ function applyDefaults(raw: Partial<LobSettings> & { lob_id: number; lob_name: s
 function countEnabledDays(schedule: ChannelSchedule): number {
   return DAYS.filter((d) => schedule[d].enabled).length;
 }
+function is24HoursChannel(schedule: ChannelSchedule): boolean {
+  return DAYS.every((d) => schedule[d].enabled && schedule[d].open === "00:00" && schedule[d].close === "23:59");
+}
 function avgHoursPerDay(schedule: ChannelSchedule): number {
+  if (is24HoursChannel(schedule)) return 24;
   const enabled = DAYS.filter((d) => schedule[d].enabled);
   if (enabled.length === 0) return 0;
   const total = enabled.reduce((sum, d) => {
@@ -246,8 +250,16 @@ function ChannelStaffingSection({
 }
 
 // ── HoursTable — module-level ─────────────────────────────────────────────────
-function HoursTable({ s, onUpdateHours }: { s: LobSettings; onUpdateHours: UpdateHoursFn }) {
+function HoursTable({ s, onUpdateHours, onUpdate }: { s: LobSettings; onUpdateHours: UpdateHoursFn; onUpdate: UpdateFn }) {
   const enabledChannels = (["voice", "email", "chat", "cases"] as ChannelKey[]).filter((c) => s.channels_enabled[c]);
+
+  function toggle24h(ch: ChannelKey, enable: boolean) {
+    const newSchedule: ChannelSchedule = enable
+      ? Object.fromEntries(DAYS.map((d) => [d, { enabled: true, open: "00:00", close: "23:59" }])) as ChannelSchedule
+      : makeDefaultChannelSchedule();
+    onUpdate(s.lob_id, "hours_of_operation", { ...s.hours_of_operation, [ch]: newSchedule });
+  }
+
   if (enabledChannels.length === 0) {
     return (
       <p className="text-sm text-muted-foreground text-center py-8">
@@ -263,11 +275,20 @@ function HoursTable({ s, onUpdateHours }: { s: LobSettings; onUpdateHours: Updat
             <th className="text-left text-xs font-black uppercase tracking-widest py-2 pl-4 pr-3 w-24">Day</th>
             {enabledChannels.map((ch) => {
               const { Icon: ChIcon, colorClass, label } = CHANNEL_META[ch];
+              const active24h = is24HoursChannel(s.hours_of_operation[ch]);
               return (
                 <th key={ch} colSpan={3}
                   className={`text-center text-xs font-black uppercase tracking-widest py-2 px-2 border-l border-border/40 ${colorClass}`}>
-                  <span className="flex items-center justify-center gap-1">
+                  <span className="flex items-center justify-center gap-2">
                     <ChIcon className="size-3" />{label}
+                    <span className="flex items-center gap-1 ml-1" onClick={(e) => e.stopPropagation()}>
+                      <Switch
+                        checked={active24h}
+                        onCheckedChange={(v) => toggle24h(ch, v)}
+                        className="scale-[0.65]"
+                      />
+                      <span className={`text-[10px] font-semibold ${active24h ? colorClass : "text-muted-foreground"}`}>24h</span>
+                    </span>
                   </span>
                 </th>
               );
@@ -290,22 +311,23 @@ function HoursTable({ s, onUpdateHours }: { s: LobSettings; onUpdateHours: Updat
               <td className="py-2 pl-4 pr-3 font-semibold text-sm">{DAY_SHORT[day]}</td>
               {enabledChannels.map((ch) => {
                 const sched = s.hours_of_operation[ch][day];
+                const locked = is24HoursChannel(s.hours_of_operation[ch]);
                 return (
                   <React.Fragment key={ch}>
                     <td className="py-1.5 px-1 border-l border-border/30">
-                      <Input type="time" value={sched.open} disabled={!sched.enabled}
+                      <Input type="time" value={sched.open} disabled={!sched.enabled || locked}
                         onChange={(e) => onUpdateHours(s.lob_id, ch, day, "open", e.target.value)}
                         className="h-7 text-xs font-mono px-1.5 disabled:opacity-40 min-w-[80px]" />
                     </td>
                     <td className="py-1.5 px-1">
-                      <Input type="time" value={sched.close} disabled={!sched.enabled}
+                      <Input type="time" value={sched.close} disabled={!sched.enabled || locked}
                         onChange={(e) => onUpdateHours(s.lob_id, ch, day, "close", e.target.value)}
                         className="h-7 text-xs font-mono px-1.5 disabled:opacity-40 min-w-[80px]" />
                     </td>
                     <td className="py-1.5 px-1 text-center">
-                      <Switch checked={sched.enabled}
+                      <Switch checked={sched.enabled} disabled={locked}
                         onCheckedChange={(v) => onUpdateHours(s.lob_id, ch, day, "enabled", v)}
-                        className="scale-75" />
+                        className="scale-75 disabled:opacity-40" />
                     </td>
                   </React.Fragment>
                 );
@@ -462,7 +484,7 @@ function LobCard({ s, isOpen, isSaving, hasError, onToggle, onUpdate, onUpdateHo
                 <p className="text-sm text-muted-foreground">
                   Set operating hours per channel per day. The totals row feeds into Demand Planner operating hours/days defaults.
                 </p>
-                <HoursTable s={s} onUpdateHours={onUpdateHours} />
+                <HoursTable s={s} onUpdateHours={onUpdateHours} onUpdate={onUpdate} />
               </TabsContent>
             </Tabs>
           </CardContent>
