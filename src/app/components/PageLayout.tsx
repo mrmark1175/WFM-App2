@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Home, ChevronRight, Search, Bell, Share2, User, Settings, LayoutDashboard, TrendingUp, Calendar, Users, Clock, Database, Phone, Building2, Activity, ChevronLeft, LineChart } from "lucide-react";
+import { Home, ChevronRight, Search, Bell, Share2, User, Settings, LayoutDashboard, TrendingUp, Calendar, Users, Clock, Database, Phone, Building2, Activity, ChevronLeft, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart2, BarChart3, UserCog } from "lucide-react";
 import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
@@ -12,23 +12,30 @@ interface PageLayoutProps {
 
 const NAV: { group: string; items: { to: string; label: string; icon: React.ElementType; badge?: string }[] }[] = [
   { group: "Forecasting", items: [
-    { to: "/",                               label: "Home",                 icon: Home },
-    { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting",  icon: TrendingUp, badge: "12" },
-    { to: "/wfm/long-term-forecasting",      label: "Strategic Planning",   icon: LayoutDashboard },
-    { to: "/wfm/intraday",                   label: "Intraday Forecast",    icon: Activity },
-    { to: "/wfm/arrival-analysis",           label: "Arrival Analysis",     icon: LineChart },
+    { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting",  icon: LineChart },
+    { to: "/wfm/shrinkage",                  label: "Shrinkage Planning",   icon: Layers },
+    { to: "/wfm/intraday",                   label: "Intraday Forecast",    icon: TrendingUp },
+    { to: "/wfm/arrival-analysis",           label: "Arrival Analysis",     icon: BarChart2 },
     { to: "/wfm/interaction-arrival",        label: "Interaction Arrival",  icon: Clock },
   ]},
   { group: "Planning", items: [
-    { to: "/wfm/capacity",                   label: "Workforce Planning",   icon: Calendar },
-    { to: "/wfm/performance-analytics",      label: "Performance Analytics", icon: Activity },
+    { to: "/wfm/capacity",                   label: "Workforce Planning",   icon: Users },
+    { to: "/wfm/performance-analytics",      label: "Performance Analytics", icon: BarChart3 },
+  ]},
+  { group: "Scheduling", items: [
+    { to: "/scheduling",                     label: "Scheduling Hub",       icon: CalendarDays },
+    { to: "/scheduling/schedule",            label: "Schedule Editor",      icon: Calendar },
+    { to: "/scheduling/agents",              label: "Agent Roster",         icon: UserCheck },
+    { to: "/scheduling/shifts",              label: "Shift Templates",      icon: Clock },
+    { to: "/scheduling/labor-laws",          label: "Labor Law Rules",      icon: Scale },
   ]},
   { group: "Data", items: [
-    { to: "/wfm/roster",                     label: "Employee Roster",      icon: Users },
+    { to: "/wfm/roster",                     label: "Employee Roster",      icon: UserCog },
     { to: "/wfm/telephony-raw",              label: "Telephony Raw Data",   icon: Phone },
   ]},
   { group: "Settings", items: [
     { to: "/configuration",                  label: "Configuration",        icon: Settings },
+    { to: "/configuration/lob-management",   label: "LOB Management",       icon: Building2 },
     { to: "/my-account",                     label: "My Account",           icon: User },
   ]},
 ];
@@ -44,9 +51,16 @@ const CRUMB_NAMES: Record<string, string> = {
   "arrival-analysis": "Arrival Analysis",
   "telephony-raw": "Telephony Raw Data",
   "performance-analytics": "Performance Analytics",
+  shrinkage: "Shrinkage Planning",
   roster: "Employee Roster",
   "my-account": "My Account",
   configuration: "Configuration",
+  "lob-management": "LOB Management",
+  scheduling: "Scheduling",
+  schedule: "Schedule Editor",
+  agents: "Agent Roster",
+  shifts: "Shift Templates",
+  "labor-laws": "Labor Law Rules",
   forecasting: "Forecasting",
 };
 
