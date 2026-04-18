@@ -12,8 +12,11 @@ import { Badge } from "../components/ui/badge";
 import { toast } from "sonner";
 import {
   ChevronDown, ChevronRight, RotateCcw, Settings2, TrendingDown, AlertTriangle, CheckCircle2, Loader2,
-  Users, UserPlus,
+  Users, UserPlus, Activity, Target,
 } from "lucide-react";
+import {
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine,
+} from "recharts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -228,6 +231,18 @@ function fmtPct(n: number | string | null | undefined, dp = 1): string {
   const num = Number(n);
   if (isNaN(num)) return "—";
   return `${num.toFixed(dp)}%`;
+}
+
+// Heatmap tint for the Gap/Surplus row. inset box-shadow overlays a translucent
+// colour over the cell's own opaque background — required because the cell is
+// sticky-bottom and must fully hide scrolled rows beneath it.
+function gapCellStyle(v: number, maxAbs: number): React.CSSProperties {
+  if (maxAbs <= 0) return {};
+  const intensity = Math.min(1, Math.abs(v) / maxAbs);
+  const color = v >= 0
+    ? `rgba(34, 197, 94, ${intensity * 0.35})`
+    : `rgba(239, 68, 68, ${intensity * 0.40})`;
+  return { boxShadow: `inset 0 0 0 9999px ${color}` };
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -841,6 +856,26 @@ export function CapacityPlanning() {
     return { peakRequired, grossHireNeed };
   }, [weekCalcs, config.startingHc, attritionSummary.totalExits]);
 
+  // ── Bottom-line summary metrics for the hero strip
+  const currentGap = weekCalcs[0]?.gapSurplus ?? 0;
+  const planHealth = useMemo(() => {
+    if (weekCalcs.length === 0) return 0;
+    const ok = weekCalcs.filter(w => w.gapSurplus >= 0).length;
+    return Math.round((ok / weekCalcs.length) * 100);
+  }, [weekCalcs]);
+  const maxAbsGap = useMemo(
+    () => Math.max(1, ...weekCalcs.map(w => Math.abs(w.gapSurplus))),
+    [weekCalcs],
+  );
+
+  // ── Chart data: Required FTE vs Projected HC vs Actual HC
+  const chartData = useMemo(() => weekCalcs.map(wk => ({
+    label: wk.label,
+    required: Math.ceil(wk.requiredFTE),
+    projected: roundTo(wk.projectedHc, 1),
+    actual: wk.actualHc,
+  })), [weekCalcs]);
+
   // ── LOB switch resets channel tab
   function handleLobSwitch(lobId: number) {
     const lob = lobs.find(l => l.id === lobId);
@@ -992,47 +1027,88 @@ export function CapacityPlanning() {
         )}
       </Card>
 
-      {/* ── Attrition & Hiring Summary */}
-      <div className="flex items-center gap-4 mb-4 flex-wrap text-xs">
+      {/* ── Hero Strip — the bottom-line metrics, always the first thing a manager sees */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        {/* Peak Required FTE */}
+        <div className="bg-card border border-border rounded-lg p-4 shadow-sm border-l-4 border-l-blue-500">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+            <Users className="size-3.5" /> Peak Required FTE
+          </div>
+          <div className="text-3xl font-bold mt-1.5 text-blue-600 dark:text-blue-400 leading-none">
+            {hiringNeed.peakRequired > 0 ? hiringNeed.peakRequired : "—"}
+          </div>
+          <div className="text-[11px] text-muted-foreground mt-1.5">
+            roster ceiling over {config.horizonWeeks} wks
+          </div>
+        </div>
+
+        {/* Current Gap (W1) — the most visceral metric */}
+        <div className={`bg-card border border-border rounded-lg p-4 shadow-sm border-l-4 ${
+          currentGap >= 0 ? "border-l-green-500" : "border-l-red-500"
+        }`}>
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+            <Target className="size-3.5" /> Current Gap (W1)
+          </div>
+          <div className={`text-3xl font-bold mt-1.5 leading-none ${
+            currentGap >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+          }`}>
+            {currentGap >= 0 ? `+${fmt1(currentGap)}` : fmt1(currentGap)}
+          </div>
+          <div className="text-[11px] text-muted-foreground mt-1.5">
+            {currentGap >= 0 ? "surplus vs. required" : "understaffed vs. required"}
+          </div>
+        </div>
+
+        {/* Gross Hiring Need */}
+        <div className="bg-card border border-border rounded-lg p-4 shadow-sm border-l-4 border-l-violet-500"
+          title={`Gap to close: ${Math.max(0, hiringNeed.peakRequired - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
+        >
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+            <UserPlus className="size-3.5" /> Gross Hiring Need
+          </div>
+          <div className="text-3xl font-bold mt-1.5 text-violet-600 dark:text-violet-400 leading-none">
+            {hiringNeed.grossHireNeed > 0 ? hiringNeed.grossHireNeed : "—"}
+          </div>
+          <div className="text-[11px] text-muted-foreground mt-1.5">
+            hires for peak + attrition
+          </div>
+        </div>
+
+        {/* Plan Health */}
+        <div className={`bg-card border border-border rounded-lg p-4 shadow-sm border-l-4 ${
+          planHealth >= 80 ? "border-l-green-500" : planHealth >= 50 ? "border-l-amber-500" : "border-l-red-500"
+        }`}>
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+            <Activity className="size-3.5" /> Plan Health
+          </div>
+          <div className={`text-3xl font-bold mt-1.5 leading-none ${
+            planHealth >= 80 ? "text-green-600 dark:text-green-400"
+              : planHealth >= 50 ? "text-amber-600 dark:text-amber-400"
+              : "text-red-600 dark:text-red-400"
+          }`}>
+            {planHealth}%
+          </div>
+          <div className="text-[11px] text-muted-foreground mt-1.5">
+            weeks at-or-above required
+          </div>
+        </div>
+      </div>
+
+      {/* ── Secondary metrics strip */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap text-xs">
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <TrendingDown className="size-3.5 text-red-500" />
           <span className="text-muted-foreground">Annualized Attrition:</span>
           <span className="font-semibold">{fmtPct(attritionSummary.annualizedPct)}</span>
         </div>
-
-        {/* Peak Required HC — the roster ceiling the manager must build toward */}
-        <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-1.5">
-          <Users className="size-3.5 text-blue-600" />
-          <span className="text-muted-foreground">Peak Required HC</span>
-          <Badge variant="outline" className="text-[10px] py-0 px-1 border-blue-300 text-blue-500">{config.horizonWeeks}wk</Badge>
-          <span className="text-muted-foreground">:</span>
-          <span className="font-semibold text-blue-700 dark:text-blue-400">
-            {hiringNeed.peakRequired > 0 ? hiringNeed.peakRequired : "—"}
-          </span>
-        </div>
-
-        {/* Gross Hiring Need — total hires Recruitment must execute to reach peak and replace attrition */}
-        <div
-          className="flex items-center gap-1.5 bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 rounded-lg px-3 py-1.5"
-          title={`Gap to close: ${Math.max(0, hiringNeed.peakRequired - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
-        >
-          <UserPlus className="size-3.5 text-violet-600" />
-          <span className="text-muted-foreground">Gross Hiring Need</span>
-          <Badge variant="outline" className="text-[10px] py-0 px-1 border-violet-300 text-violet-500">{config.horizonWeeks}wk</Badge>
-          <span className="text-muted-foreground">:</span>
-          <span className="font-semibold text-violet-700 dark:text-violet-400">
-            {hiringNeed.grossHireNeed > 0 ? hiringNeed.grossHireNeed : "—"}
-          </span>
-        </div>
-
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <AlertTriangle className="size-3.5 text-orange-500" />
-          <span className="text-muted-foreground">Projected Exits (period):</span>
+          <span className="text-muted-foreground">Projected Exits:</span>
           <span className="font-semibold">{fmt1(attritionSummary.totalExits)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <CheckCircle2 className="size-3.5 text-green-500" />
-          <span className="text-muted-foreground">Actual Attrition (recorded):</span>
+          <span className="text-muted-foreground">Actual Attrition:</span>
           <span className="font-semibold">{fmt1(attritionSummary.totalActualAttrition)}</span>
         </div>
         {demandAssumptions == null && (
@@ -1041,6 +1117,38 @@ export function CapacityPlanning() {
           </Badge>
         )}
       </div>
+
+      {/* ── Headcount Trajectory Chart — Required FTE vs Projected HC vs Actual HC */}
+      {weekCalcs.length > 0 && (
+        <Card className="mb-4">
+          <CardContent className="py-3 px-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-semibold text-foreground/70">
+                Headcount Trajectory — {isDedicated ? CHANNEL_LABELS[activeChannel] : "All Channels"}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                Required vs. plan — gap is where the red line sits above the dashed blue
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={200}>
+              <ComposedChart data={chartData} margin={{ top: 8, right: 16, bottom: 0, left: -8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 10 }} width={40} />
+                <Tooltip
+                  contentStyle={{ fontSize: 11, borderRadius: 6 }}
+                  labelStyle={{ fontWeight: 600 }}
+                />
+                <Legend wrapperStyle={{ fontSize: 11 }} iconType="line" />
+                <ReferenceLine y={config.startingHc} stroke="#9ca3af" strokeDasharray="2 2" label={{ value: "Start HC", fontSize: 9, position: "insideTopRight", fill: "#9ca3af" }} />
+                <Line type="monotone" dataKey="required" name="Required FTE" stroke="#dc2626" strokeWidth={2.5} dot={false} />
+                <Line type="monotone" dataKey="projected" name="Projected HC" stroke="#2563eb" strokeWidth={2} strokeDasharray="5 3" dot={false} />
+                <Line type="monotone" dataKey="actual" name="Actual HC" stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Main Table */}
       <div className="rounded-lg border border-border overflow-hidden">
@@ -1213,10 +1321,7 @@ export function CapacityPlanning() {
                     <RowLabel label="Proj. Shrinkage %" indent sub />
                     {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmtPct(wk.projShrinkagePct)} className="text-muted-foreground" />)}
                   </tr>
-                  <tr className="border-b border-border bg-muted/10">
-                    <RowLabel label="Required FTE" bold />
-                    {weekCalcs.map(wk => <ReadOnlyCell key={wk.weekOffset} value={fmt1(wk.requiredFTE)} bold />)}
-                  </tr>
+                  {/* Required FTE lives in the sticky footer so it's always visible */}
                 </>
               )}
 
@@ -1294,25 +1399,11 @@ export function CapacityPlanning() {
                 </>
               )}
 
-              {/* ── GAP / SURPLUS — always visible */}
+              {/* ── PERFORMANCE INSIGHTS — Actual Gap & SLA context (not sticky) */}
               <tr className="border-t-2 border-border bg-muted/20">
-                <td colSpan={colSpan} className="px-3 py-1 text-xs font-semibold text-foreground/60 sticky left-0">
-                  GAP / SURPLUS
+                <td colSpan={colSpan} className="px-3 py-1 text-xs font-semibold text-foreground/60 sticky left-0 bg-muted/20 dark:bg-muted/30">
+                  PERFORMANCE INSIGHTS
                 </td>
-              </tr>
-              <tr className="border-b border-border/60">
-                <RowLabel label="Proj. Gap / Surplus" bold />
-                {weekCalcs.map(wk => {
-                  const v = wk.gapSurplus;
-                  const color = v >= 0
-                    ? "text-green-600 dark:text-green-400"
-                    : "text-red-600 dark:text-red-400";
-                  return (
-                    <td key={wk.weekOffset} className={`px-2 py-1.5 text-right text-xs font-semibold whitespace-nowrap ${color} ${Math.abs(v) >= 3 ? "font-bold" : ""}`}>
-                      {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
-                    </td>
-                  );
-                })}
               </tr>
               <tr className="border-b border-border/40">
                 <RowLabel label="Actual Gap / Surplus" indent sub />
@@ -1367,6 +1458,50 @@ export function CapacityPlanning() {
               </tr>
 
             </tbody>
+
+            {/* ── STICKY FOOTER: Required FTE + Gap/Surplus — always visible to the manager */}
+            <tfoot>
+              {/* Required FTE — the number every manager is actually trying to hit */}
+              <tr>
+                <td
+                  className="z-30 border-r border-border bg-card border-t-2 border-t-primary px-3 py-2 text-xs font-bold whitespace-nowrap text-foreground"
+                  style={{ position: "sticky", left: 0, bottom: 36 }}
+                >
+                  Required FTE
+                </td>
+                {weekCalcs.map(wk => (
+                  <td
+                    key={wk.weekOffset}
+                    className="z-20 bg-card border-t-2 border-t-primary px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-foreground"
+                    style={{ position: "sticky", bottom: 36 }}
+                  >
+                    {fmt1(wk.requiredFTE)}
+                  </td>
+                ))}
+              </tr>
+              {/* Proj. Gap / Surplus — the manager's scorecard, heat-mapped by magnitude */}
+              <tr>
+                <td
+                  className="z-30 border-r border-border bg-card px-3 py-2 text-xs font-bold whitespace-nowrap text-foreground"
+                  style={{ position: "sticky", left: 0, bottom: 0 }}
+                >
+                  Proj. Gap / Surplus
+                </td>
+                {weekCalcs.map(wk => {
+                  const v = wk.gapSurplus;
+                  const color = v >= 0 ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300";
+                  return (
+                    <td
+                      key={wk.weekOffset}
+                      className={`z-20 bg-card px-2 py-2 text-right text-xs font-bold whitespace-nowrap ${color}`}
+                      style={{ position: "sticky", bottom: 0, ...gapCellStyle(v, maxAbsGap) }}
+                    >
+                      {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
