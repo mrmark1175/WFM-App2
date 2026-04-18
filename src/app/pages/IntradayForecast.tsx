@@ -159,6 +159,7 @@ export const IntradayForecast = () => {
   const [showMedianTable, setShowMedianTable] = useState(false);
   const [showDistributionTable, setShowDistributionTable] = useState(false);
   const [shrinkageHoursPerDay, setShrinkageHoursPerDay] = useState<number>(7.5);
+  const [lobHoursOfOperation, setLobHoursOfOperation] = useState<Record<string, Record<string, { enabled: boolean; open: string; close: string }>> | null>(null);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitStatus, setCommitStatus] = useState<"idle" | "saving" | "saved">("idle");
 
@@ -193,6 +194,9 @@ export const IntradayForecast = () => {
           ? apiSnapshot
           : localSnapshot ?? apiSnapshot;
 
+      if (lobSettings?.hours_of_operation) {
+        setLobHoursOfOperation(lobSettings.hours_of_operation as Record<string, Record<string, { enabled: boolean; open: string; close: string }>>);
+      }
       if (snapshot) {
         setPlannerSnapshot(snapshot);
       } else if (lobSettings) {
@@ -525,17 +529,46 @@ export const IntradayForecast = () => {
     return weekForecast;
   }, [weekForecast, grain]);
 
-  const chartData = useMemo(() => buildChartData(displayForecast, grain), [displayForecast, grain]);
+  // ── Operating hours mask: zero out intervals outside the channel's LOB schedule ──
+  // DOW_LABELS order: Mon=0 … Sun=6; matches schedule keys monday…sunday.
+  const DOW_SCHEDULE_KEYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  const operatingHoursMask = useMemo((): boolean[][] | null => {
+    const schedule = lobHoursOfOperation?.[selectedChannel];
+    if (!schedule) return null;
+    const intervalCount = displayForecast[0]?.length ?? 0;
+    return DOW_SCHEDULE_KEYS.map((dayKey) => {
+      const day = schedule[dayKey];
+      if (!day?.enabled) return Array(intervalCount).fill(false);
+      const [oh, om] = day.open.split(":").map(Number);
+      const [ch, cm] = day.close.split(":").map(Number);
+      const openMin = oh * 60 + om;
+      const closeMin = ch * 60 + cm;
+      return Array.from({ length: intervalCount }, (_, i) => {
+        const startMin = i * grain;
+        return startMin >= openMin && startMin < closeMin;
+      });
+    });
+  }, [lobHoursOfOperation, selectedChannel, grain, displayForecast]);
+
+  // Apply the mask: intervals outside operating hours get zero volume → zero FTE.
+  const maskedDisplayForecast = useMemo((): number[][] => {
+    if (!operatingHoursMask) return displayForecast;
+    return displayForecast.map((dayData, d) =>
+      dayData.map((calls, i) => (operatingHoursMask[d]?.[i] ? calls : 0))
+    );
+  }, [displayForecast, operatingHoursMask]);
+
+  const chartData = useMemo(() => buildChartData(maskedDisplayForecast, grain), [maskedDisplayForecast, grain]);
 
   // Intervals where every day in the forecast is 0 — used to filter blank rows
   const blankIntervalSet = useMemo(() => {
     const set = new Set<number>();
-    const len = displayForecast[0]?.length ?? 0;
+    const len = maskedDisplayForecast[0]?.length ?? 0;
     for (let i = 0; i < len; i++) {
-      if (DOW_LABELS.every((_, d) => (displayForecast[d]?.[i] ?? 0) === 0)) set.add(i);
+      if (DOW_LABELS.every((_, d) => (maskedDisplayForecast[d]?.[i] ?? 0) === 0)) set.add(i);
     }
     return set;
-  }, [displayForecast]);
+  }, [maskedDisplayForecast]);
 
   // ── FTE per Interval — pull staffing params from demand assumptions ───────────
   const fteParams = useMemo(() => {
@@ -560,7 +593,7 @@ export const IntradayForecast = () => {
 
   const fteTable = useMemo((): IntervalFTEResult[][] | null => {
     if (!fteParams) return null;
-    return displayForecast.map((dayData) =>
+    return maskedDisplayForecast.map((dayData) =>
       dayData.map((calls) =>
         computeIntervalFTE(
           calls,
@@ -576,7 +609,7 @@ export const IntradayForecast = () => {
         )
       )
     );
-  }, [displayForecast, grain, fteParams, selectedChannel]);
+  }, [maskedDisplayForecast, grain, fteParams, selectedChannel]);
 
   // Apply rolling-average smoothing to FTE values, preserving the daily total.
   const smoothedFteTable = useMemo((): IntervalFTEResult[][] | null => {
@@ -609,10 +642,9 @@ export const IntradayForecast = () => {
       if (!dayData) continue;
       dates[weekDates[d]] = Array.from({ length: 96 }, (_, i) => {
         const slotIdx = Math.floor(i / grainFactor);
-        // Zero out FTE for slots where call volume is 0 — prevents smoothing
-        // boundary bleed (e.g. 2:45 AM getting a small FTE from the 3:00 AM peak)
-        // from showing up as required staffing in the Schedule Editor.
-        if ((displayForecast[d]?.[slotIdx] ?? 0) === 0) return 0;
+        // Zero out FTE for slots where call volume is 0 (or outside operating hours) —
+        // prevents smoothing boundary bleed from showing up in the Schedule Editor.
+        if ((maskedDisplayForecast[d]?.[slotIdx] ?? 0) === 0) return 0;
         return dayData[slotIdx]?.fte ?? 0;
       });
     }
