@@ -581,9 +581,16 @@ export function CapacityPlanning() {
   // ── Monthly forecast arrays from demand planner snapshot (captures seasonality)
   const forecastedMonthlyVols = useMemo<{ voice: number[]; chat: number[]; email: number[] } | null>(() => {
     if (!plannerSnapshot) return null;
+    const sel = plannerSnapshot.selectedChannels ?? {};
+    const chatEnabled = !!sel.chat;
+    const emailEnabled = !!sel.email;
     const recut = plannerSnapshot.recutVolumesByChannel;
-    if (recut?.voice?.length && recut?.chat?.length && recut?.email?.length) {
-      return { voice: recut.voice as number[], chat: recut.chat as number[], email: recut.email as number[] };
+    if (recut?.voice?.length) {
+      return {
+        voice: recut.voice as number[],
+        chat: chatEnabled && recut.chat?.length ? recut.chat as number[] : recut.voice.map(() => 0),
+        email: emailEnabled && recut.email?.length ? recut.email as number[] : recut.voice.map(() => 0),
+      };
     }
     const { forecastMethod, hwParams, arimaParams, decompParams, assumptions } = plannerSnapshot;
     const apiData = plannerSnapshot.channelHistoricalApiData ?? {};
@@ -602,12 +609,15 @@ export function CapacityPlanning() {
     const chatH = applyOv(apiData.chat ?? [], overrides.chat ?? {});
     const emailH = applyOv(apiData.email ?? [], overrides.email ?? {});
     const voice = getCalculatedVolumes(voiceH, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
-    const chat = chatH.length > 0
-      ? getCalculatedVolumes(chatH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-      : voice.map(v => Math.round(v * 0.3));
-    const email = emailH.length > 0
-      ? getCalculatedVolumes(emailH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-      : voice.map(v => Math.round(v * 0.2));
+    const zeros = voice.map(() => 0);
+    const chat = !chatEnabled ? zeros
+      : chatH.length > 0
+        ? getCalculatedVolumes(chatH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+        : voice.map(v => Math.round(v * 0.3));
+    const email = !emailEnabled ? zeros
+      : emailH.length > 0
+        ? getCalculatedVolumes(emailH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+        : voice.map(v => Math.round(v * 0.2));
     return { voice, chat, email };
   }, [plannerSnapshot]);
 
@@ -1021,7 +1031,7 @@ export function CapacityPlanning() {
               {!collapsed.demand && (
                 <>
                   {/* Projected Volumes */}
-                  {(!isDedicated || activeChannel === "voice") && (
+                  {(!isDedicated ? enabledChannels.includes("voice") : activeChannel === "voice") && (
                     <tr className="border-b border-border/40 hover:bg-muted/20">
                       <RowLabel label="Proj. Volume — Voice" indent />
                       {weekCalcs.map(wk => (
@@ -1036,7 +1046,7 @@ export function CapacityPlanning() {
                       ))}
                     </tr>
                   )}
-                  {(!isDedicated || activeChannel === "chat") && (
+                  {(!isDedicated ? enabledChannels.includes("chat") : activeChannel === "chat") && (
                     <tr className="border-b border-border/40 hover:bg-muted/20">
                       <RowLabel label="Proj. Volume — Chat" indent />
                       {weekCalcs.map(wk => (
@@ -1051,7 +1061,7 @@ export function CapacityPlanning() {
                       ))}
                     </tr>
                   )}
-                  {(!isDedicated || activeChannel === "email") && (
+                  {(!isDedicated ? enabledChannels.includes("email") : activeChannel === "email") && (
                     <tr className="border-b border-border/40 hover:bg-muted/20">
                       <RowLabel label="Proj. Volume — Email" indent />
                       {weekCalcs.map(wk => (
@@ -1074,7 +1084,7 @@ export function CapacityPlanning() {
                   )}
 
                   {/* Projected AHTs */}
-                  {(!isDedicated || activeChannel === "voice") && (
+                  {(!isDedicated ? enabledChannels.includes("voice") : activeChannel === "voice") && (
                     <tr className="border-b border-border/40 hover:bg-muted/20">
                       <RowLabel label="Proj. AHT (s) — Voice" indent sub />
                       {weekCalcs.map(wk => (
@@ -1089,7 +1099,7 @@ export function CapacityPlanning() {
                       ))}
                     </tr>
                   )}
-                  {(!isDedicated || activeChannel === "chat") && (
+                  {(!isDedicated ? enabledChannels.includes("chat") : activeChannel === "chat") && (
                     <tr className="border-b border-border/40 hover:bg-muted/20">
                       <RowLabel label="Proj. AHT (s) — Chat" indent sub />
                       {weekCalcs.map(wk => (
@@ -1104,7 +1114,7 @@ export function CapacityPlanning() {
                       ))}
                     </tr>
                   )}
-                  {(!isDedicated || activeChannel === "email") && (
+                  {(!isDedicated ? enabledChannels.includes("email") : activeChannel === "email") && (
                     <tr className="border-b border-border/40 hover:bg-muted/20">
                       <RowLabel label="Proj. AHT (s) — Email" indent sub />
                       {weekCalcs.map(wk => (
@@ -1121,19 +1131,19 @@ export function CapacityPlanning() {
                   )}
 
                   {/* Actual volumes — roster integration coming; read-only for now */}
-                  {(!isDedicated || activeChannel === "voice") && (
+                  {(!isDedicated ? enabledChannels.includes("voice") : activeChannel === "voice") && (
                     <tr className="border-b border-border/40 border-t-2 border-t-border/60">
                       <RowLabel label="Actual Volume — Voice" indent sub />
                       {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-muted-foreground/50 italic" />)}
                     </tr>
                   )}
-                  {(!isDedicated || activeChannel === "chat") && (
+                  {(!isDedicated ? enabledChannels.includes("chat") : activeChannel === "chat") && (
                     <tr className="border-b border-border/40">
                       <RowLabel label="Actual Volume — Chat" indent sub />
                       {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-muted-foreground/50 italic" />)}
                     </tr>
                   )}
-                  {(!isDedicated || activeChannel === "email") && (
+                  {(!isDedicated ? enabledChannels.includes("email") : activeChannel === "email") && (
                     <tr className="border-b border-border/40">
                       <RowLabel label="Actual Volume — Email" indent sub />
                       {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-muted-foreground/50 italic" />)}
