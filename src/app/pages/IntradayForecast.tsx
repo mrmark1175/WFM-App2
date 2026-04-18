@@ -56,7 +56,6 @@ interface DistributionProfile {
 }
 
 interface IntradayPrefs {
-  selectedChannel: ChannelKey;
   targetMonthOffset: number;
   targetWeekStart: string;
   grain: 15 | 30 | 60;
@@ -75,7 +74,6 @@ interface IntradayPrefs {
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
 const USER_INPUTS_STORAGE_KEY = "lt_forecast_demand_user_inputs";
 const DEFAULT_PREFS: IntradayPrefs = {
-  selectedChannel: "voice",
   targetMonthOffset: 0,
   targetWeekStart: "",
   grain: 15,
@@ -122,11 +120,21 @@ function applyHistoricalOverrides(apiData: number[], overrides: Record<number, s
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export const IntradayForecast = () => {
-  const { activeLob } = useLOB();
+  const { activeLob, activeChannel } = useLOB();
+  const selectedChannel = activeChannel as ChannelKey;
   const [prefs, setPrefs] = usePagePreferences<IntradayPrefs>("intraday_forecast", DEFAULT_PREFS);
-  const { selectedChannel, targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource,
+  const { targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource,
           baselineYear, baselineStartWeek, manualRawData, manualWeeklyVolumes, editableWeights,
           hideBlankRows, smoothFTE, smoothWindow } = prefs;
+
+  // Reset target month/week when global channel changes
+  const prevChannelRef = React.useRef(selectedChannel);
+  useEffect(() => {
+    if (prevChannelRef.current !== selectedChannel) {
+      prevChannelRef.current = selectedChannel;
+      setPrefs({ targetMonthOffset: 0, targetWeekStart: "" });
+    }
+  }, [selectedChannel]);
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [plannerSnapshot, setPlannerSnapshot] = useState<PlannerSnapshot | null>(null);
@@ -949,22 +957,6 @@ export const IntradayForecast = () => {
         </div>
         <div className="p-4">
           <div className="flex flex-wrap items-end gap-4">
-            {/* Channel */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-semibold text-foreground">Channel</span>
-              <Select value={selectedChannel} onValueChange={(v) => setPrefs({ selectedChannel: v as ChannelKey, targetMonthOffset: 0, targetWeekStart: "" })}>
-                <SelectTrigger className="w-32 h-8 text-sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="voice">Voice</SelectItem>
-                  <SelectItem value="email">Email</SelectItem>
-                  <SelectItem value="chat">Chat</SelectItem>
-                  <SelectItem value="cases">Cases</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
             {/* Target month */}
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-semibold text-foreground">Target Month</span>

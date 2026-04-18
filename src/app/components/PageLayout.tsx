@@ -30,6 +30,7 @@ import logo from "../../assets/logo.svg";
 import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
+import { ChannelSelector } from "./ChannelSelector";
 import {
   Tooltip,
   TooltipContent,
@@ -238,6 +239,9 @@ export function PageLayout({ children, title }: PageLayoutProps) {
 
   const pathnames = location.pathname.split("/").filter(Boolean);
 
+  const CHANNEL_ROUTES = ["/wfm/arrival-analysis", "/wfm/interaction-arrival", "/wfm/intraday"];
+  const showChannelSelector = CHANNEL_ROUTES.includes(location.pathname);
+
   return (
     <TooltipProvider delayDuration={100}>
       <div className="min-h-screen bg-background flex">
@@ -370,6 +374,9 @@ export function PageLayout({ children, title }: PageLayoutProps) {
 
             <div className="flex items-center gap-3 shrink-0 ml-4">
               <LOBSelector className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" />
+              {showChannelSelector && (
+                <ChannelSelector className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" />
+              )}
 
               {/* Account dropdown trigger */}
               <div className="relative">

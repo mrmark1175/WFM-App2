@@ -8,10 +8,21 @@ export interface LOB {
   created_at?: string;
 }
 
+export type ChannelKey = "voice" | "chat" | "email" | "cases";
+
+export const CHANNEL_OPTIONS: { value: ChannelKey; label: string }[] = [
+  { value: "voice", label: "Voice" },
+  { value: "chat",  label: "Chat" },
+  { value: "email", label: "Email" },
+  { value: "cases", label: "Cases" },
+];
+
 interface LOBContextValue {
   lobs: LOB[];
   activeLob: LOB | null;
   setActiveLob: (lob: LOB) => void;
+  activeChannel: ChannelKey;
+  setActiveChannel: (channel: ChannelKey) => void;
   createLob: (name: string) => Promise<LOB>;
   renameLob: (id: number, name: string) => Promise<void>;
   deleteLob: (id: number) => Promise<void>;
@@ -23,6 +34,10 @@ const LOBContext = createContext<LOBContextValue | null>(null);
 export function LOBProvider({ children }: { children: React.ReactNode }) {
   const [lobs, setLobs] = useState<LOB[]>([]);
   const [activeLob, setActiveLobState] = useState<LOB | null>(null);
+  const [activeChannel, setActiveChannelState] = useState<ChannelKey>(() => {
+    const saved = localStorage.getItem("activeChannel") as ChannelKey | null;
+    return CHANNEL_OPTIONS.some((o) => o.value === saved) ? saved! : "voice";
+  });
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -43,6 +58,11 @@ export function LOBProvider({ children }: { children: React.ReactNode }) {
   const setActiveLob = (lob: LOB) => {
     setActiveLobState(lob);
     localStorage.setItem("activeLobId", String(lob.id));
+  };
+
+  const setActiveChannel = (channel: ChannelKey) => {
+    setActiveChannelState(channel);
+    localStorage.setItem("activeChannel", channel);
   };
 
   const createLob = async (name: string): Promise<LOB> => {
@@ -93,7 +113,7 @@ export function LOBProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <LOBContext.Provider
-      value={{ lobs, activeLob, setActiveLob, createLob, renameLob, deleteLob, isLoading }}
+      value={{ lobs, activeLob, setActiveLob, activeChannel, setActiveChannel, createLob, renameLob, deleteLob, isLoading }}
     >
       {children}
     </LOBContext.Provider>

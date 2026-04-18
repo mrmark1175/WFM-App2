@@ -462,11 +462,11 @@ function DistributionTab({ data, intervalSize }: DistProps) {
 // ── Main Component ────────────────────────────────────────────────────────────
 export function InteractionArrival() {
   const navigate = useNavigate();
-  const { activeLob } = useLOB();
+  const { activeLob, activeChannel } = useLOB();
+  const selectedChannel = activeChannel as ChannelKey;
 
   // ── Persisted preferences (per LOB) ─────────────────────────────────────────
   const [prefs, setPrefs] = usePagePreferences("interaction_arrival", {
-    selectedChannel: "voice" as ChannelKey,
     startDate: lastMonday(),
     endDate: addDays(lastMonday(), 6),
     activeTab: "volume" as "volume" | "aht" | "distribution",
@@ -475,7 +475,6 @@ export function InteractionArrival() {
   });
 
   // ── Core state ───────────────────────────────────────────────────────────────
-  const selectedChannel = prefs.selectedChannel;
   const activeTab       = prefs.activeTab;
   const intervalSize    = prefs.intervalSize;
   const startDate       = prefs.startDate;
@@ -759,21 +758,6 @@ export function InteractionArrival() {
                 </button>
               ))}
             </div>
-          </div>
-
-          <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />
-
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>Channel:</span>
-            <select
-              value={selectedChannel}
-              onChange={e => setPrefs({ selectedChannel: e.target.value as ChannelKey })}
-              style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 6, padding: "4px 8px", color: "#111827", background: "#fff", cursor: "pointer" }}
-            >
-              {CHANNEL_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
           </div>
 
           <div style={{ width: 1, height: 24, background: "#e5e7eb" }} />

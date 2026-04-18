@@ -24,7 +24,7 @@ const MONTHS_FULL = ["January","February","March","April","May","June","July","A
 const DOW_LABELS  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const DOW_MON_FIRST = [1,2,3,4,5,6,0];
 const DOW_SUN_FIRST = [0,1,2,3,4,5,6];
-const CHANNEL_OPTIONS: { value: ChannelKey; label: string }[] = [
+const CHANNEL_OPTIONS: { value: ChannelKey; label: string }[] = [ // kept for display-only uses
   { value: "voice", label: "Voice" },
   { value: "chat", label: "Chat" },
   { value: "email", label: "Email" },
@@ -151,11 +151,11 @@ const PivotCell = ({ vol, pctStr, maxVol, isHdr, isTotal }: PivotCellProps) => (
 // ─────────────────────────────────────────────────────────────────────────────
 export function ArrivalAnalysis() {
   const navigate = useNavigate();
-  const { activeLob } = useLOB();
+  const { activeLob, activeChannel } = useLOB();
+  const selectedChannel = activeChannel as ChannelKey;
 
   // ── Persisted view preferences (per LOB) ────────────────────────────────────
   const [prefs, setPrefs] = usePagePreferences("arrival_analysis", {
-    selectedChannel: "voice" as ChannelKey,
     view: "yoy" as ViewLevel,
     layout: "periods-as-rows" as LayoutMode,
     weekStart: 1 as WeekStart,
@@ -173,7 +173,6 @@ export function ArrivalAnalysis() {
   const [copyDone,  setCopyDone]  = useState(false);
 
   // Derive state from prefs (single source of truth)
-  const selectedChannel = prefs.selectedChannel;
   const view            = prefs.view;
   const layout          = prefs.layout;
   const weekStart       = prefs.weekStart;
@@ -1028,19 +1027,6 @@ export function ArrivalAnalysis() {
             <p style={{ margin: "3px 0 0", fontSize: 12, color: "#9ca3af" }}>
               {isLoading ? "Loading…" : loaded ? `${Object.keys(data).length.toLocaleString()} days loaded` : "No data"}
             </p>
-          </div>
-
-          <div style={{ padding: "0 20px 12px", borderBottom: "1px solid #f3f4f6" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Channel</div>
-            <select
-              value={selectedChannel}
-              onChange={e => setPrefs({ selectedChannel: e.target.value as ChannelKey })}
-              style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#111827", fontSize: 12, fontWeight: 600 }}
-            >
-              {CHANNEL_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
           </div>
 
           {/* View selector */}
