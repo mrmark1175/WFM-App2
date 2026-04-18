@@ -75,14 +75,8 @@ export function PageLayout({ children, title }: PageLayoutProps) {
 
       {/* ── Topbar (44px, near-black) ── */}
       <header className="sticky top-0 z-40 h-11 bg-shell text-[#dedbcf] border-b border-black flex items-center px-3 gap-3">
-        <div className={`flex items-center gap-2 ${collapsed ? "w-[52px]" : "w-[208px]"} transition-[width]`}>
-          <img src={logo} alt="Exordium" className="h-6 w-auto" />
-          {!collapsed && (
-            <>
-              <span className="text-[13px] font-semibold text-[#ede9dc] tracking-tight">Exordium</span>
-              <span className="ml-auto font-mono text-[10.5px] text-[#7a7b7a] uppercase tracking-wider">WFM</span>
-            </>
-          )}
+        <div className={`flex items-center ${collapsed ? "w-[52px]" : "w-[208px]"} transition-[width] overflow-hidden`}>
+          <img src={logo} alt="Exordium WFM" className="h-[29px] w-auto shrink-0" />
         </div>
 
         <nav className="flex items-center gap-1.5 text-[12px] text-[#b6b3a8]">

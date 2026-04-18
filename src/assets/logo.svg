@@ -1,28 +1,27 @@
 <svg width="380" height="110" viewBox="0 0 380 110" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <style>
-      .wm  { font-family:'Segoe UI',Arial,sans-serif; font-size:42px; font-weight:700; fill:#1A1F36; letter-spacing:-1px; }
-      .sub { font-family:'Segoe UI',Arial,sans-serif; font-size:14px; font-weight:600; fill:#1A56E8; letter-spacing:3px; }
+      .wm  { font-family:'Segoe UI',Arial,sans-serif; font-size:42px; font-weight:700; fill:#ede9dc; letter-spacing:-1px; }
+      .sub { font-family:'Segoe UI',Arial,sans-serif; font-size:14px; font-weight:600; fill:#5b9cf6; letter-spacing:3px; }
     </style>
   </defs>
 
   <!-- ── HEX GRID MARK ── -->
   <g transform="translate(0,10)">
-    <rect x="0" y="0" width="88" height="88" rx="16" fill="#F0F4FF"/>
     <!-- Center hex -->
     <polygon points="44,16 59,25 59,43 44,52 29,43 29,25" fill="#1A56E8"/>
     <!-- Top -->
     <polygon points="44,2  55,9  55,16 44,23 33,16 33,9"  fill="#0ECAD4"/>
     <!-- Top-right -->
-    <polygon points="59,24 70,31 70,43 59,50 48,43 48,31" fill="#1A56E8" opacity="0.5"/>
+    <polygon points="59,24 70,31 70,43 59,50 48,43 48,31" fill="#1A56E8" opacity="0.6"/>
     <!-- Bottom-right -->
-    <polygon points="59,51 70,58 70,70 59,77 48,70 48,58" fill="#0ECAD4" opacity="0.45"/>
+    <polygon points="59,51 70,58 70,70 59,77 48,70 48,58" fill="#0ECAD4" opacity="0.55"/>
     <!-- Bottom -->
-    <polygon points="44,52 55,59 55,71 44,78 33,71 33,59" fill="#1A56E8" opacity="0.45"/>
+    <polygon points="44,52 55,59 55,71 44,78 33,71 33,59" fill="#1A56E8" opacity="0.55"/>
     <!-- Bottom-left -->
-    <polygon points="29,51 40,58 40,70 29,77 18,70 18,58" fill="#1A56E8" opacity="0.3"/>
+    <polygon points="29,51 40,58 40,70 29,77 18,70 18,58" fill="#1A56E8" opacity="0.4"/>
     <!-- Top-left -->
-    <polygon points="29,24 40,31 40,43 29,50 18,43 18,31" fill="#0ECAD4" opacity="0.55"/>
+    <polygon points="29,24 40,31 40,43 29,50 18,43 18,31" fill="#0ECAD4" opacity="0.65"/>
     <!-- Center dot -->
     <circle cx="44" cy="34" r="6" fill="white" opacity="0.95"/>
   </g>
