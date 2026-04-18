@@ -201,29 +201,38 @@ export function computeIntervalFTE(
 
   // Voice / Chat — Erlang A when patience configured, Erlang C otherwise.
   // Occupancy is strictly an OUTPUT here; SLA alone drives the agent count.
-  // For chat, one agent handles `concurrency` simultaneous sessions, so the
-  // equivalent single-stream demand is volume / concurrency.
-  const effectiveCalls = channel === "chat" ? callsPerInterval / Math.max(1, concurrency) : callsPerInterval;
-  const A = (effectiveCalls * ahtSec) / intervalSeconds;
+  //
+  // Chat multi-session model (M/M/N×c queue):
+  //   Each physical agent handles `concurrency` simultaneous sessions, so the
+  //   system has N×c virtual server slots. Erlang C runs on the full traffic
+  //   intensity A to find the minimum virtual slots, then physical agents =
+  //   ceil(virtual / concurrency). This is more accurate than dividing the
+  //   arrival rate by c (the "reduced single-stream" approximation), which
+  //   under-counts the queue's drain rate and systematically over-staffs.
+  const A = (callsPerInterval * ahtSec) / intervalSeconds;
+  const c = channel === "chat" ? Math.max(1, concurrency) : 1;
 
   let rawAgents: number;
   let achievedSL: number;
   let abandonRate: number;
 
   if (avgPatienceSeconds > 0) {
-    // Erlang A path
-    rawAgents = minAgentsForSL_A(A, ahtSec, slaSec, slaTarget / 100, avgPatienceSeconds);
-    const metrics = erlangAMetrics(A, rawAgents, avgPatienceSeconds, ahtSec);
+    // Erlang A path — find minimum virtual slots, convert to physical
+    const minVirtual = minAgentsForSL_A(A, ahtSec, slaSec, slaTarget / 100, avgPatienceSeconds);
+    rawAgents = Math.ceil(minVirtual / c);
+    const metrics = erlangAMetrics(A, rawAgents * c, avgPatienceSeconds, ahtSec);
     achievedSL = metrics.slFn(slaSec) * 100;
     abandonRate = metrics.abandonRate;
   } else {
-    // Erlang C path (pure, no patience)
-    rawAgents = minAgentsForSL(A, ahtSec, slaSec, slaTarget / 100);
-    achievedSL = rawAgents > 0 ? erlangServiceLevel(A, rawAgents, ahtSec, slaSec) * 100 : 0;
+    // Erlang C path — find minimum virtual slots, convert to physical
+    const minVirtual = minAgentsForSL(A, ahtSec, slaSec, slaTarget / 100);
+    rawAgents = Math.ceil(minVirtual / c);
+    achievedSL = rawAgents > 0 ? erlangServiceLevel(A, rawAgents * c, ahtSec, slaSec) * 100 : 0;
     abandonRate = 0;
   }
 
-  const occupancy = rawAgents > 0 ? (A / rawAgents) * 100 : 0;
+  // Occupancy = traffic intensity / total virtual server capacity
+  const occupancy = rawAgents > 0 ? (A / (rawAgents * c)) * 100 : 0;
 
   return {
     rawAgents,
@@ -263,21 +272,24 @@ export function computeAchievedSLFromFTE(
   const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
   const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
 
-  // Invert FTE → raw concurrent agents on floor per average 30-min interval
-  const rawAgents = (actualFTE / coverageRatio) * shrinkFactor;
+  // Invert FTE → physical agents on floor per average 30-min interval
+  const physicalAgents = (actualFTE / coverageRatio) * shrinkFactor;
 
-  // Average traffic intensity per 30-min interval
+  // Average traffic intensity per 30-min interval (full, not divided by concurrency)
   const callsPerInterval = weeklyVolume / daysPerWeek / (operatingHoursPerDay * 2);
-  const effectiveCalls = channel === "chat" ? callsPerInterval / Math.max(1, concurrency) : callsPerInterval;
-  const A = (effectiveCalls * ahtSec) / 1800; // 1800s = 30-min interval
+  const A = (callsPerInterval * ahtSec) / 1800; // 1800s = 30-min interval
+
+  // Total virtual server slots: each chat agent covers c simultaneous sessions
+  const c = channel === "chat" ? Math.max(1, concurrency) : 1;
+  const virtualAgents = physicalAgents * c;
 
   if (avgPatienceSeconds > 0) {
-    const { slFn } = erlangAMetrics(A, rawAgents, avgPatienceSeconds, ahtSec);
+    const { slFn } = erlangAMetrics(A, virtualAgents, avgPatienceSeconds, ahtSec);
     return +(slFn(slaSec) * 100).toFixed(1);
   }
 
-  if (rawAgents <= A) return 0; // under-staffed: everyone waits
-  return +(erlangServiceLevel(A, rawAgents, ahtSec, slaSec) * 100).toFixed(1);
+  if (virtualAgents <= A) return 0; // under-staffed: everyone waits
+  return +(erlangServiceLevel(A, virtualAgents, ahtSec, slaSec) * 100).toFixed(1);
 }
 
 /**
