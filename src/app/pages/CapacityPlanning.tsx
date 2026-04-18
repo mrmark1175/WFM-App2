@@ -61,6 +61,8 @@ interface WeekCalc extends WeekMeta {
   achievedSLAActual: number | null; // Erlang C SLA% at actual HC; null if no actual HC or email
 }
 
+interface DaySchedule { enabled: boolean; open: string; close: string; }
+
 interface LobSettings {
   lob_id: number; lob_name: string;
   channels_enabled: Record<string, boolean>;
@@ -68,6 +70,7 @@ interface LobSettings {
   voice_aht?: number; voice_sla_target?: number; voice_sla_seconds?: number;
   chat_aht?: number; chat_sla_target?: number; chat_sla_seconds?: number; chat_concurrency?: number;
   email_aht?: number; email_sla_target?: number; email_sla_seconds?: number; email_occupancy?: number;
+  hours_of_operation?: Record<string, Record<string, DaySchedule>>;
 }
 
 interface DemandAssumptions {
@@ -113,6 +116,25 @@ const FIELD_MAP: Record<string, string> = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtDate(d: Date): string { return `${MONTHS[d.getMonth()]} ${d.getDate()}`; }
+
+// Derive operating days/hours from a channel's hours-of-operation schedule.
+// Returns null when no schedule is configured so callers can fall back.
+function hoursFromSchedule(
+  schedule: Record<string, DaySchedule> | undefined,
+): { daysPerWeek: number; hoursPerDay: number } | null {
+  if (!schedule) return null;
+  const enabled = Object.values(schedule).filter(d => d.enabled);
+  if (!enabled.length) return null;
+  const totalHrs = enabled.reduce((sum, d) => {
+    const [oh, om] = d.open.split(":").map(Number);
+    const [ch, cm] = d.close.split(":").map(Number);
+    return sum + Math.max(0, (ch + cm / 60) - (oh + om / 60));
+  }, 0);
+  return {
+    daysPerWeek: enabled.length,
+    hoursPerDay: Math.round((totalHrs / enabled.length) * 10) / 10,
+  };
+}
 function roundTo(n: number, dp = 1) { return Math.round(n * 10 ** dp) / 10 ** dp; }
 
 function getMondayOf(date: Date): Date {
@@ -633,8 +655,19 @@ export function CapacityPlanning() {
 
   // ── Staffing params
   const shrinkagePct = Number(demandAssumptions?.shrinkage ?? 20) || 20;
-  const daysPerWeek = demandAssumptions?.operatingDaysPerWeek ?? 5;
-  const operatingHoursPerDay = demandAssumptions?.operatingHoursPerDay ?? 8;
+
+  // Operating hours: LOB settings (hours_of_operation) is the source of truth.
+  // For dedicated LOBs use the active channel's schedule; for blended use voice.
+  // Falls back to demand assumptions, then hard defaults.
+  const lobOpHours = useMemo(() => {
+    const hoo = lobSettings?.hours_of_operation;
+    if (!hoo) return null;
+    const channelKey = isDedicated ? activeChannel : "voice";
+    return hoursFromSchedule(hoo[channelKey]);
+  }, [lobSettings, isDedicated, activeChannel]);
+
+  const daysPerWeek = lobOpHours?.daysPerWeek ?? demandAssumptions?.operatingDaysPerWeek ?? 5;
+  const operatingHoursPerDay = lobOpHours?.hoursPerDay ?? demandAssumptions?.operatingHoursPerDay ?? 8;
   // SLA params — LOB settings are authoritative; fall back to demand planner snapshot values
   const snap = plannerSnapshot?.assumptions;
   const slaVoiceTarget = Number(lobSettings?.voice_sla_target ?? snap?.voiceSlaTarget ?? 80);
