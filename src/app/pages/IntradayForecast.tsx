@@ -69,6 +69,7 @@ interface IntradayPrefs {
   hideBlankRows: boolean;
   smoothFTE: boolean;
   smoothWindow: number;
+  patternShiftHours: number;
 }
 
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
@@ -87,6 +88,7 @@ const DEFAULT_PREFS: IntradayPrefs = {
   hideBlankRows: false,
   smoothFTE: false,
   smoothWindow: 2,
+  patternShiftHours: 0,
 };
 const DOW_COLORS = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#9333ea", "#e11d48", "#94a3b8"];
 
@@ -125,7 +127,7 @@ export const IntradayForecast = () => {
   const [prefs, setPrefs] = usePagePreferences<IntradayPrefs>("intraday_forecast", DEFAULT_PREFS);
   const { targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource,
           baselineYear, baselineStartWeek, manualRawData, manualWeeklyVolumes, editableWeights,
-          hideBlankRows, smoothFTE, smoothWindow } = prefs;
+          hideBlankRows, smoothFTE, smoothWindow, patternShiftHours = 0 } = prefs;
 
   // Reset target month/week when global channel changes
   const prevChannelRef = React.useRef(selectedChannel);
@@ -523,11 +525,25 @@ export const IntradayForecast = () => {
     [forecastedWeekVolume, distributionWeights.dayWeights, activeIntervalWeights]
   );
 
+  // ── DST / timezone shift: circularly rotate 15-min slots before aggregation ──
+  // Positive hours → pattern shifts forward (e.g. +1h: peak moves from 10 AM to 11 AM).
+  // Applied at the raw 96-slot level so grain aggregation sees the shifted data.
+  const shiftedWeekForecast = useMemo((): number[][] => {
+    const slotShift = Math.round(patternShiftHours * 4); // 4 × 15-min slots per hour
+    if (slotShift === 0) return weekForecast;
+    const N = SLOT_COUNT; // 96
+    const k = ((slotShift % N) + N) % N; // normalise to [0, N)
+    return weekForecast.map((dayData) => [
+      ...dayData.slice(N - k),
+      ...dayData.slice(0, N - k),
+    ]);
+  }, [weekForecast, patternShiftHours]);
+
   const displayForecast = useMemo(() => {
-    if (grain === 60) return aggregateTo60Min(weekForecast);
-    if (grain === 30) return aggregateTo30Min(weekForecast);
-    return weekForecast;
-  }, [weekForecast, grain]);
+    if (grain === 60) return aggregateTo60Min(shiftedWeekForecast);
+    if (grain === 30) return aggregateTo30Min(shiftedWeekForecast);
+    return shiftedWeekForecast;
+  }, [shiftedWeekForecast, grain]);
 
   // ── Operating hours mask: zero out intervals outside the channel's LOB schedule ──
   // DOW_LABELS order: Mon=0 … Sun=6; matches schedule keys monday…sunday.
@@ -1530,9 +1546,46 @@ export const IntradayForecast = () => {
 
       {/* ── Pattern Preview Chart ── */}
       <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
-          <h2 className="text-sm font-semibold text-slate-700">Intraday Arrival Pattern</h2>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-200 flex-wrap">
+          <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+            Intraday Arrival Pattern
+            {patternShiftHours !== 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 px-2 py-0.5 text-[10px] font-bold text-amber-700 uppercase tracking-wide">
+                DST {patternShiftHours > 0 ? "+" : ""}{patternShiftHours}h
+              </span>
+            )}
+          </h2>
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Pattern shift control */}
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-slate-400">Pattern shift:</span>
+              <button
+                onClick={() => setPrefs({ patternShiftHours: Math.max(-12, patternShiftHours - 0.5) })}
+                disabled={patternShiftHours <= -12}
+                className="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 text-sm leading-none"
+                title="Shift pattern earlier by 30 min"
+              >−</button>
+              <span
+                className={`w-12 text-center text-xs font-mono font-semibold tabular-nums ${patternShiftHours !== 0 ? "text-amber-700" : "text-slate-400"}`}
+              >
+                {patternShiftHours > 0 ? "+" : ""}{patternShiftHours}h
+              </span>
+              <button
+                onClick={() => setPrefs({ patternShiftHours: Math.min(12, patternShiftHours + 0.5) })}
+                disabled={patternShiftHours >= 12}
+                className="w-6 h-6 flex items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 text-sm leading-none"
+                title="Shift pattern later by 30 min"
+              >+</button>
+              {patternShiftHours !== 0 && (
+                <button
+                  onClick={() => setPrefs({ patternShiftHours: 0 })}
+                  className="text-[10px] text-muted-foreground hover:text-destructive ml-0.5 px-1"
+                  title="Reset shift to 0"
+                >✕</button>
+              )}
+            </div>
+            <div className="h-4 w-px bg-slate-200" />
+            {/* Grain selector */}
             <span className="text-xs text-slate-400">Grain:</span>
             <div className="flex rounded-md border border-slate-200 overflow-hidden">
               {([15, 30, 60] as const).map((g) => (
