@@ -1,5 +1,29 @@
 
 :root {
+  /* ── Dense analyst design tokens (from UI Design port) ───────────────── */
+  --shell: #0c0d10;
+  --shell-fg: #ede9dc;
+  --shell-muted: #a8a79b;
+  --canvas: #f6f5f2;
+  --surface: #ffffff;
+  --surface-2: #fbfaf7;
+  --hairline: #e6e3dc;
+  --hairline-2: #d9d5cc;
+  --ink: #15171a;
+  --ink-2: #3c3f45;
+  --ink-3: #6b6f77;
+  --ink-4: #9aa0a8;
+  --indigo: #3a4ad9;
+  --indigo-2: #1f2b8e;
+  --indigo-soft: #e5e8ff;
+  --pos: #14743a;
+  --pos-soft: #e1f3e6;
+  --neg: #9b2030;
+  --neg-soft: #fbe5e8;
+  --warn: #8a5a00;
+  --warn-soft: #fbeecf;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
   --font-size: 16px;
   --font-weight-semibold: 600;
   --background: var(--bg-app);
@@ -115,6 +139,28 @@ html.dark {
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  /* ── Dense analyst design tokens ───────────────────────────────────── */
+  --color-shell: var(--shell);
+  --color-canvas: var(--canvas);
+  --color-hairline: var(--hairline);
+  --color-hairline-2: var(--hairline-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-indigo: var(--indigo);
+  --color-indigo-2: var(--indigo-2);
+  --color-indigo-soft: var(--indigo-soft);
+  --color-pos: var(--pos);
+  --color-pos-soft: var(--pos-soft);
+  --color-neg: var(--neg);
+  --color-neg-soft: var(--neg-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --font-family-mono: var(--font-mono);
 }
 
 @layer base {
@@ -132,7 +178,7 @@ html.dark {
   }
 
   html, body {
-    @apply bg-background text-foreground transition-colors duration-300;
+    @apply bg-background text-foreground transition-colors duration-300 tabular-nums;
   }
 
   h1 {

@@ -1,498 +1,145 @@
 import { Link, useLocation } from "react-router-dom";
-import {
-  Home,
-  ChevronRight,
-  Loader2,
-  LineChart,
-  Layers,
-  TrendingUp,
-  BarChart2,
-  Grid,
-  Users,
-  BarChart3,
-  CalendarDays,
-  UserCheck,
-  Clock,
-  Scale,
-  UserCog,
-  Database,
-  Settings,
-  User,
-  Building2,
-  PanelLeftOpen,
-  PanelLeftClose,
-  LogOut,
-  KeyRound,
-  Eye,
-  EyeOff,
-} from "lucide-react";
-import logo from "../../assets/logo.svg";
+import { Home, ChevronRight, Search, Bell, Share2, User, Settings, LayoutDashboard, TrendingUp, Calendar, Users, Clock, Database, Phone, Building2, Activity, ChevronLeft, LineChart } from "lucide-react";
 import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
-import { LOBSelector } from "./LOBSelector";
-import { ChannelSelector } from "./ChannelSelector";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "./ui/tooltip";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "./ui/dialog";
-import { Button } from "./ui/button";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
-import { apiUrl } from "../lib/api";
-import { toast } from "sonner";
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-interface NavItem {
-  label: string;
-  icon: React.ElementType;
-  path: string;
-}
-
-interface NavGroup {
-  label: string;
-  items: NavItem[];
-}
+import logo from "../../assets/logo.png";
 
 interface PageLayoutProps {
   children: React.ReactNode;
-  title: string;
+  title?: string; // now optional — pages own their own headers
 }
 
-// ── Nav structure ────────────────────────────────────────────────────────────
-
-const NAV_GROUPS: NavGroup[] = [
-  {
-    label: "Forecasting",
-    items: [
-      { label: "Demand Forecasting",  icon: LineChart,    path: "/wfm/long-term-forecasting-demand" },
-      { label: "Shrinkage Planning",  icon: Layers,       path: "/wfm/shrinkage" },
-      { label: "Intraday Forecast",   icon: TrendingUp,   path: "/wfm/intraday" },
-      { label: "Arrival Analysis",    icon: BarChart2,    path: "/wfm/arrival-analysis" },
-      { label: "Interaction Arrival", icon: Grid,         path: "/wfm/interaction-arrival" },
-    ],
-  },
-  {
-    label: "Planning",
-    items: [
-      { label: "Workforce Planning",    icon: Users,     path: "/wfm/capacity" },
-      { label: "Performance Analytics", icon: BarChart3, path: "/wfm/performance-analytics" },
-    ],
-  },
-  {
-    label: "Scheduling",
-    items: [
-      { label: "Scheduling Hub",   icon: CalendarDays, path: "/scheduling" },
-      { label: "Schedule Editor",  icon: Grid,         path: "/scheduling/schedule" },
-      { label: "Agent Roster",     icon: UserCheck,    path: "/scheduling/agents" },
-      { label: "Shift Templates",  icon: Clock,        path: "/scheduling/shifts" },
-      { label: "Labor Law Rules",  icon: Scale,        path: "/scheduling/labor-laws" },
-    ],
-  },
-  {
-    label: "Data",
-    items: [
-      { label: "Employee Roster",     icon: UserCog,  path: "/wfm/roster" },
-      { label: "Telephony Raw Data",  icon: Database, path: "/wfm/telephony-raw" },
-    ],
-  },
-  {
-    label: "Settings",
-    items: [
-      { label: "Configuration",   icon: Settings,   path: "/configuration" },
-      { label: "LOB Management",  icon: Building2,  path: "/configuration/lob-management" },
-      { label: "My Account",      icon: User,       path: "/my-account" },
-    ],
-  },
+const NAV: { group: string; items: { to: string; label: string; icon: React.ElementType; badge?: string }[] }[] = [
+  { group: "Forecasting", items: [
+    { to: "/",                               label: "Home",                 icon: Home },
+    { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting",  icon: TrendingUp, badge: "12" },
+    { to: "/wfm/long-term-forecasting",      label: "Strategic Planning",   icon: LayoutDashboard },
+    { to: "/wfm/intraday",                   label: "Intraday Forecast",    icon: Activity },
+    { to: "/wfm/arrival-analysis",           label: "Arrival Analysis",     icon: LineChart },
+    { to: "/wfm/interaction-arrival",        label: "Interaction Arrival",  icon: Clock },
+  ]},
+  { group: "Planning", items: [
+    { to: "/wfm/capacity",                   label: "Workforce Planning",   icon: Calendar },
+    { to: "/wfm/performance-analytics",      label: "Performance Analytics", icon: Activity },
+  ]},
+  { group: "Data", items: [
+    { to: "/wfm/roster",                     label: "Employee Roster",      icon: Users },
+    { to: "/wfm/telephony-raw",              label: "Telephony Raw Data",   icon: Phone },
+  ]},
+  { group: "Settings", items: [
+    { to: "/configuration",                  label: "Configuration",        icon: Settings },
+    { to: "/my-account",                     label: "My Account",           icon: User },
+  ]},
 ];
 
-const BREADCRUMB_NAMES: Record<string, string> = {
-  wfm:                          "Workforce Management",
-  roster:                       "Employee Roster",
-  forecasting:                  "Forecasting",
-  capacity:                     "Workforce Planning",
-  shrinkage:                    "Shrinkage Planning",
-  intraday:                     "Intraday Forecast",
-  "my-account":                 "My Account",
-  configuration:                "Configuration",
-  scheduling:                   "Scheduling",
-  agents:                       "Agent Roster",
-  shifts:                       "Shift Templates",
-  "labor-laws":                 "Labor Law Rules",
+const CRUMB_NAMES: Record<string, string> = {
+  wfm: "Workforce Management",
   "long-term-forecasting-demand": "Demand Forecasting",
-  "arrival-analysis":           "Arrival Analysis",
-  "interaction-arrival":        "Interaction Arrival",
-  "performance-analytics":      "Performance Analytics",
-  "telephony-raw":              "Telephony Raw Data",
-  "lob-management":             "LOB Management",
-  "lob-settings":               "LOB Settings",
+  "long-term-forecasting": "Strategic Planning",
+  "long-term-forecasting-blended": "Blended Forecast",
+  capacity: "Workforce Planning",
+  intraday: "Intraday Forecast",
+  "interaction-arrival": "Interaction Arrival",
+  "arrival-analysis": "Arrival Analysis",
+  "telephony-raw": "Telephony Raw Data",
+  "performance-analytics": "Performance Analytics",
+  roster: "Employee Roster",
+  "my-account": "My Account",
+  configuration: "Configuration",
+  forecasting: "Forecasting",
 };
-
-const SIDEBAR_KEY = "wfm_sidebar_expanded";
-
-// ── Sub-components ───────────────────────────────────────────────────────────
-
-function SideNavItem({
-  item,
-  expanded,
-  active,
-}: {
-  item: NavItem;
-  expanded: boolean;
-  active: boolean;
-}) {
-  const Icon = item.icon;
-  const linkClass = [
-    "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium transition-colors",
-    active
-      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-      : "text-sidebar-foreground/60 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-    !expanded && "justify-center",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Link to={item.path} className={linkClass}>
-          <span className="flex items-center justify-center size-6 rounded-md bg-primary/80 shrink-0">
-            <Icon className="size-3.5 text-white" />
-          </span>
-          {expanded && <span className="truncate leading-none">{item.label}</span>}
-        </Link>
-      </TooltipTrigger>
-      {!expanded && (
-        <TooltipContent side="right" sideOffset={8}>
-          {item.label}
-        </TooltipContent>
-      )}
-    </Tooltip>
-  );
-}
-
-// ── Main layout ──────────────────────────────────────────────────────────────
 
 export function PageLayout({ children, title }: PageLayoutProps) {
   const location = useLocation();
-
-  const [expanded, setExpanded] = useState<boolean>(() => {
-    const stored = localStorage.getItem(SIDEBAR_KEY);
-    return stored === null ? true : stored === "true";
-  });
-
-  // ── Account menu state ───────────────────────────────────────────────────────
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [changePwOpen, setChangePwOpen] = useState(false);
-  const [curPw, setCurPw] = useState("");
-  const [newPw, setNewPw] = useState("");
-  const [confirmPw, setConfirmPw] = useState("");
-  const [showCur, setShowCur] = useState(false);
-  const [showNew, setShowNew] = useState(false);
-  const [pwError, setPwError] = useState("");
-  const [pwLoading, setPwLoading] = useState(false);
-
-  function openChangePw() { setChangePwOpen(true); setAccountOpen(false); setCurPw(""); setNewPw(""); setConfirmPw(""); setPwError(""); }
-
-  async function handleChangePw(e: React.FormEvent) {
-    e.preventDefault();
-    setPwError("");
-    if (newPw !== confirmPw) { setPwError("Passwords do not match"); return; }
-    if (newPw.length < 6) { setPwError("Password must be at least 6 characters"); return; }
-    setPwLoading(true);
-    try {
-      const res = await fetch(apiUrl("/api/auth/change-password"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentPassword: curPw, newPassword: newPw }),
-        credentials: "include",
-      });
-      const data = await res.json();
-      if (!res.ok) { setPwError(data.error || "Failed to change password"); return; }
-      setChangePwOpen(false);
-      toast.success("Password changed successfully");
-    } catch {
-      setPwError("Could not reach server");
-    } finally {
-      setPwLoading(false);
-    }
-  }
-
-  async function handleLogout() {
-    await fetch(apiUrl("/api/auth/logout"), { method: "POST", credentials: "include" });
-    window.location.reload();
-  }
-
-  const toggle = () => {
-    setExpanded((v) => {
-      localStorage.setItem(SIDEBAR_KEY, String(!v));
-      return !v;
-    });
-  };
-
-  // Active: exact match or prefix match (so /scheduling is active on /scheduling/agents)
-  const isActive = (path: string) =>
-    location.pathname === path || location.pathname.startsWith(path + "/");
-
+  const [collapsed, setCollapsed] = useState(false);
   const pathnames = location.pathname.split("/").filter(Boolean);
 
-  const CHANNEL_ROUTES = ["/wfm/arrival-analysis", "/wfm/interaction-arrival", "/wfm/intraday"];
-  const showChannelSelector = CHANNEL_ROUTES.includes(location.pathname);
-
   return (
-    <TooltipProvider delayDuration={100}>
-      <div className="min-h-screen bg-background flex">
-        <Toaster richColors position="top-right" />
+    <div className="min-h-screen bg-canvas text-ink">
+      <Toaster richColors position="top-right" />
 
-        {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-        <aside
-          className={[
-            "fixed top-0 left-0 h-full z-40 bg-sidebar border-r border-sidebar-border",
-            "flex flex-col overflow-hidden",
-            "transition-[width] duration-300 ease-in-out",
-            expanded ? "w-60" : "w-14",
-          ].join(" ")}
-        >
-          {/* Header: logo + toggle */}
-          <div className="flex items-center h-16 px-3 border-b border-sidebar-border shrink-0 gap-2">
-            {expanded && (
-              <Link to="/" className="flex-1 min-w-0">
-                <img src={logo} alt="Exordium WFM" className="h-10 w-auto" />
-              </Link>
-            )}
-            <button
-              onClick={toggle}
-              className={[
-                "p-1.5 rounded-md hover:bg-sidebar-accent/60 transition-colors shrink-0",
-                !expanded && "mx-auto",
-              ].join(" ")}
-              aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
-            >
-              {expanded ? (
-                <PanelLeftClose className="size-4 text-sidebar-foreground/60" />
-              ) : (
-                <PanelLeftOpen className="size-4 text-sidebar-foreground/60" />
-              )}
-            </button>
+      {/* ── Topbar (44px, near-black) ── */}
+      <header className="sticky top-0 z-40 h-11 bg-shell text-[#dedbcf] border-b border-black flex items-center px-3 gap-3">
+        <div className={`flex items-center gap-2 ${collapsed ? "w-[52px]" : "w-[208px]"} transition-[width]`}>
+          <img src={logo} alt="Exordium" className="h-6 w-auto" />
+          {!collapsed && (
+            <>
+              <span className="text-[13px] font-semibold text-[#ede9dc] tracking-tight">Exordium</span>
+              <span className="ml-auto font-mono text-[10.5px] text-[#7a7b7a] uppercase tracking-wider">WFM</span>
+            </>
+          )}
+        </div>
+
+        <nav className="flex items-center gap-1.5 text-[12px] text-[#b6b3a8]">
+          <Home className="size-3.5 opacity-75" />
+          <Link to="/" className="hover:text-[#ede9dc]">Home</Link>
+          {pathnames.map((seg, i) => {
+            const last = i === pathnames.length - 1;
+            const to = "/" + pathnames.slice(0, i + 1).join("/");
+            const name = CRUMB_NAMES[seg] || seg;
+            return (
+              <React.Fragment key={to}>
+                <ChevronRight className="size-3 text-[#4a4c50]" />
+                {last
+                  ? <span className="text-[#ede9dc] font-medium">{name}</span>
+                  : <Link to={to} className="hover:text-[#ede9dc]">{name}</Link>}
+              </React.Fragment>
+            );
+          })}
+        </nav>
+
+        <div className="ml-auto flex items-center gap-1">
+          <div className="font-mono text-[10.5px] tracking-wider uppercase text-[#c3b36a] border border-[#3d381e] bg-[#1b1811] px-1.5 py-0.5 rounded">
+            Tier 1 · Prod
           </div>
+          <button className="h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-[#cfccbf] hover:bg-[#1a1c20] hover:text-[#f1eede]">
+            <Search className="size-3.5" /> Search
+            <span className="font-mono text-[11px] text-[#7c7d7a] border border-[#2a2c30] px-1 h-[22px] leading-[22px] rounded ml-1">⌘K</span>
+          </button>
+          <button className="h-[26px] px-2.5 rounded inline-flex items-center text-[#cfccbf] hover:bg-[#1a1c20]"><Bell className="size-3.5"/></button>
+          <button className="h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-[#cfccbf] hover:bg-[#1a1c20]"><Share2 className="size-3.5"/> Share</button>
+          <div className="size-6 rounded-full bg-gradient-to-br from-[#b8b5a6] to-[#6e6b5f] text-[#0c0d10] text-[10.5px] font-semibold grid place-items-center ml-1">MK</div>
+        </div>
+      </header>
 
-          {/* Home link */}
-          <div className="px-2 pt-3 pb-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Link
-                  to="/"
-                  className={[
-                    "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium transition-colors",
-                    location.pathname === "/"
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "text-sidebar-foreground/60 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-                    !expanded && "justify-center",
-                  ].join(" ")}
-                >
-                  <span className="flex items-center justify-center size-6 rounded-md bg-primary/80 shrink-0">
-                    <Home className="size-3.5 text-white" />
-                  </span>
-                  {expanded && <span className="truncate leading-none">Home</span>}
-                </Link>
-              </TooltipTrigger>
-              {!expanded && (
-                <TooltipContent side="right" sideOffset={8}>Home</TooltipContent>
-              )}
-            </Tooltip>
-          </div>
-
-          {/* Nav groups */}
-          <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2 pb-4 space-y-4">
-            {NAV_GROUPS.map((group) => (
-              <div key={group.label}>
-                {expanded && (
-                  <p className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/50 select-none">
-                    {group.label}
-                  </p>
-                )}
-                {!expanded && (
-                  <div className="my-1 border-t border-sidebar-border" />
-                )}
-                <div className="space-y-0.5">
-                  {group.items.map((item) => (
-                    <SideNavItem
-                      key={item.path}
-                      item={item}
-                      expanded={expanded}
-                      active={isActive(item.path)}
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </nav>
-        </aside>
-
-        {/* ── Main area ───────────────────────────────────────────────────── */}
-        <div
-          className={[
-            "flex flex-col min-w-0 flex-1",
-            "transition-[margin-left] duration-300 ease-in-out",
-            expanded ? "ml-60" : "ml-14",
-          ].join(" ")}
-        >
-          {/* Top bar */}
-          <header className="sticky top-0 z-30 bg-[#3813f0] px-6 h-16 flex items-center justify-between shrink-0">
-            {/* Breadcrumbs */}
-            <nav className="flex items-center gap-1.5 text-sm text-white/70 min-w-0">
-              <Link
-                to="/"
-                className="hover:text-white flex items-center gap-1 transition-colors shrink-0"
-              >
-                <Home className="size-3.5" />
-                <span>Home</span>
-              </Link>
-              {pathnames.map((value, index) => {
-                const last = index === pathnames.length - 1;
-                const to = `/${pathnames.slice(0, index + 1).join("/")}`;
-                const name =
-                  BREADCRUMB_NAMES[value] ||
-                  value.charAt(0).toUpperCase() + value.slice(1);
+      <div className={`grid min-h-[calc(100vh-44px)] ${collapsed ? "grid-cols-[56px_1fr]" : "grid-cols-[220px_1fr]"} transition-[grid-template-columns]`}>
+        <aside className="bg-shell text-[#a8a79b] border-r border-black py-3 px-2 overflow-auto">
+          {NAV.map(g => (
+            <div key={g.group} className="mt-3 first:mt-0">
+              <div className={`font-mono text-[10px] text-[#55574f] uppercase tracking-[.14em] px-2.5 pb-1.5 ${collapsed ? "invisible h-0 p-0" : ""}`}>{g.group}</div>
+              {g.items.map(it => {
+                const Icon = it.icon;
+                const active = location.pathname === it.to;
                 return (
-                  <React.Fragment key={to}>
-                    <ChevronRight className="size-3.5 opacity-50 shrink-0" />
-                    {last ? (
-                      <span className="font-medium text-white truncate">{name}</span>
-                    ) : (
-                      <Link to={to} className="hover:text-white transition-colors shrink-0">
-                        {name}
-                      </Link>
+                  <Link key={it.to} to={it.to}
+                    className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded text-[12.5px] ${active
+                      ? "bg-[#1c1e22] text-[#ede9dc] shadow-[inset_2px_0_0_var(--indigo)]"
+                      : "text-[#b5b3a5] hover:bg-[#17181c] hover:text-[#efecdf]"}`}>
+                    <Icon className="size-3.5 shrink-0 opacity-85" />
+                    {!collapsed && <span>{it.label}</span>}
+                    {!collapsed && it.badge && (
+                      <span className="ml-auto font-mono text-[10px] text-[#6e6f68] bg-[#17181c] border border-[#23252a] px-1.5 py-[1px] rounded">{it.badge}</span>
                     )}
-                  </React.Fragment>
+                  </Link>
                 );
               })}
-            </nav>
-
-            <div className="flex items-center gap-3 shrink-0 ml-4">
-              <LOBSelector className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" />
-              {showChannelSelector && (
-                <ChannelSelector className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" />
-              )}
-
-              {/* Account dropdown trigger */}
-              <div className="relative">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={() => setAccountOpen(v => !v)}
-                      className="p-1.5 rounded-md hover:bg-white/15 transition-colors text-white/80 hover:text-white"
-                    >
-                      <User className="size-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">Account</TooltipContent>
-                </Tooltip>
-
-                {accountOpen && (
-                  <>
-                    {/* Backdrop */}
-                    <div className="fixed inset-0 z-40" onClick={() => setAccountOpen(false)} />
-                    {/* Dropdown */}
-                    <div className="absolute right-0 top-full mt-1 w-44 bg-popover border border-border rounded-lg shadow-lg z-50 py-1 overflow-hidden">
-                      <button
-                        onClick={openChangePw}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
-                      >
-                        <KeyRound className="size-3.5 text-muted-foreground" />
-                        Change password
-                      </button>
-                      <div className="h-px bg-border mx-2 my-1" />
-                      <button
-                        onClick={handleLogout}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left text-destructive"
-                      >
-                        <LogOut className="size-3.5" />
-                        Sign out
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
             </div>
-          </header>
+          ))}
+          <button onClick={() => setCollapsed(!collapsed)}
+            className="mt-2 w-full h-[22px] flex items-center justify-center text-[#55574f] font-mono text-[10px] border border-dashed border-[#23252a] rounded hover:text-[#a8a79b] tracking-wider">
+            {collapsed ? "»" : "« collapse"}
+          </button>
+        </aside>
 
-          {/* Change Password dialog */}
-          <Dialog open={changePwOpen} onOpenChange={setChangePwOpen}>
-            <DialogContent className="max-w-sm">
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                  <KeyRound className="size-4 text-muted-foreground" />
-                  Change password
-                </DialogTitle>
-              </DialogHeader>
-              <form onSubmit={handleChangePw} className="space-y-4 py-2">
-                <div className="space-y-1.5">
-                  <Label>Current password</Label>
-                  <div className="relative">
-                    <Input
-                      type={showCur ? "text" : "password"}
-                      value={curPw}
-                      onChange={e => setCurPw(e.target.value)}
-                      placeholder="Current password"
-                      className="pr-10"
-                      required
-                    />
-                    <button type="button" onClick={() => setShowCur(v => !v)} className="absolute inset-y-0 right-2.5 flex items-center text-muted-foreground hover:text-foreground" tabIndex={-1}>
-                      {showCur ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>New password</Label>
-                  <div className="relative">
-                    <Input
-                      type={showNew ? "text" : "password"}
-                      value={newPw}
-                      onChange={e => setNewPw(e.target.value)}
-                      placeholder="New password (min 6 chars)"
-                      className="pr-10"
-                      required
-                    />
-                    <button type="button" onClick={() => setShowNew(v => !v)} className="absolute inset-y-0 right-2.5 flex items-center text-muted-foreground hover:text-foreground" tabIndex={-1}>
-                      {showNew ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Confirm new password</Label>
-                  <Input
-                    type="password"
-                    value={confirmPw}
-                    onChange={e => setConfirmPw(e.target.value)}
-                    placeholder="Confirm new password"
-                    required
-                  />
-                </div>
-                {pwError && <p className="text-sm text-destructive">{pwError}</p>}
-                <DialogFooter>
-                  <Button type="button" variant="outline" size="sm" onClick={() => setChangePwOpen(false)}>Cancel</Button>
-                  <Button type="submit" size="sm" disabled={pwLoading}>
-                    {pwLoading && <Loader2 className="size-3.5 animate-spin" />}
-                    {pwLoading ? "Saving…" : "Save"}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-
-          {/* Page content */}
-          <main className="flex-1 w-full max-w-[1920px] mx-auto px-8 py-8">
-            <h1 className="text-2xl mb-8 text-foreground font-semibold tracking-tight">
-              {title}
-            </h1>
-            {children}
-          </main>
-        </div>
+        <main className="bg-canvas overflow-auto">
+          {title && (
+            <div className="px-[18px] py-4 border-b border-hairline">
+              <h1 className="text-[20px] font-semibold tracking-tight text-ink">{title}</h1>
+            </div>
+          )}
+          {children}
+        </main>
       </div>
-    </TooltipProvider>
+    </div>
   );
 }
