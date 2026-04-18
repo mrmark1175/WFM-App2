@@ -6,16 +6,15 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/app/components/ui/dropdown-menu";
-import { Button } from "@/app/components/ui/button";
 
 export function LOBSelector({ className }: { className?: string }) {
   const { lobs, activeLob, setActiveLob, isLoading } = useLOB();
 
   if (isLoading) {
     return (
-      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-card text-sm text-muted-foreground animate-pulse ${className ?? ""}`}>
-        <Building2 className="size-4" />
-        <span>Loading...</span>
+      <div className={`h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-[#cfccbf] bg-[#1a1c20] animate-pulse ${className ?? ""}`}>
+        <Building2 className="size-3.5 opacity-60" />
+        <span className="w-20 h-2.5 bg-[#2a2c30] rounded" />
       </div>
     );
   }
@@ -23,13 +22,13 @@ export function LOBSelector({ className }: { className?: string }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" className={`flex items-center gap-2 max-w-[220px] ${className ?? ""}`}>
-          <Building2 className="size-4 shrink-0 opacity-70" />
-          <span className="truncate font-medium">{activeLob?.lob_name ?? "Select LOB"}</span>
-          <ChevronDown className="size-3.5 shrink-0 opacity-70 ml-auto" />
-        </Button>
+        <button className={`h-[26px] px-2.5 rounded inline-flex items-center gap-1.5 text-[12px] text-[#cfccbf] hover:bg-[#1a1c20] hover:text-[#f1eede] border border-[#2a2c30] max-w-[200px] ${className ?? ""}`}>
+          <Building2 className="size-3.5 shrink-0 opacity-70" />
+          <span className="truncate">{activeLob?.lob_name ?? "Select LOB"}</span>
+          <ChevronDown className="size-3 shrink-0 opacity-60 ml-0.5" />
+        </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-56">
+      <DropdownMenuContent align="start" className="w-52">
         {lobs.map((lob) => (
           <DropdownMenuItem
             key={lob.id}

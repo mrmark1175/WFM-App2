@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import { Home, ChevronRight, Search, Bell, Share2, User, Settings, LayoutDashboard, TrendingUp, Calendar, Users, Clock, Database, Phone, Building2, Activity, ChevronLeft, LineChart } from "lucide-react";
 import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
+import { LOBSelector } from "./LOBSelector";
 import logo from "../../assets/logo.png";
 
 interface PageLayoutProps {
@@ -88,7 +89,9 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           })}
         </nav>
 
-        <div className="ml-auto flex items-center gap-1">
+        <LOBSelector className="ml-auto" />
+
+        <div className="flex items-center gap-1">
           <div className="font-mono text-[10.5px] tracking-wider uppercase text-[#c3b36a] border border-[#3d381e] bg-[#1b1811] px-1.5 py-0.5 rounded">
             Tier 1 · Prod
           </div>
