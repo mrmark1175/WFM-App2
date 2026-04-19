@@ -488,11 +488,14 @@ export function ScheduleGrid({
                   const slotH = Math.floor((slot * 15) / 60) % 24;
                   const slotM = (slot * 15) % 60;
                   const timeLabel = `${String(slotH).padStart(2, "0")}:${String(slotM).padStart(2, "0")}`;
+                  // Show LITERAL value (one decimal) matching IntradayForecast exactly.
+                  // Over/Under still uses Math.ceil for coverage math below.
+                  const literal = val.toFixed(1);
                   return (
                     <div
                       key={slot}
-                      title={val > 0 ? `${timeLabel} — raw: ${val.toFixed(2)} → ceil: ${Math.ceil(val)}` : `${timeLabel} — no data`}
-                      className="flex items-center justify-center text-[9px] font-bold border-r border-slate-100/50 tabular-nums"
+                      title={val > 0 ? `${timeLabel} — ${val.toFixed(2)} FTE (ceil: ${Math.ceil(val)})` : `${timeLabel} — no data`}
+                      className="flex items-center justify-center text-[8px] font-bold border-r border-slate-100/50 tabular-nums"
                       style={{
                         width: COL_W,
                         height: COV_ROW_H,
@@ -502,7 +505,7 @@ export function ScheduleGrid({
                         color: val > 0 ? "#1e293b" : "#cbd5e1",
                       }}
                     >
-                      {val > 0 ? Math.ceil(val) : (isHour && !isNextDay ? "·" : "")}
+                      {val > 0 ? literal : (isHour && !isNextDay ? "·" : "")}
                     </div>
                   );
                 })}
