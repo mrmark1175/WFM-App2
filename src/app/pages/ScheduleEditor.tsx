@@ -245,6 +245,8 @@ export function ScheduleEditor() {
   const [activeDayIdx, setActiveDayIdx] = useState(0);
   const [agentQuery, setAgentQuery] = useState("");
   const [skillFilter, setSkillFilter] = useState<"all" | "voice" | "chat" | "email">("all");
+  const [sortBy, setSortBy] = useState<"name" | "start" | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const [agents, setAgents]           = useState<Agent[]>([]);
   const [templates, setTemplates]     = useState<ShiftTemplate[]>([]);
@@ -737,6 +739,23 @@ export function ScheduleEditor() {
     });
   }, [activeAgents, agentQuery, skillFilter]);
 
+  const sortedAgents = useMemo(() => {
+    if (!sortBy) return visibleAgents;
+    return [...visibleAgents].sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === "name") {
+        cmp = a.full_name.localeCompare(b.full_name);
+      } else {
+        const aShift = assignments.find(x => x.agent_id === a.id && x.work_date?.startsWith(activeDate));
+        const bShift = assignments.find(x => x.agent_id === b.id && x.work_date?.startsWith(activeDate));
+        const aTime = aShift ? timeToMins(aShift.start_time) : 9999;
+        const bTime = bShift ? timeToMins(bShift.start_time) : 9999;
+        cmp = aTime - bTime;
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [visibleAgents, sortBy, sortDir, assignments, activeDate]);
+
   const todayShiftCount = useMemo(() =>
     assignments.filter(a => a.work_date?.startsWith(activeDate)).length,
     [assignments, activeDate]
@@ -916,6 +935,36 @@ export function ScheduleEditor() {
             ))}
           </div>
 
+          {/* Sort controls */}
+          <div className="flex items-center gap-1 ml-2">
+            <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mr-0.5">Sort:</span>
+            {(["name", "start"] as const).map((key) => {
+              const active = sortBy === key;
+              const label = key === "name" ? "Name" : "Start";
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    if (sortBy === key) {
+                      if (sortDir === "asc") setSortDir("desc");
+                      else { setSortBy(null); setSortDir("asc"); }
+                    } else {
+                      setSortBy(key);
+                      setSortDir("asc");
+                    }
+                  }}
+                  className={`h-6 px-2 rounded-full text-[11px] font-semibold transition-colors flex items-center gap-0.5 ${
+                    active ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-200 hover:text-slate-800"
+                  }`}
+                >
+                  {label}
+                  {active && <span className="text-[9px]">{sortDir === "asc" ? "↑" : "↓"}</span>}
+                </button>
+              );
+            })}
+          </div>
+
           <div className="flex-1" />
           <span className="text-[11px] text-slate-400 font-medium">
             {visibleAgents.length} of {activeAgents.length} agents
@@ -1013,7 +1062,7 @@ export function ScheduleEditor() {
             </div>
           ) : viewMode === "daily" ? (
             <ScheduleGrid
-              agents={visibleAgents}
+              agents={sortedAgents}
               assignments={assignments}
               allWeekAssignments={assignments}
               activeDate={activeDate}
@@ -1032,7 +1081,7 @@ export function ScheduleEditor() {
             />
           ) : (
             <WeeklyScheduleGrid
-              agents={visibleAgents}
+              agents={sortedAgents}
               assignments={assignments}
               weekDates={weekDates.map(d => toDateStr(d))}
               selectedShiftId={selectedShiftId}

@@ -15,9 +15,12 @@ import { Activity } from "./ActivityBlock";
 import { Plus } from "lucide-react";
 
 // Grid constants
-export const COL_W   = 11;   // px per 15-min column
-export const ROW_H   = 30;   // px per agent row (thin Genesys style)
-export const AGENT_W = 240;  // px for the sticky name column (includes paid hours)
+export const COL_W    = 11;   // px per 15-min column
+export const ROW_H    = 30;   // px per agent row (thin Genesys style)
+export const AGENT_W  = 300;  // px for the sticky name column (name + shift time + paid hours)
+export const NAME_W   = 120;  // px for agent name sub-column
+export const SHIFT_W  = 80;   // px for shift time sub-column
+export const HRS_W    = 50;   // px for each paid-hours sub-column
 export const TOTAL_COLS = 144;  // 36h × 4 — extends to noon next day for overnight shifts
 
 // Coverage row height
@@ -304,9 +307,10 @@ export function ScheduleGrid({
               className="flex items-center sticky left-0 z-30 bg-slate-50 border-r border-slate-200 shrink-0"
               style={{ width: AGENT_W, height: 28 }}
             >
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2" style={{ width: 130 }}>Agent</span>
-              <span className="text-[9px] font-semibold text-slate-400 text-center" style={{ width: 52 }}>Day</span>
-              <span className="text-[9px] font-semibold text-slate-400 text-center" style={{ width: 52 }}>Week</span>
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2" style={{ width: NAME_W }}>Agent</span>
+              <span className="text-[9px] font-semibold text-slate-400 text-center border-l border-slate-200" style={{ width: SHIFT_W }}>Shift Time</span>
+              <span className="text-[9px] font-semibold text-slate-400 text-center border-l border-slate-200" style={{ width: HRS_W }}>Day</span>
+              <span className="text-[9px] font-semibold text-slate-400 text-center border-l border-slate-200" style={{ width: HRS_W }}>Week</span>
             </div>
             <div className="relative" style={{ width: TOTAL_COLS * COL_W, height: 28 }}>
               {/* Next-day zone tint */}
@@ -347,29 +351,34 @@ export function ScheduleGrid({
                   className={`flex border-b border-slate-100 ${isAgentSelected ? "bg-blue-50/60" : "odd:bg-slate-50/30"}`}
                   style={{ height: ROW_H }}
                 >
-                  {/* Agent name + paid hours (sticky left) */}
+                  {/* Agent sticky left: name | shift time | day hrs | week hrs */}
                   <div
                     className="flex items-center sticky left-0 z-10 bg-inherit border-r border-slate-200 shrink-0 min-w-0 cursor-pointer hover:bg-slate-100/50"
                     style={{ width: AGENT_W, height: ROW_H }}
                     onClick={(e) => onSelectAgent?.(agent.id, e.shiftKey)}
                     title={agent.full_name}
                   >
-                    <div className="flex flex-col min-w-0 px-2" style={{ width: 130 }}>
-                      <span className="text-[11px] font-semibold text-slate-700 truncate leading-tight">
-                        {agent.full_name}
-                      </span>
+                    {/* Name */}
+                    <span className="text-[11px] font-semibold text-slate-700 truncate px-2" style={{ width: NAME_W }}>
+                      {agent.full_name}
+                    </span>
+                    {/* Shift time */}
+                    <span
+                      className="text-[9px] tabular-nums font-medium text-center border-l border-slate-200 shrink-0"
+                      style={{ width: SHIFT_W }}
+                    >
                       {firstShift ? (
-                        <span className="text-[9px] text-slate-400 font-medium tabular-nums leading-tight">
-                          {fmt12(firstShift.start_time)}–{fmt12(firstShift.end_time)}
-                        </span>
+                        <span className="text-slate-500">{fmt12(firstShift.start_time)}–{fmt12(firstShift.end_time)}</span>
                       ) : (
-                        <span className="text-[9px] text-slate-300 leading-tight">No shift</span>
+                        <span className="text-slate-300">—</span>
                       )}
-                    </div>
-                    <span className="text-[10px] tabular-nums font-medium text-slate-500 text-center" style={{ width: 52 }}>
+                    </span>
+                    {/* Day paid hours */}
+                    <span className="text-[10px] tabular-nums font-medium text-slate-500 text-center border-l border-slate-200 shrink-0" style={{ width: HRS_W }}>
                       {dayHrs > 0 ? dayHrs.toFixed(1) : "—"}
                     </span>
-                    <span className="text-[10px] tabular-nums font-medium text-slate-500 text-center" style={{ width: 52 }}>
+                    {/* Week paid hours */}
+                    <span className="text-[10px] tabular-nums font-medium text-slate-500 text-center border-l border-slate-200 shrink-0" style={{ width: HRS_W }}>
                       {weekHrs > 0 ? weekHrs.toFixed(1) : "—"}
                     </span>
                   </div>
