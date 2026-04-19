@@ -618,7 +618,7 @@ const getChannelStaffingMetrics = (
     };
   }
   const serviceTargets = getChannelServiceTargets(assumptions, channel);
-  if (channel === "email") {
+  if (channel === "email" || channel === "cases") {
     const intensity = (volume * assumptions.emailAht) / openSecondsPerMonth;
     const businessDaysPerMonth = Math.max(getBusinessDaysPerMonth(assumptions), 1);
     const dailyVolume = volume / businessDaysPerMonth;
