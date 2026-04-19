@@ -488,9 +488,9 @@ export function ScheduleGrid({
                   const slotH = Math.floor((slot * 15) / 60) % 24;
                   const slotM = (slot * 15) % 60;
                   const timeLabel = `${String(slotH).padStart(2, "0")}:${String(slotM).padStart(2, "0")}`;
-                  // Show LITERAL value (one decimal) matching IntradayForecast exactly.
-                  // Over/Under still uses Math.ceil for coverage math below.
-                  const literal = val.toFixed(1);
+                  // Show whole-number required FTE in the Required row.
+                  // Keep aligned with Over/Under coverage math below.
+                  const literal = String(Math.ceil(val));
                   return (
                     <div
                       key={slot}
