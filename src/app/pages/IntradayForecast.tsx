@@ -638,11 +638,9 @@ export const IntradayForecast = () => {
   }, [fteTable, smoothFTE, smoothWindow]);
 
   // Commit FTE to scheduling — called by the "Commit to Scheduling" button.
-  // Writes the EXACT values shown in the Required FTE per Interval table
+  // Writes the EXACT rounded-up values shown in the Required FTE per Interval table
   // (smoothedFteTable, which already respects operating-hours mask, smoothing
-  // toggle/window, and the currently selected channel assumptions). The Schedule
-  // Editor's Required row will render Math.ceil of these per 15-min slot, so
-  // what you see here is what gets scheduled.
+  // toggle/window, and the currently selected channel assumptions).
   //
   // Grain handling: output is always 96 × 15-min slots. When display grain is
   // 30 or 60 min, each display-row value is repeated across its sub-slots (a
@@ -667,7 +665,7 @@ export const IntradayForecast = () => {
 
       const expanded = new Array(96).fill(0) as number[];
       for (let i = 0; i < dayFTEs.length; i++) {
-        const val = dayFTEs[i]?.fte ?? 0;
+        const val = Math.ceil(dayFTEs[i]?.fte ?? 0);
         for (let s = 0; s < subSlots; s++) {
           const idx = i * subSlots + s;
           if (idx < 96) expanded[idx] = val;
@@ -1912,6 +1910,7 @@ export const IntradayForecast = () => {
                           </TableCell>
                           {rowVals.map((result, d) => {
                             const fte = result?.fte ?? 0;
+                            const roundedFte = Math.ceil(fte);
                             const intensity = maxFTE > 0 ? fte / maxFTE : 0;
                             return (
                               <TableCell
@@ -1921,12 +1920,12 @@ export const IntradayForecast = () => {
                                   ? `${result.rawAgents} on-phone agents | A=${result.erlangs} Erl${selectedChannel !== "email" && selectedChannel !== "cases" ? ` | SL: ${result.achievedSL}% | Occ: ${result.occupancy}%` : ` | Occ: ${result.occupancy}%`}`
                                   : undefined}
                                 style={{
-                                  backgroundColor: fte > 0
+                                  backgroundColor: roundedFte > 0
                                     ? `rgba(249, 115, 22, ${0.1 + intensity * 0.45})`
                                     : undefined,
                                 }}
                               >
-                                {fte > 0 ? fte.toFixed(1) : ""}
+                                {roundedFte > 0 ? String(roundedFte) : ""}
                               </TableCell>
                             );
                           })}
