@@ -317,7 +317,7 @@ const getOpenSecondsPerMonth = (assumptions: Assumptions) => getOpenHoursPerMont
 const getOpenSecondsPerDay = (assumptions: Assumptions) => assumptions.operatingHoursPerDay * 3600;
 const getBusinessDaysPerMonth = (assumptions: Assumptions) => assumptions.operatingDaysPerWeek * WEEKS_PER_MONTH;
 const getChannelModelLabel = (channel: ChannelKey, chatConcurrency = CHAT_CONCURRENCY) => {
-  if (channel === "chat") return `Modified Erlang C (${chatConcurrency} concurrent chats)`;
+  if (channel === "chat") return `Erlang Chat (${chatConcurrency}× concurrent)`;
   if (channel === "email" || channel === "cases") return "Deferred backlog model";
   return "Erlang C";
 };
@@ -642,7 +642,33 @@ const getChannelStaffingMetrics = (
       achievedServiceLevel: roundTo(achievableServiceLevel, 1),
     };
   }
-  const effectiveAhtSeconds = getChannelEffectiveAhtSeconds(assumptions, channel);
+  // Chat: Koole Erlang Chat — N_eff = N × m model.
+  // Full AHT (no division), find minimum virtual slots via Erlang C, convert to physical agents.
+  // This correctly captures that N agents each handling m chats in parallel act as N×m
+  // virtual single-chat servers — more accurate than dividing offered traffic by m, which
+  // underestimates queue drain rate and systematically over-staffs.
+  if (channel === "chat") {
+    const ahtSec = assumptions.chatAht;
+    const intervalSeconds = getOpenHoursPerMonth(assumptions) * 3600;
+    const A = intervalSeconds > 0 ? (volume * ahtSec) / intervalSeconds : 0;
+    const N_eff = minAgentsForServiceLevel(A, ahtSec, serviceTargets.slaAnswerSeconds, serviceTargets.slaTarget / 100);
+    const rawAgents = Math.ceil(N_eff / chatConcurrency);
+    const actualSlots = rawAgents * chatConcurrency;
+    const achievedSL = computeServiceLevel(A, actualSlots, ahtSec, serviceTargets.slaAnswerSeconds) * 100;
+    return {
+      channel,
+      model: getChannelModelLabel(channel, chatConcurrency),
+      volume,
+      workloadHours,
+      intensity: roundTo(A, 2),
+      rawAgents,
+      requiredOccupancy: roundTo(actualSlots > 0 ? (A / actualSlots) * 100 : 0, 1),
+      requiredFTE: getGrossRequiredFTE(rawAgents, assumptions),
+      achievedServiceLevel: roundTo(achievedSL, 1),
+    };
+  }
+
+  const effectiveAhtSeconds = getChannelAhtSeconds(assumptions, channel);
   const erlangStaffing = calculateErlangCStaffing({
     volume,
     ahtSeconds: effectiveAhtSeconds,
