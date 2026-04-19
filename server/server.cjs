@@ -514,6 +514,8 @@ async function ensureAppTables() {
       UNIQUE (organization_id, lob_id, channel, week_offset)
     )
   `);
+  await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS vol_override_cases NUMERIC`);
+  await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS aht_override_cases NUMERIC`);
 
   // ── Schedule Assignments — agent shift assignments per date ──────────────────
   await pool.query(`
@@ -2095,8 +2097,8 @@ app.put('/api/capacity-plan-inputs', async (req, res) => {
     return res.status(400).json({ error: 'week_offset and field are required' });
   }
   const allowed = ['planned_hires','known_exits','actual_hc','actual_attrition',
-    'vol_override_voice','vol_override_chat','vol_override_email',
-    'aht_override_voice','aht_override_chat','aht_override_email'];
+    'vol_override_voice','vol_override_chat','vol_override_email','vol_override_cases',
+    'aht_override_voice','aht_override_chat','aht_override_email','aht_override_cases'];
   if (!allowed.includes(field)) return res.status(400).json({ error: 'Invalid field' });
   try {
     await pool.query(

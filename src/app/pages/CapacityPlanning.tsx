@@ -20,7 +20,7 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type ChannelKey = "voice" | "chat" | "email";
+type ChannelKey = "voice" | "chat" | "email" | "cases";
 
 interface PlanConfig {
   planStartDate: string;
@@ -40,9 +40,11 @@ interface WeekInput {
   volVoice?: number | null;
   volChat?: number | null;
   volEmail?: number | null;
+  volCases?: number | null;
   ahtVoice?: number | null;
   ahtChat?: number | null;
   ahtEmail?: number | null;
+  ahtCases?: number | null;
 }
 
 type WeekInputMap = Record<number, WeekInput>;
@@ -50,10 +52,10 @@ type WeekInputMap = Record<number, WeekInput>;
 interface WeekMeta { weekOffset: number; label: string; dateLabel: string; }
 
 interface WeekCalc extends WeekMeta {
-  autoVolVoice: number; autoVolChat: number; autoVolEmail: number;
-  effVolVoice: number; effVolChat: number; effVolEmail: number; effVolTotal: number;
-  autoAhtVoice: number; autoAhtChat: number; autoAhtEmail: number;
-  effAhtVoice: number; effAhtChat: number; effAhtEmail: number;
+  autoVolVoice: number; autoVolChat: number; autoVolEmail: number; autoVolCases: number;
+  effVolVoice: number; effVolChat: number; effVolEmail: number; effVolCases: number; effVolTotal: number;
+  autoAhtVoice: number; autoAhtChat: number; autoAhtEmail: number; autoAhtCases: number;
+  effAhtVoice: number; effAhtChat: number; effAhtEmail: number; effAhtCases: number;
   projOccupancyPct: number; projShrinkagePct: number;
   requiredFTE: number;
   plannedHires: number; effectiveNewHc: number; attritionDecay: number;
@@ -108,10 +110,10 @@ const DEFAULT_CONFIG: PlanConfig = {
   startingHc: 0,
 };
 
-const CHANNEL_LABELS: Record<ChannelKey, string> = { voice: "Voice", chat: "Chat", email: "Email" };
+const CHANNEL_LABELS: Record<ChannelKey, string> = { voice: "Voice", chat: "Chat", email: "Email", cases: "Cases" };
 const FIELD_MAP: Record<string, string> = {
-  volVoice: "vol_override_voice", volChat: "vol_override_chat", volEmail: "vol_override_email",
-  ahtVoice: "aht_override_voice", ahtChat: "aht_override_chat", ahtEmail: "aht_override_email",
+  volVoice: "vol_override_voice", volChat: "vol_override_chat", volEmail: "vol_override_email", volCases: "vol_override_cases",
+  ahtVoice: "aht_override_voice", ahtChat: "aht_override_chat", ahtEmail: "aht_override_email", ahtCases: "aht_override_cases",
   plannedHires: "planned_hires", knownExits: "known_exits",
   actualHc: "actual_hc", actualAttrition: "actual_attrition",
 };
@@ -422,7 +424,7 @@ export function CapacityPlanning() {
   const isDedicated = lobSettings?.pooling_mode === "dedicated";
   const enabledChannels = useMemo<ChannelKey[]>(() => {
     if (!lobSettings?.channels_enabled) return ["voice"];
-    return (["voice", "chat", "email"] as ChannelKey[]).filter(c => lobSettings.channels_enabled[c]);
+    return (["voice", "chat", "email", "cases"] as ChannelKey[]).filter(c => lobSettings.channels_enabled[c]);
   }, [lobSettings]);
   const apiChannel = isDedicated ? activeChannel : "blended";
 
@@ -475,9 +477,11 @@ export function CapacityPlanning() {
             volVoice: row.vol_override_voice != null ? parseFloat(row.vol_override_voice) : null,
             volChat: row.vol_override_chat != null ? parseFloat(row.vol_override_chat) : null,
             volEmail: row.vol_override_email != null ? parseFloat(row.vol_override_email) : null,
+            volCases: row.vol_override_cases != null ? parseFloat(row.vol_override_cases) : null,
             ahtVoice: row.aht_override_voice != null ? parseFloat(row.aht_override_voice) : null,
             ahtChat: row.aht_override_chat != null ? parseFloat(row.aht_override_chat) : null,
             ahtEmail: row.aht_override_email != null ? parseFloat(row.aht_override_email) : null,
+            ahtCases: row.aht_override_cases != null ? parseFloat(row.aht_override_cases) : null,
           };
         }
         setWeeklyInputs(map);
@@ -585,7 +589,7 @@ export function CapacityPlanning() {
     for (const w of allWeeks) {
       if (updated[w]) {
         const clean = { ...updated[w] };
-        for (const f of ["volVoice","volChat","volEmail","ahtVoice","ahtChat","ahtEmail"] as (keyof WeekInput)[]) {
+        for (const f of ["volVoice","volChat","volEmail","volCases","ahtVoice","ahtChat","ahtEmail","ahtCases"] as (keyof WeekInput)[]) {
           clean[f] = null as never;
           saveCell(w, f, null);
         }
@@ -599,17 +603,19 @@ export function CapacityPlanning() {
   const weeks = useMemo(() => buildWeeks(config.planStartDate, config.horizonWeeks), [config.planStartDate, config.horizonWeeks]);
 
   // ── Monthly forecast arrays from demand planner snapshot (captures seasonality)
-  const forecastedMonthlyVols = useMemo<{ voice: number[]; chat: number[]; email: number[] } | null>(() => {
+  const forecastedMonthlyVols = useMemo<{ voice: number[]; chat: number[]; email: number[]; cases: number[] } | null>(() => {
     if (!plannerSnapshot) return null;
     const sel = plannerSnapshot.selectedChannels ?? {};
     const chatEnabled = !!sel.chat;
     const emailEnabled = !!sel.email;
+    const casesEnabled = !!sel.cases;
     const recut = plannerSnapshot.recutVolumesByChannel;
     if (recut?.voice?.length) {
       return {
         voice: recut.voice as number[],
         chat: chatEnabled && recut.chat?.length ? recut.chat as number[] : recut.voice.map(() => 0),
         email: emailEnabled && recut.email?.length ? recut.email as number[] : recut.voice.map(() => 0),
+        cases: casesEnabled && recut.cases?.length ? recut.cases as number[] : recut.voice.map(() => 0),
       };
     }
     const { forecastMethod, hwParams, arimaParams, decompParams, assumptions } = plannerSnapshot;
@@ -628,6 +634,7 @@ export function CapacityPlanning() {
     const voiceH = applyOv(apiData.voice ?? [], overrides.voice ?? {});
     const chatH = applyOv(apiData.chat ?? [], overrides.chat ?? {});
     const emailH = applyOv(apiData.email ?? [], overrides.email ?? {});
+    const casesH = applyOv(apiData.cases ?? [], overrides.cases ?? {});
     const voice = getCalculatedVolumes(voiceH, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
     const zeros = voice.map(() => 0);
     const chat = !chatEnabled ? zeros
@@ -638,7 +645,11 @@ export function CapacityPlanning() {
       : emailH.length > 0
         ? getCalculatedVolumes(emailH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
         : voice.map(v => Math.round(v * 0.2));
-    return { voice, chat, email };
+    const cases = !casesEnabled ? zeros
+      : casesH.length > 0
+        ? getCalculatedVolumes(casesH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+        : voice.map(v => Math.round(v * 0.2));
+    return { voice, chat, email, cases };
   }, [plannerSnapshot]);
 
   // ── Auto volumes from demand snapshot
@@ -663,6 +674,7 @@ export function CapacityPlanning() {
             voice: Math.round(forecastedMonthlyVols.voice[monthOffset] * f),
             chat: Math.round(forecastedMonthlyVols.chat[monthOffset] * f),
             email: Math.round(forecastedMonthlyVols.email[monthOffset] * f),
+            cases: Math.round(forecastedMonthlyVols.cases[monthOffset] * f),
           };
         }
       }
@@ -672,6 +684,7 @@ export function CapacityPlanning() {
         voice: monthlyToWeekly(a?.voiceVolume ?? 0, growthPct, w.weekOffset),
         chat: monthlyToWeekly(a?.chatVolume ?? 0, growthPct, w.weekOffset),
         email: monthlyToWeekly(a?.emailVolume ?? 0, growthPct, w.weekOffset),
+        cases: 0,
       };
     });
   }, [demandAssumptions, weeks, forecastedMonthlyVols, plannerSnapshot, config.planStartDate]);
@@ -681,6 +694,7 @@ export function CapacityPlanning() {
     voice: lobSettings?.voice_aht ?? demandAssumptions?.aht ?? 300,
     chat: lobSettings?.chat_aht ?? demandAssumptions?.chatAht ?? 450,
     email: lobSettings?.email_aht ?? demandAssumptions?.emailAht ?? 600,
+    cases: lobSettings?.email_aht ?? demandAssumptions?.emailAht ?? 600,
   }), [lobSettings, demandAssumptions]);
 
   // ── Staffing params
@@ -720,28 +734,32 @@ export function CapacityPlanning() {
 
     return weeks.map((wk, w) => {
       const inp = weeklyInputs[w] ?? {};
-      const auto = autoBaseVolumes[w] ?? { voice: 0, chat: 0, email: 0 };
+      const auto = autoBaseVolumes[w] ?? { voice: 0, chat: 0, email: 0, cases: 0 };
 
       // Effective volumes (override or auto)
       const effVolVoice = inp.volVoice != null ? inp.volVoice : auto.voice;
       const effVolChat = inp.volChat != null ? inp.volChat : auto.chat;
       const effVolEmail = inp.volEmail != null ? inp.volEmail : auto.email;
+      const effVolCases = inp.volCases != null ? inp.volCases : auto.cases;
 
       // Effective AHTs
       const effAhtVoice = inp.ahtVoice != null ? inp.ahtVoice : autoAhts.voice;
       const effAhtChat = inp.ahtChat != null ? inp.ahtChat : autoAhts.chat;
       const effAhtEmail = inp.ahtEmail != null ? inp.ahtEmail : autoAhts.email;
+      const effAhtCases = inp.ahtCases != null ? inp.ahtCases : autoAhts.cases;
 
       // Required FTE via Erlang C — occupancy is an OUTPUT, SLA drives the agent count.
       let requiredFTE = 0;
       let erlangOccupancy = 0;
       if (isDedicated) {
-        const vol = activeChannel === "voice" ? effVolVoice : activeChannel === "chat" ? effVolChat : effVolEmail;
-        const aht = activeChannel === "voice" ? effAhtVoice : activeChannel === "chat" ? effAhtChat : effAhtEmail;
+        const vol = activeChannel === "voice" ? effVolVoice : activeChannel === "chat" ? effVolChat : activeChannel === "cases" ? effVolCases : effVolEmail;
+        const aht = activeChannel === "voice" ? effAhtVoice : activeChannel === "chat" ? effAhtChat : activeChannel === "cases" ? effAhtCases : effAhtEmail;
         const target = activeChannel === "voice" ? slaVoiceTarget : activeChannel === "chat" ? slaChatTarget : slaEmailTarget;
         const sec    = activeChannel === "voice" ? slaVoiceSec    : activeChannel === "chat" ? slaChatSec    : slaEmailSec;
         const conc   = activeChannel === "chat" ? chatConcurrency : 1;
-        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, activeChannel, conc, emailOccupancy);
+        // cases uses the email (backlog/deferred) model
+        const modelChannel: "voice" | "chat" | "email" = activeChannel === "voice" ? "voice" : activeChannel === "chat" ? "chat" : "email";
+        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy);
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
       } else {
@@ -755,11 +773,15 @@ export function CapacityPlanning() {
         const rEmail = enabledChannels.includes("email")
           ? calcWeeklyErlangFTE(effVolEmail, effAhtEmail, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaEmailTarget, slaEmailSec, shrinkagePct, "email", 1, emailOccupancy)
           : { fte: 0, occupancy: 0 };
-        requiredFTE = roundTo(rVoice.fte + rChat.fte + rEmail.fte);
+        // cases uses email (backlog/deferred) staffing model
+        const rCases = enabledChannels.includes("cases")
+          ? calcWeeklyErlangFTE(effVolCases, effAhtCases, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaEmailTarget, slaEmailSec, shrinkagePct, "email", 1, emailOccupancy)
+          : { fte: 0, occupancy: 0 };
+        requiredFTE = roundTo(rVoice.fte + rChat.fte + rEmail.fte + rCases.fte);
         // Blended occupancy: weighted average by volume
-        const totalVol = effVolVoice + effVolChat + effVolEmail;
+        const totalVol = effVolVoice + effVolChat + effVolEmail + effVolCases;
         erlangOccupancy = totalVol > 0
-          ? (rVoice.occupancy * effVolVoice + rChat.occupancy * effVolChat + rEmail.occupancy * effVolEmail) / totalVol
+          ? (rVoice.occupancy * effVolVoice + rChat.occupancy * effVolChat + rEmail.occupancy * effVolEmail + rCases.occupancy * effVolCases) / totalVol
           : 0;
       }
 
@@ -792,7 +814,7 @@ export function CapacityPlanning() {
       // Helper: compute achieved SLA% from a given FTE headcount (Erlang A when patience > 0)
       function achievedSLFor(hc: number): number | null {
         if (isDedicated) {
-          if (activeChannel === "email") return null;
+          if (activeChannel === "email" || activeChannel === "cases") return null;
           const vol = activeChannel === "voice" ? effVolVoice : effVolChat;
           const aht = activeChannel === "voice" ? effAhtVoice : effAhtChat;
           const sec = activeChannel === "voice" ? slaVoiceSec : slaChatSec;
@@ -822,10 +844,10 @@ export function CapacityPlanning() {
 
       return {
         ...wk,
-        autoVolVoice: auto.voice, autoVolChat: auto.chat, autoVolEmail: auto.email,
-        effVolVoice, effVolChat, effVolEmail, effVolTotal: effVolVoice + effVolChat + effVolEmail,
-        autoAhtVoice: autoAhts.voice, autoAhtChat: autoAhts.chat, autoAhtEmail: autoAhts.email,
-        effAhtVoice, effAhtChat, effAhtEmail,
+        autoVolVoice: auto.voice, autoVolChat: auto.chat, autoVolEmail: auto.email, autoVolCases: auto.cases,
+        effVolVoice, effVolChat, effVolEmail, effVolCases, effVolTotal: effVolVoice + effVolChat + effVolEmail + effVolCases,
+        autoAhtVoice: autoAhts.voice, autoAhtChat: autoAhts.chat, autoAhtEmail: autoAhts.email, autoAhtCases: autoAhts.cases,
+        effAhtVoice, effAhtChat, effAhtEmail, effAhtCases,
         projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
         knownExits, projectedHc: projHC, actualHc, actualAttrition,
@@ -1228,6 +1250,21 @@ export function CapacityPlanning() {
                       ))}
                     </tr>
                   )}
+                  {(!isDedicated ? enabledChannels.includes("cases") : activeChannel === "cases") && (
+                    <tr className="border-b border-border/40 hover:bg-muted/20">
+                      <RowLabel label="Proj. Volume — Cases" indent />
+                      {weekCalcs.map(wk => (
+                        <EditableCell key={wk.weekOffset}
+                          value={weeklyInputs[wk.weekOffset]?.volCases ?? null}
+                          autoValue={wk.autoVolCases}
+                          isOverridden={weeklyInputs[wk.weekOffset]?.volCases != null}
+                          onSave={v => setCellInput(wk.weekOffset, "volCases", v)}
+                          onReset={() => resetOverride(wk.weekOffset, "volCases")}
+                          format={n => Math.round(n).toLocaleString()}
+                        />
+                      ))}
+                    </tr>
+                  )}
                   {!isDedicated && (
                     <tr className="border-b border-border/40 bg-muted/10">
                       <RowLabel label="Proj. Volume — Total" indent bold />
@@ -1281,6 +1318,21 @@ export function CapacityPlanning() {
                       ))}
                     </tr>
                   )}
+                  {(!isDedicated ? enabledChannels.includes("cases") : activeChannel === "cases") && (
+                    <tr className="border-b border-border/40 hover:bg-muted/20">
+                      <RowLabel label="Proj. AHT (s) — Cases" indent sub />
+                      {weekCalcs.map(wk => (
+                        <EditableCell key={wk.weekOffset}
+                          value={weeklyInputs[wk.weekOffset]?.ahtCases ?? null}
+                          autoValue={wk.autoAhtCases}
+                          isOverridden={weeklyInputs[wk.weekOffset]?.ahtCases != null}
+                          onSave={v => setCellInput(wk.weekOffset, "ahtCases", v)}
+                          onReset={() => resetOverride(wk.weekOffset, "ahtCases")}
+                          format={n => Math.round(n).toLocaleString()}
+                        />
+                      ))}
+                    </tr>
+                  )}
 
                   {/* Actual volumes — roster integration coming; read-only for now */}
                   {(!isDedicated ? enabledChannels.includes("voice") : activeChannel === "voice") && (
@@ -1298,6 +1350,12 @@ export function CapacityPlanning() {
                   {(!isDedicated ? enabledChannels.includes("email") : activeChannel === "email") && (
                     <tr className="border-b border-border/40">
                       <RowLabel label="Actual Volume — Email" indent sub />
+                      {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-black italic" />)}
+                    </tr>
+                  )}
+                  {(!isDedicated ? enabledChannels.includes("cases") : activeChannel === "cases") && (
+                    <tr className="border-b border-border/40">
+                      <RowLabel label="Actual Volume — Cases" indent sub />
                       {weeks.map(w => <ReadOnlyCell key={w.weekOffset} value="—" className="text-black italic" />)}
                     </tr>
                   )}
@@ -1422,7 +1480,7 @@ export function CapacityPlanning() {
                 <RowLabel label="Projected SLA (Proj. HC)" indent sub />
                 {weekCalcs.map(wk => {
                   const sl = wk.achievedSLAProj;
-                  if (isDedicated && activeChannel === "email") {
+                  if (isDedicated && (activeChannel === "email" || activeChannel === "cases")) {
                     return <ReadOnlyCell key={wk.weekOffset} value="N/A" className="text-black italic" />;
                   }
                   if (sl == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-black" />;
@@ -1441,7 +1499,7 @@ export function CapacityPlanning() {
                 <RowLabel label="Achieved SLA (Actual HC)" indent sub />
                 {weekCalcs.map(wk => {
                   const sl = wk.achievedSLAActual;
-                  if (sl == null && isDedicated && activeChannel === "email") {
+                  if (sl == null && isDedicated && (activeChannel === "email" || activeChannel === "cases")) {
                     return <ReadOnlyCell key={wk.weekOffset} value="N/A" className="text-black italic" />;
                   }
                   if (sl == null) return <ReadOnlyCell key={wk.weekOffset} value="—" className="text-black" />;
