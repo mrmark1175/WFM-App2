@@ -498,7 +498,7 @@ export function ScheduleGrid({
                         color: val > 0 ? "#1e293b" : "#cbd5e1",
                       }}
                     >
-                      {val > 0 ? Math.round(val) : (isHour && !isNextDay ? "·" : "")}
+                      {val > 0 ? Math.ceil(val) : (isHour && !isNextDay ? "·" : "")}
                     </div>
                   );
                 })}

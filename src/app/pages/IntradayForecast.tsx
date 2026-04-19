@@ -1829,6 +1829,11 @@ export const IntradayForecast = () => {
                       <SlidersHorizontal className="h-3 w-3" />
                       Smooth
                     </button>
+                    {!smoothFTE && (
+                      <span className="text-[10px] italic text-amber-600" title="Raw Erlang output often has isolated zero-FTE intervals that make shifts hard to build around. Smoothing preserves the daily total while eliminating gaps.">
+                        Recommended before committing
+                      </span>
+                    )}
                     {smoothFTE && (
                       <div className="flex items-center gap-1 text-xs">
                         <span className="text-muted-foreground">Window</span>
