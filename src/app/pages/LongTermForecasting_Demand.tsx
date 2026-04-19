@@ -2358,387 +2358,34 @@ export default function LongTermForecastingDemand() {
             </CardContent>
           </Card>
 
+          {/* ── Unified Historical + Forecast Detail Table ───────────────── */}
           <Card id="section-historical" className="border border-primary/15 shadow-md overflow-hidden">
             <CardHeader className="bg-muted/40 border-b border-border/50">
-              <button type="button" className="w-full flex items-start justify-between gap-4 text-left" onClick={() => setIsHistoricalSourceOpen((current) => !current)}>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <CardTitle className="text-sm font-bold">Historical Data Source</CardTitle>
-                    <Badge variant="outline" className={`border-primary/20 ${dataSourceMode === "manual" ? "text-emerald-600 border-emerald-400" : "text-primary"}`}>
-                      {dataSourceMode === "manual" ? "Manual Entry" : `${historicalSourceRows.length} Months · API`}
-                    </Badge>
-                    {dataSourceMode === "api" && overrideCount > 0 && <Badge className="bg-amber-500 hover:bg-amber-500 text-black">{overrideCount} Overrides</Badge>}
-                  </div>
-                  <p className="text-xs text-foreground/60">Review and adjust the baseline monthly historical volumes used for forecast generation</p>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <UITooltip>
-                      <TooltipTrigger asChild>
-                        <Info className="size-3.5 cursor-help" />
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p className="text-xs">Manual overrides allow planners to incorporate business judgment beyond system-fed data.</p>
-                      </TooltipContent>
-                    </UITooltip>
-                    <span>Section A: Forecast input layer</span>
-                  </div>
-                </div>
-                <div className="shrink-0 mt-1 rounded-full border border-border bg-background p-2">
-                  {isHistoricalSourceOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                </div>
-              </button>
-            </CardHeader>
-            <div className={`grid transition-[grid-template-rows] duration-300 ease-out ${isHistoricalSourceOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}>
-              <div className="overflow-hidden">
-                <CardContent className={`space-y-4 pt-6 transition-opacity duration-200 ${isHistoricalSourceOpen ? "opacity-100" : "opacity-0"}`}>
-                  {/* ── Data Source Mode Toggle ─────────────────────────── */}
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <span className="text-xs font-black uppercase tracking-widest text-foreground/60">Data Source</span>
-                    <div className="flex rounded-lg border border-border p-0.5 bg-muted/40">
-                      <button
-                        type="button"
-                        onClick={() => setDataSourceMode("api")}
-                        className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${dataSourceMode === "api" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                      >
-                        API
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDataSourceMode("manual")}
-                        className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${dataSourceMode === "manual" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                      >
-                        Manual Entry
-                      </button>
-                    </div>
-                    {dataSourceMode === "manual" && (
-                      <span className="text-xs text-muted-foreground">Enter up to 24 months of history — partial data is fine, the forecast uses what you have.</span>
-                    )}
-                  </div>
-
-                  {/* ── Shared controls: Channel + Forecast Year ────────── */}
-                  <div className="flex flex-wrap gap-3 items-end">
-                    <div className="w-[200px]">
-                      <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Channel</Label>
-                      <Select value={historicalChannelView} onValueChange={(value) => { setHistoricalChannelView(value as ChannelKey); setDetailChannel(value as ChannelKey); }}>
-                        <SelectTrigger className="mt-2 h-9 font-semibold">
-                          <SelectValue placeholder="Select channel" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="voice">Voice</SelectItem>
-                          <SelectItem value="email">Email</SelectItem>
-                          <SelectItem value="chat">Chat</SelectItem>
-                          <SelectItem value="cases">Cases</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="w-[110px]">
-                      <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Forecast Year</Label>
-                      <Input
-                        type="number"
-                        min={2000}
-                        max={2100}
-                        className="mt-2 h-9 font-bold"
-                        value={forecastYear}
-                        onChange={(e) => {
-                          const yr = Math.max(2000, Math.min(2100, Number(e.target.value)));
-                          if (Number.isFinite(yr)) {
-                            setAssumptions((prev) => ({ ...prev, startDate: `${yr}-01-01` }));
-                          }
-                        }}
-                      />
-                    </div>
-                    {dataSourceMode === "api" && (
-                      <div className="flex items-center gap-2 ml-auto flex-wrap">
-                        <Button variant="outline" size="sm" className="gap-2 h-9" onClick={handleClearApiData}>
-                          <Trash2 className="size-3.5" />
-                          Clear API Data
-                        </Button>
-                        <Button variant="outline" size="sm" className="gap-2 h-9" onClick={handleRestoreApiData} disabled={!canRestoreApiData}>
-                          <RotateCcw className="size-3.5" />
-                          Restore API Data
-                        </Button>
-                        <Button variant="outline" size="sm" className="gap-2 h-9" onClick={handleResetAllOverrides} disabled={overrideCount === 0}>
-                          <RotateCcw className="size-3.5" />
-                          Reset Overrides
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="gap-2 h-9 bg-violet-600 hover:bg-violet-700 text-white border-0"
-                          onClick={runOutlierAnalysis}
-                          disabled={isAnalyzing || historicalSourceRows.length < 4}
-                        >
-                          {isAnalyzing ? <Loader2 className="size-3.5 animate-spin" /> : <BrainCircuit className="size-3.5" />}
-                          {isAnalyzing ? "Analyzing…" : "Detect Outliers"}
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                  {/* ── Manual Entry 2-year Grid ───────────────────────── */}
-                  {dataSourceMode === "manual" && (() => {
-                    const year1 = forecastYear - 2;
-                    const year2 = forecastYear - 1;
-                    const computeTotal = (startIdx: number) =>
-                      Array.from({ length: 12 }, (_, i) => {
-                        const v = visibleHistoricalOverrides[startIdx + i];
-                        if (!v || v === "") return 0;
-                        const n = parseInt(v, 10);
-                        return Number.isFinite(n) && n > 0 ? n : 0;
-                      }).reduce((a, b) => a + b, 0);
-                    const computeCount = (startIdx: number) =>
-                      Array.from({ length: 12 }, (_, i) => {
-                        const v = visibleHistoricalOverrides[startIdx + i];
-                        if (!v || v === "") return 0;
-                        const n = parseInt(v, 10);
-                        return Number.isFinite(n) && n > 0 ? 1 : 0;
-                      }).reduce((a, b) => a + b, 0);
-                    const year1Total = computeTotal(0);
-                    const year2Total = computeTotal(12);
-                    const year1Count = computeCount(0);
-                    const year2Count = computeCount(12);
-                    return (
-                      <div className="flex gap-4">
-                        {[{ label: String(year1), startIdx: 0, total: year1Total, count: year1Count },
-                          { label: String(year2), startIdx: 12, total: year2Total, count: year2Count }].map(({ label, startIdx, total, count }) => (
-                          <div key={label} className="flex-1 min-w-0 rounded-xl border border-border/60 overflow-hidden">
-                            <div className="bg-muted/70 border-b border-border/60 px-3 py-2 text-center">
-                              <span className="text-xs font-black uppercase tracking-widest text-foreground/70">{label}</span>
-                              <span className="ml-2 text-[10px] text-muted-foreground">({count}/12 months)</span>
-                            </div>
-                            <div className="p-3 space-y-1.5">
-                              {MONTH_NAMES.map((month, i) => (
-                                <div key={month} className="flex items-center gap-2">
-                                  <span className="text-[11px] font-semibold w-8 text-muted-foreground shrink-0">{month}</span>
-                                  <Input
-                                    inputMode="numeric"
-                                    pattern="[0-9]*"
-                                    value={visibleHistoricalOverrides[startIdx + i] ?? ""}
-                                    onChange={(e) => handleOverrideChange(startIdx + i, e.target.value)}
-                                    onBlur={() => handleOverrideBlur(startIdx + i)}
-                                    onPaste={(e) => handleManualGridPaste(startIdx, i, e)}
-                                    placeholder="—"
-                                    className="h-7 text-center font-mono tabular-nums text-xs px-1"
-                                  />
-                                </div>
-                              ))}
-                              <div className="pt-1 border-t border-border/40 flex items-center justify-between">
-                                <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Total</span>
-                                <span className="text-xs font-bold tabular-nums">{total > 0 ? total.toLocaleString() : "—"}</span>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  })()}
-
-                  {/* ── Detect Outliers button for Manual mode ───────────── */}
-                  {dataSourceMode === "manual" && (
-                    <div className="flex items-center gap-3">
-                      <Button
-                        size="sm"
-                        className="gap-2 bg-violet-600 hover:bg-violet-700 text-white border-0"
-                        onClick={runOutlierAnalysis}
-                        disabled={isAnalyzing || Object.values(visibleHistoricalOverrides).filter((v) => v && parseInt(v, 10) > 0).length < 4}
-                      >
-                        {isAnalyzing ? <Loader2 className="size-4 animate-spin" /> : <BrainCircuit className="size-4" />}
-                        {isAnalyzing ? "Analyzing…" : "Detect Outliers"}
-                      </Button>
-                      <span className="text-xs text-muted-foreground">Checks entered values for statistical anomalies</span>
-                    </div>
-                  )}
-
-                  {/* ── Outlier Analysis Panel (both modes) ─────────────── */}
-                  {outlierResults !== null && (
-                    <div className="rounded-xl border border-violet-200/70 dark:border-violet-800/40 bg-violet-50/60 dark:bg-violet-950/20 overflow-hidden">
-                      <button
-                        type="button"
-                        className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-violet-100/40 dark:hover:bg-violet-900/20 transition-colors"
-                        onClick={() => setIsOutlierPanelOpen((v) => !v)}
-                      >
-                        <div className="flex items-center gap-3 flex-wrap">
-                          <BrainCircuit className="size-4 text-violet-600 shrink-0" />
-                          <span className="text-sm font-bold text-violet-900 dark:text-violet-200">
-                            AI Outlier Analysis
-                          </span>
-                          {outlierResults.length === 0
-                            ? <Badge className="bg-emerald-500 text-white text-[10px] gap-1"><CheckCircle2 className="size-3" />Clean</Badge>
-                            : <Badge className="bg-violet-600 text-white text-[10px]">{outlierResults.length} flagged</Badge>
-                          }
-                          <div className="flex items-center gap-1 text-[10px] text-violet-600/80 dark:text-violet-400/70 font-medium">
-                            <ShieldCheck className="size-3" />
-                            Exordium Private AI Engine — runs entirely on your isolated server. No data leaves your environment.
-                          </div>
-                        </div>
-                        <ChevronDown className={`size-4 text-violet-500 shrink-0 transition-transform ${isOutlierPanelOpen ? "" : "-rotate-90"}`} />
-                      </button>
-                      {isOutlierPanelOpen && (
-                        <div className="px-4 pb-4 space-y-3">
-                          {outlierResults.length === 0 ? (
-                            <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-400 font-medium py-1">
-                              <CheckCircle2 className="size-4 shrink-0" />
-                              All {dataSourceMode === "manual" ? historicalSourceRows.filter((r) => r.finalVolume > 0).length : historicalSourceRows.length} months are within normal statistical range. No normalization needed.
-                            </div>
-                          ) : (
-                            <>
-                              <p className="text-xs text-violet-700/80 dark:text-violet-300/70">
-                                Outliers detected using IQR fences (Q1 − 1.5×IQR, Q3 + 1.5×IQR) and Modified Z-score. Click <strong>Apply</strong> to set the suggested value as an override.
-                              </p>
-                              <div className="space-y-2">
-                                {outlierResults.map((result) => (
-                                  <div
-                                    key={result.index}
-                                    className={`rounded-lg border px-4 py-3 flex flex-col sm:flex-row sm:items-start gap-3 ${
-                                      result.applied
-                                        ? "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/40"
-                                        : result.severity === "extreme"
-                                          ? "border-rose-200/80 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-800/40"
-                                          : "border-amber-200/80 bg-amber-50/60 dark:bg-amber-950/20 dark:border-amber-800/40"
-                                    }`}
-                                  >
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      <AlertTriangle className={`size-4 ${result.applied ? "text-emerald-500" : result.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
-                                      <span className="font-bold text-sm">{result.monthLabel}</span>
-                                      <Badge variant="outline" className={`text-[10px] ${result.direction === "high" ? "border-rose-300 text-rose-700" : "border-blue-300 text-blue-700"}`}>
-                                        {result.direction === "high" ? "↑ High" : "↓ Low"}
-                                      </Badge>
-                                      <Badge variant="outline" className="text-[10px] border-violet-300 text-violet-700">
-                                        Z {result.modZScore}
-                                      </Badge>
-                                    </div>
-                                    <p className="text-xs text-foreground/70 flex-1">{result.reason}</p>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      {result.applied ? (
-                                        <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1"><CheckCircle2 className="size-3" /> Applied</span>
-                                      ) : (
-                                        <Button
-                                          size="sm"
-                                          className="h-7 text-xs gap-1 bg-violet-600 hover:bg-violet-700 text-white"
-                                          onClick={() => applyOutlierSuggestion(result.index, result.suggestedValue)}
-                                        >
-                                          Apply {result.suggestedValue.toLocaleString()}
-                                        </Button>
-                                      )}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {/* ── API Year Tables (API mode only) ─────────────────── */}
-                  {dataSourceMode === "api" && (() => {
-                    const renderYearTable = (yearGroup: { year: string; rows: HistoricalSourceRow[] }) => (
-                      <div key={yearGroup.year} className="flex-1 min-w-0 overflow-x-auto rounded-xl border border-border/60">
-                        <div className="bg-muted/70 border-b border-border/60 px-3 py-1.5 text-center">
-                          <span className="text-xs font-black uppercase tracking-widest text-foreground/70">{yearGroup.year}</span>
-                        </div>
-                        <Table className="table-fixed w-full">
-                          <colgroup>
-                            <col className="w-[18%]" />
-                            <col className="w-[16%]" />
-                            <col className="w-[20%]" />
-                            <col className="w-[16%]" />
-                            <col className="w-[11%]" />
-                            <col className="w-[19%]" />
-                          </colgroup>
-                          <TableHeader className="bg-muted/50">
-                            <TableRow className="hover:bg-transparent">
-                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Month</TableHead>
-                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">API Vol</TableHead>
-                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Override</TableHead>
-                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Final</TableHead>
-                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Var%</TableHead>
-                              <TableHead className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest whitespace-nowrap">Edit</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {yearGroup.rows.map((row) => {
-                              const outlier = outlierResults?.find((r) => r.index === row.index);
-                              return (
-                                <TableRow key={row.index} className={`h-9 ${outlier && !outlier.applied ? (outlier.severity === "extreme" ? "bg-rose-50/40 dark:bg-rose-950/10" : "bg-amber-50/40 dark:bg-amber-950/10") : row.canEdit ? "bg-amber-50/60 dark:bg-amber-950/10" : ""}`}>
-                                  <TableCell className="px-2 py-1 text-center align-middle">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <span className="font-bold text-xs">{row.monthLabel.split(" ")[0]}</span>
-                                      {outlier && !outlier.applied && (
-                                        <UITooltip>
-                                          <TooltipTrigger asChild>
-                                            <AlertTriangle className={`size-3 shrink-0 cursor-help ${outlier.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
-                                          </TooltipTrigger>
-                                          <TooltipContent className="max-w-[280px]">
-                                            <p className="text-xs font-semibold mb-1">{outlier.severity === "extreme" ? "Extreme Outlier" : "Mild Outlier"} — {outlier.direction === "high" ? "↑ Above upper fence" : "↓ Below lower fence"}</p>
-                                            <p className="text-xs">{outlier.reason}</p>
-                                            <p className="text-xs mt-1 font-semibold text-violet-300">Suggested: {outlier.suggestedValue.toLocaleString()}</p>
-                                          </TooltipContent>
-                                        </UITooltip>
-                                      )}
-                                      {outlier?.applied && <CheckCircle2 className="size-3 text-emerald-500 shrink-0" />}
-                                    </div>
-                                  </TableCell>
-                                  <TableCell className="px-2 py-1 text-center font-mono text-xs tabular-nums whitespace-nowrap align-middle">{formatInteger(row.apiVolume)}</TableCell>
-                                  <TableCell className="px-2 py-1 text-center align-middle">
-                                    <Input
-                                      inputMode="numeric"
-                                      pattern="[0-9]*"
-                                      value={row.overrideVolume}
-                                      onChange={(event) => handleOverrideChange(row.index, event.target.value)}
-                                      onBlur={() => handleOverrideBlur(row.index)}
-                                      placeholder={String(row.apiVolume)}
-                                      disabled={!row.canEdit}
-                                      className="h-7 w-full text-center font-mono tabular-nums text-xs px-1"
-                                    />
-                                  </TableCell>
-                                  <TableCell className="px-2 py-1 text-center font-mono text-xs font-bold text-primary tabular-nums whitespace-nowrap align-middle">{formatInteger(row.finalVolume)}</TableCell>
-                                  <TableCell className={`px-2 py-1 text-center font-mono text-xs tabular-nums whitespace-nowrap align-middle ${row.variancePct === null ? "text-muted-foreground" : row.variancePct >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                                    {row.variancePct === null ? "—" : `${row.variancePct > 0 ? "+" : ""}${row.variancePct.toFixed(1)}%`}
-                                  </TableCell>
-                                  <TableCell className="px-2 py-1 text-center align-middle">
-                                    <div className="flex items-center justify-center gap-1.5">
-                                      <Switch checked={row.canEdit} onCheckedChange={(checked) => handleOverrideToggle(row.index, checked)} disabled={row.stateLabel === "Manual"} className="scale-75" />
-                                      <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[10px]" onClick={() => handleResetMonthOverride(row.index)} disabled={!row.canEdit}>
-                                        Reset
-                                      </Button>
-                                    </div>
-                                  </TableCell>
-                                </TableRow>
-                              );
-                            })}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    );
-                    return (
-                      <div className={`flex gap-3 ${historicalRowsByYear.length > 1 ? "flex-row" : "flex-col"}`}>
-                        {historicalRowsByYear.map(renderYearTable)}
-                      </div>
-                    );
-                  })()}
-                </CardContent>
-              </div>
-            </div>
-          </Card>
-          {/* ── Demand Forecast Detail + Re-cut ─────────────────────────── */}
-          <Card className="border border-border/50 shadow-lg bg-card">
-            <CardHeader className="border-b border-border/50 bg-muted/50">
-              <div className="flex flex-col gap-3">
+              <div className="space-y-4">
+                {/* Title row */}
                 <div className="flex items-start justify-between gap-4 flex-wrap">
-                  <div>
-                    <CardTitle className="text-sm font-bold flex items-center gap-2">
-                      Demand Forecast Detail
-                      {recutVolumesByChannel && (
-                        <Badge className="bg-emerald-600 text-white text-[10px]">Re-cut Active</Badge>
-                      )}
-                    </CardTitle>
-                    <p className="text-xs text-foreground/60 mt-0.5">Per-channel view. Enter actuals for completed months to generate a re-cut.</p>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <CardTitle className="text-sm font-bold">
+                        Historical &amp; Forecast Detail
+                        {recutVolumesByChannel && (
+                          <Badge className="ml-2 bg-emerald-600 text-white text-[10px]">Re-cut Active</Badge>
+                        )}
+                      </CardTitle>
+                      <Badge variant="outline" className={`border-primary/20 ${dataSourceMode === "manual" ? "text-emerald-600 border-emerald-400" : "text-primary"}`}>
+                        {dataSourceMode === "manual" ? "Manual Entry" : `${historicalSourceRows.length} Months · API`}
+                      </Badge>
+                      {dataSourceMode === "api" && overrideCount > 0 && <Badge className="bg-amber-500 hover:bg-amber-500 text-black">{overrideCount} Overrides</Badge>}
+                    </div>
+                    <p className="text-xs text-foreground/60">Historical volumes feed the forecast engine. Enter actuals for completed months to generate a re-cut.</p>
                   </div>
-                  {/* Channel selector tabs */}
+                  {/* Channel tabs */}
                   <div className="flex gap-1 rounded-lg border border-border p-1 bg-muted/40">
                     {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((ch) => (
                       <button
                         key={ch}
                         type="button"
-                        onClick={() => setDetailChannel(ch)}
+                        onClick={() => { setHistoricalChannelView(ch); setDetailChannel(ch); }}
                         className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${detailChannel === ch ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                       >
                         {CHANNEL_ASSUMPTION_META[ch].label}
@@ -2746,6 +2393,135 @@ export default function LongTermForecastingDemand() {
                     ))}
                   </div>
                 </div>
+
+                {/* Controls row */}
+                <div className="flex flex-wrap gap-3 items-end">
+                  {/* Data source toggle */}
+                  <div>
+                    <span className="text-[11px] font-black uppercase tracking-widest text-foreground/60 block mb-1.5">Data Source</span>
+                    <div className="flex rounded-lg border border-border p-0.5 bg-muted/40">
+                      <button type="button" onClick={() => setDataSourceMode("api")}
+                        className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${dataSourceMode === "api" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                        API
+                      </button>
+                      <button type="button" onClick={() => setDataSourceMode("manual")}
+                        className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${dataSourceMode === "manual" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                        Manual Entry
+                      </button>
+                    </div>
+                  </div>
+                  {/* Forecast year */}
+                  <div className="w-[110px]">
+                    <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Forecast Year</Label>
+                    <Input
+                      type="number" min={2000} max={2100}
+                      className="mt-1.5 h-9 font-bold"
+                      value={forecastYear}
+                      onChange={(e) => {
+                        const yr = Math.max(2000, Math.min(2100, Number(e.target.value)));
+                        if (Number.isFinite(yr)) setAssumptions((prev) => ({ ...prev, startDate: `${yr}-01-01` }));
+                      }}
+                    />
+                  </div>
+                  {/* API action buttons */}
+                  {dataSourceMode === "api" && (
+                    <div className="flex items-center gap-2 ml-auto flex-wrap">
+                      <Button variant="outline" size="sm" className="gap-2 h-9" onClick={handleClearApiData}>
+                        <Trash2 className="size-3.5" />Clear API Data
+                      </Button>
+                      <Button variant="outline" size="sm" className="gap-2 h-9" onClick={handleRestoreApiData} disabled={!canRestoreApiData}>
+                        <RotateCcw className="size-3.5" />Restore API Data
+                      </Button>
+                      <Button variant="outline" size="sm" className="gap-2 h-9" onClick={handleResetAllOverrides} disabled={overrideCount === 0}>
+                        <RotateCcw className="size-3.5" />Reset Overrides
+                      </Button>
+                      <Button size="sm" className="gap-2 h-9 bg-violet-600 hover:bg-violet-700 text-white border-0"
+                        onClick={runOutlierAnalysis} disabled={isAnalyzing || historicalSourceRows.length < 4}>
+                        {isAnalyzing ? <Loader2 className="size-3.5 animate-spin" /> : <BrainCircuit className="size-3.5" />}
+                        {isAnalyzing ? "Analyzing…" : "Detect Outliers"}
+                      </Button>
+                    </div>
+                  )}
+                  {dataSourceMode === "manual" && (
+                    <div className="flex items-center gap-3 ml-auto">
+                      <Button size="sm" className="gap-2 h-9 bg-violet-600 hover:bg-violet-700 text-white border-0"
+                        onClick={runOutlierAnalysis}
+                        disabled={isAnalyzing || Object.values(visibleHistoricalOverrides).filter((v) => v && parseInt(v, 10) > 0).length < 4}>
+                        {isAnalyzing ? <Loader2 className="size-3.5 animate-spin" /> : <BrainCircuit className="size-3.5" />}
+                        {isAnalyzing ? "Analyzing…" : "Detect Outliers"}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">Checks entered values for anomalies</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Outlier analysis panel */}
+                {outlierResults !== null && (
+                  <div className="rounded-xl border border-violet-200/70 dark:border-violet-800/40 bg-violet-50/60 dark:bg-violet-950/20 overflow-hidden">
+                    <button type="button"
+                      className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-violet-100/40 dark:hover:bg-violet-900/20 transition-colors"
+                      onClick={() => setIsOutlierPanelOpen((v) => !v)}>
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <BrainCircuit className="size-4 text-violet-600 shrink-0" />
+                        <span className="text-sm font-bold text-violet-900 dark:text-violet-200">AI Outlier Analysis</span>
+                        {outlierResults.length === 0
+                          ? <Badge className="bg-emerald-500 text-white text-[10px] gap-1"><CheckCircle2 className="size-3" />Clean</Badge>
+                          : <Badge className="bg-violet-600 text-white text-[10px]">{outlierResults.length} flagged</Badge>}
+                        <div className="flex items-center gap-1 text-[10px] text-violet-600/80 dark:text-violet-400/70 font-medium">
+                          <ShieldCheck className="size-3" />
+                          Exordium Private AI Engine — runs entirely on your isolated server. No data leaves your environment.
+                        </div>
+                      </div>
+                      <ChevronDown className={`size-4 text-violet-500 shrink-0 transition-transform ${isOutlierPanelOpen ? "" : "-rotate-90"}`} />
+                    </button>
+                    {isOutlierPanelOpen && (
+                      <div className="px-4 pb-4 space-y-3">
+                        {outlierResults.length === 0 ? (
+                          <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-400 font-medium py-1">
+                            <CheckCircle2 className="size-4 shrink-0" />
+                            All {dataSourceMode === "manual" ? historicalSourceRows.filter((r) => r.finalVolume > 0).length : historicalSourceRows.length} months are within normal statistical range.
+                          </div>
+                        ) : (
+                          <>
+                            <p className="text-xs text-violet-700/80 dark:text-violet-300/70">
+                              Outliers detected using IQR fences (Q1 − 1.5×IQR, Q3 + 1.5×IQR) and Modified Z-score. Click <strong>Apply</strong> to set the suggested value as an override.
+                            </p>
+                            <div className="space-y-2">
+                              {outlierResults.map((result) => (
+                                <div key={result.index}
+                                  className={`rounded-lg border px-4 py-3 flex flex-col sm:flex-row sm:items-start gap-3 ${
+                                    result.applied ? "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/40"
+                                    : result.severity === "extreme" ? "border-rose-200/80 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-800/40"
+                                    : "border-amber-200/80 bg-amber-50/60 dark:bg-amber-950/20 dark:border-amber-800/40"}`}>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <AlertTriangle className={`size-4 ${result.applied ? "text-emerald-500" : result.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
+                                    <span className="font-bold text-sm">{result.monthLabel}</span>
+                                    <Badge variant="outline" className={`text-[10px] ${result.direction === "high" ? "border-rose-300 text-rose-700" : "border-blue-300 text-blue-700"}`}>
+                                      {result.direction === "high" ? "↑ High" : "↓ Low"}
+                                    </Badge>
+                                    <Badge variant="outline" className="text-[10px] border-violet-300 text-violet-700">Z {result.modZScore}</Badge>
+                                  </div>
+                                  <p className="text-xs text-foreground/70 flex-1">{result.reason}</p>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    {result.applied ? (
+                                      <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1"><CheckCircle2 className="size-3" /> Applied</span>
+                                    ) : (
+                                      <Button size="sm" className="h-7 text-xs gap-1 bg-violet-600 hover:bg-violet-700 text-white"
+                                        onClick={() => applyOutlierSuggestion(result.index, result.suggestedValue)}>
+                                        Apply {result.suggestedValue.toLocaleString()}
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Re-cut factor banner */}
                 {activeRecutFactor != null && (
                   <div className="flex items-center gap-3 flex-wrap rounded-xl border border-emerald-200/60 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/40 px-4 py-2.5">
@@ -2757,17 +2533,19 @@ export default function LongTermForecastingDemand() {
                     </div>
                     <span className="text-xs text-muted-foreground">({activeRecutFactor >= 1 ? "+" : ""}{((activeRecutFactor - 1) * 100).toFixed(1)}% vs original)</span>
                     <div className="ml-auto flex gap-2">
-                      {recutVolumesByChannel ? (
+                      {recutVolumesByChannel && (
                         <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5 border-rose-300 text-rose-700 hover:bg-rose-50" onClick={handleClearRecut}>
                           <X className="size-3" />Clear Re-cut
                         </Button>
-                      ) : null}
+                      )}
                       <Button size="sm" className="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white" onClick={handlePublishRecut}>
                         <TrendingUp className="size-3" />Publish to Intraday
                       </Button>
                     </div>
                   </div>
                 )}
+
+                {/* Missing actuals warning */}
                 {completedMonthIndices.length > 0 && activeRecutFactor == null && (() => {
                   const missing = allForecastMonths.filter(m => m.isCompleted && (m.actualVol == null || m.actualVol === 0)).length;
                   if (missing === 0) return null;
@@ -2775,105 +2553,205 @@ export default function LongTermForecastingDemand() {
                     <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 flex-wrap">
                       <AlertTriangle className="size-4 text-amber-600 shrink-0" />
                       <span className="text-xs font-semibold text-amber-800">
-                        {missing} completed {missing === 1 ? "month has" : "months have"} no actuals entered. Add them below to unlock the Re-cut factor.
+                        {missing} completed {missing === 1 ? "month has" : "months have"} no actuals entered. Add them in the Actual column to unlock the Re-cut factor.
                       </span>
-                      <span className="text-xs text-amber-600">↓ scroll down in this table</span>
                     </div>
                   );
                 })()}
               </div>
             </CardHeader>
+
             <CardContent className="p-0 overflow-x-auto">
-              <Table className="table-fixed">
-                <colgroup>
-                  <col className="w-[18%]" />
-                  <col className="w-[17%]" />
-                  <col className="w-[17%]" />
-                  <col className="w-[12%]" />
-                  <col className="w-[12%]" />
-                  <col className="w-[24%]" />
-                </colgroup>
-                <TableHeader className="bg-muted/50">
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Month</TableHead>
-                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Forecast Volume</TableHead>
-                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Actual Volume</TableHead>
-                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Variance</TableHead>
-                    {activeRecutFactor != null && (
-                      <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-emerald-700 whitespace-nowrap">Re-cut Forecast</TableHead>
-                    )}
-                    <TableHead className="text-center text-xs font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {allForecastMonths.map((row) => {
-                    const isSaving = savingActuals.has(row.actualKey);
-                    const isSaved = savedActuals.has(row.actualKey);
-                    return (
-                      <TableRow key={`${row.year}-${row.month1}-${detailChannel}`} className={`hover:bg-muted/30 ${row.isCompleted ? "bg-blue-50/30 dark:bg-blue-950/10" : ""}`}>
-                        <TableCell className="px-3 text-center align-middle">
-                          <div className="flex items-center justify-center gap-2 min-w-0">
-                            <span className="font-bold text-sm">{row.monthLabel} {row.year}</span>
-                            {row.isCompleted && <Badge variant="outline" className="text-[10px] h-4 px-1 text-blue-600 border-blue-300">Completed</Badge>}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-3 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">{row.forecastVol.toLocaleString()}</TableCell>
-                        <TableCell className="px-3 text-center align-middle">
-                          {row.isCompleted ? (
-                            <div className="flex items-center justify-center gap-1.5">
-                              <Input
-                                type="number"
-                                min={0}
-                                className="h-7 w-full max-w-[8.5rem] text-center text-xs font-mono font-bold tabular-nums"
-                                placeholder="Enter actual"
-                                defaultValue={row.actualVol ?? ""}
-                                onBlur={(e) => {
-                                  const val = e.target.value.trim();
-                                  if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
-                                    void handleSaveActual(row.index, detailChannel, Number(val));
-                                  }
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    const val = (e.target as HTMLInputElement).value.trim();
-                                    if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
-                                      void handleSaveActual(row.index, detailChannel, Number(val));
-                                      (e.target as HTMLInputElement).blur();
-                                    }
-                                  }
-                                }}
-                              />
-                              {isSaving && <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0" />}
-                              {isSaved && !isSaving && <span className="text-emerald-600 text-xs font-bold shrink-0">✓</span>}
-                            </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
-                          {row.variancePct != null ? (
-                            <span className={row.variancePct >= 0 ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>
-                              {row.variancePct >= 0 ? "+" : ""}{row.variancePct}%
-                            </span>
-                          ) : <span className="text-muted-foreground">—</span>}
-                        </TableCell>
+              {(() => {
+                const yr1 = forecastYear - 2;
+                const yr2 = forecastYear - 1;
+                const hist1 = historicalRowsByYear.find((g) => g.year === String(yr1))?.rows ?? [];
+                const hist2 = historicalRowsByYear.find((g) => g.year === String(yr2))?.rows ?? [];
+                // build monthIndex→row maps for quick lookup
+                const hist1ByMonthIdx = new Map(hist1.map((r) => [MONTH_NAMES.indexOf(r.monthLabel.split(" ")[0]), r]));
+                const hist2ByMonthIdx = new Map(hist2.map((r) => [MONTH_NAMES.indexOf(r.monthLabel.split(" ")[0]), r]));
+
+                return (
+                  <Table className="table-fixed min-w-[820px]">
+                    <colgroup>
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: dataSourceMode === "api" ? "14%" : "12%" }} />
+                      <col style={{ width: dataSourceMode === "api" ? "14%" : "12%" }} />
+                      <col style={{ width: "13%" }} />
+                      <col style={{ width: "16%" }} />
+                      <col style={{ width: "10%" }} />
+                      {activeRecutFactor != null && <col style={{ width: "13%" }} />}
+                    </colgroup>
+                    <TableHeader className="bg-muted/50">
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">Month</TableHead>
+                        <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">{yr1} Volume</TableHead>
+                        <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">{yr2} Volume</TableHead>
+                        <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-primary whitespace-nowrap">{forecastYear} Forecast</TableHead>
+                        <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">Actual Volume</TableHead>
+                        <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">Variance</TableHead>
                         {activeRecutFactor != null && (
-                          <TableCell className="px-3 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
-                            {row.recutVol != null ? (
-                              <span className="font-bold text-emerald-700">{row.recutVol.toLocaleString()}</span>
-                            ) : row.isCompleted && row.actualVol != null ? (
-                              <span className="font-bold text-blue-700">{row.actualVol.toLocaleString()}</span>
-                            ) : <span className="text-muted-foreground">—</span>}
-                          </TableCell>
+                          <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-emerald-700 whitespace-nowrap">Re-cut Forecast</TableHead>
                         )}
-                        <TableCell className="px-3 text-center text-xs text-muted-foreground whitespace-nowrap align-middle">
-                          {row.isCompleted ? "Actual entry" : "Forecast"}
-                        </TableCell>
                       </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {MONTH_NAMES.map((monthName, monthIdx) => {
+                        const h1 = hist1ByMonthIdx.get(monthIdx);
+                        const h2 = hist2ByMonthIdx.get(monthIdx);
+                        const fc = allForecastMonths[monthIdx];
+                        if (!fc) return null;
+                        const isSaving = savingActuals.has(fc.actualKey);
+                        const isSaved = savedActuals.has(fc.actualKey);
+                        const outlier1 = outlierResults?.find((r) => r.index === (h1?.index ?? -1));
+                        const outlier2 = outlierResults?.find((r) => r.index === (h2?.index ?? -1));
+
+                        const renderHistCell = (
+                          histRow: typeof h1,
+                          startIdx: number,
+                          outlier: typeof outlier1,
+                        ) => {
+                          if (dataSourceMode === "manual") {
+                            return (
+                              <TableCell className="px-2 py-1.5 text-center align-middle">
+                                <Input
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  value={visibleHistoricalOverrides[startIdx + monthIdx] ?? ""}
+                                  onChange={(e) => handleOverrideChange(startIdx + monthIdx, e.target.value)}
+                                  onBlur={() => handleOverrideBlur(startIdx + monthIdx)}
+                                  onPaste={(e) => handleManualGridPaste(startIdx, monthIdx, e)}
+                                  placeholder="—"
+                                  className="h-7 w-full text-center font-mono tabular-nums text-xs px-1"
+                                />
+                              </TableCell>
+                            );
+                          }
+                          // API mode
+                          if (!histRow) {
+                            return <TableCell className="px-2 py-1.5 text-center text-xs text-muted-foreground align-middle">—</TableCell>;
+                          }
+                          return (
+                            <TableCell className={`px-2 py-1.5 text-center align-middle ${
+                              outlier && !outlier.applied
+                                ? outlier.severity === "extreme" ? "bg-rose-50/40 dark:bg-rose-950/10" : "bg-amber-50/40 dark:bg-amber-950/10"
+                                : histRow.canEdit ? "bg-amber-50/60 dark:bg-amber-950/10" : ""
+                            }`}>
+                              {histRow.canEdit ? (
+                                <div className="flex items-center gap-1 justify-center">
+                                  <Input
+                                    inputMode="numeric"
+                                    pattern="[0-9]*"
+                                    value={histRow.overrideVolume}
+                                    onChange={(e) => handleOverrideChange(histRow.index, e.target.value)}
+                                    onBlur={() => handleOverrideBlur(histRow.index)}
+                                    placeholder={String(histRow.apiVolume)}
+                                    className="h-7 w-24 text-center font-mono tabular-nums text-xs px-1"
+                                  />
+                                  <Button variant="ghost" size="sm" className="h-6 px-1 text-[10px]"
+                                    onClick={() => handleResetMonthOverride(histRow.index)}>✕</Button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-center gap-1">
+                                  <span className="font-mono text-xs tabular-nums">{formatInteger(histRow.finalVolume)}</span>
+                                  {outlier && !outlier.applied && (
+                                    <UITooltip>
+                                      <TooltipTrigger asChild>
+                                        <AlertTriangle className={`size-3 cursor-help shrink-0 ${outlier.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
+                                      </TooltipTrigger>
+                                      <TooltipContent className="max-w-[260px]">
+                                        <p className="text-xs font-semibold mb-1">{outlier.severity === "extreme" ? "Extreme" : "Mild"} Outlier — {outlier.direction === "high" ? "↑ High" : "↓ Low"}</p>
+                                        <p className="text-xs">{outlier.reason}</p>
+                                        <p className="text-xs mt-1 font-semibold text-violet-300">Suggested: {outlier.suggestedValue.toLocaleString()}</p>
+                                      </TooltipContent>
+                                    </UITooltip>
+                                  )}
+                                  {outlier?.applied && <CheckCircle2 className="size-3 text-emerald-500 shrink-0" />}
+                                  <Switch checked={false} onCheckedChange={(checked) => handleOverrideToggle(histRow.index, checked)}
+                                    disabled={histRow.stateLabel === "Manual"} className="scale-[0.65] ml-0.5" />
+                                </div>
+                              )}
+                            </TableCell>
+                          );
+                        };
+
+                        return (
+                          <TableRow key={`${monthName}-${detailChannel}`}
+                            className={`hover:bg-muted/30 ${fc.isCompleted ? "bg-blue-50/30 dark:bg-blue-950/10" : ""}`}>
+                            {/* Month */}
+                            <TableCell className="px-3 py-2 text-center align-middle">
+                              <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                <span className="font-bold text-sm">{monthName}</span>
+                                {fc.isCompleted && (
+                                  <Badge variant="outline" className="text-[10px] h-4 px-1 text-blue-600 border-blue-300">Done</Badge>
+                                )}
+                              </div>
+                            </TableCell>
+                            {/* yr1 historical */}
+                            {renderHistCell(h1, 0, outlier1)}
+                            {/* yr2 historical */}
+                            {renderHistCell(h2, 12, outlier2)}
+                            {/* forecast */}
+                            <TableCell className="px-3 py-2 text-center font-mono text-sm font-bold text-primary tabular-nums whitespace-nowrap align-middle">
+                              {fc.forecastVol.toLocaleString()}
+                            </TableCell>
+                            {/* actual */}
+                            <TableCell className="px-2 py-1.5 text-center align-middle">
+                              {fc.isCompleted ? (
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <Input
+                                    type="number" min={0}
+                                    className="h-7 w-28 text-center text-xs font-mono font-bold tabular-nums"
+                                    placeholder="Enter actual"
+                                    defaultValue={fc.actualVol ?? ""}
+                                    onBlur={(e) => {
+                                      const val = e.target.value.trim();
+                                      if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
+                                        void handleSaveActual(fc.index, detailChannel, Number(val));
+                                      }
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        const val = (e.target as HTMLInputElement).value.trim();
+                                        if (val !== "" && !isNaN(Number(val)) && Number(val) >= 0) {
+                                          void handleSaveActual(fc.index, detailChannel, Number(val));
+                                          (e.target as HTMLInputElement).blur();
+                                        }
+                                      }
+                                    }}
+                                  />
+                                  {isSaving && <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0" />}
+                                  {isSaved && !isSaving && <span className="text-emerald-600 text-xs font-bold shrink-0">✓</span>}
+                                </div>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
+                            {/* variance */}
+                            <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
+                              {fc.variancePct != null ? (
+                                <span className={fc.variancePct >= 0 ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>
+                                  {fc.variancePct >= 0 ? "+" : ""}{fc.variancePct}%
+                                </span>
+                              ) : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
+                            {/* re-cut */}
+                            {activeRecutFactor != null && (
+                              <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
+                                {fc.recutVol != null ? (
+                                  <span className="font-bold text-emerald-700">{fc.recutVol.toLocaleString()}</span>
+                                ) : fc.isCompleted && fc.actualVol != null ? (
+                                  <span className="font-bold text-blue-700">{fc.actualVol.toLocaleString()}</span>
+                                ) : <span className="text-muted-foreground">—</span>}
+                              </TableCell>
+                            )}
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                );
+              })()}
             </CardContent>
           </Card>
           <div className="space-y-1">
