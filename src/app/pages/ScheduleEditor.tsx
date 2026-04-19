@@ -46,6 +46,7 @@ function formatFullDate(d: Date): string {
 }
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DOW_SCHEDULE_KEYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -252,6 +253,7 @@ export function ScheduleEditor() {
   const [templates, setTemplates]     = useState<ShiftTemplate[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [requiredFteByDate, setRequiredFteByDate] = useState<Record<string, number[]>>({});
+  const [requiredFteByWeekday, setRequiredFteByWeekday] = useState<Record<string, number[]>>({});
 
   const [viewMode, setViewMode]       = useState<"daily" | "weekly">("daily");
   const [loading, setLoading]         = useState(true);
@@ -325,6 +327,18 @@ export function ScheduleEditor() {
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data) return;
+        if (data.weekdays && typeof data.weekdays === "object") {
+          const byWeekday: Record<string, number[]> = {};
+          for (const [weekday, slots] of Object.entries(data.weekdays)) {
+            if (!Array.isArray(slots)) continue;
+            const padded = [...(slots as number[])];
+            while (padded.length < 96) padded.push(0);
+            byWeekday[String(weekday).toLowerCase()] = padded.slice(0, 96);
+          }
+          setRequiredFteByWeekday(byWeekday);
+        } else {
+          setRequiredFteByWeekday({});
+        }
         // New format: { dates: { "YYYY-MM-DD": [96 numbers], ... } }
         if (data.dates && typeof data.dates === "object") {
           const byDate: Record<string, number[]> = {};
@@ -719,6 +733,8 @@ export function ScheduleEditor() {
   // baseline week (IntradayForecast commits Mon–Sun keyed by baseline dates,
   // which won't match the schedule editor's current week).
   const requiredFte = useMemo(() => {
+    const weekdayKey = DOW_SCHEDULE_KEYS[activeDayIdx];
+    if (weekdayKey && requiredFteByWeekday[weekdayKey]) return requiredFteByWeekday[weekdayKey];
     if (requiredFteByDate[activeDate]) return requiredFteByDate[activeDate];
     if (requiredFteByDate["*"]) return requiredFteByDate["*"];
     // Day-of-week fallback: find a committed date with the same weekday
@@ -729,7 +745,7 @@ export function ScheduleEditor() {
       if (dow === targetDow) return slots;
     }
     return undefined;
-  }, [requiredFteByDate, activeDate]);
+  }, [requiredFteByWeekday, activeDayIdx, requiredFteByDate, activeDate]);
 
   // ── Derived counts ────────────────────────────────────────────────────────
 

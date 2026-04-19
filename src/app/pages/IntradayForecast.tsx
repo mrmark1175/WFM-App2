@@ -665,6 +665,7 @@ export const IntradayForecast = () => {
     const subSlots = grain === 15 ? 1 : grain === 30 ? 2 : 4;
 
     const dates: Record<string, number[]> = {};
+    const weekdays: Record<string, number[]> = {};
     for (let d = 0; d < 7; d++) {
       const dayRoundedFTEs = roundedRequiredFteTable[d];
       if (!dayRoundedFTEs) continue;
@@ -679,6 +680,7 @@ export const IntradayForecast = () => {
       }
 
       dates[weekDates[d]] = expanded;
+      weekdays[DOW_SCHEDULE_KEYS[d]] = expanded;
     }
 
     const monKey = weekDates[0];
@@ -692,7 +694,7 @@ export const IntradayForecast = () => {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          preferences: { dates, channel: selectedChannel, grain: 15 },
+          preferences: { dates, weekdays, channel: selectedChannel, grain: 15 },
         }),
         credentials: "include",
       });
