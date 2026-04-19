@@ -162,7 +162,6 @@ export const IntradayForecast = () => {
   const [showDistributionTable, setShowDistributionTable] = useState(false);
   const [shrinkageHoursPerDay, setShrinkageHoursPerDay] = useState<number>(7.5);
   const [lobHoursOfOperation, setLobHoursOfOperation] = useState<Record<string, Record<string, { enabled: boolean; open: string; close: string }>> | null>(null);
-  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitStatus, setCommitStatus] = useState<"idle" | "saving" | "saved">("idle");
 
   // Virtual scroll for weight editor
@@ -639,31 +638,56 @@ export const IntradayForecast = () => {
   }, [fteTable, smoothFTE, smoothWindow]);
 
   // Commit FTE to scheduling — called by the "Commit to Scheduling" button.
-  // Saves per-date FTE arrays (one 96-slot array per day of the target week)
-  // so the Schedule Editor can show date-specific Required FTE rows.
-  async function saveCommitToScheduling(targetGrain: 15 | 30 | 60) {
-    if (!smoothedFteTable || !activeLob || !targetWeekStart) return;
-    const grainFactor = targetGrain === 15 ? 1 : targetGrain === 30 ? 2 : 4;
-    // Build per-date FTE: smoothedFteTable[0]=Mon, [1]=Tue, …, [6]=Sun
-    // Key by the TARGET week dates (the week being scheduled), not the baseline week
+  // Always computes FTE at 15-min grain from shiftedWeekForecast (which is always
+  // 96 slots regardless of the current display grain). This eliminates two bugs:
+  // 1) race condition: old code used smoothedFteTable which hadn't re-rendered yet
+  //    when "Switch to 15-min & Commit" fired via setTimeout — causing the wrong
+  //    grainFactor to be applied and producing zeros for half the day.
+  // 2) peak/valley mismatch: grain=30 averages out peaks, so Required row in
+  //    Schedule Editor appeared lower than IntradayForecast's 15-min table.
+  async function saveCommitToScheduling() {
+    if (!fteParams || !activeLob || !targetWeekStart) return;
+
     const twMon = new Date(targetWeekStart + "T12:00:00");
     const weekDates = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(twMon);
       d.setDate(d.getDate() + i);
       return d.toISOString().slice(0, 10);
     });
+
+    // 15-min operating hours mask — always at 15-min resolution, independent of display grain
+    const mask15: boolean[][] = DOW_SCHEDULE_KEYS.map((dayKey) => {
+      if (!lobHoursOfOperation) return Array(96).fill(true) as boolean[];
+      const day = lobHoursOfOperation[selectedChannel]?.[dayKey];
+      if (!day?.enabled) return Array(96).fill(false) as boolean[];
+      const [oh, om] = day.open.split(":").map(Number);
+      const [ch, cm] = day.close.split(":").map(Number);
+      const openMin = oh * 60 + om;
+      const closeMin = ch * 60 + cm;
+      return Array.from({ length: 96 }, (_, i) => i * 15 >= openMin && i * 15 < closeMin);
+    });
+
     const dates: Record<string, number[]> = {};
     for (let d = 0; d < 7; d++) {
-      const dayData = smoothedFteTable[d];
-      if (!dayData) continue;
-      dates[weekDates[d]] = Array.from({ length: 96 }, (_, i) => {
-        const slotIdx = Math.floor(i / grainFactor);
-        // Zero out FTE for slots where call volume is 0 (or outside operating hours) —
-        // prevents smoothing boundary bleed from showing up in the Schedule Editor.
-        if ((maskedDisplayForecast[d]?.[slotIdx] ?? 0) === 0) return 0;
-        return dayData[slotIdx]?.fte ?? 0;
+      const rawDay = shiftedWeekForecast[d];
+      if (!rawDay) continue;
+
+      const rawFTEs = Array.from({ length: 96 }, (_, i) => {
+        const calls = mask15[d][i] ? (rawDay[i] ?? 0) : 0;
+        if (calls <= 0) return 0;
+        return computeIntervalFTE(
+          calls, 15,
+          fteParams.ahtSec, fteParams.slaTarget, fteParams.slaSec,
+          fteParams.emailOccupancy, fteParams.shrinkage, selectedChannel,
+          fteParams.concurrency, fteParams.avgPatienceSeconds,
+        ).fte;
       });
+
+      dates[weekDates[d]] = smoothFTE
+        ? smoothFTEValues(rawFTEs, smoothWindow)
+        : rawFTEs;
     }
+
     setCommitStatus("saving");
     try {
       await fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`), {
@@ -682,12 +706,8 @@ export const IntradayForecast = () => {
   }
 
   function handleCommitClick() {
-    if (!smoothedFteTable) return;
-    if (grain === 15) {
-      saveCommitToScheduling(15);
-    } else {
-      setCommitDialogOpen(true);
-    }
+    if (!fteParams) return;
+    saveCommitToScheduling();
   }
 
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
@@ -2409,56 +2429,6 @@ export const IntradayForecast = () => {
         </div>
       </section>
 
-      {/* ── Commit to Scheduling — grain warning dialog ── */}
-      <Dialog open={commitDialogOpen} onOpenChange={setCommitDialogOpen}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
-              Not on 15-min view
-            </DialogTitle>
-          </DialogHeader>
-          <div className="text-sm text-muted-foreground space-y-3 pt-1">
-            <p>
-              You're currently on the <strong>{grain}-min</strong> grain view. For the most accurate Required FTE
-              in the Schedule Editor, commit at <strong>15-min</strong> resolution.
-            </p>
-            <p>
-              You can switch to 15-min now (recommended), or commit as-is — the {grain}-min values will be
-              stepped out to fill each 15-min slot.
-            </p>
-          </div>
-          <div className="flex flex-col gap-2 pt-2">
-            <button
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors"
-              onClick={() => {
-                setCommitDialogOpen(false);
-                setPrefs({ grain: 15 });
-                // grain state update is async; wait a tick then save using grain=15 factor
-                setTimeout(() => saveCommitToScheduling(15), 50);
-              }}
-            >
-              <Save className="h-3.5 w-3.5" />
-              Switch to 15-min &amp; Commit
-            </button>
-            <button
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-amber-300 bg-amber-50 text-amber-700 text-sm hover:bg-amber-100 transition-colors"
-              onClick={() => {
-                setCommitDialogOpen(false);
-                saveCommitToScheduling(grain);
-              }}
-            >
-              Commit as-is ({grain}-min, upsampled)
-            </button>
-            <button
-              className="w-full px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-              onClick={() => setCommitDialogOpen(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* ── Save Profile Dialog ── */}
       <Dialog open={saveModalOpen} onOpenChange={setSaveModalOpen}>
