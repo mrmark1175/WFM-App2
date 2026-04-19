@@ -637,6 +637,12 @@ export const IntradayForecast = () => {
     });
   }, [fteTable, smoothFTE, smoothWindow]);
 
+  // Rounded-up required FTE shown in the table and committed to Scheduling.
+  const roundedRequiredFteTable = useMemo((): number[][] | null => {
+    if (!smoothedFteTable) return null;
+    return smoothedFteTable.map((dayData) => dayData.map((r) => Math.ceil(r.fte ?? 0)));
+  }, [smoothedFteTable]);
+
   // Commit FTE to scheduling — called by the "Commit to Scheduling" button.
   // Writes the EXACT rounded-up values shown in the Required FTE per Interval table
   // (smoothedFteTable, which already respects operating-hours mask, smoothing
@@ -647,7 +653,7 @@ export const IntradayForecast = () => {
   // 30-min block of 1.8 FTE becomes two 15-min slots of 1.8 each — not halved,
   // because that many agents are needed throughout the block).
   async function saveCommitToScheduling() {
-    if (!smoothedFteTable || !activeLob || !targetWeekStart) return;
+    if (!smoothedFteTable || !roundedRequiredFteTable || !activeLob || !targetWeekStart) return;
 
     const twMon = new Date(targetWeekStart + "T12:00:00");
     const weekDates = Array.from({ length: 7 }, (_, i) => {
@@ -660,12 +666,12 @@ export const IntradayForecast = () => {
 
     const dates: Record<string, number[]> = {};
     for (let d = 0; d < 7; d++) {
-      const dayFTEs = smoothedFteTable[d];
-      if (!dayFTEs) continue;
+      const dayRoundedFTEs = roundedRequiredFteTable[d];
+      if (!dayRoundedFTEs) continue;
 
       const expanded = new Array(96).fill(0) as number[];
-      for (let i = 0; i < dayFTEs.length; i++) {
-        const val = Math.ceil(dayFTEs[i]?.fte ?? 0);
+      for (let i = 0; i < dayRoundedFTEs.length; i++) {
+        const val = dayRoundedFTEs[i] ?? 0;
         for (let s = 0; s < subSlots; s++) {
           const idx = i * subSlots + s;
           if (idx < 96) expanded[idx] = val;
@@ -1873,7 +1879,7 @@ export const IntradayForecast = () => {
                   No demand assumptions found for this LOB. Open the <strong className="mx-1">Long-Term Forecast → Demand</strong> page, configure a scenario, and return here.
                 </div>
               )}
-              {smoothedFteTable && (
+              {smoothedFteTable && roundedRequiredFteTable && (
                 <Table containerClassName="overflow-auto border-t" containerStyle={{ maxHeight: 500 }}>
                   <TableHeader className="sticky top-0 z-10 bg-background">
                     <TableRow>
@@ -1910,14 +1916,14 @@ export const IntradayForecast = () => {
                           </TableCell>
                           {rowVals.map((result, d) => {
                             const fte = result?.fte ?? 0;
-                            const roundedFte = Math.ceil(fte);
+                            const roundedFte = roundedRequiredFteTable[d]?.[idx] ?? 0;
                             const intensity = maxFTE > 0 ? fte / maxFTE : 0;
                             return (
                               <TableCell
                                 key={d}
                                 className="text-xs text-right py-1.5 font-mono"
                                 title={result && result.rawAgents > 0
-                                  ? `${result.rawAgents} on-phone agents | A=${result.erlangs} Erl${selectedChannel !== "email" && selectedChannel !== "cases" ? ` | SL: ${result.achievedSL}% | Occ: ${result.occupancy}%` : ` | Occ: ${result.occupancy}%`}`
+                                  ? `Required FTE: ${roundedFte} | On-phone agents: ${result.rawAgents} | A=${result.erlangs} Erl${selectedChannel !== "email" && selectedChannel !== "cases" ? ` | SL: ${result.achievedSL}% | Occ: ${result.occupancy}%` : ` | Occ: ${result.occupancy}%`}`
                                   : undefined}
                                 style={{
                                   backgroundColor: roundedFte > 0
