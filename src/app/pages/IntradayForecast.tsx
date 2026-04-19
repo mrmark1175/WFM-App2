@@ -638,15 +638,18 @@ export const IntradayForecast = () => {
   }, [fteTable, smoothFTE, smoothWindow]);
 
   // Commit FTE to scheduling — called by the "Commit to Scheduling" button.
-  // Always computes FTE at 15-min grain from shiftedWeekForecast (which is always
-  // 96 slots regardless of the current display grain). This eliminates two bugs:
-  // 1) race condition: old code used smoothedFteTable which hadn't re-rendered yet
-  //    when "Switch to 15-min & Commit" fired via setTimeout — causing the wrong
-  //    grainFactor to be applied and producing zeros for half the day.
-  // 2) peak/valley mismatch: grain=30 averages out peaks, so Required row in
-  //    Schedule Editor appeared lower than IntradayForecast's 15-min table.
+  // Writes the EXACT values shown in the Required FTE per Interval table
+  // (smoothedFteTable, which already respects operating-hours mask, smoothing
+  // toggle/window, and the currently selected channel assumptions). The Schedule
+  // Editor's Required row will render Math.ceil of these per 15-min slot, so
+  // what you see here is what gets scheduled.
+  //
+  // Grain handling: output is always 96 × 15-min slots. When display grain is
+  // 30 or 60 min, each display-row value is repeated across its sub-slots (a
+  // 30-min block of 1.8 FTE becomes two 15-min slots of 1.8 each — not halved,
+  // because that many agents are needed throughout the block).
   async function saveCommitToScheduling() {
-    if (!fteParams || !activeLob || !targetWeekStart) return;
+    if (!smoothedFteTable || !activeLob || !targetWeekStart) return;
 
     const twMon = new Date(targetWeekStart + "T12:00:00");
     const weekDates = Array.from({ length: 7 }, (_, i) => {
@@ -655,37 +658,23 @@ export const IntradayForecast = () => {
       return d.toISOString().slice(0, 10);
     });
 
-    // 15-min operating hours mask — always at 15-min resolution, independent of display grain
-    const mask15: boolean[][] = DOW_SCHEDULE_KEYS.map((dayKey) => {
-      if (!lobHoursOfOperation) return Array(96).fill(true) as boolean[];
-      const day = lobHoursOfOperation[selectedChannel]?.[dayKey];
-      if (!day?.enabled) return Array(96).fill(false) as boolean[];
-      const [oh, om] = day.open.split(":").map(Number);
-      const [ch, cm] = day.close.split(":").map(Number);
-      const openMin = oh * 60 + om;
-      const closeMin = ch * 60 + cm;
-      return Array.from({ length: 96 }, (_, i) => i * 15 >= openMin && i * 15 < closeMin);
-    });
+    const subSlots = grain === 15 ? 1 : grain === 30 ? 2 : 4;
 
     const dates: Record<string, number[]> = {};
     for (let d = 0; d < 7; d++) {
-      const rawDay = shiftedWeekForecast[d];
-      if (!rawDay) continue;
+      const dayFTEs = smoothedFteTable[d];
+      if (!dayFTEs) continue;
 
-      const rawFTEs = Array.from({ length: 96 }, (_, i) => {
-        const calls = mask15[d][i] ? (rawDay[i] ?? 0) : 0;
-        if (calls <= 0) return 0;
-        return computeIntervalFTE(
-          calls, 15,
-          fteParams.ahtSec, fteParams.slaTarget, fteParams.slaSec,
-          fteParams.emailOccupancy, fteParams.shrinkage, selectedChannel,
-          fteParams.concurrency, fteParams.avgPatienceSeconds,
-        ).fte;
-      });
+      const expanded = new Array(96).fill(0) as number[];
+      for (let i = 0; i < dayFTEs.length; i++) {
+        const val = dayFTEs[i]?.fte ?? 0;
+        for (let s = 0; s < subSlots; s++) {
+          const idx = i * subSlots + s;
+          if (idx < 96) expanded[idx] = val;
+        }
+      }
 
-      dates[weekDates[d]] = smoothFTE
-        ? smoothFTEValues(rawFTEs, smoothWindow)
-        : rawFTEs;
+      dates[weekDates[d]] = expanded;
     }
 
     setCommitStatus("saving");
