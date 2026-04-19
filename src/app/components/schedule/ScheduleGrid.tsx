@@ -539,6 +539,33 @@ export function ScheduleGrid({
                 })}
               </div>
             </div>
+
+            {/* Time axis row */}
+            <div className="flex border-t border-slate-200">
+              <div
+                className="flex items-center px-2 sticky left-0 z-30 border-r border-slate-200 shrink-0"
+                style={{ width: AGENT_W, height: 20, background: "#f8fafc" }}
+              />
+              <div className="relative" style={{ width: TOTAL_COLS * COL_W, height: 20, background: "#f8fafc" }}>
+                <div className="absolute pointer-events-none" style={{ left: 96 * COL_W, top: 0, width: 48 * COL_W, height: 20, backgroundColor: "rgba(99,102,241,0.07)" }} />
+                {TIME_LABELS.filter(t => t.label).map(({ slot, label, nextDay }) => (
+                  <div
+                    key={slot}
+                    className={`absolute text-[9px] select-none ${nextDay ? "text-indigo-400/90" : "text-slate-500"}`}
+                    style={{ left: slot * COL_W + 2, top: 4 }}
+                  >
+                    {label}
+                  </div>
+                ))}
+                {TIME_LABELS.filter(t => t.label).map(({ slot, nextDay }) => (
+                  <div
+                    key={`tl-${slot}`}
+                    className={`absolute ${slot === 96 ? "border-l-2 border-indigo-300/70" : "border-l border-slate-200/80"}`}
+                    style={{ left: slot * COL_W, top: 0, height: 20 }}
+                  />
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>
