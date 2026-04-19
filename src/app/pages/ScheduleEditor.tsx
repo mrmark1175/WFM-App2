@@ -319,7 +319,7 @@ export function ScheduleEditor() {
       .finally(() => setLoading(false));
   }, [activeLob, dateStart, dateEnd]);
 
-  useEffect(() => {
+  const loadRequiredFte = useCallback(() => {
     if (!activeLob) return;
     fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`))
       .then(r => r.ok ? r.json() : null)
@@ -335,6 +335,8 @@ export function ScheduleEditor() {
             byDate[dateStr] = padded.slice(0, 96);
           }
           setRequiredFteByDate(byDate);
+          const sample = Object.entries(byDate)[0];
+          if (sample) console.log(`[ScheduleEditor] Loaded requiredFte for ${sample[0]}, first 24 slots:`, sample[1].slice(0, 24));
           return;
         }
         // Legacy format: { slots: [96 numbers] } — store under a wildcard key "*"
@@ -347,6 +349,16 @@ export function ScheduleEditor() {
       })
       .catch(() => {});
   }, [activeLob]);
+
+  useEffect(() => { loadRequiredFte(); }, [loadRequiredFte]);
+
+  // Refetch required FTE when window regains focus — catches the case where
+  // the user commits in IntradayForecast in another tab, then returns here.
+  useEffect(() => {
+    const onFocus = () => loadRequiredFte();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [loadRequiredFte]);
 
   // ── Local-only mutations (no API calls) ──────────────────────────────────
 

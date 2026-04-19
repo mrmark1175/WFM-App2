@@ -677,6 +677,11 @@ export const IntradayForecast = () => {
       dates[weekDates[d]] = expanded;
     }
 
+    const monKey = weekDates[0];
+    console.log(`[Commit→Scheduling] LOB=${activeLob.id} channel=${selectedChannel} grain=${grain} smoothFTE=${smoothFTE}`);
+    console.log(`[Commit→Scheduling] ${monKey} (Mon) first 24 slots:`, dates[monKey]?.slice(0, 24));
+    console.log(`[Commit→Scheduling] ${monKey} (Mon) peak slots 48–56:`, dates[monKey]?.slice(48, 56));
+
     setCommitStatus("saving");
     try {
       await fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`), {
@@ -688,6 +693,7 @@ export const IntradayForecast = () => {
         credentials: "include",
       });
       setCommitStatus("saved");
+      toast.success(`Committed for LOB ${activeLob.name}. Mon 4:00 AM = ${dates[monKey]?.[16]?.toFixed(2) ?? "—"}`);
       setTimeout(() => setCommitStatus("idle"), 3000);
     } catch {
       setCommitStatus("idle");

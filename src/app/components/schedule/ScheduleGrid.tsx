@@ -485,9 +485,13 @@ export function ScheduleGrid({
                   const val = slot < 96 ? (requiredFte?.[slot] ?? 0) : 0;
                   const isHour = slot % 4 === 0;
                   const isNextDay = slot >= 96;
+                  const slotH = Math.floor((slot * 15) / 60) % 24;
+                  const slotM = (slot * 15) % 60;
+                  const timeLabel = `${String(slotH).padStart(2, "0")}:${String(slotM).padStart(2, "0")}`;
                   return (
                     <div
                       key={slot}
+                      title={val > 0 ? `${timeLabel} — raw: ${val.toFixed(2)} → ceil: ${Math.ceil(val)}` : `${timeLabel} — no data`}
                       className="flex items-center justify-center text-[9px] font-bold border-r border-slate-100/50 tabular-nums"
                       style={{
                         width: COL_W,
