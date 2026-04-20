@@ -125,14 +125,16 @@ const REST_PAIRS = (() => {
 })();
 
 // ── Rest-day assignment ──────────────────────────────────────────────────────
-// Assigns 2 consecutive rest days per agent minimizing remaining shortage.
-function assignRestDays(agents, demandByWeekday, fairnessEnabled) {
-  // demandByWeekday[d] = total required agent-hours on weekday d
+// Assigns 2 consecutive rest days per agent so that headcount per weekday
+// tracks the demand share from the snapshot. Each agent works 5 of 7 days,
+// so total agent-working-days across the week = 5 × N. A day that carries X%
+// of demand should get X% × 5N workers.
+function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperation, channel) {
   const result = new Map();
-
-  // Fixed-rest-day accommodations first
   const rotationIdx = { i: 0 };
   const flexibleAgents = [];
+
+  // Fixed-rest-day accommodations first
   for (const agent of agents) {
     const fixed = agent.availability?.fixed_rest_days;
     if (Array.isArray(fixed) && fixed.length === 2) {
@@ -145,30 +147,68 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled) {
     flexibleAgents.push(agent);
   }
 
-  // Remaining shortage model: running demand per weekday. Start from the demand curve.
-  // We approximate rest-day cost as the demand-hours lost by resting on those days.
+  // Seed workingAgentCount with fixed-rest agents so the target calculation
+  // accounts for them.
   const workingAgentCount = Array(7).fill(0);
+  for (const agent of agents) {
+    if (!result.has(agent.id)) continue;
+    const rest = result.get(agent.id);
+    for (let d = 0; d < 7; d++) {
+      if (!rest.includes(d)) workingAgentCount[d]++;
+    }
+  }
+
+  // Target working agents per weekday, from demand share.
+  const totalAgents = agents.length;
+  const totalDemand = demandByWeekday.reduce((a, b) => a + b, 0);
+  const targetWorkers = Array(7).fill(0);
+  if (totalDemand > 0) {
+    for (let d = 0; d < 7; d++) {
+      targetWorkers[d] = (demandByWeekday[d] / totalDemand) * 5 * totalAgents;
+    }
+  } else {
+    for (let d = 0; d < 7; d++) targetWorkers[d] = (5 * totalAgents) / 7;
+  }
+
+  // Days where the channel is closed. Strongly prefer resting on these.
+  const closedDays = [];
+  for (let d = 0; d < 7; d++) {
+    const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
+    if (!win) closedDays.push(d);
+  }
 
   if (fairnessEnabled) {
+    // Round-robin, but if the rotation pair would force work on a closed day,
+    // swap in a pair that covers both closures when one exists.
     for (const agent of flexibleAgents) {
-      const pair = REST_PAIRS[rotationIdx.i % REST_PAIRS.length];
+      let pair = REST_PAIRS[rotationIdx.i % REST_PAIRS.length];
+      if (closedDays.length > 0 && closedDays.some((d) => !pair.includes(d))) {
+        const better = REST_PAIRS.find((p) => closedDays.every((d) => p.includes(d)));
+        if (better) pair = better;
+      }
       rotationIdx.i++;
       result.set(agent.id, [...pair].sort((a, b) => a - b));
       for (let d = 0; d < 7; d++) if (!pair.includes(d)) workingAgentCount[d]++;
     }
   } else {
-    // Best-fit: pair score = sum demand on the 2 rest days (lower = better choice of rest).
-    // Pick rest pair that rests on the LOWEST-demand days relative to current capacity gap.
+    // Best-fit: minimize Σ max(0, target - workingAfter)² across all days.
+    // Squared deficit heavily penalizes days with ZERO workers when demand > 0.
     for (const agent of flexibleAgents) {
       let bestPair = REST_PAIRS[0];
       let bestScore = Infinity;
       for (const pair of REST_PAIRS) {
-        // Score: demand on rest days (we prefer resting on LOW-demand days)
-        const restDemand = demandByWeekday[pair[0]] + demandByWeekday[pair[1]];
-        // Tie-break: balance out the current working-count distribution
-        const workingBalanceCost =
-          Math.max(...pair.map((d) => -workingAgentCount[d])) * -1;
-        const score = restDemand * 1000 + workingBalanceCost;
+        // Huge penalty for requiring work on a closed day
+        let closedPenalty = 0;
+        for (const cd of closedDays) {
+          if (!pair.includes(cd)) closedPenalty += 1e9;
+        }
+        let shortageSq = 0;
+        for (let d = 0; d < 7; d++) {
+          const newWorking = workingAgentCount[d] + (pair.includes(d) ? 0 : 1);
+          const shortage = Math.max(0, targetWorkers[d] - newWorking);
+          shortageSq += shortage * shortage;
+        }
+        const score = closedPenalty + shortageSq;
         if (score < bestScore) { bestScore = score; bestPair = pair; }
       }
       result.set(agent.id, [...bestPair].sort((a, b) => a - b));
@@ -225,18 +265,23 @@ function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, chann
     for (const s of candidateStarts) {
       const endMin = s + shiftMin;
       if (endMin > 1440) continue;
-      // Check: for every working day, candidate must fit within that day's op window
-      let fits = true;
+      // A candidate is valid if it fits on AT LEAST ONE working day's op window.
+      // Closed days are simply skipped (the agent won't be written on those).
+      // Days that are open but where the start doesn't fit also invalidate the candidate.
+      let fitDays = [];
+      let conflicted = false;
       for (const d of workingDays) {
         const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
-        if (!win) { fits = false; break; }
-        if (s < win.open || endMin > win.close) { fits = false; break; }
+        if (!win) continue; // closed: agent just doesn't work that day
+        if (s < win.open || endMin > win.close) { conflicted = true; break; }
+        fitDays.push(d);
       }
-      if (!fits) continue;
+      if (conflicted) continue;
+      if (fitDays.length === 0) continue;
 
       const covered = onQueueIntervals(s, endMin, plan, intervalMinutes);
       let gain = 0;
-      for (const d of workingDays) {
+      for (const d of fitDays) {
         for (const iv of covered) {
           if (residual[d][iv] > 0) gain += Math.min(1, residual[d][iv]);
         }
@@ -248,9 +293,11 @@ function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, chann
 
     startMap.set(agent.id, { startMin: bestStart, shiftMin, plan });
 
-    // Decrement residual shortage by 1 (this agent covers these intervals) on working days
+    // Decrement residual shortage by 1 on OPEN working days only
     const covered = onQueueIntervals(bestStart, bestStart + shiftMin, plan, intervalMinutes);
     for (const d of workingDays) {
+      const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
+      if (!win) continue;
       for (const iv of covered) residual[d][iv] = Math.max(0, residual[d][iv] - 1);
     }
   }
@@ -430,7 +477,7 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
       const demandCurves = demandByChannel.get(channel);
       const demandByWeekday = demandCurves.map((arr) => arr.reduce((a, b) => a + b, 0));
 
-      const restMap = assignRestDays(agents, demandByWeekday, fairness_enabled);
+      const restMap = assignRestDays(agents, demandByWeekday, fairness_enabled, hoursOfOperation, channel);
 
       const shiftLenByAgent = new Map();
       for (const a of agents) shiftLenByAgent.set(a.id, a.shift_length_hours);
@@ -446,6 +493,9 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
         const workDate = addDays(horizon_start, offset);
         const jsDow = new Date(workDate + 'T00:00:00Z').getUTCDay();
         const weekday = jsDowToMon0(jsDow);
+        // Skip days where the channel is closed so no shift is written
+        const dayWin = operatingWindowForWeekday(hoursOfOperation, channel, weekday);
+        if (!dayWin) continue;
         for (const agent of agents) {
           const info = startMap.get(agent.id);
           if (!info) continue;
