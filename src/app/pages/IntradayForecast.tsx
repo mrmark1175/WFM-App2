@@ -163,6 +163,7 @@ export const IntradayForecast = () => {
   const [shrinkageHoursPerDay, setShrinkageHoursPerDay] = useState<number>(7.5);
   const [lobHoursOfOperation, setLobHoursOfOperation] = useState<Record<string, Record<string, { enabled: boolean; open: string; close: string }>> | null>(null);
   const [commitStatus, setCommitStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [approveStatus, setApproveStatus] = useState<"idle" | "saving" | "saved">("idle");
 
   // Virtual scroll for weight editor
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -709,6 +710,61 @@ export const IntradayForecast = () => {
   function handleCommitClick() {
     if (!fteParams) return;
     saveCommitToScheduling();
+  }
+
+  async function saveApproveForScheduler() {
+    if (!smoothedFteTable || !roundedRequiredFteTable || !activeLob) return;
+    const intervalMinutes = grain;
+    const slotsPerDay = Math.ceil(1440 / intervalMinutes);
+    const toHHMM = (i: number) => {
+      const m = i * intervalMinutes;
+      return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    };
+
+    const rows: Array<{ channel: string; weekday: number; interval_start: string; required_fte: number }> = [];
+    for (let d = 0; d < 7; d++) {
+      const dayData = roundedRequiredFteTable[d] || [];
+      for (let i = 0; i < Math.min(slotsPerDay, dayData.length); i++) {
+        const val = dayData[i] ?? 0;
+        if (val > 0) {
+          rows.push({
+            channel: selectedChannel,
+            weekday: d,
+            interval_start: toHHMM(i),
+            required_fte: val,
+          });
+        }
+      }
+    }
+
+    if (rows.length === 0) {
+      toast.error("No non-zero FTE to approve. Check operating hours / data.");
+      return;
+    }
+
+    setApproveStatus("saving");
+    try {
+      const res = await fetch(apiUrl(`/api/scheduling/demand-snapshots`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lob_id: activeLob.id,
+          snapshot_label: `${activeLob.name} • ${selectedChannel} • ${new Date().toISOString().slice(0, 10)}`,
+          interval_minutes: intervalMinutes,
+          notes: `Approved from Intraday Forecast (smoothed=${smoothFTE}, window=${smoothWindow})`,
+          rows,
+        }),
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const json = await res.json();
+      setApproveStatus("saved");
+      toast.success(`Approved snapshot #${json.id} for scheduling (${rows.length} intervals)`);
+      setTimeout(() => setApproveStatus("idle"), 3000);
+    } catch (err: any) {
+      setApproveStatus("idle");
+      toast.error(`Failed to approve snapshot: ${err?.message || err}`);
+    }
   }
 
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
@@ -1871,6 +1927,26 @@ export const IntradayForecast = () => {
                         <><RotateCcw className="h-3 w-3 animate-spin" /> Saving…</>
                       ) : (
                         <><Save className="h-3 w-3" /> Commit to Scheduling{grain !== 15 ? " ⚠" : ""}</>
+                      )}
+                    </button>
+                    <button
+                      onClick={saveApproveForScheduler}
+                      disabled={approveStatus === "saving"}
+                      className={`flex items-center gap-1 px-2.5 py-0.5 rounded border text-xs font-medium transition-colors ${
+                        approveStatus === "saved"
+                          ? "bg-emerald-100 border-emerald-300 text-emerald-700"
+                          : approveStatus === "saving"
+                          ? "opacity-60 cursor-not-allowed border-border text-muted-foreground"
+                          : "bg-violet-50 border-violet-300 text-violet-700 hover:bg-violet-100"
+                      }`}
+                      title="Freeze this Required-FTE curve as a scheduler snapshot for auto-generation"
+                    >
+                      {approveStatus === "saved" ? (
+                        <><Save className="h-3 w-3" /> Approved</>
+                      ) : approveStatus === "saving" ? (
+                        <><RotateCcw className="h-3 w-3 animate-spin" /> Approving…</>
+                      ) : (
+                        <><Save className="h-3 w-3" /> Approve for Scheduler</>
                       )}
                     </button>
                   </div>

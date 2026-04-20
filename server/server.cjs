@@ -4,6 +4,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const { getCurrentUser } = require('./auth.cjs');
 const { pool } = require('./db.cjs');
+const { generate: generateSchedule } = require('./scheduling/generator.cjs');
 
 const app = express();
 const distPath = path.resolve(__dirname, '../dist');
@@ -549,6 +550,56 @@ async function ensureAppTables() {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // ── Auto-Scheduler: Demand snapshots frozen from Intraday Forecast ────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduling_demand_snapshots (
+      id                SERIAL PRIMARY KEY,
+      organization_id   INTEGER NOT NULL DEFAULT 1,
+      lob_id            INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      snapshot_label    VARCHAR(255),
+      interval_minutes  INTEGER NOT NULL DEFAULT 30,
+      approved_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      approved_by       VARCHAR(255),
+      notes             TEXT
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduling_demand_snapshot_rows (
+      id             SERIAL PRIMARY KEY,
+      snapshot_id    INTEGER NOT NULL REFERENCES scheduling_demand_snapshots(id) ON DELETE CASCADE,
+      channel        TEXT NOT NULL,
+      weekday        INTEGER NOT NULL,
+      interval_start TIME NOT NULL,
+      required_fte   NUMERIC NOT NULL DEFAULT 0,
+      UNIQUE (snapshot_id, channel, weekday, interval_start)
+    )
+  `);
+
+  // ── Auto-Scheduler: Generation runs ───────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schedule_generation_runs (
+      id                 SERIAL PRIMARY KEY,
+      organization_id    INTEGER NOT NULL DEFAULT 1,
+      lob_id             INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      snapshot_id        INTEGER REFERENCES scheduling_demand_snapshots(id) ON DELETE SET NULL,
+      horizon_start      DATE NOT NULL,
+      horizon_end        DATE NOT NULL,
+      fairness_enabled   BOOLEAN NOT NULL DEFAULT FALSE,
+      coverage_report    JSONB NOT NULL DEFAULT '{}',
+      notes              TEXT,
+      created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_by         VARCHAR(255)
+    )
+  `);
+
+  // ── Auto-Scheduler: extensions to existing tables ─────────────────────────
+  await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS shift_length_hours NUMERIC NOT NULL DEFAULT 9`);
+  await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS team_name VARCHAR(255)`);
+  await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS team_lead_id INTEGER`);
+  await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'draft'`);
+  await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS generation_run_id INTEGER REFERENCES schedule_generation_runs(id) ON DELETE SET NULL`);
 
   // ── Admin auth ────────────────────────────────────────────────────────────────
   await pool.query(`
@@ -1679,29 +1730,29 @@ app.get('/api/scheduling/agents', async (req, res) => {
 });
 
 app.post('/api/scheduling/agents', async (req, res) => {
-  const { employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status } = req.body;
+  const { employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id } = req.body;
   try {
     const { rows } = await pool.query(
       `INSERT INTO scheduling_agents
-         (organization_id, employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status)
-       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [employee_id||null, full_name, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active']
+         (organization_id, employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id)
+       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+      [employee_id||null, full_name, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null]
     );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/scheduling/agents/:id', async (req, res) => {
-  const { employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status } = req.body;
+  const { employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id } = req.body;
   try {
     const { rows } = await pool.query(
       `UPDATE scheduling_agents SET
          employee_id=$1, full_name=$2, email=$3, contract_type=$4,
          skill_voice=$5, skill_chat=$6, skill_email=$7,
          lob_assignments=$8, accommodation_flags=$9, availability=$10,
-         status=$11, updated_at=NOW()
-       WHERE id=$12 AND organization_id=1 RETURNING *`,
-      [employee_id||null, full_name, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, req.params.id]
+         status=$11, shift_length_hours=$12, team_name=$13, team_lead_id=$14, updated_at=NOW()
+       WHERE id=$15 AND organization_id=1 RETURNING *`,
+      [employee_id||null, full_name, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Agent not found' });
     res.json(rows[0]);
@@ -2011,6 +2062,153 @@ app.put('/api/scheduling/assignments-publish', async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
+  }
+});
+
+// ── Auto-Scheduler: Demand Snapshots ────────────────────────────────────────
+app.get('/api/scheduling/demand-snapshots', async (req, res) => {
+  const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
+  if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
+  try {
+    const snapshots = await pool.query(
+      `SELECT id, snapshot_label, interval_minutes, approved_at, approved_by, notes
+       FROM scheduling_demand_snapshots
+       WHERE organization_id=1 AND lob_id=$1
+       ORDER BY approved_at DESC`,
+      [lob_id]
+    );
+    res.json(snapshots.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/scheduling/demand-snapshots/:id', async (req, res) => {
+  try {
+    const snap = await pool.query(
+      'SELECT * FROM scheduling_demand_snapshots WHERE id=$1',
+      [req.params.id]
+    );
+    if (snap.rows.length === 0) return res.status(404).json({ error: 'not found' });
+    const rows = await pool.query(
+      'SELECT channel, weekday, interval_start::text AS interval_start, required_fte FROM scheduling_demand_snapshot_rows WHERE snapshot_id=$1 ORDER BY channel, weekday, interval_start',
+      [req.params.id]
+    );
+    res.json({ ...snap.rows[0], rows: rows.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/scheduling/demand-snapshots', async (req, res) => {
+  const { lob_id, snapshot_label, interval_minutes, approved_by, notes, rows } = req.body;
+  if (!lob_id || !Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: 'lob_id and rows[] required' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const snap = await client.query(
+      `INSERT INTO scheduling_demand_snapshots (lob_id, snapshot_label, interval_minutes, approved_by, notes)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [lob_id, snapshot_label || null, interval_minutes || 30, approved_by || null, notes || null]
+    );
+    const snapshot_id = snap.rows[0].id;
+    for (const r of rows) {
+      await client.query(
+        `INSERT INTO scheduling_demand_snapshot_rows (snapshot_id, channel, weekday, interval_start, required_fte)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (snapshot_id, channel, weekday, interval_start) DO UPDATE SET required_fte=EXCLUDED.required_fte`,
+        [snapshot_id, r.channel || 'blended', r.weekday, r.interval_start, Number(r.required_fte) || 0]
+      );
+    }
+    await client.query('COMMIT');
+    res.json({ id: snapshot_id });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/scheduling/demand-snapshots/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM scheduling_demand_snapshots WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Auto-Scheduler: Generate ────────────────────────────────────────────────
+app.post('/api/scheduling/auto-generate', async (req, res) => {
+  const { lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by } = req.body;
+  if (!lob_id || !snapshot_id || !horizon_start || !horizon_end) {
+    return res.status(400).json({ error: 'lob_id, snapshot_id, horizon_start, horizon_end required' });
+  }
+  try {
+    const result = await generateSchedule({
+      pool, lob_id, snapshot_id, horizon_start, horizon_end,
+      fairness_enabled: !!fairness_enabled, created_by: created_by || null,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('Auto-generate error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Auto-Scheduler: Publish with scope ──────────────────────────────────────
+app.post('/api/scheduling/publish', async (req, res) => {
+  const { lob_id, date_start, date_end, scope, agent_ids, team_name } = req.body;
+  if (!lob_id || !date_start || !date_end || !scope) {
+    return res.status(400).json({ error: 'lob_id, date_start, date_end, scope required' });
+  }
+  try {
+    let q, params;
+    if (scope === 'agent') {
+      if (!Array.isArray(agent_ids) || agent_ids.length === 0) {
+        return res.status(400).json({ error: 'agent_ids[] required for scope=agent' });
+      }
+      q = `UPDATE schedule_assignments SET status='published', updated_at=NOW()
+           WHERE organization_id=1 AND lob_id=$1 AND work_date BETWEEN $2 AND $3 AND status='draft' AND agent_id = ANY($4)`;
+      params = [lob_id, date_start, date_end, agent_ids];
+    } else if (scope === 'team') {
+      if (!team_name) return res.status(400).json({ error: 'team_name required for scope=team' });
+      q = `UPDATE schedule_assignments sa SET status='published', updated_at=NOW()
+           FROM scheduling_agents ag
+           WHERE sa.agent_id = ag.id AND ag.team_name = $4
+             AND sa.organization_id=1 AND sa.lob_id=$1 AND sa.work_date BETWEEN $2 AND $3 AND sa.status='draft'`;
+      params = [lob_id, date_start, date_end, team_name];
+    } else if (scope === 'site') {
+      q = `UPDATE schedule_assignments SET status='published', updated_at=NOW()
+           WHERE organization_id=1 AND lob_id=$1 AND work_date BETWEEN $2 AND $3 AND status='draft'`;
+      params = [lob_id, date_start, date_end];
+    } else {
+      return res.status(400).json({ error: 'scope must be agent|team|site' });
+    }
+    const result = await pool.query(q, params);
+    res.json({ published_count: result.rowCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Auto-Scheduler: Generation runs ─────────────────────────────────────────
+app.get('/api/scheduling/generation-runs', async (req, res) => {
+  const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
+  if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
+  try {
+    const runs = await pool.query(
+      `SELECT id, snapshot_id, horizon_start, horizon_end, fairness_enabled,
+              coverage_report, notes, created_at, created_by
+       FROM schedule_generation_runs
+       WHERE organization_id=1 AND lob_id=$1
+       ORDER BY created_at DESC LIMIT 20`,
+      [lob_id]
+    );
+    res.json(runs.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

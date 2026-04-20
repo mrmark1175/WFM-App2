@@ -26,8 +26,11 @@ interface Agent {
   skill_email: boolean;
   lob_assignments: number[];
   accommodation_flags: string[];
-  availability: Record<string, { available: boolean; start: string; end: string }>;
+  availability: Record<string, { available?: boolean; start?: string; end?: string }> & { fixed_rest_days?: string[] };
   status: string;
+  shift_length_hours?: number;
+  team_name?: string | null;
+  team_lead_id?: number | null;
 }
 
 const CONTRACT_TYPES = [
@@ -68,7 +71,20 @@ const EMPTY_FORM: Omit<Agent, "id"> = {
   lob_assignments: [], accommodation_flags: [],
   availability: DEFAULT_AVAILABILITY,
   status: "active",
+  shift_length_hours: 9,
+  team_name: "",
+  team_lead_id: null,
 };
+
+const REST_DAY_OPTIONS = [
+  { value: "monday", label: "Mon" },
+  { value: "tuesday", label: "Tue" },
+  { value: "wednesday", label: "Wed" },
+  { value: "thursday", label: "Thu" },
+  { value: "friday", label: "Fri" },
+  { value: "saturday", label: "Sat" },
+  { value: "sunday", label: "Sun" },
+];
 
 function contractLabel(v: string) { return CONTRACT_TYPES.find((c) => c.value === v)?.label ?? v; }
 function statusColor(s: string) {
@@ -119,7 +135,15 @@ export function AgentRoster() {
   const openAdd = () => { setEditingAgent(null); setForm(EMPTY_FORM); setDialogOpen(true); };
   const openEdit = (a: Agent) => {
     setEditingAgent(a);
-    setForm({ ...a, employee_id: a.employee_id ?? "", email: a.email ?? "", availability: { ...DEFAULT_AVAILABILITY, ...a.availability } });
+    setForm({
+      ...a,
+      employee_id: a.employee_id ?? "",
+      email: a.email ?? "",
+      availability: { ...DEFAULT_AVAILABILITY, ...a.availability },
+      shift_length_hours: a.shift_length_hours ?? 9,
+      team_name: a.team_name ?? "",
+      team_lead_id: a.team_lead_id ?? null,
+    });
     setDialogOpen(true);
   };
 
@@ -362,6 +386,55 @@ export function AgentRoster() {
                       <span className="text-sm">{opt.label}</span>
                     </label>
                   ))}
+                </div>
+              </div>
+
+              {/* Scheduling fields */}
+              <div>
+                <Label className="text-xs font-semibold uppercase tracking-widest text-foreground/50 block mb-2">Scheduling</Label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold">Shift Length (hrs)</Label>
+                    <Input
+                      type="number" step="0.5" min="1" max="24"
+                      value={form.shift_length_hours ?? 9}
+                      onChange={(e) => setForm((p) => ({ ...p, shift_length_hours: Number(e.target.value) || 9 }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold">Team</Label>
+                    <Input
+                      value={form.team_name ?? ""}
+                      onChange={(e) => setForm((p) => ({ ...p, team_name: e.target.value }))}
+                      placeholder="e.g., Team Alpha"
+                    />
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <Label className="text-xs font-semibold block mb-1.5">Fixed Rest Days (accommodation)</Label>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    Leave empty to let the auto-scheduler pick 2 consecutive rest days. Select 2 to lock them (e.g., Sat + Sun).
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {REST_DAY_OPTIONS.map((d) => {
+                      const checked = (form.availability.fixed_rest_days ?? []).includes(d.value);
+                      return (
+                        <label key={d.value} className="flex items-center gap-1.5 cursor-pointer border rounded px-2 py-1">
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={() => setForm((p) => {
+                              const current = (p.availability.fixed_rest_days ?? []).slice();
+                              const idx = current.indexOf(d.value);
+                              if (idx >= 0) current.splice(idx, 1);
+                              else if (current.length < 2) current.push(d.value);
+                              return { ...p, availability: { ...p.availability, fixed_rest_days: current } };
+                            })}
+                          />
+                          <span className="text-xs">{d.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 
