@@ -103,4 +103,8 @@ export const router = createBrowserRouter([
     path: "/scheduling/schedule",
     lazy: () => lazyLoad(async () => { const { ScheduleEditor } = await import("./pages/ScheduleEditor"); return { Component: ScheduleEditor }; }),
   },
+  {
+    path: "/help/auto-scheduler",
+    lazy: () => lazyLoad(async () => { const { HelpAutoScheduler } = await import("./pages/HelpAutoScheduler"); return { Component: HelpAutoScheduler }; }),
+  },
 ]);

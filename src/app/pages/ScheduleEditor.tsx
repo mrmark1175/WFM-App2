@@ -9,7 +9,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle } from "lucide-react";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
 import { WeeklyScheduleGrid } from "../components/schedule/WeeklyScheduleGrid";
@@ -1184,6 +1184,17 @@ export function ScheduleEditor() {
             <Send className="size-3.5" />
             <span className="hidden sm:inline">Publish Drafts</span>
           </Button>
+
+          <a
+            href="/help/auto-scheduler"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Auto-Scheduler user guide"
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 text-sm font-medium"
+          >
+            <HelpCircle className="size-3.5" />
+            <span className="hidden sm:inline">Help</span>
+          </a>
 
           <Button
             size="sm"
