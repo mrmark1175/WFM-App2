@@ -305,9 +305,21 @@ export function computeAchievedSLFromFTE(
 export function smoothFTEValues(fteValues: number[], halfWindow: number): number[] {
   if (halfWindow <= 0) return [...fteValues];
   const n = fteValues.length;
+
+  // Find the active range so smoothing never bleeds outside operating hours.
+  let firstActive = -1, lastActive = -1;
+  for (let i = 0; i < n; i++) {
+    if (fteValues[i] > 0) {
+      if (firstActive === -1) firstActive = i;
+      lastActive = i;
+    }
+  }
+  if (firstActive === -1) return [...fteValues];
+
   const smoothed = fteValues.map((_, i) => {
-    const start = Math.max(0, i - halfWindow);
-    const end   = Math.min(n - 1, i + halfWindow);
+    if (i < firstActive || i > lastActive) return 0;
+    const start = Math.max(firstActive, i - halfWindow);
+    const end   = Math.min(lastActive, i + halfWindow);
     let sum = 0, count = 0;
     for (let j = start; j <= end; j++) { sum += fteValues[j]; count++; }
     return count > 0 ? sum / count : 0;
