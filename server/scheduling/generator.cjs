@@ -361,7 +361,11 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
     availability: a.availability || {},
     shift_length_hours: Number(a.shift_length_hours || 9),
   }));
-  if (allAgents.length === 0) throw new Error('No active agents assigned to this LOB');
+  if (allAgents.length === 0) {
+    throw new Error(
+      'No active agents assigned to this LOB. Open Agent Roster, edit each agent, check this LOB under "LOB Assignments", and ensure status is Active.'
+    );
+  }
 
   // Create generation run row
   const runIns = await pool.query(

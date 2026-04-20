@@ -14,6 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Plus, Pencil, Trash2, Users, Phone, MessageSquare, Mail, Search, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { useLOB } from "../lib/lobContext";
 
 interface Agent {
   id: number;
@@ -95,6 +96,7 @@ function statusColor(s: string) {
 }
 
 export function AgentRoster() {
+  const { lobs } = useLOB();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -374,6 +376,38 @@ export function AgentRoster() {
                     </label>
                   ))}
                 </div>
+              </div>
+
+              {/* LOB Assignments */}
+              <div>
+                <Label className="text-xs font-semibold uppercase tracking-widest text-foreground/50 block mb-2">LOB Assignments</Label>
+                <p className="text-xs text-muted-foreground mb-2">
+                  Agent must be assigned to at least one LOB to be eligible for auto-scheduling.
+                </p>
+                {lobs.length === 0 ? (
+                  <p className="text-sm text-amber-700 italic">No LOBs defined. Create one under Configuration → LOB Management.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {lobs.map((lob) => {
+                      const checked = form.lob_assignments.includes(lob.id);
+                      return (
+                        <label key={lob.id} className="flex items-center gap-1.5 cursor-pointer border rounded px-2 py-1">
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={() => setForm((p) => {
+                              const current = p.lob_assignments.slice();
+                              const idx = current.indexOf(lob.id);
+                              if (idx >= 0) current.splice(idx, 1);
+                              else current.push(lob.id);
+                              return { ...p, lob_assignments: current };
+                            })}
+                          />
+                          <span className="text-xs">{lob.lob_name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Accommodations */}
