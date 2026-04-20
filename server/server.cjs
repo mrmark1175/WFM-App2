@@ -1955,6 +1955,25 @@ app.delete('/api/scheduling/assignments/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Bulk delete assignments in a date range for a LOB. Accepts status="draft"|"published"|"all" (default "draft").
+app.post('/api/scheduling/assignments/bulk-delete', async (req, res) => {
+  const { lob_id, date_start, date_end, status } = req.body;
+  if (!lob_id || !date_start || !date_end) {
+    return res.status(400).json({ error: 'lob_id, date_start, date_end required' });
+  }
+  const filter = status === 'published' ? `AND status='published'`
+                : status === 'all' ? ''
+                : `AND status='draft'`;
+  try {
+    const result = await pool.query(
+      `DELETE FROM schedule_assignments
+       WHERE organization_id=1 AND lob_id=$1 AND work_date BETWEEN $2 AND $3 ${filter}`,
+      [lob_id, date_start, date_end]
+    );
+    res.json({ ok: true, deleted: result.rowCount });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Scheduling: Activities within a shift ─────────────────────────────────────
 app.post('/api/scheduling/activities', async (req, res) => {
   const { assignment_id, activity_type, start_time, end_time, is_paid, notes } = req.body;
@@ -2141,11 +2160,18 @@ app.delete('/api/scheduling/demand-snapshots/:id', async (req, res) => {
 
 // ── Auto-Scheduler: Generate ────────────────────────────────────────────────
 app.post('/api/scheduling/auto-generate', async (req, res) => {
-  const { lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by } = req.body;
+  const { lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, clear_published, created_by } = req.body;
   if (!lob_id || !snapshot_id || !horizon_start || !horizon_end) {
     return res.status(400).json({ error: 'lob_id, snapshot_id, horizon_start, horizon_end required' });
   }
   try {
+    if (clear_published) {
+      await pool.query(
+        `DELETE FROM schedule_assignments
+         WHERE organization_id=1 AND lob_id=$1 AND work_date BETWEEN $2 AND $3 AND status='published'`,
+        [lob_id, horizon_start, horizon_end]
+      );
+    }
     const result = await generateSchedule({
       pool, lob_id, snapshot_id, horizon_start, horizon_end,
       fairness_enabled: !!fairness_enabled, created_by: created_by || null,
