@@ -98,10 +98,15 @@ function operatingWindowForWeekday(hoursOfOperation, channel, weekday) {
   const key = WEEKDAY_KEYS[weekday];
   if (!hoursOfOperation) return { open: 0, close: 1440 };
   if (channel === 'blended') {
+    // If the entire hours_of_operation object has no channel keys at all, fall back to 24/7.
+    const anyChannelConfigured = ['voice', 'chat', 'email', 'cases'].some((ch) => hoursOfOperation?.[ch]);
+    if (!anyChannelConfigured) return { open: 0, close: 1440 };
     let open = Infinity, close = -Infinity;
     for (const ch of ['voice', 'chat', 'email', 'cases']) {
       const sched = hoursOfOperation?.[ch]?.[key];
-      if (!sched || !sched.enabled) continue;
+      // Only skip if explicitly disabled; missing key is not "closed."
+      if (!sched) continue;
+      if (!sched.enabled) continue;
       open = Math.min(open, hhmmToMin(sched.open));
       const c = hhmmToMin(sched.close);
       close = Math.max(close, c === 0 && sched.close === '00:00' ? 1440 : c);
@@ -110,7 +115,10 @@ function operatingWindowForWeekday(hoursOfOperation, channel, weekday) {
     return { open, close };
   } else {
     const sched = hoursOfOperation?.[channel]?.[key];
-    if (!sched || !sched.enabled) return null;
+    // Missing key → no hours configured for this channel/day → treat as 24h open.
+    // Only a key that is explicitly disabled (enabled: false) counts as "closed."
+    if (sched === undefined || sched === null) return { open: 0, close: 1440 };
+    if (!sched.enabled) return null;
     const close = hhmmToMin(sched.close);
     return { open: hhmmToMin(sched.open), close: close === 0 && sched.close === '00:00' ? 1440 : close };
   }
@@ -125,10 +133,13 @@ const REST_PAIRS = (() => {
 })();
 
 // ── Rest-day assignment ──────────────────────────────────────────────────────
-// Assigns 2 consecutive rest days per agent so that headcount per weekday
-// tracks the demand share from the snapshot. Each agent works 5 of 7 days,
-// so total agent-working-days across the week = 5 × N. A day that carries X%
-// of demand should get X% × 5N workers.
+// Priority 1 (hard): each weekday d must have at least ceil(N × dayWeight[d])
+//   agents working. Equivalently, at most N − ceil(N × dayWeight[d]) agents
+//   may rest on that day. This floor is enforced before any soft objective.
+// Priority 2 (soft): working-agent count per day tracks 5N × dayWeight[d]
+//   (the proportional target assuming each agent works 5 of 7 days).
+// Each agent works 5 days per week (2 consecutive rest days). Work-days-per-week
+//   is currently fixed at 5; future work can make this configurable.
 function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperation, channel) {
   const result = new Map();
   const rotationIdx = { i: 0 };
@@ -158,9 +169,29 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     }
   }
 
-  // Target working agents per weekday, from demand share.
   const totalAgents = agents.length;
   const totalDemand = demandByWeekday.reduce((a, b) => a + b, 0);
+
+  // ── Priority 1: minimum agents per day (hard floor) ───────────────────────
+  // minAgents[d] = ceil(N × dayWeight[d]); maxRest[d] = N − minAgents[d].
+  // Σ maxRest ≈ 6N >> 2N (rest slots needed), so this is always feasible.
+  const minAgents = Array(7).fill(0);
+  const maxRest = Array(7).fill(totalAgents);
+  if (totalDemand > 0) {
+    for (let d = 0; d < 7; d++) {
+      minAgents[d] = Math.ceil((demandByWeekday[d] / totalDemand) * totalAgents);
+      maxRest[d] = totalAgents - minAgents[d];
+    }
+  }
+
+  // Track explicit rest count so the floor can be enforced incrementally.
+  // Initialise from fixed-rest agents already committed above.
+  const restCount = Array(7).fill(0);
+  for (const [, rest] of result.entries()) {
+    for (const d of rest) restCount[d]++;
+  }
+
+  // ── Priority 2: proportional target (soft objective) ──────────────────────
   const targetWorkers = Array(7).fill(0);
   if (totalDemand > 0) {
     for (let d = 0; d < 7; d++) {
@@ -177,41 +208,70 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     if (!win) closedDays.push(d);
   }
 
+  // Returns true if assigning this pair does not exhaust any day's rest budget.
+  function pairRespectsBudget(pair) {
+    return pair.every((d) => restCount[d] < maxRest[d]);
+  }
+
   if (fairnessEnabled) {
-    // Round-robin, but if the rotation pair would force work on a closed day,
-    // swap in a pair that covers both closures when one exists.
+    // Round-robin rotation. Each agent advances the pointer by 1, but if the
+    // rotation's pair would violate Priority 1 we skip forward to the nearest
+    // valid pair (staying as close to the rotation as possible).
     for (const agent of flexibleAgents) {
-      let pair = REST_PAIRS[rotationIdx.i % REST_PAIRS.length];
+      const baseIdx = rotationIdx.i % REST_PAIRS.length;
+      rotationIdx.i++;
+
+      let pair = REST_PAIRS[baseIdx];
+
+      // If the rotation pair violates Priority 1, find the nearest valid one.
+      if (!pairRespectsBudget(pair)) {
+        const fallback = REST_PAIRS.find((p) => pairRespectsBudget(p));
+        if (fallback) pair = fallback;
+        // else: no valid pair (degenerate — fixed-rest already consumed budget);
+        // keep the rotation pair and accept the minor violation.
+      }
+
+      // Prefer a pair that covers all closed days when one exists and is valid.
       if (closedDays.length > 0 && closedDays.some((d) => !pair.includes(d))) {
-        const better = REST_PAIRS.find((p) => closedDays.every((d) => p.includes(d)));
+        const better = REST_PAIRS.find(
+          (p) => closedDays.every((d) => p.includes(d)) && pairRespectsBudget(p)
+        );
         if (better) pair = better;
       }
-      rotationIdx.i++;
+
       result.set(agent.id, [...pair].sort((a, b) => a - b));
+      for (const d of pair) restCount[d]++;
       for (let d = 0; d < 7; d++) if (!pair.includes(d)) workingAgentCount[d]++;
     }
   } else {
-    // Best-fit: minimize Σ max(0, target - workingAfter)² across all days.
-    // Squared deficit heavily penalizes days with ZERO workers when demand > 0.
+    // Best-fit: minimize Σ max(0, target − workingAfter)² (Priority 2 soft),
+    // with a 1e9 penalty per day where Priority 1 rest budget would be exceeded.
     for (const agent of flexibleAgents) {
       let bestPair = REST_PAIRS[0];
       let bestScore = Infinity;
       for (const pair of REST_PAIRS) {
-        // Huge penalty for requiring work on a closed day
+        // Priority 1 hard constraint expressed as a large penalty
+        let p1Penalty = 0;
+        for (const d of pair) {
+          if (restCount[d] >= maxRest[d]) p1Penalty += 1e9;
+        }
+        // Closed-day penalty (same scale as Priority 1)
         let closedPenalty = 0;
         for (const cd of closedDays) {
           if (!pair.includes(cd)) closedPenalty += 1e9;
         }
+        // Priority 2 soft: squared shortage vs proportional target
         let shortageSq = 0;
         for (let d = 0; d < 7; d++) {
           const newWorking = workingAgentCount[d] + (pair.includes(d) ? 0 : 1);
           const shortage = Math.max(0, targetWorkers[d] - newWorking);
           shortageSq += shortage * shortage;
         }
-        const score = closedPenalty + shortageSq;
+        const score = p1Penalty + closedPenalty + shortageSq;
         if (score < bestScore) { bestScore = score; bestPair = pair; }
       }
       result.set(agent.id, [...bestPair].sort((a, b) => a - b));
+      for (const d of bestPair) restCount[d]++;
       for (let d = 0; d < 7; d++) if (!bestPair.includes(d)) workingAgentCount[d]++;
     }
   }
