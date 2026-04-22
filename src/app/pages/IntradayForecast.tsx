@@ -667,21 +667,27 @@ export const IntradayForecast = () => {
 
     const dates: Record<string, number[]> = {};
     const weekdays: Record<string, number[]> = {};
+    const erlangs_dates: Record<string, number[]> = {};
+    const erlangs_weekdays: Record<string, number[]> = {};
     for (let d = 0; d < 7; d++) {
       const dayRoundedFTEs = roundedRequiredFteTable[d];
       if (!dayRoundedFTEs) continue;
 
       const expanded = new Array(96).fill(0) as number[];
+      const expandedErlangs = new Array(96).fill(0) as number[];
       for (let i = 0; i < dayRoundedFTEs.length; i++) {
         const val = dayRoundedFTEs[i] ?? 0;
+        const erl = smoothedFteTable![d]?.[i]?.erlangs ?? 0;
         for (let s = 0; s < subSlots; s++) {
           const idx = i * subSlots + s;
-          if (idx < 96) expanded[idx] = val;
+          if (idx < 96) { expanded[idx] = val; expandedErlangs[idx] = erl; }
         }
       }
 
       dates[weekDates[d]] = expanded;
       weekdays[DOW_SCHEDULE_KEYS[d]] = expanded;
+      erlangs_dates[weekDates[d]] = expandedErlangs;
+      erlangs_weekdays[DOW_SCHEDULE_KEYS[d]] = expandedErlangs;
     }
 
     const monKey = weekDates[0];
@@ -695,7 +701,17 @@ export const IntradayForecast = () => {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          preferences: { dates, weekdays, channel: selectedChannel, grain: 15 },
+          preferences: {
+            dates,
+            weekdays,
+            erlangs_dates,
+            erlangs_weekdays,
+            aht_sec: fteParams!.ahtSec,
+            sla_sec: fteParams!.slaSec,
+            sla_target: fteParams!.slaTarget,
+            channel: selectedChannel,
+            grain: 15,
+          },
         }),
         credentials: "include",
       });

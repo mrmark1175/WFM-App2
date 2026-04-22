@@ -10,6 +10,7 @@ import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle, Eraser } from "lucide-react";
+import { erlangC, erlangServiceLevel } from "./intraday-distribution-logic";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
 import { WeeklyScheduleGrid } from "../components/schedule/WeeklyScheduleGrid";
@@ -517,6 +518,9 @@ export function ScheduleEditor() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [requiredFteByDate, setRequiredFteByDate] = useState<Record<string, number[]>>({});
   const [requiredFteByWeekday, setRequiredFteByWeekday] = useState<Record<string, number[]>>({});
+  const [erlangsByDate, setErlangsByDate] = useState<Record<string, number[]>>({});
+  const [erlangsByWeekday, setErlangsByWeekday] = useState<Record<string, number[]>>({});
+  const [slaParams, setSlaParams] = useState<{ ahtSec: number; slaSec: number; slaTarget: number; channel: string } | null>(null);
 
   const [viewMode, setViewMode]       = useState<"daily" | "weekly">("daily");
   const [loading, setLoading]         = useState(true);
@@ -599,34 +603,37 @@ export function ScheduleEditor() {
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data) return;
-        if (data.weekdays && typeof data.weekdays === "object") {
-          const byWeekday: Record<string, number[]> = {};
-          for (const [weekday, slots] of Object.entries(data.weekdays)) {
+
+        const expand = (map: unknown): Record<string, number[]> => {
+          const out: Record<string, number[]> = {};
+          if (!map || typeof map !== "object") return out;
+          for (const [k, slots] of Object.entries(map as Record<string, unknown>)) {
             if (!Array.isArray(slots)) continue;
             const padded = [...(slots as number[])];
             while (padded.length < 96) padded.push(0);
-            byWeekday[String(weekday).toLowerCase()] = padded.slice(0, 96);
+            out[String(k).toLowerCase()] = padded.slice(0, 96);
           }
-          setRequiredFteByWeekday(byWeekday);
-        } else {
-          setRequiredFteByWeekday({});
-        }
-        // New format: { dates: { "YYYY-MM-DD": [96 numbers], ... } }
+          return out;
+        };
+
+        setRequiredFteByWeekday(expand(data.weekdays));
+        setErlangsByWeekday(expand(data.erlangs_weekdays));
+
         if (data.dates && typeof data.dates === "object") {
-          const byDate: Record<string, number[]> = {};
-          for (const [dateStr, slots] of Object.entries(data.dates)) {
-            if (!Array.isArray(slots)) continue;
-            const padded = [...(slots as number[])];
-            while (padded.length < 96) padded.push(0);
-            byDate[dateStr] = padded.slice(0, 96);
-          }
+          const byDate = expand(data.dates);
           setRequiredFteByDate(byDate);
-          const sample = Object.entries(byDate)[0];
-          if (sample) console.log(`[ScheduleEditor] Loaded requiredFte for ${sample[0]}, first 24 slots:`, sample[1].slice(0, 24));
+          setErlangsByDate(expand(data.erlangs_dates));
+          if (data.aht_sec && data.sla_sec != null && data.sla_target != null) {
+            setSlaParams({
+              ahtSec: Number(data.aht_sec),
+              slaSec: Number(data.sla_sec),
+              slaTarget: Number(data.sla_target),
+              channel: String(data.channel ?? "voice"),
+            });
+          }
           return;
         }
-        // Legacy format: { slots: [96 numbers] } — store under a wildcard key "*"
-        // that the derived requiredFte memo will pick up as a fallback for any date
+        // Legacy format: { slots: [96 numbers] }
         const slots = data.slots as number[] | undefined;
         if (!slots?.length) return;
         const padded = [...slots];
@@ -1047,6 +1054,17 @@ export function ScheduleEditor() {
     return undefined;
   }, [requiredFteByWeekday, activeDayIdx, requiredFteByDate, activeDate]);
 
+  const requiredErlangs = useMemo(() => {
+    const weekdayKey = DOW_SCHEDULE_KEYS[activeDayIdx];
+    if (weekdayKey && erlangsByWeekday[weekdayKey]) return erlangsByWeekday[weekdayKey];
+    if (erlangsByDate[activeDate]) return erlangsByDate[activeDate];
+    const targetDow = new Date(activeDate + "T12:00:00").getDay();
+    for (const [dateStr, slots] of Object.entries(erlangsByDate)) {
+      if (new Date(dateStr + "T12:00:00").getDay() === targetDow) return slots;
+    }
+    return undefined;
+  }, [erlangsByWeekday, activeDayIdx, erlangsByDate, activeDate]);
+
   // ── Derived counts ────────────────────────────────────────────────────────
 
   const activeAgents = useMemo(() =>
@@ -1096,6 +1114,63 @@ export function ScheduleEditor() {
     if (!required) return null;
     return Math.min(999, Math.round((scheduled / required) * 100));
   }, [assignments, activeDate, requiredFte]);
+
+  const projectedSla = useMemo(() => {
+    if (!requiredErlangs?.length || !slaParams) return null;
+    if (slaParams.channel === "email" || slaParams.channel === "cases") return null;
+    const { ahtSec, slaSec } = slaParams;
+    let weightedSL = 0, totalWeight = 0;
+    for (let slot = 0; slot < 96; slot++) {
+      const A = requiredErlangs[slot] ?? 0;
+      if (A <= 0) continue;
+      const slotStart = slot * 15;
+      const N = assignments.filter(a => {
+        if (a.absence_type) return false;
+        if (!a.work_date?.startsWith(activeDate)) return false;
+        const s = timeToMins(a.start_time);
+        let e = timeToMins(a.end_time) || 24 * 60;
+        if (a.is_overnight && e <= s) e += 24 * 60;
+        return s <= slotStart && e > slotStart;
+      }).length;
+      const sl = N > A ? erlangServiceLevel(A, N, ahtSec, slaSec) : (N > 0 ? erlangServiceLevel(A, N, ahtSec, slaSec) : 0);
+      weightedSL += sl * A;
+      totalWeight += A;
+    }
+    if (totalWeight === 0) return null;
+    return Math.round((weightedSL / totalWeight) * 100);
+  }, [requiredErlangs, assignments, activeDate, slaParams]);
+
+  const projectedSlaByDay = useMemo(() => {
+    if (!slaParams) return null;
+    if (slaParams.channel === "email" || slaParams.channel === "cases") return null;
+    const { ahtSec, slaSec, slaTarget } = slaParams;
+    return weekDates.map((date, idx) => {
+      const dateStr = toDateStr(date);
+      const weekdayKey = DOW_SCHEDULE_KEYS[idx];
+      const erlangs = erlangsByDate[dateStr] ?? erlangsByWeekday[weekdayKey] ?? null;
+      if (!erlangs) return null;
+      let weightedSL = 0, totalWeight = 0;
+      for (let slot = 0; slot < 96; slot++) {
+        const A = erlangs[slot] ?? 0;
+        if (A <= 0) continue;
+        const slotStart = slot * 15;
+        const N = assignments.filter(a => {
+          if (a.absence_type) return false;
+          if (!a.work_date?.startsWith(dateStr)) return false;
+          const s = timeToMins(a.start_time);
+          let e = timeToMins(a.end_time) || 24 * 60;
+          if (a.is_overnight && e <= s) e += 24 * 60;
+          return s <= slotStart && e > slotStart;
+        }).length;
+        const sl = N > 0 ? erlangServiceLevel(A, N, ahtSec, slaSec) : 0;
+        weightedSL += sl * A;
+        totalWeight += A;
+      }
+      if (totalWeight === 0) return null;
+      const pct = Math.round((weightedSL / totalWeight) * 100);
+      return { pct, target: slaTarget };
+    });
+  }, [slaParams, weekDates, erlangsByDate, erlangsByWeekday, assignments]);
 
   const todayStr = toDateStr(new Date());
 
@@ -1186,6 +1261,19 @@ export function ScheduleEditor() {
           <div className="hidden md:flex items-center gap-1.5">
             <KpiTile label="Active" value={activeAgents.length} accent="bg-blue-50 text-blue-700" />
             <KpiTile label="Shifts" value={todayShiftCount} accent="bg-emerald-50 text-emerald-700" />
+            {projectedSla !== null && slaParams && (
+              <KpiTile
+                label="Proj. SLA"
+                value={`${projectedSla}%`}
+                accent={
+                  projectedSla >= slaParams.slaTarget
+                    ? "bg-green-50 text-green-700"
+                    : projectedSla >= slaParams.slaTarget - 10
+                    ? "bg-amber-50 text-amber-700"
+                    : "bg-red-50 text-red-700"
+                }
+              />
+            )}
           </div>
 
           <div className="h-5 w-px bg-slate-200 hidden md:block" />
@@ -1336,6 +1424,7 @@ export function ScheduleEditor() {
               const count = assignments.filter(a => a.work_date?.startsWith(dayStr)).length;
               const isToday = dayStr === todayStr;
               const active = activeDayIdx === i;
+              const daySla = projectedSlaByDay?.[i] ?? null;
               return (
                 <button
                   key={label}
@@ -1361,6 +1450,14 @@ export function ScheduleEditor() {
                   {count > 0 && (
                     <span className={`text-[10px] font-black mt-0.5 ${active ? "text-blue-400" : "text-slate-400"}`}>
                       {count} shift{count !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  {daySla !== null && (
+                    <span className={`text-[9px] font-bold mt-0.5 ${
+                      daySla.pct >= daySla.target ? "text-green-600" :
+                      daySla.pct >= daySla.target - 10 ? "text-amber-500" : "text-red-500"
+                    }`}>
+                      {daySla.pct}% SLA
                     </span>
                   )}
                 </button>

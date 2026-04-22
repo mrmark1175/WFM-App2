@@ -4,7 +4,7 @@
 // ── Erlang C staffing — per-interval FTE calculation ─────────────────────────
 
 /** Erlang C: probability that an arriving call must wait (exact formula). */
-function erlangC(A: number, N: number): number {
+export function erlangC(A: number, N: number): number {
   const nInt = Math.floor(N);
   if (nInt <= A) return 1; // under-staffed: everyone waits
   let sumFact = 1, term = 1;
@@ -15,7 +15,7 @@ function erlangC(A: number, N: number): number {
 }
 
 /** Service level: fraction of calls answered within `asaSec` seconds. */
-function erlangServiceLevel(A: number, N: number, ahtSec: number, asaSec: number): number {
+export function erlangServiceLevel(A: number, N: number, ahtSec: number, asaSec: number): number {
   if (N <= A) return 0;
   return 1 - erlangC(A, N) * Math.exp(-((N - A) * asaSec) / ahtSec);
 }
