@@ -1265,28 +1265,25 @@ export function ScheduleEditor() {
           {/* Sort controls */}
           <div className="flex items-center gap-1 ml-2">
             <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mr-0.5">Sort:</span>
-            {(["name", "start"] as const).map((key) => {
-              const active = sortBy === key;
-              const label = key === "name" ? "Name" : "Start";
+            {([
+              { key: "name" as const, dir: "asc" as const, label: "Name" },
+              { key: "start" as const, dir: "asc" as const, label: "Earliest" },
+              { key: "start" as const, dir: "desc" as const, label: "Latest" },
+            ]).map(({ key, dir, label }) => {
+              const active = sortBy === key && sortDir === dir;
               return (
                 <button
-                  key={key}
+                  key={label}
                   type="button"
                   onClick={() => {
-                    if (sortBy === key) {
-                      if (sortDir === "asc") setSortDir("desc");
-                      else { setSortBy(null); setSortDir("asc"); }
-                    } else {
-                      setSortBy(key);
-                      setSortDir("asc");
-                    }
+                    if (active) { setSortBy(null); setSortDir("asc"); }
+                    else { setSortBy(key); setSortDir(dir); }
                   }}
-                  className={`h-6 px-2 rounded-full text-[11px] font-semibold transition-colors flex items-center gap-0.5 ${
+                  className={`h-6 px-2 rounded-full text-[11px] font-semibold transition-colors ${
                     active ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-200 hover:text-slate-800"
                   }`}
                 >
                   {label}
-                  {active && <span className="text-[9px]">{sortDir === "asc" ? "↑" : "↓"}</span>}
                 </button>
               );
             })}
