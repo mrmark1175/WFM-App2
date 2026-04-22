@@ -1142,12 +1142,6 @@ export function ScheduleEditor() {
             </button>
           </div>
 
-          <div className="hidden sm:flex items-center gap-2 ml-1">
-            <div className="h-4 w-px bg-slate-200" />
-            <span className="text-sm font-bold text-slate-800">Schedule Editor</span>
-            {activeLob && <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-slate-200 text-slate-500">{activeLob.name}</Badge>}
-          </div>
-
           <div className="flex-1" />
 
           {/* Clipboard indicator */}
@@ -1160,13 +1154,6 @@ export function ScheduleEditor() {
           <div className="hidden md:flex items-center gap-1.5">
             <KpiTile label="Active" value={activeAgents.length} accent="bg-blue-50 text-blue-700" />
             <KpiTile label="Shifts" value={todayShiftCount} accent="bg-emerald-50 text-emerald-700" />
-            {coverageRate != null && (
-              <KpiTile
-                label="Coverage"
-                value={`${coverageRate}%`}
-                accent={coverageRate >= 80 ? "bg-green-50 text-green-700" : coverageRate >= 60 ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"}
-              />
-            )}
           </div>
 
           <div className="h-5 w-px bg-slate-200 hidden md:block" />
