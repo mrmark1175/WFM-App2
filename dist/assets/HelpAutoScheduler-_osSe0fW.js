@@ -1,4 +1,4 @@
-# Auto-Scheduler — User Guide
+import{j as s,r as p}from"./index-J77S7KW6.js";import{P as m}from"./PageLayout-C6hbf7Kr.js";import"./index-CX5q7N6y.js";const g=`# Auto-Scheduler — User Guide
 
 ## Overview
 The auto-scheduler generates a full agent roster from a frozen demand curve, honoring all your rules: 5 working days, 2 consecutive rest days, shift length, fixed-rest-day accommodations, operating hours, and channel skills. You review drafts, then publish.
@@ -18,7 +18,7 @@ For each agent, fill in:
 - **Fixed Rest Days (accommodation)** — check 2 days only if that agent is *required* to be off on those days (e.g., Sat+Sun). Leave empty to let the scheduler choose.
 - **LOB Assignments** — check the LOB(s) this agent can work. **Required for auto-generation.** If you skip this the scheduler errors out with "No active agents assigned to this LOB".
 
-**3. Make sure Shrinkage Planning is set** — the scheduler uses `hours_per_day` (default 7.5) to align Daily FTE math.
+**3. Make sure Shrinkage Planning is set** — the scheduler uses \`hours_per_day\` (default 7.5) to align Daily FTE math.
 
 ---
 
@@ -69,7 +69,7 @@ The **"Clear Week"** button (rose-colored, next to Publish Drafts) deletes all s
    - **Specific Agents** — check individual agents
 4. Click **Publish**.
 
-Toast confirms: *"Published N draft shifts"*. Those rows are now `status='published'` and won't be overwritten by future auto-generate runs.
+Toast confirms: *"Published N draft shifts"*. Those rows are now \`status='published'\` and won't be overwritten by future auto-generate runs.
 
 ---
 
@@ -137,6 +137,9 @@ Absence types are local changes like any other edit. Click **Publish** (top-righ
 ## Troubleshooting
 
 - **"No approved snapshots"** — Go approve one on Intraday Forecast first.
-- **Generation fails with "No active agents assigned to this LOB"** — Check Agent Roster: each agent needs the LOB in their `lob_assignments`.
-- **Coverage gaps in the draft** — Not enough agents / wrong skills for the demand. Check `coverage_report` on the run (stored in DB) or just add headcount.
-- **Published shifts showing as drafts** — Only shifts with `status='published'` survive Auto-Generate overwrite. Run Publish Drafts after each cycle.
+- **Generation fails with "No active agents assigned to this LOB"** — Check Agent Roster: each agent needs the LOB in their \`lob_assignments\`.
+- **Coverage gaps in the draft** — Not enough agents / wrong skills for the demand. Check \`coverage_report\` on the run (stored in DB) or just add headcount.
+- **Published shifts showing as drafts** — Only shifts with \`status='published'\` survive Auto-Generate overwrite. Run Publish Drafts after each cycle.
+`;function f(c){const t=c.replace(/\r\n/g,`
+`).split(`
+`),n=[];let e=0;for(;e<t.length;){const a=t[e];if(a.trim()===""){e++;continue}if(/^---+\s*$/.test(a)){n.push({kind:"hr"}),e++;continue}const r=/^(#{1,6})\s+(.*)$/.exec(a);if(r){n.push({kind:"h",level:r[1].length,text:r[2]}),e++;continue}if(a.startsWith(">")){const o=[];for(;e<t.length&&t[e].startsWith(">");)o.push(t[e].replace(/^>\s?/,"")),e++;n.push({kind:"blockquote",text:o.join(" ")});continue}if(/^\s*[-*]\s+/.test(a)){const o=[];for(;e<t.length&&/^\s*[-*]\s+/.test(t[e]);)o.push(t[e].replace(/^\s*[-*]\s+/,"")),e++;n.push({kind:"ul",items:o});continue}if(/^\s*\d+\.\s+/.test(a)){const o=[];for(;e<t.length&&/^\s*\d+\.\s+/.test(t[e]);)o.push(t[e].replace(/^\s*\d+\.\s+/,"")),e++;n.push({kind:"ol",items:o});continue}if(a.startsWith("|")&&e+1<t.length&&/^\|[-:\s|]+\|$/.test(t[e+1])){const o=a.slice(1,-1).split("|").map(l=>l.trim());e+=2;const d=[];for(;e<t.length&&t[e].startsWith("|")&&t[e].trim()!=="";){const l=t[e].slice(1,-1).split("|").map(u=>u.trim());d.push(l),e++}n.push({kind:"table",header:o,rows:d});continue}const i=[a];for(e++;e<t.length&&t[e].trim()!==""&&!/^(#{1,6}\s|-{3,}\s*$|>|\|)/.test(t[e])&&!/^\s*[-*]\s+/.test(t[e])&&!/^\s*\d+\.\s+/.test(t[e]);)i.push(t[e]),e++;n.push({kind:"p",text:i.join(" ")})}return n}function h(c){const t=[];let n=c,e=0;const a=[[/\*\*([^*]+)\*\*/,r=>s.jsx("strong",{className:"font-semibold",children:r[1]},e++)],[/\*([^*]+)\*/,r=>s.jsx("em",{className:"italic",children:r[1]},e++)],[/`([^`]+)`/,r=>s.jsx("code",{className:"px-1 py-0.5 rounded bg-muted text-[0.85em] font-mono",children:r[1]},e++)]];for(;n.length>0;){let r=-1,i=null;for(const[o,d]of a){const l=o.exec(n);l&&(r===-1||l.index<r)&&(r=l.index,i={m:l,render:d})}if(!i){t.push(n);break}i.m.index>0&&t.push(n.slice(0,i.m.index)),t.push(i.render(i.m)),n=n.slice(i.m.index+i.m[0].length)}return t}function b({source:c}){const t=p.useMemo(()=>f(c),[c]);return s.jsx("div",{className:"prose prose-slate max-w-none text-sm leading-relaxed text-foreground",children:t.map((n,e)=>{switch(n.kind){case"h":{const a=n.level===1?"text-3xl font-black mt-0 mb-4 pb-2 border-b":n.level===2?"text-2xl font-bold mt-8 mb-3":n.level===3?"text-lg font-semibold mt-6 mb-2":"text-base font-semibold mt-4 mb-2";return s.jsx("div",{className:a,children:h(n.text)},e)}case"p":return s.jsx("p",{className:"my-3",children:h(n.text)},e);case"ul":return s.jsx("ul",{className:"list-disc pl-6 my-3 space-y-1",children:n.items.map((a,r)=>s.jsx("li",{children:h(a)},r))},e);case"ol":return s.jsx("ol",{className:"list-decimal pl-6 my-3 space-y-1",children:n.items.map((a,r)=>s.jsx("li",{children:h(a)},r))},e);case"blockquote":return s.jsx("blockquote",{className:"my-3 border-l-4 border-amber-300 bg-amber-50/50 pl-4 py-2 text-amber-900 italic",children:h(n.text)},e);case"hr":return s.jsx("hr",{className:"my-6 border-slate-200"},e);case"table":return s.jsx("div",{className:"overflow-x-auto my-4",children:s.jsxs("table",{className:"w-full border-collapse text-sm",children:[s.jsx("thead",{className:"bg-slate-100",children:s.jsx("tr",{children:n.header.map((a,r)=>s.jsx("th",{className:"border border-slate-200 px-3 py-2 text-left font-semibold",children:h(a)},r))})}),s.jsx("tbody",{children:n.rows.map((a,r)=>s.jsx("tr",{className:"hover:bg-slate-50",children:a.map((i,o)=>s.jsx("td",{className:"border border-slate-200 px-3 py-2 align-top",children:h(i)},o))},r))})]})},e)}})})}function x(){return s.jsx(m,{children:s.jsx("div",{className:"max-w-4xl mx-auto py-8 px-6",children:s.jsx(b,{source:g})})})}export{x as HelpAutoScheduler,x as default};
