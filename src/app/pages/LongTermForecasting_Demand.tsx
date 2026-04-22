@@ -298,7 +298,7 @@ const VOLUME_TREND_ACTUAL_COLORS = ["#6b9f97", "#9b8ac9", "#d3a37f", "#7ba2d6", 
 const VOLUME_TREND_FORECAST_COLORS = ["#1d4ed8", "#4f46e5", "#0f766e"];
 const CHANNEL_ASSUMPTION_META: Record<ChannelKey, { label: string; colorClass: string; bgClass: string }> = {
   voice: { label: "Voice", colorClass: "text-sky-700 dark:text-sky-300", bgClass: "bg-sky-50 dark:bg-sky-950/30" },
-  email: { label: "Email", colorClass: "text-emerald-700 dark:text-emerald-300", bgClass: "bg-emerald-50 dark:bg-emerald-950/30" },
+  email: { label: "Email", colorClass: "text-foreground", bgClass: "bg-emerald-50 dark:bg-emerald-950/30" },
   chat: { label: "Chat", colorClass: "text-amber-700 dark:text-amber-300", bgClass: "bg-amber-50 dark:bg-amber-950/30" },
   cases: { label: "Cases", colorClass: "text-violet-700 dark:text-violet-300", bgClass: "bg-violet-50 dark:bg-violet-950/30" },
 };
@@ -2264,7 +2264,7 @@ export default function LongTermForecastingDemand() {
                   if (pct == null) return null;
                   const up = pct >= 0;
                   return (
-                    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold ${up ? "text-emerald-600" : "text-rose-600"}`}>
+                    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold ${up ? "text-foreground" : "text-rose-600"}`}>
                       {up ? "↑" : "↓"} {up ? "+" : ""}{pct}% vs prior
                     </span>
                   );
@@ -2317,7 +2317,7 @@ export default function LongTermForecastingDemand() {
             )}
             {insightNarrative && isInsightNarrativeOpen && (
               <div className="mt-3">
-                <p className={`text-sm font-bold mb-2 ${insightNarrative.trendDir === "growing" ? "text-emerald-600" : insightNarrative.trendDir === "declining" ? "text-rose-600" : "text-sky-700"}`}>
+                <p className={`text-sm font-bold mb-2 ${insightNarrative.trendDir === "growing" ? "text-foreground" : insightNarrative.trendDir === "declining" ? "text-rose-600" : "text-sky-700"}`}>
                   {insightNarrative.headline}
                 </p>
                 <div className="text-xs text-slate-600 space-y-1.5 leading-relaxed">
@@ -2398,7 +2398,7 @@ export default function LongTermForecastingDemand() {
                           <Badge className="ml-2 bg-emerald-600 text-white text-[10px]">Re-cut Active</Badge>
                         )}
                       </CardTitle>
-                      <Badge variant="outline" className={`border-primary/20 ${dataSourceMode === "manual" ? "text-emerald-600 border-emerald-400" : "text-primary"}`}>
+                      <Badge variant="outline" className={`border-primary/20 ${dataSourceMode === "manual" ? "text-foreground border-foreground/30" : "text-primary"}`}>
                         {dataSourceMode === "manual" ? "Manual Entry" : `${historicalSourceRows.length} Months · API`}
                       </Badge>
                       {dataSourceMode === "api" && overrideCount > 0 && <Badge className="bg-amber-500 hover:bg-amber-500 text-black">{overrideCount} Overrides</Badge>}
@@ -2503,7 +2503,7 @@ export default function LongTermForecastingDemand() {
                     {isOutlierPanelOpen && (
                       <div className="px-4 pb-4 space-y-3">
                         {outlierResults.length === 0 ? (
-                          <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-400 font-medium py-1">
+                          <div className="flex items-center gap-2 text-sm text-foreground font-medium py-1">
                             <CheckCircle2 className="size-4 shrink-0" />
                             All {dataSourceMode === "manual" ? historicalSourceRows.filter((r) => r.finalVolume > 0).length : historicalSourceRows.length} months are within normal statistical range.
                           </div>
@@ -2520,7 +2520,7 @@ export default function LongTermForecastingDemand() {
                                     : result.severity === "extreme" ? "border-rose-200/80 bg-rose-50/60 dark:bg-rose-950/20 dark:border-rose-800/40"
                                     : "border-amber-200/80 bg-amber-50/60 dark:bg-amber-950/20 dark:border-amber-800/40"}`}>
                                   <div className="flex items-center gap-2 shrink-0">
-                                    <AlertTriangle className={`size-4 ${result.applied ? "text-emerald-500" : result.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
+                                    <AlertTriangle className={`size-4 ${result.applied ? "text-foreground" : result.severity === "extreme" ? "text-rose-500" : "text-amber-500"}`} />
                                     <span className="font-bold text-sm">{result.monthLabel}</span>
                                     <Badge variant="outline" className={`text-[10px] ${result.direction === "high" ? "border-rose-300 text-rose-700" : "border-blue-300 text-blue-700"}`}>
                                       {result.direction === "high" ? "↑ High" : "↓ Low"}
@@ -2530,7 +2530,7 @@ export default function LongTermForecastingDemand() {
                                   <p className="text-xs text-foreground/70 flex-1">{result.reason}</p>
                                   <div className="flex items-center gap-2 shrink-0">
                                     {result.applied ? (
-                                      <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1"><CheckCircle2 className="size-3" /> Applied</span>
+                                      <span className="text-xs font-semibold text-foreground flex items-center gap-1"><CheckCircle2 className="size-3" /> Applied</span>
                                     ) : (
                                       <Button size="sm" className="h-7 text-xs gap-1 bg-violet-600 hover:bg-violet-700 text-white"
                                         onClick={() => applyOutlierSuggestion(result.index, result.suggestedValue)}>
@@ -2552,7 +2552,7 @@ export default function LongTermForecastingDemand() {
                 {activeRecutFactor != null && (
                   <div className="flex items-center gap-3 flex-wrap rounded-xl border border-emerald-200/60 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-800/40 px-4 py-2.5">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">Re-cut Factor ({CHANNEL_ASSUMPTION_META[detailChannel].label})</span>
+                      <span className="text-xs font-semibold text-foreground">Re-cut Factor ({CHANNEL_ASSUMPTION_META[detailChannel].label})</span>
                       <Badge className={`font-black text-sm ${activeRecutFactor >= 1 ? "bg-emerald-600" : "bg-rose-600"} text-white`}>
                         {activeRecutFactor.toFixed(4)}×
                       </Badge>
@@ -2617,7 +2617,7 @@ export default function LongTermForecastingDemand() {
                         <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">Actual Volume</TableHead>
                         <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">Variance</TableHead>
                         {activeRecutFactor != null && (
-                          <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-emerald-700 whitespace-nowrap">Re-cut Forecast</TableHead>
+                          <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground whitespace-nowrap">Re-cut Forecast</TableHead>
                         )}
                       </TableRow>
                     </TableHeader>
@@ -2692,7 +2692,7 @@ export default function LongTermForecastingDemand() {
                                       </TooltipContent>
                                     </UITooltip>
                                   )}
-                                  {outlier?.applied && <CheckCircle2 className="size-3 text-emerald-500 shrink-0" />}
+                                  {outlier?.applied && <CheckCircle2 className="size-3 text-foreground shrink-0" />}
                                   <Switch checked={false} onCheckedChange={(checked) => handleOverrideToggle(histRow.index, checked)}
                                     disabled={histRow.stateLabel === "Manual"} className="scale-[0.65] ml-0.5" />
                                 </div>
@@ -2747,7 +2747,7 @@ export default function LongTermForecastingDemand() {
                                     }}
                                   />
                                   {isSaving && <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0" />}
-                                  {isSaved && !isSaving && <span className="text-emerald-600 text-xs font-bold shrink-0">✓</span>}
+                                  {isSaved && !isSaving && <span className="text-foreground text-xs font-bold shrink-0">✓</span>}
                                 </div>
                               ) : (
                                 <span className="text-xs text-muted-foreground">—</span>
@@ -2756,7 +2756,7 @@ export default function LongTermForecastingDemand() {
                             {/* variance */}
                             <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
                               {fc.variancePct != null ? (
-                                <span className={fc.variancePct >= 0 ? "text-emerald-600 font-bold" : "text-rose-600 font-bold"}>
+                                <span className={fc.variancePct >= 0 ? "text-foreground font-bold" : "text-rose-600 font-bold"}>
                                   {fc.variancePct >= 0 ? "+" : ""}{fc.variancePct}%
                                 </span>
                               ) : <span className="text-muted-foreground">—</span>}
@@ -2765,7 +2765,7 @@ export default function LongTermForecastingDemand() {
                             {activeRecutFactor != null && (
                               <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle">
                                 {fc.recutVol != null ? (
-                                  <span className="font-bold text-emerald-700">{fc.recutVol.toLocaleString()}</span>
+                                  <span className="font-bold text-foreground">{fc.recutVol.toLocaleString()}</span>
                                 ) : fc.isCompleted && fc.actualVol != null ? (
                                   <span className="font-bold text-blue-700">{fc.actualVol.toLocaleString()}</span>
                                 ) : <span className="text-muted-foreground">—</span>}
@@ -2895,7 +2895,7 @@ export default function LongTermForecastingDemand() {
                       <CardTitle className="text-sm font-bold">Staffing Detail — Future Months</CardTitle>
                       <p className="text-xs text-foreground/60 mt-0.5">
                         Per-channel volumes for all active channels.{" "}
-                        {recutVolumesByChannel != null && <span className="font-semibold text-emerald-700">Re-cut volumes applied.</span>}{" "}
+                        {recutVolumesByChannel != null && <span className="font-semibold text-foreground">Re-cut volumes applied.</span>}{" "}
                         AHT, Occ., and Req. FTE reflect the blended staffing allocation ({selectedBlendConfig.label}).
                       </p>
                     </div>
@@ -2933,7 +2933,7 @@ export default function LongTermForecastingDemand() {
                     <TableBody>
                       {futureData.map((row) => {
                         const isRecut = recutVolumesByChannel != null;
-                        const volClass = isRecut ? "text-emerald-700 font-bold" : "text-primary font-bold";
+                        const volClass = isRecut ? "text-foreground font-bold" : "text-primary font-bold";
                         return (
                           <TableRow key={`${row.year}-${row.month}`} className="hover:bg-muted/30">
                             <TableCell className="pl-4 pr-3 font-bold text-sm whitespace-nowrap align-middle">{row.month} {row.year}</TableCell>
@@ -3087,7 +3087,7 @@ export default function LongTermForecastingDemand() {
                           </div>
                         </div>
                         <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
-                          <p className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Email / Cases SLA</p>
+                          <p className="text-[10px] font-black uppercase tracking-wider text-foreground">Email / Cases SLA</p>
                           <div className="grid grid-cols-3 gap-2">
                             <div className="space-y-1"><Label htmlFor="emailSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
                             <div className="space-y-1"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-8 text-xs font-semibold" /></div>
