@@ -1,159 +1,157 @@
 import { PageLayout } from "../components/PageLayout";
-import { Calendar, Users, BarChart3, Clock, TrendingUp, FileText, UserCog, Phone, Grid, Monitor, PieChart, LineChart, Database, Layers } from "lucide-react";
 import { Link } from "react-router-dom";
+import {
+  LineChart, Layers, TrendingUp,
+  Users,
+  CalendarDays, Calendar, UserCheck, Clock, Scale,
+  Monitor,
+  BarChart3,
+  ChevronRight,
+} from "lucide-react";
 import React from "react";
 
-export function WFM() {
-  const wfmModules = [
-    {
-      title: "Long Term Forecasting (Demand)",
-      description: "Forecast monthly contact demand and required staffing needs",
-      icon: LineChart,
-      stats: "Demand Only",
-      path: "/wfm/long-term-forecasting-demand",
-    },
-    {
-      title: "Shrinkage Planning",
-      description: "Model absence and in-work off-phone shrinkage to compute FTE gross-up",
-      icon: Layers,
-      stats: "FTE Modeler",
-      path: "/wfm/shrinkage",
-    },
-    {
-      title: "Workforce Planning",
-      description: "Forecast staffing needs and optimize resource allocation",
-      icon: Users,
-      stats: "156 Employees",
-      path: "/wfm/capacity",
-    },
-    {
-      title: "Scheduling Hub",
-      description: "Agent roster, shift templates, labor law rules, and AI schedule generation",
-      icon: Calendar,
-      stats: "Scheduling",
-      path: "/scheduling",
-    },
-    {
-      title: "Real Time Management",
-      description: "Monitor live queue activity, agent states, and SLA in real time",
-      icon: Monitor,
-      stats: "Coming Soon",
-      placeholder: true,
-    },
-    {
-      title: "Time & Attendance",
-      description: "Monitor clock-ins, breaks, and time-off requests",
-      icon: Clock,
-      stats: "12 Pending Requests",
-    },
-    {
-      title: "Productivity Report",
-      description: "Analyze agent productivity, utilization, and output trends",
-      icon: PieChart,
-      stats: "Coming Soon",
-      placeholder: true,
-    },
-    {
-      title: "Performance Analytics",
-      description: "Track KPIs, service levels, and detailed queue performance metrics",
-      icon: BarChart3,
-      stats: "Detailed KPIs",
-      path: "/wfm/performance-analytics",
-    },
-    {
-      title: "Intra-Day Distribution Engine",
-      description: "Distribute monthly forecasts into 15/30-min interval arrival patterns by day of week",
-      icon: TrendingUp,
-      stats: "Distribution",
-      path: "/wfm/intraday",
-    },
-    {
-      title: "Interaction Arrival",
-      description: "Intraday volume and AHT by 15-min intervals",
-      icon: Grid,
-      stats: "Intraday",
-      path: "/wfm/interaction-arrival",
-    },
-    {
-      title: "Arrival Analysis",
-      description: "YoY, monthly, weekly, daily & intraday volume pivot — short & long-term forecasting",
-      icon: LineChart,
-      stats: "Pivot & Export",
-      path: "/wfm/arrival-analysis",
-    },
-    {
-      title: "Employee Roster",
-      description: "Manage employee profiles, skills, and availability",
-      icon: UserCog,
-      stats: "156 Employees",
-      path: "/wfm/roster",
-    },
-    {
-      title: "Telephony Integrations",
-      description: "Connect and manage telephony systems and call routing",
-      icon: Phone,
-      stats: "5 Active Systems",
-    },
-    {
-      title: "Telephony Raw Data",
-      description: "Import and manage raw call records, AHT, and agent activity logs",
-      icon: Database,
-      stats: "Import Tool",
-      path: "/wfm/telephony-raw",
-    },
-  ];
+interface SubTool {
+  label: string;
+  path: string;
+  icon: React.ElementType;
+}
 
+interface CycleStep {
+  step: string;
+  title: string;
+  description: string;
+  icon: React.ElementType;
+  tools: SubTool[];
+  placeholder?: true;
+}
+
+const CYCLE_STEPS: CycleStep[] = [
+  {
+    step: "01",
+    title: "Forecasting",
+    description:
+      "Predict future contact volumes and handle-time patterns using historical data and statistical models — the foundation of every WFM cycle.",
+    icon: LineChart,
+    tools: [
+      { label: "Demand Forecasting", path: "/wfm/long-term-forecasting-demand", icon: LineChart },
+      { label: "Shrinkage Planning",  path: "/wfm/shrinkage",                   icon: Layers },
+      { label: "Intraday Forecast",   path: "/wfm/intraday",                    icon: TrendingUp },
+    ],
+  },
+  {
+    step: "02",
+    title: "Capacity Management",
+    description:
+      "Translate forecasted demand into required staffing headcount using Erlang C queuing models and multi-channel pooling scenarios.",
+    icon: Users,
+    tools: [
+      { label: "Workforce Planning", path: "/wfm/capacity", icon: Users },
+    ],
+  },
+  {
+    step: "03",
+    title: "Scheduling",
+    description:
+      "Build and publish agent schedules that match required staffing patterns while respecting labor laws, shift preferences, and coverage targets.",
+    icon: CalendarDays,
+    tools: [
+      { label: "Scheduling Hub",   path: "/scheduling",          icon: CalendarDays },
+      { label: "Schedule Editor",  path: "/scheduling/schedule", icon: Calendar },
+      { label: "Agent Roster",     path: "/scheduling/agents",   icon: UserCheck },
+      { label: "Shift Templates",  path: "/scheduling/shifts",   icon: Clock },
+      { label: "Labor Law Rules",  path: "/scheduling/labor-laws", icon: Scale },
+    ],
+  },
+  {
+    step: "04",
+    title: "RTA & Traffic Management",
+    description:
+      "Monitor real-time queue activity, agent adherence, and live SLA performance — and intervene when volumes or staffing deviate from plan.",
+    icon: Monitor,
+    placeholder: true,
+    tools: [],
+  },
+  {
+    step: "05",
+    title: "Reporting, Analysing & Advising",
+    description:
+      "Measure WFM outcomes against targets, identify root causes of gaps, and advise leadership on corrective actions and strategic improvements.",
+    icon: BarChart3,
+    placeholder: true,
+    tools: [],
+  },
+];
+
+export function WFM() {
   return (
     <PageLayout title="Workforce Management">
-      <div className="grid md:grid-cols-3 gap-6">
-        {wfmModules.map((module) => {
-          const isPlaceholder = (module as any).placeholder === true;
+      {/* Cycle legend */}
+      <div className="px-6 pt-4 pb-2">
+        <p className="text-xs text-muted-foreground tracking-wide uppercase font-mono">
+          WFM Cycle &nbsp;·&nbsp; 5 Steps
+        </p>
+      </div>
 
-          const CardContent = (
-            <div className={`bg-card border rounded-lg p-6 transition-all h-full
-              ${isPlaceholder
-                ? "border-dashed border-border opacity-60 cursor-default"
-                : "border-border hover:shadow-lg hover:border-primary/30 cursor-pointer group"
-              }`}>
-              <div className="flex items-start justify-between mb-4">
-                <div className={`p-3 rounded-lg transition-colors
-                  ${isPlaceholder
-                    ? "bg-muted"
-                    : "bg-primary/10 group-hover:bg-primary/20"
-                  }`}>
-                  <module.icon className={`size-6 ${isPlaceholder ? "text-muted-foreground" : "text-primary"}`} />
-                </div>
-                <span className={`text-xs px-3 py-1 rounded-full
-                  ${isPlaceholder
-                    ? "bg-muted text-muted-foreground border border-dashed border-border"
-                    : "bg-accent text-accent-foreground"
-                  }`}>
-                  {module.stats}
-                </span>
-              </div>
-              <h3 className={`text-lg font-semibold mb-2 transition-colors
+      <div className="px-6 pb-8 grid md:grid-cols-3 gap-6">
+        {CYCLE_STEPS.map((step) => {
+          const Icon = step.icon;
+          const isPlaceholder = step.placeholder === true;
+
+          return (
+            <div
+              key={step.step}
+              className={`relative bg-card border rounded-xl p-6 flex flex-col gap-4 h-full
                 ${isPlaceholder
-                  ? "text-muted-foreground"
-                  : "text-card-foreground group-hover:text-primary"
-                }`}>
-                {module.title}
-              </h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                {module.description}
-              </p>
+                  ? "border-dashed border-border opacity-60"
+                  : "border-border hover:shadow-md hover:border-primary/30 transition-shadow"
+                }`}
+            >
+              {/* Step number + icon */}
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[11px] font-bold tracking-[.16em] text-muted-foreground">
+                  STEP {step.step}
+                </span>
+                <div className={`p-2.5 rounded-lg ${isPlaceholder ? "bg-muted" : "bg-primary/10"}`}>
+                  <Icon className={`size-5 ${isPlaceholder ? "text-muted-foreground" : "text-primary"}`} />
+                </div>
+              </div>
+
+              {/* Title + description */}
+              <div>
+                <h2 className={`text-lg font-semibold mb-1.5 ${isPlaceholder ? "text-muted-foreground" : "text-card-foreground"}`}>
+                  {step.title}
+                </h2>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  {step.description}
+                </p>
+              </div>
+
+              {/* Sub-tools or Coming Soon */}
+              {isPlaceholder ? (
+                <div className="mt-auto">
+                  <span className="inline-flex items-center text-[11px] font-mono px-2.5 py-1 rounded border border-dashed border-border text-muted-foreground bg-muted">
+                    Coming Soon
+                  </span>
+                </div>
+              ) : (
+                <div className="mt-auto flex flex-col gap-1.5">
+                  {step.tools.map((tool) => {
+                    const ToolIcon = tool.icon;
+                    return (
+                      <Link
+                        key={tool.path}
+                        to={tool.path}
+                        className="group flex items-center gap-2.5 px-3 py-2 rounded-md bg-accent/60 hover:bg-accent text-sm text-accent-foreground hover:text-primary transition-colors"
+                      >
+                        <ToolIcon className="size-3.5 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" />
+                        <span className="flex-1">{tool.label}</span>
+                        <ChevronRight className="size-3.5 opacity-0 group-hover:opacity-100 text-primary transition-opacity" />
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          );
-
-          if (isPlaceholder) {
-            return <div key={module.title}>{CardContent}</div>;
-          }
-
-          return (module as any).path ? (
-            <Link key={module.title} to={(module as any).path} className="block no-underline text-inherit">
-              {CardContent}
-            </Link>
-          ) : (
-            <div key={module.title}>{CardContent}</div>
           );
         })}
       </div>

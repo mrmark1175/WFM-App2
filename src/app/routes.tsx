@@ -36,10 +36,6 @@ export const router = createBrowserRouter([
     lazy: () => lazyLoad(async () => { const { WFM } = await import("./pages/WFM"); return { Component: WFM }; }),
   },
   {
-    path: "/wfm/roster",
-    lazy: () => lazyLoad(async () => { const { EmployeeRoster } = await import("./pages/EmployeeRoster"); return { Component: EmployeeRoster }; }),
-  },
-  {
     path: "/wfm/long-term-forecasting-demand",
     lazy: () => lazyLoad(async () => { const mod = await import("./pages/LongTermForecasting_Demand"); return { Component: mod.default }; }),
   },
@@ -54,22 +50,6 @@ export const router = createBrowserRouter([
   {
     path: "/wfm/intraday",
     lazy: () => lazyLoad(async () => { const { IntradayForecast } = await import("./pages/IntradayForecast"); return { Component: IntradayForecast }; }),
-  },
-  {
-    path: "/wfm/interaction-arrival",
-    lazy: () => lazyLoad(async () => { const { InteractionArrival } = await import("./pages/InteractionArrival"); return { Component: InteractionArrival }; }),
-  },
-  {
-    path: "/wfm/arrival-analysis",
-    lazy: () => lazyLoad(async () => { const { ArrivalAnalysis } = await import("./pages/ArrivalAnalysis"); return { Component: ArrivalAnalysis }; }),
-  },
-  {
-    path: "/wfm/telephony-raw",
-    lazy: () => lazyLoad(async () => { const { TelephonyRawData } = await import("./pages/TelephonyRawData"); return { Component: TelephonyRawData }; }),
-  },
-  {
-    path: "/wfm/performance-analytics",
-    lazy: () => lazyLoad(async () => { const { PerformanceAnalytics } = await import("./pages/PerformanceAnalytics"); return { Component: PerformanceAnalytics }; }),
   },
   {
     path: "/configuration",

@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock, Phone, Building2, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart2, BarChart3, UserCog } from "lucide-react";
+import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock, Building2, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart3 } from "lucide-react";
 import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
@@ -12,47 +12,36 @@ interface PageLayoutProps {
 
 const NAV: { group: string; items: { to: string; label: string; icon: React.ElementType; badge?: string }[] }[] = [
   { group: "Forecasting", items: [
-    { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting",  icon: LineChart },
-    { to: "/wfm/shrinkage",                  label: "Shrinkage Planning",   icon: Layers },
-    { to: "/wfm/intraday",                   label: "Intraday Forecast",    icon: TrendingUp },
-    { to: "/wfm/arrival-analysis",           label: "Arrival Analysis",     icon: BarChart2 },
-    { to: "/wfm/interaction-arrival",        label: "Interaction Arrival",  icon: Clock },
+    { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting", icon: LineChart },
+    { to: "/wfm/shrinkage",                    label: "Shrinkage Planning", icon: Layers },
+    { to: "/wfm/intraday",                     label: "Intraday Forecast",  icon: TrendingUp },
   ]},
-  { group: "Planning", items: [
-    { to: "/wfm/capacity",                   label: "Workforce Planning",   icon: Users },
-    { to: "/wfm/performance-analytics",      label: "Performance Analytics", icon: BarChart3 },
+  { group: "Capacity Management", items: [
+    { to: "/wfm/capacity",                     label: "Workforce Planning", icon: Users },
   ]},
   { group: "Scheduling", items: [
-    { to: "/scheduling",                     label: "Scheduling Hub",       icon: CalendarDays },
-    { to: "/scheduling/schedule",            label: "Schedule Editor",      icon: Calendar },
-    { to: "/scheduling/agents",              label: "Agent Roster",         icon: UserCheck },
-    { to: "/scheduling/shifts",              label: "Shift Templates",      icon: Clock },
-    { to: "/scheduling/labor-laws",          label: "Labor Law Rules",      icon: Scale },
+    { to: "/scheduling",                       label: "Scheduling Hub",     icon: CalendarDays },
+    { to: "/scheduling/schedule",              label: "Schedule Editor",    icon: Calendar },
+    { to: "/scheduling/agents",                label: "Agent Roster",       icon: UserCheck },
+    { to: "/scheduling/shifts",                label: "Shift Templates",    icon: Clock },
+    { to: "/scheduling/labor-laws",            label: "Labor Law Rules",    icon: Scale },
   ]},
-  { group: "Data", items: [
-    { to: "/wfm/roster",                     label: "Employee Roster",      icon: UserCog },
-    { to: "/wfm/telephony-raw",              label: "Telephony Raw Data",   icon: Phone },
+  { group: "RTA & Traffic", items: [
+    { to: "/wfm", label: "Coming Soon", icon: BarChart3, badge: "Soon" },
   ]},
   { group: "Settings", items: [
-    { to: "/configuration",                  label: "Configuration",        icon: Settings },
-    { to: "/configuration/lob-management",   label: "LOB Management",       icon: Building2 },
-    { to: "/my-account",                     label: "My Account",           icon: User },
+    { to: "/configuration",                    label: "Configuration",      icon: Settings },
+    { to: "/configuration/lob-management",     label: "LOB Management",     icon: Building2 },
+    { to: "/my-account",                       label: "My Account",         icon: User },
   ]},
 ];
 
 const CRUMB_NAMES: Record<string, string> = {
   wfm: "Workforce Management",
   "long-term-forecasting-demand": "Demand Forecasting",
-  "long-term-forecasting": "Strategic Planning",
-  "long-term-forecasting-blended": "Blended Forecast",
   capacity: "Workforce Planning",
   intraday: "Intraday Forecast",
-  "interaction-arrival": "Interaction Arrival",
-  "arrival-analysis": "Arrival Analysis",
-  "telephony-raw": "Telephony Raw Data",
-  "performance-analytics": "Performance Analytics",
   shrinkage: "Shrinkage Planning",
-  roster: "Employee Roster",
   "my-account": "My Account",
   configuration: "Configuration",
   "lob-management": "LOB Management",
@@ -61,7 +50,6 @@ const CRUMB_NAMES: Record<string, string> = {
   agents: "Agent Roster",
   shifts: "Shift Templates",
   "labor-laws": "Labor Law Rules",
-  forecasting: "Forecasting",
 };
 
 export function PageLayout({ children, title }: PageLayoutProps) {
