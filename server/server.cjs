@@ -600,6 +600,7 @@ async function ensureAppTables() {
   await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS team_lead_id INTEGER`);
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'draft'`);
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS generation_run_id INTEGER REFERENCES schedule_generation_runs(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS absence_type VARCHAR(100) NULL`);
 
   // ── Admin auth ────────────────────────────────────────────────────────────────
   await pool.query(`
@@ -2033,9 +2034,9 @@ app.put('/api/scheduling/assignments-publish', async (req, res) => {
     // Re-create all assignments with their activities
     for (const a of assignments) {
       const { rows } = await client.query(
-        `INSERT INTO schedule_assignments (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time, is_overnight, channel, notes)
-         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-        [lob_id, a.agent_id, a.shift_template_id || null, a.work_date, a.start_time, a.end_time, a.is_overnight || false, a.channel || 'voice', a.notes || null]
+        `INSERT INTO schedule_assignments (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time, is_overnight, channel, notes, absence_type)
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+        [lob_id, a.agent_id, a.shift_template_id || null, a.work_date, a.start_time, a.end_time, a.is_overnight || false, a.channel || 'voice', a.notes || null, a.absence_type || null]
       );
       const newId = rows[0].id;
 

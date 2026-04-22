@@ -32,6 +32,7 @@ export interface Assignment {
   is_overnight: boolean;
   channel: string;
   notes: string | null;
+  absence_type: string | null;
   activities: Activity[];
 }
 
@@ -228,13 +229,15 @@ export function ShiftBlock({
       {segments.map((seg, i) => {
         const segWidth = Math.max((seg.durationMins / 15) * colW, 1);
         if (seg.type === "queue") {
+          const isAbsent = !!assignment.absence_type;
           return (
             <div
               key={`q-${i}`}
               style={{
                 width: segWidth,
                 height: "100%",
-                backgroundColor: color,
+                backgroundColor: isAbsent ? "#fee2e2" : color,
+                borderLeft: isAbsent ? "2px solid #ef4444" : undefined,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -243,8 +246,16 @@ export function ShiftBlock({
               }}
             >
               {segWidth > 40 && (
-                <span style={{ fontSize: 9, color: "#fff", fontWeight: 600, opacity: 0.9 }} className="truncate px-0.5">
-                  On Queue
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: isAbsent ? "#b91c1c" : "#fff",
+                    fontWeight: 700,
+                    opacity: 0.95,
+                  }}
+                  className="truncate px-0.5"
+                >
+                  {isAbsent ? assignment.absence_type!.toUpperCase() : "On Queue"}
                 </span>
               )}
             </div>

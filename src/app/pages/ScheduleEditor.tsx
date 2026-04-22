@@ -530,6 +530,10 @@ export function ScheduleEditor() {
   const [prefillStart, setPrefillStart] = useState<string | undefined>();
   const [prefillDate, setPrefillDate]   = useState<string | undefined>();
 
+  // Absence
+  const [absenceDialogAgentId, setAbsenceDialogAgentId] = useState<number | null>(null);
+  const [absenceInput, setAbsenceInput] = useState("");
+
   // Local-first: dirty tracking + publish
   const [isDirty, setIsDirty]         = useState(false);
   const [publishing, setPublishing]   = useState(false);
@@ -829,6 +833,34 @@ export function ScheduleEditor() {
     ));
     setIsDirty(true);
   }, []);
+
+  const handleRequestAbsence = useCallback((agentId: number) => {
+    const existing = assignmentsRef.current.find(
+      a => a.agent_id === agentId && a.work_date?.startsWith(activeDate) && a.absence_type
+    );
+    setAbsenceInput(existing?.absence_type ?? "");
+    setAbsenceDialogAgentId(agentId);
+  }, [activeDate]);
+
+  const handleConfirmAbsence = useCallback((type: string) => {
+    if (!absenceDialogAgentId || !type.trim()) return;
+    setAssignments(prev => prev.map(a =>
+      a.agent_id === absenceDialogAgentId && a.work_date?.startsWith(activeDate)
+        ? { ...a, absence_type: type.trim() }
+        : a
+    ));
+    setIsDirty(true);
+    setAbsenceDialogAgentId(null);
+  }, [absenceDialogAgentId, activeDate]);
+
+  const handleClearAbsence = useCallback((agentId: number) => {
+    setAssignments(prev => prev.map(a =>
+      a.agent_id === agentId && a.work_date?.startsWith(activeDate)
+        ? { ...a, absence_type: null }
+        : a
+    ));
+    setIsDirty(true);
+  }, [activeDate]);
 
   const handleGridAddShift = useCallback((agentId: number, startTime: string, workDate?: string) => {
     setPrefillAgent(agentId);
@@ -1402,6 +1434,8 @@ export function ScheduleEditor() {
               onUpdateTimes={updateTimes}
               onSelectShift={handleSelectShift}
               onSelectAgent={handleSelectAgent}
+              onRequestAbsence={handleRequestAbsence}
+              onClearAbsence={handleClearAbsence}
             />
           ) : (
             <WeeklyScheduleGrid
@@ -1521,6 +1555,56 @@ export function ScheduleEditor() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Absence Dialog */}
+      <Dialog open={absenceDialogAgentId !== null} onOpenChange={(open) => { if (!open) setAbsenceDialogAgentId(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              Mark Absent — {agents.find(a => a.id === absenceDialogAgentId)?.full_name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div className="flex gap-2 flex-wrap">
+              {["Sick", "Emergency", "NCNS"].map(preset => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setAbsenceInput(preset)}
+                  className={`h-7 px-3 rounded-full text-xs font-semibold border transition-colors ${
+                    absenceInput === preset
+                      ? "bg-red-600 text-white border-red-600"
+                      : "border-slate-300 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Absence Type</Label>
+              <Input
+                value={absenceInput}
+                onChange={e => setAbsenceInput(e.target.value)}
+                placeholder="e.g. Training, Bereavement…"
+                autoFocus
+                onKeyDown={e => { if (e.key === "Enter" && absenceInput.trim()) handleConfirmAbsence(absenceInput); }}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setAbsenceDialogAgentId(null)}>Cancel</Button>
+            <Button
+              size="sm"
+              disabled={!absenceInput.trim()}
+              className="bg-red-600 hover:bg-red-700 text-white"
+              onClick={() => handleConfirmAbsence(absenceInput)}
+            >
+              Mark Absent
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Overwrite confirmation dialog */}
       <AlertDialog

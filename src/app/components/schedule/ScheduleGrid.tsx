@@ -13,6 +13,13 @@ import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
 import { ShiftBlock, Assignment } from "./ShiftBlock";
 import { Activity } from "./ActivityBlock";
 import { Plus } from "lucide-react";
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+} from "../ui/context-menu";
 
 // Grid constants
 export const COL_W    = 11;   // px per 15-min column
@@ -98,6 +105,8 @@ interface ScheduleGridProps {
   onUpdateTimes: (id: number, start: string, end: string) => void;
   onSelectShift?: (id: number, shiftHeld: boolean) => void;
   onSelectAgent?: (id: number, shiftHeld: boolean) => void;
+  onRequestAbsence?: (agentId: number) => void;
+  onClearAbsence?: (agentId: number) => void;
 }
 
 export function ScheduleGrid({
@@ -117,6 +126,8 @@ export function ScheduleGrid({
   onUpdateTimes,
   onSelectShift,
   onSelectAgent,
+  onRequestAbsence,
+  onClearAbsence,
 }: ScheduleGridProps) {
   const [activeShift, setActiveShift] = useState<Assignment | null>(null);
   const [activeType, setActiveType] = useState<string | null>(null);
@@ -352,16 +363,24 @@ export function ScheduleGrid({
                   style={{ height: ROW_H }}
                 >
                   {/* Agent sticky left: name | shift time | day hrs | week hrs */}
-                  <div
-                    className="flex items-center sticky left-0 z-10 bg-inherit border-r border-slate-200 shrink-0 min-w-0 cursor-pointer hover:bg-slate-100/50"
-                    style={{ width: AGENT_W, height: ROW_H }}
-                    onClick={(e) => onSelectAgent?.(agent.id, e.shiftKey)}
-                    title={agent.full_name}
-                  >
-                    {/* Name */}
-                    <span className="text-[11px] font-semibold text-slate-700 truncate px-2" style={{ width: NAME_W }}>
-                      {agent.full_name}
-                    </span>
+                  <ContextMenu>
+                    <ContextMenuTrigger asChild>
+                      <div
+                        className="flex items-center sticky left-0 z-10 bg-inherit border-r border-slate-200 shrink-0 min-w-0 cursor-pointer hover:bg-slate-100/50"
+                        style={{ width: AGENT_W, height: ROW_H }}
+                        onClick={(e) => onSelectAgent?.(agent.id, e.shiftKey)}
+                        title={agent.full_name}
+                      >
+                        {/* Name */}
+                        <span
+                          className="text-[11px] font-semibold truncate px-2"
+                          style={{
+                            width: NAME_W,
+                            color: agentAssignments.some(a => a.absence_type) ? "#b91c1c" : undefined,
+                          }}
+                        >
+                          {agent.full_name}
+                        </span>
                     {/* Shift time */}
                     <span
                       className="text-[9px] tabular-nums font-medium text-center border-l border-slate-200 shrink-0"
@@ -381,7 +400,33 @@ export function ScheduleGrid({
                     <span className="text-[10px] tabular-nums font-medium text-slate-500 text-center border-l border-slate-200 shrink-0" style={{ width: HRS_W }}>
                       {weekHrs > 0 ? weekHrs.toFixed(1) : "—"}
                     </span>
-                  </div>
+                      </div>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent className="z-50">
+                      {agentAssignments.length === 0 ? (
+                        <ContextMenuItem disabled>
+                          No shift — add a shift first
+                        </ContextMenuItem>
+                      ) : agentAssignments.some(a => a.absence_type) ? (
+                        <>
+                          <ContextMenuItem disabled className="text-[11px] text-red-600 font-semibold opacity-100">
+                            Absent: {agentAssignments.find(a => a.absence_type)?.absence_type}
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem onClick={() => onRequestAbsence?.(agent.id)}>
+                            Change Absence Type…
+                          </ContextMenuItem>
+                          <ContextMenuItem className="text-destructive" onClick={() => onClearAbsence?.(agent.id)}>
+                            Clear Absence
+                          </ContextMenuItem>
+                        </>
+                      ) : (
+                        <ContextMenuItem onClick={() => onRequestAbsence?.(agent.id)}>
+                          Mark Absent…
+                        </ContextMenuItem>
+                      )}
+                    </ContextMenuContent>
+                  </ContextMenu>
 
                   {/* Grid row */}
                   <div
