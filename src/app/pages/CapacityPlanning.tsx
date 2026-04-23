@@ -809,8 +809,8 @@ export function CapacityPlanning() {
       const modelProjHC = Math.max(0, roundTo(projHC + effectiveNewHc - attritionDecay - knownExits, 1));
       projHC = modelProjHC;
 
-      // Re-anchor for the NEXT week only — preserve modelProjHC for this week's display.
-      if (actualHc != null) projHC = actualHc;
+      // Re-anchor for the NEXT week only — only when actual is a meaningful positive value.
+      if (actualHc != null && actualHc > 0) projHC = actualHc;
 
       const gapSurplus = roundTo(modelProjHC - requiredFTE, 1);
       const actualGapSurplus = actualHc != null ? roundTo(actualHc - requiredFTE, 1) : null;
