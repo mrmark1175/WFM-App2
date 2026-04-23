@@ -808,6 +808,9 @@ export function CapacityPlanning() {
 
       projHC = Math.max(0, roundTo(projHC + effectiveNewHc - attritionDecay - knownExits, 1));
 
+      // Re-anchor to actual HC so subsequent projections start from reality.
+      if (actualHc != null) projHC = actualHc;
+
       const gapSurplus = roundTo(projHC - requiredFTE, 1);
       const actualGapSurplus = actualHc != null ? roundTo(actualHc - requiredFTE, 1) : null;
 
