@@ -806,12 +806,13 @@ export function CapacityPlanning() {
       const actualHc = inp.actualHc ?? null;
       const actualAttrition = inp.actualAttrition ?? null;
 
-      projHC = Math.max(0, roundTo(projHC + effectiveNewHc - attritionDecay - knownExits, 1));
+      const modelProjHC = Math.max(0, roundTo(projHC + effectiveNewHc - attritionDecay - knownExits, 1));
+      projHC = modelProjHC;
 
-      // Re-anchor to actual HC so subsequent projections start from reality.
+      // Re-anchor for the NEXT week only — preserve modelProjHC for this week's display.
       if (actualHc != null) projHC = actualHc;
 
-      const gapSurplus = roundTo(projHC - requiredFTE, 1);
+      const gapSurplus = roundTo(modelProjHC - requiredFTE, 1);
       const actualGapSurplus = actualHc != null ? roundTo(actualHc - requiredFTE, 1) : null;
 
       // Helper: compute achieved SLA% from a given FTE headcount (Erlang A when patience > 0)
@@ -839,8 +840,8 @@ export function CapacityPlanning() {
         }
       }
 
-      // Projected SLA — always computed from projected HC
-      const achievedSLAProj = projHC > 0 ? achievedSLFor(projHC) : null;
+      // Projected SLA — always computed from model projected HC
+      const achievedSLAProj = modelProjHC > 0 ? achievedSLFor(modelProjHC) : null;
 
       // Achieved SLA at actual HC — only when actual HC is entered
       const achievedSLAActual = actualHc != null ? achievedSLFor(actualHc) : null;
@@ -853,7 +854,7 @@ export function CapacityPlanning() {
         effAhtVoice, effAhtChat, effAhtEmail, effAhtCases,
         projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
-        knownExits, projectedHc: projHC, actualHc, actualAttrition,
+        knownExits, projectedHc: modelProjHC, actualHc, actualAttrition,
         gapSurplus, actualGapSurplus, achievedSLAProj, achievedSLAActual,
       };
     });
