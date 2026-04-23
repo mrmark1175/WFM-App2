@@ -929,6 +929,7 @@ export default function LongTermForecastingDemand() {
   const { activeLob } = useLOB();
   const [isAssumptionsOpen, setIsAssumptionsOpen] = useState(true);
   const [isHistoricalSourceOpen, setIsHistoricalSourceOpen] = useState(false);
+  const isBlendedStaffingOpen = false;
   const [isInsightNarrativeOpen, setIsInsightNarrativeOpen] = useState(false);
   // Sidebar section open/close states
   const [sbForecast,      setSbForecast]      = useState(true);
