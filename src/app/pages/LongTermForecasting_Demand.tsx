@@ -929,17 +929,10 @@ export default function LongTermForecastingDemand() {
   const { activeLob } = useLOB();
   const [isAssumptionsOpen, setIsAssumptionsOpen] = useState(true);
   const [isHistoricalSourceOpen, setIsHistoricalSourceOpen] = useState(false);
-  const [isBlendedStaffingOpen, setIsBlendedStaffingOpen] = useState(true);
   const [isInsightNarrativeOpen, setIsInsightNarrativeOpen] = useState(false);
   // Sidebar section open/close states
   const [sbForecast,      setSbForecast]      = useState(true);
-  const [sbChannelAht,    setSbChannelAht]    = useState(false);
-  const [sbServiceLevels, setSbServiceLevels] = useState(false);
-  const [sbShrinkage,     setSbShrinkage]     = useState(true);
-  const [sbOperations,    setSbOperations]    = useState(false);
   const [sbGrowth,        setSbGrowth]        = useState(true);
-  // Staffing detail table column visibility
-  const [showDetailCols,  setShowDetailCols]  = useState(false);
   const [outlierResults, setOutlierResults] = useState<OutlierResult[] | null>(null);
   const [isOutlierPanelOpen, setIsOutlierPanelOpen] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -1012,7 +1005,6 @@ export default function LongTermForecastingDemand() {
     setSelectedChannels(normalizeSelectedChannels(snapshot.selectedChannels));
     setPoolingMode(snapshot.poolingMode === "dedicated" ? "dedicated" : "blended");
     setIsHistoricalSourceOpen(snapshot.isHistoricalSourceOpen);
-    setIsBlendedStaffingOpen(snapshot.isBlendedStaffingOpen);
     setHistoricalChannelView(snapshot.selectedHistoricalChannel || "voice");
     setRecutVolumesByChannel(snapshot.recutVolumesByChannel ?? null);
   };
@@ -2234,8 +2226,7 @@ export default function LongTermForecastingDemand() {
               { label: "Historical Data",  id: "section-historical" },
               { label: "Assumptions",      id: "section-assumptions" },
               { label: "Forecast",         id: "section-charts" },
-              { label: "Channel Staffing", id: "section-staffing-setup" },
-              { label: "Staffing Detail",  id: "section-staffing-detail" },
+              { label: "Demand Output",    id: "section-staffing-detail" },
             ] as const).map((step, i, arr) => (
               <React.Fragment key={step.id}>
                 <button
@@ -2280,14 +2271,6 @@ export default function LongTermForecastingDemand() {
                       <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Workload Hours</p>
                       <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgWorkloadHours.toLocaleString()}</p>
                       <div className="mt-0.5 flex items-center gap-2">{trendChip(kpiTrends?.workload)}</div>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Required Agents / FTE</p>
-                      <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgRequiredFTE}</p>
-                      <div className="mt-0.5 flex items-center gap-2">
-                        {trendChip(kpiTrends?.fte)}
-                        <span className="text-[10px] text-slate-400">{selectedBlendConfig.label}</span>
-                      </div>
                     </div>
                   </>
                 );
@@ -2780,154 +2763,36 @@ export default function LongTermForecastingDemand() {
               })()}
             </CardContent>
           </Card>
-          <div className="space-y-1">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-foreground/50">Section B</p>
-            <p className="text-sm font-semibold text-foreground">Forecasted Demand Output</p>
-          </div>
-          <Card id="section-staffing-setup" className="border border-border/60 shadow-sm overflow-hidden">
-            <CardHeader className="border-b border-border/50 bg-muted/40">
-              <button type="button" className="w-full flex items-start justify-between gap-4 text-left" onClick={() => setIsBlendedStaffingOpen((current) => !current)}>
-                <div className="space-y-2">
-                  <CardTitle className="text-sm font-bold">Channel Staffing Setup</CardTitle>
-                  <p className="text-xs text-foreground/60">Choose which channels are included and whether they share one agent pool or stay dedicated.</p>
-                </div>
-                <div className="shrink-0 mt-1 rounded-full border border-border bg-background p-2">
-                  {isBlendedStaffingOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                </div>
-              </button>
-            </CardHeader>
-            <div className={`grid transition-[grid-template-rows] duration-300 ease-out ${isBlendedStaffingOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}>
-              <div className="overflow-hidden">
-                <CardContent className={`pt-6 space-y-6 transition-opacity duration-200 ${isBlendedStaffingOpen ? "opacity-100" : "opacity-0"}`}>
-              <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-4">
-                <Card className="border border-border/60 shadow-none rounded-3xl bg-card">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground/80">Channel Selection</CardTitle>
-                  <p className="text-xs text-foreground/55">Tick the channels to include in the staffing view.</p>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((channel) => (
-                      <label key={channel} className={`flex items-start gap-3 rounded-xl border border-border/60 p-4 cursor-pointer ${CHANNEL_ASSUMPTION_META[channel].bgClass}`}>
-                        <Checkbox
-                          checked={selectedChannels[channel]}
-                          onCheckedChange={(checked) => handleSelectedChannelChange(channel, checked)}
-                          className="mt-0.5"
-                        />
-                        <div className="space-y-1">
-                      <p className="text-xs font-black uppercase tracking-wider text-black">{CHANNEL_ASSUMPTION_META[channel].label}</p>
-                          <p className="text-xs text-black/75 mt-0.5">
-                            {channel === "voice" ? "Priority queue and base staffing channel." : channel === "chat" ? `Concurrent channel with ${assumptions.chatConcurrency} chats per staffed seat.` : "Deferred workload channel shared with Email."}
-                          </p>
-                        </div>
-                      </label>
-                    ))}
-                  </CardContent>
-                </Card>
-                <Card className="border border-border/60 shadow-none rounded-3xl bg-card">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground/80">Pooling Mode</CardTitle>
-                    <p className="text-xs text-foreground/55">Choose whether selected channels share one pool or remain dedicated.</p>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <RadioGroup value={poolingMode} onValueChange={(value) => setPoolingMode(value as PoolingMode)} className="gap-3">
-                      <label className="flex items-start gap-3 rounded-xl border border-border/60 p-4 cursor-pointer">
-                        <RadioGroupItem value="blended" className="mt-0.5" />
-                        <div className="space-y-1">
-                          <p className="text-sm font-semibold">Blend Selected Channels</p>
-                          <p className="text-xs text-foreground/55">All selected channels share a single staffed pool.</p>
-                        </div>
-                      </label>
-                      <label className="flex items-start gap-3 rounded-xl border border-border/60 p-4 cursor-pointer">
-                        <RadioGroupItem value="dedicated" className="mt-0.5" />
-                        <div className="space-y-1">
-                          <p className="text-sm font-semibold">Dedicated</p>
-                          <p className="text-xs text-foreground/55">Each selected channel remains in its own pool.</p>
-                        </div>
-                      </label>
-                    </RadioGroup>
-                    <div className="rounded-lg border border-border/60 bg-muted/50 p-3 text-sm text-muted-foreground">
-                      <span className="font-semibold text-foreground">Active setup:</span> {selectedBlendConfig.label}. {selectedBlendConfig.description}.
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-              <Card className="border border-border/60 shadow-none">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground/80">Blended Staffing Pools</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {poolExplainability.map((pool) => (
-                    <div key={pool.poolName} className="rounded-lg border border-border/50 p-4 bg-muted/30">
-                      <div className="flex items-center justify-between gap-3 flex-wrap">
-                        <div>
-                          <p className="text-xs font-semibold uppercase tracking-wider text-foreground/70">{pool.poolName}</p>
-                          <p className="text-sm font-semibold">{pool.channels.map((channel) => channel.charAt(0).toUpperCase() + channel.slice(1)).join(" + ")}</p>
-                        </div>
-                        <Badge variant={pool.isShared ? "default" : "outline"} className={pool.isShared ? "bg-emerald-600" : ""}>{pool.isShared ? "Shared Pool" : "Standalone Pool"}</Badge>
-                      </div>
-                      <div className="mt-3 flex gap-6 text-sm text-muted-foreground flex-wrap">
-                        <span>Avg workload: <strong className="text-foreground">{pool.averageWorkload}</strong> hrs</span>
-                        <span>Avg FTE: <strong className="text-foreground">{pool.averageFTE}</strong></span>
-                      </div>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-                </CardContent>
-              </div>
-            </div>
-          </Card>
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_304px] gap-6 items-start">
             <div className="space-y-6">
               {/* ── Four charts in 2×2 grid ───────────────────────────────── */}
               <div id="section-charts" className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Workload Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Pool workloads update with the current channel selection and pooling mode.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={pooledWorkloadChartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{selectedBlendConfig.pools.map((_, index) => <Line key={`pool${index + 1}`} type="monotone" dataKey={`pool${index + 1}`} name={`Pool ${String.fromCharCode(65 + index)} Workload`} stroke={["#4f46e5", "#0f766e", "#dc2626"][index % 3]} strokeWidth={3} />)}<Line type="monotone" dataKey="totalWorkloadHours" name="Total Workload" stroke="#94a3b8" strokeDasharray="6 4" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Blended Staffing Requirement</CardTitle><p className="text-xs text-foreground/60 mt-1">Voice: Erlang C · Chat: Modified Erlang C · Email: backlog model. Idle capacity reused across channels.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={requiredStaffingTrendData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Line type="monotone" dataKey="sharedPoolFTE" name="Shared Pool FTE" stroke="#0f766e" strokeWidth={3} /><Line type="monotone" dataKey="standalonePoolFTE" name="Standalone Pool FTE" stroke="#2563eb" strokeWidth={3} /><Line type="monotone" dataKey="totalRequiredFTE" name="Total Required FTE" stroke="#f59e0b" strokeWidth={3} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
               </div>
-              <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Scenario Comparison — Required FTE</CardTitle></CardHeader><CardContent className="p-6 h-[360px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={scenarioComparisonData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{Object.values(scenarios).map((scenario, index) => <Line key={scenario.id} type="monotone" dataKey={scenario.id} name={scenario.name} stroke={scenarioColors[index % scenarioColors.length]} strokeWidth={scenario.id === selectedScenarioId ? 3.5 : 2} dot={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
               {/* ── Staffing detail — future months ──────────────────────────── */}
               <Card id="section-staffing-detail" className="border border-border/50 shadow-lg bg-card">
                 <CardHeader className="border-b border-border/50 bg-muted/50">
                   <div className="flex items-start justify-between gap-4 flex-wrap">
                     <div>
-                      <CardTitle className="text-sm font-bold">Staffing Detail — Future Months</CardTitle>
+                      <CardTitle className="text-sm font-bold">Demand Output — Future Months</CardTitle>
                       <p className="text-xs text-foreground/60 mt-0.5">
-                        Per-channel volumes for all active channels.{" "}
-                        {recutVolumesByChannel != null && <span className="font-semibold text-foreground">Re-cut volumes applied.</span>}{" "}
-                        AHT, Occ., and Req. FTE reflect the blended staffing allocation ({selectedBlendConfig.label}).
+                        Per-channel volume forecast for all active channels.{" "}
+                        {recutVolumesByChannel != null && <span className="font-semibold text-foreground">Re-cut volumes applied.</span>}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowDetailCols(v => !v)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-border bg-background hover:bg-muted/50 text-foreground/70 transition-colors shrink-0"
-                    >
-                      {showDetailCols ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
-                      {showDetailCols ? "Fewer columns" : "Show detail columns"}
-                    </button>
                   </div>
                 </CardHeader>
                 <CardContent className="p-0 overflow-x-auto">
-                  <Table className={showDetailCols ? "min-w-[1050px]" : "min-w-[680px]"}>
+                  <Table className="min-w-[480px]">
                     <TableHeader className="bg-muted/50">
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="pl-4 text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap">Month</TableHead>
                         <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-blue-600 whitespace-nowrap" title="Total inbound voice contacts forecast for the month">Voice Vol.</TableHead>
                         <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-violet-600 whitespace-nowrap" title="Total inbound chat sessions forecast for the month">Chat Vol.</TableHead>
                         <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-rose-600 whitespace-nowrap" title="Total inbound email contacts forecast for the month">Email Vol.</TableHead>
-                        <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-amber-600 whitespace-nowrap" title="Total case/ticket volume forecast for the month">Cases Vol.</TableHead>
-                        {showDetailCols && <>
-                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Total blended workload hours across all active channels for the month">Blended Wkld</TableHead>
-                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Blended average handle time (weighted by channel volume and AHT)">AHT</TableHead>
-                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Required occupancy % — derived from Erlang C to meet the SLA target. This is an output, not an input.">Occ.</TableHead>
-                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Shrinkage % applied to gross up net FTE (breaks, training, leave, etc.)">Shr.</TableHead>
-                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Active channel pooling configuration for this calculation">Setup</TableHead>
-                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="FTE in the shared/blended agent pool (voice + chat + email in one team)">Shared FTE</TableHead>
-                          <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="FTE in dedicated standalone pools (not sharing capacity with other channels)">Solo FTE</TableHead>
-                        </>}
-                        <TableHead className="pr-4 text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Total required FTE after shrinkage and safety margin">Req. FTE</TableHead>
+                        <TableHead className="pr-4 text-right text-[11px] font-semibold uppercase tracking-wide text-amber-600 whitespace-nowrap" title="Total case/ticket volume forecast for the month">Cases Vol.</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2946,19 +2811,9 @@ export default function LongTermForecastingDemand() {
                             <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.email ? volClass : "text-muted-foreground"}`}>
                               {selectedChannels.email ? row.channelMetrics.email.volume.toLocaleString() : "—"}
                             </TableCell>
-                            <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.cases ? volClass : "text-muted-foreground"}`}>
+                            <TableCell className={`pr-4 px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.cases ? volClass : "text-muted-foreground"}`}>
                               {selectedChannels.cases ? row.channelMetrics.cases.volume.toLocaleString() : "—"}
                             </TableCell>
-                            {showDetailCols && <>
-                              <TableCell className="px-3 text-right font-mono text-sm text-indigo-600 tabular-nums whitespace-nowrap align-middle">{row.workloadHours.toLocaleString()}</TableCell>
-                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.aht}s</TableCell>
-                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.occupancy}%</TableCell>
-                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.shrinkage}%</TableCell>
-                              <TableCell className="px-3 text-right text-xs whitespace-nowrap align-middle">{row.activeBlendPreset}</TableCell>
-                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.sharedPoolFTE > 0 ? row.sharedPoolFTE.toLocaleString() : "—"}</TableCell>
-                              <TableCell className="px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle">{row.standalonePoolFTE > 0 ? row.standalonePoolFTE.toLocaleString() : "—"}</TableCell>
-                            </>}
-                            <TableCell className="pr-4 pl-3 text-right font-mono text-sm font-bold text-amber-600 tabular-nums whitespace-nowrap align-middle">{row.totalRequiredFTE}</TableCell>
                           </TableRow>
                         );
                       })}
@@ -3031,138 +2886,6 @@ export default function LongTermForecastingDemand() {
                     )}
                   </div>
 
-                  {/* ── Group: Channel AHT ── */}
-                  <div>
-                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbChannelAht(v => !v)}>
-                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Channel AHT</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-[#4d4d4d]">{assumptions.aht}s · {assumptions.chatAht}s · {assumptions.emailAht}s</span>
-                        {sbChannelAht ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
-                      </div>
-                    </button>
-                    {sbChannelAht && (
-                      <div className="px-4 pb-4 space-y-3">
-                        <div className="space-y-2"><div className="flex items-center justify-between"><Label htmlFor="aht" className="text-xs font-medium text-[#4d4d4d]">Voice AHT (seconds)</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.aht}s</span></div><Input id="aht" type="number" value={assumptions.aht} onChange={(event) => setAssumptions({ ...assumptions, aht: validateInput(Number(event.target.value)) })} className="h-9 font-semibold" /></div>
-                        <div className="space-y-2"><div className="flex items-center justify-between"><Label htmlFor="chatAht" className="text-xs font-medium text-[#4d4d4d]">Chat AHT (seconds)</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.chatAht}s</span></div><Input id="chatAht" type="number" value={assumptions.chatAht} onChange={(event) => setAssumptions({ ...assumptions, chatAht: validateInput(Number(event.target.value)) })} className="h-9 font-semibold" /></div>
-                        <div className="space-y-2"><div className="flex items-center justify-between"><Label htmlFor="emailAht" className="text-xs font-medium text-[#4d4d4d]">Email AHT (seconds)</Label><span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.emailAht}s</span></div><Input id="emailAht" type="number" value={assumptions.emailAht} onChange={(event) => setAssumptions({ ...assumptions, emailAht: validateInput(Number(event.target.value)) })} className="h-9 font-semibold" /></div>
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-1"><Label htmlFor="chatConcurrency" className="text-xs font-medium text-[#4d4d4d]">Chat Concurrency</Label><UITooltip><TooltipTrigger asChild><Info className="size-3 text-muted-foreground cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Simultaneous chats per agent. Lowers effective AHT (AHT ÷ concurrency).</p></TooltipContent></UITooltip></div>
-                            <span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.chatConcurrency}×</span>
-                          </div>
-                          <Input id="chatConcurrency" type="number" min="1" max="10" step="1" value={assumptions.chatConcurrency} onChange={(event) => setAssumptions({ ...assumptions, chatConcurrency: validateInput(Math.round(Number(event.target.value)), 1, 10) })} className="h-9 font-bold" />
-                          <p className="text-[11px] text-[#4d4d4d]">Effective Chat AHT = {assumptions.chatAht}s ÷ {assumptions.chatConcurrency} = <span className="font-semibold text-[#171717]">{Math.round(assumptions.chatAht / Math.max(1, assumptions.chatConcurrency))}s</span></p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* ── Group: Service Levels ── */}
-                  <div>
-                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbServiceLevels(v => !v)}>
-                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Service Levels</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-[#4d4d4d]">{assumptions.voiceSlaTarget}% · {assumptions.chatSlaTarget}% · {assumptions.emailSlaTarget}%</span>
-                        {sbServiceLevels ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
-                      </div>
-                    </button>
-                    {sbServiceLevels && (
-                      <div className="px-4 pb-4 space-y-3">
-                        <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
-                          <p className="text-[10px] font-black uppercase tracking-wider text-sky-700">Voice SLA</p>
-                          <div className="grid grid-cols-4 gap-2">
-                            <div className="space-y-1"><Label htmlFor="voiceSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="voiceSlaTarget" type="number" value={assumptions.voiceSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
-                            <div className="space-y-1"><Label htmlFor="voiceSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="voiceSlaAnswerSeconds" type="number" value={assumptions.voiceSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
-                            <div className="space-y-1"><Label htmlFor="voiceAsaTargetSeconds" className="text-xs text-[#4d4d4d]">ASA (s)</Label><Input id="voiceAsaTargetSeconds" type="number" value={assumptions.voiceAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, voiceAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
-                            <div className="space-y-1"><Label htmlFor="voiceAvgPatienceSeconds" className="text-xs text-[#4d4d4d]">Patience (s)</Label><Input id="voiceAvgPatienceSeconds" type="number" value={assumptions.voiceAvgPatienceSeconds ?? 120} onChange={(event) => setAssumptions({ ...assumptions, voiceAvgPatienceSeconds: validateInput(Number(event.target.value), 0, 3600) })} className="h-8 text-xs font-semibold" title="Erlang A: avg seconds before a customer abandons the queue (0 = use Erlang C)" /></div>
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
-                          <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Chat SLA</p>
-                          <div className="grid grid-cols-4 gap-2">
-                            <div className="space-y-1"><Label htmlFor="chatSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="chatSlaTarget" type="number" value={assumptions.chatSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, chatSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
-                            <div className="space-y-1"><Label htmlFor="chatSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="chatSlaAnswerSeconds" type="number" value={assumptions.chatSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
-                            <div className="space-y-1"><Label htmlFor="chatAsaTargetSeconds" className="text-xs text-[#4d4d4d]">ASA (s)</Label><Input id="chatAsaTargetSeconds" type="number" value={assumptions.chatAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, chatAsaTargetSeconds: validateInput(Number(event.target.value), 1, 3600) })} className="h-8 text-xs font-semibold" /></div>
-                            <div className="space-y-1"><Label htmlFor="chatAvgPatienceSeconds" className="text-xs text-[#4d4d4d]">Patience (s)</Label><Input id="chatAvgPatienceSeconds" type="number" value={assumptions.chatAvgPatienceSeconds ?? 60} onChange={(event) => setAssumptions({ ...assumptions, chatAvgPatienceSeconds: validateInput(Number(event.target.value), 0, 3600) })} className="h-8 text-xs font-semibold" title="Erlang A: avg seconds before a chat customer abandons (0 = use Erlang C)" /></div>
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-border/60 bg-[#fafafa] p-3 space-y-2">
-                          <p className="text-[10px] font-black uppercase tracking-wider text-foreground">Email / Cases SLA</p>
-                          <div className="grid grid-cols-3 gap-2">
-                            <div className="space-y-1"><Label htmlFor="emailSlaTarget" className="text-xs text-[#4d4d4d]">SLA %</Label><Input id="emailSlaTarget" type="number" value={assumptions.emailSlaTarget} onChange={(event) => setAssumptions({ ...assumptions, emailSlaTarget: validateInput(Number(event.target.value), 1, 100) })} className="h-8 text-xs font-semibold" /></div>
-                            <div className="space-y-1"><Label htmlFor="emailSlaAnswerSeconds" className="text-xs text-[#4d4d4d]">Within (s)</Label><Input id="emailSlaAnswerSeconds" type="number" value={assumptions.emailSlaAnswerSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailSlaAnswerSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-8 text-xs font-semibold" /></div>
-                            <div className="space-y-1"><Label htmlFor="emailAsaTargetSeconds" className="text-xs text-[#4d4d4d]">ASA (s)</Label><Input id="emailAsaTargetSeconds" type="number" value={assumptions.emailAsaTargetSeconds} onChange={(event) => setAssumptions({ ...assumptions, emailAsaTargetSeconds: validateInput(Number(event.target.value), 1, 86400) })} className="h-8 text-xs font-semibold" /></div>
-                          </div>
-                        </div>
-                        {/* Occupancy display */}
-                        <div className="space-y-2 pt-1">
-                          <div className="flex items-center justify-between"><p className="text-[10px] font-semibold uppercase text-[#4d4d4d]">Resulting Occupancy</p><Badge variant="outline" className="font-black text-xs border-indigo-200 text-indigo-700">Derived</Badge></div>
-                          <div className="grid grid-cols-1 gap-2">
-                            {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((channelKey) => (
-                              <div key={channelKey} className={`rounded-lg border border-border/60 px-3 py-2 flex items-center justify-between ${CHANNEL_ASSUMPTION_META[channelKey].bgClass}`}>
-                                <div><p className={`text-[10px] font-black uppercase tracking-widest ${CHANNEL_ASSUMPTION_META[channelKey].colorClass}`}>{CHANNEL_ASSUMPTION_META[channelKey].label}</p><p className="text-[10px] text-muted-foreground">{averageChannelMetrics[channelKey].averageFTE} FTE avg</p></div>
-                                <span className="font-black text-sm text-foreground">{averageChannelMetrics[channelKey].averageOccupancy}%</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* ── Group: Shrinkage ── */}
-                  <div>
-                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbShrinkage(v => !v)}>
-                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Shrinkage</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium bg-[#ebf5ff] text-[#0068d6] px-2 py-0.5 rounded-full">{assumptions.shrinkage}%</span>
-                        {sbShrinkage ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
-                      </div>
-                    </button>
-                    {sbShrinkage && (
-                      <div className="px-4 pb-4 space-y-3">
-                        <Select value={assumptions.shrinkageSource ?? "manual"} onValueChange={(val) => setAssumptions((prev) => ({ ...prev, shrinkageSource: val as Assumptions["shrinkageSource"] }))}>
-                          <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="manual" className="text-xs">Manual entry</SelectItem>
-                            <SelectItem value="planner_excl" className="text-xs">Shrinkage Planner (excl. holidays)</SelectItem>
-                            <SelectItem value="planner_incl" className="text-xs">Shrinkage Planner (incl. holidays)</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        {(assumptions.shrinkageSource ?? "manual") === "manual" && (
-                          <Input id="shrinkage" type="number" value={assumptions.shrinkage} onChange={(e) => setAssumptions({ ...assumptions, shrinkage: validateInput(Number(e.target.value), 0, 99) })} className="h-9 font-bold" />
-                        )}
-                        {((assumptions.shrinkageSource ?? "manual") === "planner_excl" || (assumptions.shrinkageSource ?? "manual") === "planner_incl") && (
-                          <ShrinkagePlannerLink source={assumptions.shrinkageSource!} shrinkage={assumptions.shrinkage} />
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* ── Group: Operating Hours & Safety ── */}
-                  <div>
-                    <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbOperations(v => !v)}>
-                      <span className="text-xs font-black uppercase tracking-widest text-[#171717]">Operating Hours</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-[#4d4d4d]">{assumptions.operatingHoursPerDay}h/day · {assumptions.operatingDaysPerWeek}d/wk</span>
-                        {sbOperations ? <ChevronUp className="size-3.5 text-[#4d4d4d]" /> : <ChevronDown className="size-3.5 text-[#4d4d4d]" />}
-                      </div>
-                    </button>
-                    {sbOperations && (
-                      <div className="px-4 pb-4 space-y-3">
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="space-y-1"><Label htmlFor="operatingHoursPerDay" className="text-xs font-medium text-[#4d4d4d]">Hours / Day</Label><Input id="operatingHoursPerDay" type="number" step="0.5" value={assumptions.operatingHoursPerDay} onChange={(event) => { const nextHours = validateInput(Number(event.target.value), 0.5, 24); const next: Assumptions = { ...assumptions, operatingHoursPerDay: nextHours }; if (assumptions.useShrinkageModeler) { const LEAVE_IDS = new Set(["annual_leave", "sick_leave"]); const shiftMin = Math.round(nextHours * 60); const scaledItems = (assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS).map((item) => LEAVE_IDS.has(item.id) ? { ...item, durationMinutes: shiftMin } : item); next.shrinkageItems = scaledItems; next.shrinkage = computeShrinkageFromItems(scaledItems, nextHours, assumptions.operatingDaysPerWeek); } setAssumptions(next); }} className="h-9 font-semibold" /></div>
-                          <div className="space-y-1"><Label htmlFor="operatingDaysPerWeek" className="text-xs font-medium text-[#4d4d4d]">Days / Week</Label><Input id="operatingDaysPerWeek" type="number" step="0.5" value={assumptions.operatingDaysPerWeek} onChange={(event) => { const nextDays = validateInput(Number(event.target.value), 0.5, 7); const next: Assumptions = { ...assumptions, operatingDaysPerWeek: nextDays }; if (assumptions.useShrinkageModeler) next.shrinkage = computeShrinkageFromItems(assumptions.shrinkageItems ?? DEFAULT_SHRINKAGE_ITEMS, assumptions.operatingHoursPerDay, nextDays); setAssumptions(next); }} className="h-9 font-semibold" /></div>
-                        </div>
-                        <div className="rounded-lg border border-border/60 bg-[#fafafa] px-3 py-2 text-xs text-[#4d4d4d]">
-                          {assumptions.operatingHoursPerDay}h/day × {assumptions.operatingDaysPerWeek}d/week = <span className="font-semibold text-[#171717]">{openHoursPerMonth} open hours/month</span>
-                        </div>
-                        <div className="space-y-1"><div className="flex items-center gap-1"><Label htmlFor="safetyMargin" className="text-xs font-medium text-[#4d4d4d]">Safety Margin %</Label><UITooltip><TooltipTrigger asChild><ShieldAlert className="size-3 text-[#4d4d4d] cursor-help" /></TooltipTrigger><TooltipContent><p className="text-xs">Staffing buffer for forecast variance</p></TooltipContent></UITooltip></div><Input id="safetyMargin" type="number" value={assumptions.safetyMargin} onChange={(event) => setAssumptions({ ...assumptions, safetyMargin: validateInput(Number(event.target.value), 0, 20) })} className="h-9 font-semibold" /></div>
-                        <div className="space-y-1"><Label htmlFor="fteMonthlyHours" className="text-xs font-medium text-[#4d4d4d]">FTE Monthly Hours</Label><Input id="fteMonthlyHours" type="number" step="0.01" value={assumptions.fteMonthlyHours} onChange={(event) => setAssumptions({ ...assumptions, fteMonthlyHours: validateInput(Number(event.target.value), 1) })} className="h-9 font-semibold" /></div>
-                      </div>
-                    )}
-                  </div>
-
                   {/* ── Group: Growth Rate ── */}
                   <div>
                     <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#fafafa] transition-colors" onClick={() => setSbGrowth(v => !v)}>
@@ -3199,10 +2922,8 @@ export default function LongTermForecastingDemand() {
               <div className="rounded-lg border border-[#ebebeb] bg-[#fafafa] mt-6 px-4 py-3">
                 <p className="text-[10px] font-semibold flex items-center gap-2 uppercase text-[#4d4d4d] mb-3"><LineChartIcon className="size-4" />Demand Notes</p>
                 <div className="space-y-3">
-                  <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Staffing Logic</p><p className="text-xs text-[#4d4d4d] leading-relaxed">Voice uses Erlang C, chat uses modified Erlang C with concurrency, and email uses a backlog-clearing model. Service-level targets drive the staffing requirement; occupancy is reported as an output, not an input.</p></div>
-                  <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Blended Pools</p><p className="text-xs text-[#4d4d4d] leading-relaxed">Voice establishes the staffed base. Remaining idle capacity is then reused for chat first and email second before any additional blended staffing is added.</p></div>
-                  <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Open-Hours Effect</p><p className="text-xs text-[#4d4d4d] leading-relaxed">Monthly open hours determine how much productive staffed-seat time is available and therefore the gross FTE after shrinkage.</p></div>
                   <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Seasonality View</p><p className="text-xs text-[#4d4d4d] leading-relaxed">The seasonality chart indexes each forecast month against the average monthly forecast volume.</p></div>
+                  <div><p className="text-[10px] text-[#4d4d4d] uppercase font-medium tracking-[0.05em] mb-0.5">Growth Rate</p><p className="text-xs text-[#4d4d4d] leading-relaxed">Applied as a post-forecast volume multiplier. Negative values model decline scenarios.</p></div>
                 </div>
               </div>
             </div>
