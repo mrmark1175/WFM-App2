@@ -58,8 +58,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
   const pathnames = location.pathname.split("/").filter(Boolean);
 
   return (
-    <div className="min-h-screen bg-[#0d0d1a]">
-    <div className="max-w-[1600px] mx-auto min-h-screen bg-canvas text-ink shadow-[0_0_60px_rgba(0,0,0,0.35)]">
+    <div className="min-h-screen bg-canvas text-ink">
       <Toaster richColors position="top-right" />
 
       {/* ── Topbar (44px, near-black) ── */}
@@ -127,7 +126,6 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           {children}
         </main>
       </div>
-    </div>
     </div>
   );
 }
