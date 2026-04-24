@@ -628,6 +628,9 @@ async function ensureAppTables() {
   await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS shift_length_hours NUMERIC NOT NULL DEFAULT 9`);
   await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS team_name VARCHAR(255)`);
   await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS team_lead_id INTEGER`);
+  await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS first_name VARCHAR(255)`);
+  await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS last_name VARCHAR(255)`);
+  await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS team_leader_name VARCHAR(255)`);
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'draft'`);
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS generation_run_id INTEGER REFERENCES schedule_generation_runs(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS absence_type VARCHAR(100) NULL`);
@@ -1767,36 +1770,38 @@ app.put('/api/lob-settings', async (req, res) => {
 app.get('/api/scheduling/agents', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT * FROM scheduling_agents WHERE organization_id = 1 ORDER BY full_name ASC'
+      'SELECT * FROM scheduling_agents WHERE organization_id = 1 ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST, full_name ASC'
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/scheduling/agents', async (req, res) => {
-  const { employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id } = req.body;
+  const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name } = req.body;
+  const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
   try {
     const { rows } = await pool.query(
       `INSERT INTO scheduling_agents
-         (organization_id, employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id)
-       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [employee_id||null, full_name, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null]
+         (organization_id, employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name)
+       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null]
     );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/scheduling/agents/:id', async (req, res) => {
-  const { employee_id, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id } = req.body;
+  const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name } = req.body;
+  const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
   try {
     const { rows } = await pool.query(
       `UPDATE scheduling_agents SET
-         employee_id=$1, full_name=$2, email=$3, contract_type=$4,
-         skill_voice=$5, skill_chat=$6, skill_email=$7,
-         lob_assignments=$8, accommodation_flags=$9, availability=$10,
-         status=$11, shift_length_hours=$12, team_name=$13, team_lead_id=$14, updated_at=NOW()
-       WHERE id=$15 AND organization_id=1 RETURNING *`,
-      [employee_id||null, full_name, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, req.params.id]
+         employee_id=$1, first_name=$2, last_name=$3, full_name=$4, email=$5, contract_type=$6,
+         skill_voice=$7, skill_chat=$8, skill_email=$9,
+         lob_assignments=$10, accommodation_flags=$11, availability=$12,
+         status=$13, shift_length_hours=$14, team_name=$15, team_lead_id=$16, team_leader_name=$17, updated_at=NOW()
+       WHERE id=$18 AND organization_id=1 RETURNING *`,
+      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Agent not found' });
     res.json(rows[0]);

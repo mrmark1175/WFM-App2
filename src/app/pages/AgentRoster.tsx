@@ -19,6 +19,8 @@ import { useLOB } from "../lib/lobContext";
 interface Agent {
   id: number;
   employee_id: string | null;
+  first_name: string | null;
+  last_name: string | null;
   full_name: string;
   email: string | null;
   contract_type: string;
@@ -32,6 +34,7 @@ interface Agent {
   shift_length_hours?: number;
   team_name?: string | null;
   team_lead_id?: number | null;
+  team_leader_name?: string | null;
 }
 
 const CONTRACT_TYPES = [
@@ -66,7 +69,7 @@ const DEFAULT_AVAILABILITY = Object.fromEntries(
 );
 
 const EMPTY_FORM: Omit<Agent, "id"> = {
-  employee_id: "", full_name: "", email: "",
+  employee_id: "", first_name: "", last_name: "", full_name: "", email: "",
   contract_type: "full_time",
   skill_voice: true, skill_chat: false, skill_email: false,
   lob_assignments: [], accommodation_flags: [],
@@ -75,6 +78,7 @@ const EMPTY_FORM: Omit<Agent, "id"> = {
   shift_length_hours: 9,
   team_name: "",
   team_lead_id: null,
+  team_leader_name: "",
 };
 
 const REST_DAY_OPTIONS = [
@@ -125,7 +129,14 @@ export function AgentRoster() {
   useEffect(() => { load(); }, []);
 
   const filtered = useMemo(() => agents.filter((a) => {
-    if (search && !a.full_name.toLowerCase().includes(search.toLowerCase()) && !(a.employee_id?.toLowerCase().includes(search.toLowerCase()))) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const nameMatch = a.full_name.toLowerCase().includes(q)
+        || (a.first_name?.toLowerCase().includes(q))
+        || (a.last_name?.toLowerCase().includes(q))
+        || (a.employee_id?.toLowerCase().includes(q));
+      if (!nameMatch) return false;
+    }
     if (filterSkill === "voice" && !a.skill_voice) return false;
     if (filterSkill === "chat" && !a.skill_chat) return false;
     if (filterSkill === "email" && !a.skill_email) return false;
@@ -140,22 +151,27 @@ export function AgentRoster() {
     setForm({
       ...a,
       employee_id: a.employee_id ?? "",
+      first_name: a.first_name ?? "",
+      last_name: a.last_name ?? "",
       email: a.email ?? "",
       availability: { ...DEFAULT_AVAILABILITY, ...a.availability },
       shift_length_hours: a.shift_length_hours ?? 9,
       team_name: a.team_name ?? "",
       team_lead_id: a.team_lead_id ?? null,
+      team_leader_name: a.team_leader_name ?? "",
     });
     setDialogOpen(true);
   };
 
   const handleSave = async () => {
-    if (!form.full_name.trim()) { toast.error("Full name is required"); return; }
+    if (!form.first_name?.trim()) { toast.error("First name is required"); return; }
+    if (!form.last_name?.trim()) { toast.error("Last name is required"); return; }
+    const payload = { ...form, full_name: `${form.first_name?.trim()} ${form.last_name?.trim()}` };
     setSaving(true);
     try {
       const url = editingAgent ? apiUrl(`/api/scheduling/agents/${editingAgent.id}`) : apiUrl("/api/scheduling/agents");
       const method = editingAgent ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+      const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error((await res.json()).error);
       toast.success(editingAgent ? "Agent updated" : "Agent added");
       setDialogOpen(false);
@@ -262,7 +278,10 @@ export function AgentRoster() {
             <Table>
               <TableHeader className="bg-muted/40">
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-foreground/70">Agent</TableHead>
+                  <TableHead className="pl-6 text-xs font-semibold uppercase tracking-wide text-foreground/70">First Name</TableHead>
+                  <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Last Name</TableHead>
+                  <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">LOB</TableHead>
+                  <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Team Leader</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Contract</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Skills</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Accommodations</TableHead>
@@ -273,23 +292,42 @@ export function AgentRoster() {
               </TableHeader>
               <TableBody>
                 {loading ? (
-                  <TableRow><TableCell colSpan={7} className="text-center py-12"><Loader2 className="size-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
+                  <TableRow><TableCell colSpan={10} className="text-center py-12"><Loader2 className="size-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
                 ) : filtered.length === 0 ? (
-                  <TableRow><TableCell colSpan={7} className="text-center py-12">
+                  <TableRow><TableCell colSpan={10} className="text-center py-12">
                     <div className="flex flex-col items-center gap-2">
                       <Users className="size-10 text-muted-foreground/30" />
                       <p className="text-sm text-muted-foreground">{agents.length === 0 ? "No agents yet. Click Add Agent to get started." : "No agents match the current filters."}</p>
                     </div>
                   </TableCell></TableRow>
                 ) : filtered.map((a) => {
-                  const availDays = Object.entries(a.availability || {}).filter(([, v]) => v.available).length;
+                  const availDays = Object.entries(a.availability || {}).filter(([k, v]) => k !== "fixed_rest_days" && (v as { available?: boolean }).available).length;
+                  const agentLobs = lobs.filter((l) => a.lob_assignments?.includes(l.id));
                   return (
                     <TableRow key={a.id} className="hover:bg-muted/30">
                       <TableCell className="pl-6">
                         <div>
-                          <p className="font-bold text-sm">{a.full_name}</p>
-                          <p className="text-xs text-muted-foreground">{a.employee_id || "—"} {a.email ? `· ${a.email}` : ""}</p>
+                          <p className="font-bold text-sm">{a.first_name || a.full_name}</p>
+                          <p className="text-xs text-muted-foreground">{a.employee_id || "—"}</p>
                         </div>
+                      </TableCell>
+                      <TableCell>
+                        <div>
+                          <p className="font-bold text-sm">{a.last_name || ""}</p>
+                          {a.email && <p className="text-xs text-muted-foreground">{a.email}</p>}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {agentLobs.length > 0
+                            ? agentLobs.map((l) => <Badge key={l.id} variant="outline" className="text-[10px] px-1.5">{l.lob_name}</Badge>)
+                            : <span className="text-xs text-muted-foreground">—</span>}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {a.team_leader_name
+                          ? <span className="text-sm">{a.team_leader_name}</span>
+                          : <span className="text-xs text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell><Badge variant="outline" className="text-xs">{contractLabel(a.contract_type)}</Badge></TableCell>
                       <TableCell>
@@ -330,8 +368,12 @@ export function AgentRoster() {
               {/* Basic info */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold">Full Name *</Label>
-                  <Input value={form.full_name} onChange={(e) => setForm((p) => ({ ...p, full_name: e.target.value }))} placeholder="Maria Santos" />
+                  <Label className="text-xs font-semibold">First Name *</Label>
+                  <Input value={form.first_name ?? ""} onChange={(e) => setForm((p) => ({ ...p, first_name: e.target.value }))} placeholder="Maria" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">Last Name *</Label>
+                  <Input value={form.last_name ?? ""} onChange={(e) => setForm((p) => ({ ...p, last_name: e.target.value }))} placeholder="Santos" />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">Employee ID</Label>
@@ -340,6 +382,10 @@ export function AgentRoster() {
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">Email</Label>
                   <Input type="email" value={form.email ?? ""} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} placeholder="maria@company.com" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">Team Leader</Label>
+                  <Input value={form.team_leader_name ?? ""} onChange={(e) => setForm((p) => ({ ...p, team_leader_name: e.target.value }))} placeholder="e.g., Juan Dela Cruz" />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">Contract Type</Label>
