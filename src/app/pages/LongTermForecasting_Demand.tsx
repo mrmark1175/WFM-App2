@@ -2246,8 +2246,7 @@ export default function LongTermForecastingDemand() {
           <section className="rounded-xl border border-slate-200 bg-white px-6 py-4 shadow-sm">
             {/* Header row */}
             <div className="flex items-baseline gap-3 flex-wrap mb-4">
-              <p className="text-[10px] uppercase tracking-[0.4em] text-slate-400 font-semibold shrink-0">Long Term Forecasting</p>
-              <h1 className="font-bold text-xl md:text-2xl text-slate-800 leading-tight">Multi-Channel Demand & Capacity Planning</h1>
+              <h1 className="font-bold text-xl md:text-2xl text-slate-800 leading-tight">Long Term Forecasting</h1>
             </div>
             {/* KPI tiles */}
             <div className="grid gap-3 md:grid-cols-3">
