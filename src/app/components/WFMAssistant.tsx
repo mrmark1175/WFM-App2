@@ -109,13 +109,22 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
     const assistantMsg: Message = { role: "assistant", content: "" };
     setMessages(prev => [...prev, assistantMsg]);
 
+    // Inject page data only on the first message — once it's in conversation
+    // history the AI retains it without re-sending on every subsequent turn.
+    const isFirstMessage = messages.length === 0;
+    let apiMessages: Message[] = nextMessages;
+    if (isFirstMessage && pageData) {
+      const prefix = `[Live page data — ${pageLabel}]\n${JSON.stringify(pageData, null, 2)}\n\n---\n`;
+      apiMessages = [{ role: "user", content: prefix + text.trim() }];
+    }
+
     try {
       const resp = await fetch(apiUrl("/api/ai/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: nextMessages,
-          pageContext: { page: pageLabel, path: location.pathname, data: pageData ?? undefined },
+          messages: apiMessages,
+          pageContext: { page: pageLabel, path: location.pathname },
         }),
       });
 

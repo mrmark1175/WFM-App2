@@ -3,6 +3,7 @@ import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
 import { getCalculatedVolumes, Assumptions } from "./forecasting-logic";
 import { computeIntervalFTE, computeAchievedSLFromFTE } from "./intraday-distribution-logic";
+import { useWFMPageData } from "../lib/WFMPageDataContext";
 import { PageLayout } from "../components/PageLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -1256,6 +1257,40 @@ export function CapacityPlanning() {
 
   // Pixel offsets for frozen thead rows — each row is ~33px tall, week-date header ~40px.
   const billableActive = config.billableFte > 0;
+
+  const { setPageData } = useWFMPageData();
+  useEffect(() => {
+    setPageData({
+      channel: activeChannel,
+      planStartDate: config.planStartDate,
+      horizonWeeks: config.horizonWeeks,
+      shrinkagePct,
+      hoursPerDay,
+      assumptions: demandAssumptions ? {
+        aht: demandAssumptions.aht,
+        chatAht: demandAssumptions.chatAht,
+        emailAht: demandAssumptions.emailAht,
+        chatConcurrency: demandAssumptions.chatConcurrency,
+        voiceSlaTarget: demandAssumptions.voiceSlaTarget,
+        voiceSlaAnswerSeconds: demandAssumptions.voiceSlaAnswerSeconds,
+        chatSlaTarget: demandAssumptions.chatSlaTarget,
+        emailSlaTarget: demandAssumptions.emailSlaTarget,
+        occupancy: demandAssumptions.occupancy,
+        operatingHoursPerDay: demandAssumptions.operatingHoursPerDay,
+        operatingDaysPerWeek: demandAssumptions.operatingDaysPerWeek,
+      } : null,
+      hiringNeed,
+      attritionSummary,
+      weekSummary: weekCalcs.slice(0, 12).map((w) => ({
+        label: w.weekLabel,
+        requiredFTE: w.requiredFTE,
+        projectedHC: w.modelProjHC,
+        gap: w.gapSurplus,
+      })),
+    });
+    return () => setPageData(null);
+  }, [activeChannel, config, shrinkagePct, hoursPerDay, demandAssumptions, hiringNeed, attritionSummary, weekCalcs, setPageData]);
+
   const TOP_WEEK_HDR  = 0;
   const TOP_REQ_FTE   = 40;
   const TOP_BILLABLE  = 73;

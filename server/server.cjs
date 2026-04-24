@@ -2625,11 +2625,7 @@ app.post('/api/ai/chat', async (req, res) => {
 
   let systemPrompt = WFM_SYSTEM_PROMPT;
   if (pageContext) {
-    const { data, ...meta } = pageContext;
-    systemPrompt += `\n\nCurrent page: ${JSON.stringify(meta)}`;
-    if (data) {
-      systemPrompt += `\n\nLive page data (use this to answer questions — do not ask the user to re-enter it):\n${JSON.stringify(data, null, 2)}`;
-    }
+    systemPrompt += `\n\nCurrent page: ${pageContext.page} (${pageContext.path})\nIf the user's first message contains a [Live page data] block, use those numbers directly — never ask the user to re-enter data you already have.`;
   }
 
   // Set up SSE streaming

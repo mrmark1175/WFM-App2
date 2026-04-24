@@ -4,6 +4,7 @@ import { BarChart2, Download, Edit2, Eye, EyeOff, RotateCcw, Save, Trash2, Uploa
 import { toast } from "sonner";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
+import { useWFMPageData } from "../lib/WFMPageDataContext";
 import { usePagePreferences } from "../lib/usePagePreferences";
 import { PageLayout } from "../components/PageLayout";
 import { getCalculatedVolumes, Assumptions } from "./forecasting-logic";
@@ -1050,6 +1051,37 @@ export const IntradayForecast = () => {
     if (grain === 30) return aggregateTo30Min(w);
     return w;
   }, [distributionWeights.intervalWeights, grain]);
+
+  const { setPageData } = useWFMPageData();
+  useEffect(() => {
+    const a = plannerSnapshot?.assumptions;
+    setPageData({
+      channel: selectedChannel,
+      targetMonthlyVolume,
+      forecastedWeekVolume,
+      grain,
+      assumptions: a ? {
+        aht: a.aht,
+        chatAht: a.chatAht,
+        emailAht: a.emailAht,
+        chatConcurrency: a.chatConcurrency,
+        voiceSlaTarget: a.voiceSlaTarget,
+        voiceSlaAnswerSeconds: a.voiceSlaAnswerSeconds,
+        chatSlaTarget: a.chatSlaTarget,
+        emailSlaTarget: a.emailSlaTarget,
+        shrinkage: a.shrinkage,
+        operatingHoursPerDay: a.operatingHoursPerDay,
+      } : null,
+      fteSummary: smoothedFteTable
+        ? smoothedFteTable.map((daySlots, d) => ({
+            day: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][d],
+            peakFTE: Math.max(...daySlots.map(s => s.fte)),
+            avgFTE: daySlots.length ? Number((daySlots.reduce((s, r) => s + r.fte, 0) / daySlots.length).toFixed(1)) : 0,
+          }))
+        : null,
+    });
+    return () => setPageData(null);
+  }, [selectedChannel, targetMonthlyVolume, forecastedWeekVolume, grain, plannerSnapshot, smoothedFteTable, setPageData]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 

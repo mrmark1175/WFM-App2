@@ -8,6 +8,7 @@ import { Badge } from "../components/ui/badge";
 import { Plus, Trash2, Cloud, CloudOff, Loader2 } from "lucide-react";
 import { useLOB } from "../lib/lobContext";
 import { apiUrl } from "../lib/api";
+import { useWFMPageData } from "../lib/WFMPageDataContext";
 
 // Types
 type ShrinkageFrequency = "per_day" | "per_week" | "per_month" | "per_year";
@@ -285,6 +286,22 @@ export function ShrinkagePlanning() {
   useEffect(() => {
     localStorage.setItem(`wfm_shrinkage_totals${lobKey}`, JSON.stringify({ totalExcl: totalExclHolidays, totalIncl: totalInclHolidays, lastUpdated: new Date().toISOString() }));
   }, [totalExclHolidays, totalInclHolidays, lobKey]);
+
+  const { setPageData } = useWFMPageData();
+  useEffect(() => {
+    setPageData({
+      hoursPerDay,
+      daysPerWeek,
+      totalShrinkageExclHolidays: totalExclHolidays,
+      totalShrinkageInclHolidays: totalInclHolidays,
+      netFte: netFte || null,
+      grossFteExclHolidays: grossFteExcl,
+      grossFteInclHolidays: grossFteIncl,
+      absenceItems: absenceItems.filter(i => i.enabled).map(i => ({ label: i.label, contributionPct: itemContribution(i, hoursPerDay, daysPerWeek) })),
+      activityItems: activityItems.filter(i => i.enabled).map(i => ({ label: i.label, contributionPct: itemContribution(i, hoursPerDay, daysPerWeek) })),
+    });
+    return () => setPageData(null);
+  }, [hoursPerDay, daysPerWeek, totalExclHolidays, totalInclHolidays, netFte, grossFteExcl, grossFteIncl, absenceItems, activityItems, setPageData]);
 
   // ── UI ──────────────────────────────────────────────────────────────────────
 
