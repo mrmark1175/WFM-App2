@@ -18,9 +18,9 @@ const PROVIDERS = [
     { value: "gpt-4o", label: "GPT-4o — smarter, slower" },
   ]},
   { value: "gemini", label: "Google Gemini", models: [
-    { value: "gemini-1.5-flash", label: "Gemini 1.5 Flash — free tier friendly (recommended)" },
-    { value: "gemini-1.5-flash-8b", label: "Gemini 1.5 Flash 8B — lightest, most free quota" },
-    { value: "gemini-1.5-pro", label: "Gemini 1.5 Pro — smarter, lower free quota" },
+    { value: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite — lightest, most free quota (recommended)" },
+    { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash — smarter, good free quota" },
+    { value: "gemini-1.5-flash", label: "Gemini 1.5 Flash — legacy" },
   ]},
   { value: "groq", label: "Groq (Llama)", models: [
     { value: "llama-3.1-70b-versatile", label: "Llama 3.1 70B — fastest inference (recommended)" },

@@ -2555,7 +2555,7 @@ app.post('/api/ai-settings/test', async (req, res) => {
     } else if (provider === 'gemini') {
       // Always test with the known-good free-tier model regardless of what's selected,
       // so a bad saved model can't block the key validation
-      const testModel = 'gemini-1.5-flash';
+      const testModel = 'gemini-2.0-flash-lite';
       const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${api_key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
