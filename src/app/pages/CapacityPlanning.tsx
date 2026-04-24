@@ -228,6 +228,68 @@ function calcWeeklyErlangFTE(
   return { fte: roundTo(result.fte * coverageRatio), occupancy: result.occupancy };
 }
 
+// Blended staffing: voice Erlang C sets the base; idle voice capacity absorbs chat
+// (concurrency-adjusted) then email/cases. Only the overflow workload requires extra agents.
+// This matches calculateBlendedTriChannelRequirement in the demand planner.
+function calcWeeklyBlendedFTE(
+  voiceVol: number, voiceAht: number,
+  chatVol: number, chatAht: number,
+  emailVol: number, emailAht: number, // email + cases combined
+  daysPerWeek: number,
+  operatingHoursPerDay: number,
+  fteHoursPerDay: number,
+  slaVoiceTarget: number,
+  slaVoiceSec: number,
+  shrinkagePct: number,
+  chatConcurrency: number,
+  voiceAvgPatienceSec = 0,
+): { fte: number; occupancy: number } {
+  if (daysPerWeek <= 0 || operatingHoursPerDay <= 0) return { fte: 0, occupancy: 0 };
+
+  const intervalsPerDay = operatingHoursPerDay * 2; // 30-min intervals
+  const intervalHours = 0.5;
+  const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
+  const safeConcurrency = Math.max(1, chatConcurrency);
+
+  const voiceCPI = voiceVol > 0 ? (voiceVol / daysPerWeek) / intervalsPerDay : 0;
+  const chatCPI = chatVol > 0 ? (chatVol / daysPerWeek) / intervalsPerDay : 0;
+  const emailCPI = emailVol > 0 ? (emailVol / daysPerWeek) / intervalsPerDay : 0;
+
+  // Voice: Erlang C/A — rawAgents (pre-shrinkage) needed to meet SLA
+  let voiceRawAgents = 0;
+  let voiceOccupancy = 0;
+  if (voiceCPI > 0 && voiceAht > 0) {
+    const vr = computeIntervalFTE(voiceCPI, 30, voiceAht, slaVoiceTarget, slaVoiceSec, 85, 0, "voice", 1, voiceAvgPatienceSec);
+    voiceRawAgents = vr.rawAgents;
+    voiceOccupancy = vr.occupancy;
+  }
+
+  // Idle capacity available after serving voice
+  const voiceWorkloadHours = voiceCPI * voiceAht / 3600;
+  const voiceIdleHours = Math.max(0, voiceRawAgents * intervalHours - voiceWorkloadHours);
+
+  // Chat absorbs idle (concurrency lets each agent handle multiple sessions)
+  const rawChatWorkloadHours = chatCPI * chatAht / 3600;
+  const concurrentChatWorkload = rawChatWorkloadHours / safeConcurrency;
+  const netChatWorkload = Math.max(0, concurrentChatWorkload - voiceIdleHours);
+  const remainingIdle = Math.max(0, voiceIdleHours - concurrentChatWorkload);
+
+  // Email/async absorbs remaining idle
+  const emailWorkloadHours = emailCPI * emailAht / 3600;
+  const netEmailWorkload = Math.max(0, emailWorkloadHours - remainingIdle);
+
+  // Extra agents needed for overflow only
+  const chatExtraAgents = intervalHours > 0 ? netChatWorkload / intervalHours : 0;
+  const emailExtraAgents = intervalHours > 0 ? netEmailWorkload / intervalHours : 0;
+
+  const totalBaseAgents = voiceRawAgents + chatExtraAgents + emailExtraAgents;
+  const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
+  return {
+    fte: roundTo((totalBaseAgents / shrinkFactor) * coverageRatio),
+    occupancy: voiceOccupancy,
+  };
+}
+
 function calcRampPct(ageWeeks: number, trainWks: number, nestWks: number, nestPct: number): number {
   if (ageWeeks < trainWks) return 0;
   if (ageWeeks < trainWks + nestWks) return nestPct / 100;
@@ -852,26 +914,21 @@ export function CapacityPlanning() {
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
       } else {
-        // Blended: sum Erlang FTE per enabled channel (each channel staffed to its own SLA)
-        const rVoice = enabledChannels.includes("voice")
-          ? calcWeeklyErlangFTE(effVolVoice, effAhtVoice, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceTarget, slaVoiceSec, shrinkagePct, "voice")
-          : { fte: 0, occupancy: 0 };
-        const rChat = enabledChannels.includes("chat")
-          ? calcWeeklyErlangFTE(effVolChat, effAhtChat, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatTarget, slaChatSec, shrinkagePct, "chat", chatConcurrency)
-          : { fte: 0, occupancy: 0 };
-        const rEmail = enabledChannels.includes("email")
-          ? calcWeeklyErlangFTE(effVolEmail, effAhtEmail, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaEmailTarget, slaEmailSec, shrinkagePct, "email", 1, emailOccupancy)
-          : { fte: 0, occupancy: 0 };
-        // cases uses email (backlog/deferred) staffing model
-        const rCases = enabledChannels.includes("cases")
-          ? calcWeeklyErlangFTE(effVolCases, effAhtCases, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaEmailTarget, slaEmailSec, shrinkagePct, "email", 1, emailOccupancy)
-          : { fte: 0, occupancy: 0 };
-        requiredFTE = roundTo(rVoice.fte + rChat.fte + rEmail.fte + rCases.fte);
-        // Blended occupancy: weighted average by volume
-        const totalVol = effVolVoice + effVolChat + effVolEmail + effVolCases;
-        erlangOccupancy = totalVol > 0
-          ? (rVoice.occupancy * effVolVoice + rChat.occupancy * effVolChat + rEmail.occupancy * effVolEmail + rCases.occupancy * effVolCases) / totalVol
-          : 0;
+        // Blended: voice Erlang C sets the base; idle capacity absorbs chat then email/cases.
+        // Summing independent Erlang results per channel would over-staff by treating a
+        // blended pool as three separate dedicated pools.
+        const blendedEmailVol = (enabledChannels.includes("email") ? effVolEmail : 0)
+          + (enabledChannels.includes("cases") ? effVolCases : 0);
+        const blendedEmailAht = effAhtEmail; // email AHT for all async channels
+        const r = calcWeeklyBlendedFTE(
+          enabledChannels.includes("voice") ? effVolVoice : 0, effAhtVoice,
+          enabledChannels.includes("chat") ? effVolChat : 0, effAhtChat,
+          blendedEmailVol, blendedEmailAht,
+          daysPerWeek, operatingHoursPerDay, hoursPerDay,
+          slaVoiceTarget, slaVoiceSec, shrinkagePct, chatConcurrency, voiceAvgPatienceSec,
+        );
+        requiredFTE = r.fte;
+        erlangOccupancy = r.occupancy;
       }
 
       // Attrition decay
@@ -953,7 +1010,7 @@ export function CapacityPlanning() {
   }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay,
       shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
-      emailOccupancy, chatConcurrency]);
+      emailOccupancy, chatConcurrency, voiceAvgPatienceSec, chatAvgPatienceSec]);
 
   // ── Attrition summary
   const attritionSummary = useMemo(() => {
