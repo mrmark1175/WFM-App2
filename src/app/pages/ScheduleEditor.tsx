@@ -512,7 +512,7 @@ export function ScheduleEditor() {
   const [activeDayIdx, setActiveDayIdx] = useState(0);
   const [agentQuery, setAgentQuery] = useState("");
   const [skillFilter, setSkillFilter] = useState<"all" | "voice" | "chat" | "email">("all");
-  const [sortBy, setSortBy] = useState<"name" | "start" | null>(null);
+  const [sortBy, setSortBy] = useState<"name" | "start" | null>("start");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const [agents, setAgents]           = useState<Agent[]>([]);
