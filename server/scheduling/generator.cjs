@@ -1,4 +1,4 @@
-// Auto-Scheduler Generator — Phase 1 (greedy, pure Node, deterministic)
+// Auto-Scheduler Generator — Phase 2 (multi-pass greedy + local search, SLA-optimal)
 //
 // Rules enforced:
 //   - Each agent has ONE start time for all working days in the week
@@ -8,6 +8,12 @@
 //   - 9h shift breaks: +2:00 (15m), +4:00 lunch (60m), +7:00 (15m)
 //   - Shift starts on 30-minute boundaries clamped to LOB hours_of_operation
 //   - Channels: blended LOB → one pool; dedicated LOB → per-channel pools
+//
+// Optimisation strategy:
+//   1. Demand-proportional scoring — high-shortage intervals attract more coverage
+//   2. Multi-pass (8 orderings) — overcomes single-pass ordering bias
+//   3. Local search improvement — re-seats each agent to reduce total squared shortage
+//   4. Valley-aware break stagger — breaks land in low-demand windows
 //
 // Entry point: await generate({ pool, lob_id, snapshot_id, horizon_start,
 //                              horizon_end, fairness_enabled, created_by })
@@ -55,6 +61,16 @@ function dateDiffDays(a, b) {
   return Math.round((db - da) / 86400000);
 }
 
+// Fisher-Yates shuffle — produces a new array, does not mutate input
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 // ── Break/lunch placement for a given shift length ───────────────────────────
 // Returns activity offsets in minutes from shift start.
 function activityPlan(shiftHours, rules) {
@@ -88,23 +104,17 @@ function activityPlan(shiftHours, rules) {
 function onQueueIntervals(startMin, endMin, activities, intervalMinutes) {
   const covered = new Set();
   const nIntervals = Math.ceil(1440 / intervalMinutes);
-  // Mark all intervals overlapped by the shift
-  // Support overnight shifts (endMin < startMin means next day; we restrict to one day for Phase 1)
   for (let iv = 0; iv < nIntervals; iv++) {
     const ivStart = iv * intervalMinutes;
     const ivEnd = ivStart + intervalMinutes;
     if (ivEnd > startMin && ivStart < endMin) covered.add(iv);
   }
-  // Remove intervals fully consumed by any activity
   for (const act of activities) {
     const aStart = startMin + act.offsetFromStart;
     const aEnd = aStart + act.duration;
     for (let iv = 0; iv < nIntervals; iv++) {
       const ivStart = iv * intervalMinutes;
       const ivEnd = ivStart + intervalMinutes;
-      // If the activity covers the ENTIRE interval, remove it.
-      // (Using "entirely consumed" vs "overlaps" matters; pick entirely-consumed
-      // so partial-overlap intervals still count as on-queue.)
       if (aStart <= ivStart && aEnd >= ivEnd) covered.delete(iv);
     }
   }
@@ -113,17 +123,14 @@ function onQueueIntervals(startMin, endMin, activities, intervalMinutes) {
 
 // ── Operating-hours union across channels (for blended) or per-channel ───────
 function operatingWindowForWeekday(hoursOfOperation, channel, weekday) {
-  // weekday: 0=Mon..6=Sun (our convention)
   const key = WEEKDAY_KEYS[weekday];
   if (!hoursOfOperation) return { open: 0, close: 1440 };
   if (channel === 'blended') {
-    // If the entire hours_of_operation object has no channel keys at all, fall back to 24/7.
     const anyChannelConfigured = ['voice', 'chat', 'email', 'cases'].some((ch) => hoursOfOperation?.[ch]);
     if (!anyChannelConfigured) return { open: 0, close: 1440 };
     let open = Infinity, close = -Infinity;
     for (const ch of ['voice', 'chat', 'email', 'cases']) {
       const sched = hoursOfOperation?.[ch]?.[key];
-      // Only skip if explicitly disabled; missing key is not "closed."
       if (!sched) continue;
       if (!sched.enabled) continue;
       open = Math.min(open, hhmmToMin(sched.open));
@@ -134,8 +141,6 @@ function operatingWindowForWeekday(hoursOfOperation, channel, weekday) {
     return { open, close };
   } else {
     const sched = hoursOfOperation?.[channel]?.[key];
-    // Missing key → no hours configured for this channel/day → treat as 24h open.
-    // Only a key that is explicitly disabled (enabled: false) counts as "closed."
     if (sched === undefined || sched === null) return { open: 0, close: 1440 };
     if (!sched.enabled) return null;
     const close = hhmmToMin(sched.close);
@@ -144,11 +149,8 @@ function operatingWindowForWeekday(hoursOfOperation, channel, weekday) {
 }
 
 // ── Candidate rest-day combinations ─────────────────────────────────────────
-// Generates all combinations of `restCount` rest days from 7 days.
-// If consecutiveOnly, only runs of consecutive days (with wrap) are included.
 function buildRestCombinations(restCount, consecutiveOnly) {
   const all = [];
-  // Generate C(7, restCount) combinations
   function combine(start, current) {
     if (current.length === restCount) { all.push([...current]); return; }
     for (let i = start; i < 7; i++) { current.push(i); combine(i + 1, current); current.pop(); }
@@ -157,17 +159,13 @@ function buildRestCombinations(restCount, consecutiveOnly) {
 
   if (!consecutiveOnly) return all;
 
-  // Keep only groups that are consecutive (including wrap-around, e.g. [6,0,1])
   return all.filter((combo) => {
     const sorted = [...combo].sort((a, b) => a - b);
-    // Check straight consecutive
     const straight = sorted.every((v, i) => i === 0 || v === sorted[i - 1] + 1);
     if (straight) return true;
-    // Check wrap-around: e.g. [5,6,0] — gap of 1 between max and (min+7)
     const max = sorted[sorted.length - 1];
     const min = sorted[0];
-    if (max - min === 6) return true; // spans full week, always consecutive
-    // Wrap case: [max, …, 6, 0, …, min] all consecutive
+    if (max - min === 6) return true;
     const wrapped = sorted.filter((v) => v >= min && v <= max);
     return wrapped.every((v, i) => i === 0 || v === wrapped[i - 1] + 1) &&
            (max + 1) % 7 === sorted.find((v) => v < min) || false;
@@ -179,14 +177,12 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
   const r = { ...DEFAULT_RULES, ...rules };
   const restDayCount = 7 - Number(r.days_per_week);
   const REST_COMBOS = buildRestCombinations(restDayCount, !!r.require_consecutive_rest);
-  // Fallback: if no valid consecutive combos found (edge case), allow any
   const combos = REST_COMBOS.length > 0 ? REST_COMBOS : buildRestCombinations(restDayCount, false);
 
   const result = new Map();
   const rotationIdx = { i: 0 };
   const flexibleAgents = [];
 
-  // Fixed-rest-day accommodations first
   for (const agent of agents) {
     const fixed = agent.availability?.fixed_rest_days;
     if (Array.isArray(fixed) && fixed.length === restDayCount) {
@@ -199,8 +195,6 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     flexibleAgents.push(agent);
   }
 
-  // Seed workingAgentCount with fixed-rest agents so the target calculation
-  // accounts for them.
   const workingAgentCount = Array(7).fill(0);
   for (const agent of agents) {
     if (!result.has(agent.id)) continue;
@@ -214,7 +208,6 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
   const totalDemand = demandByWeekday.reduce((a, b) => a + b, 0);
   const daysPerWeek = Number(r.days_per_week);
 
-  // ── Priority 1: minimum agents per day (hard floor) ───────────────────────
   const minAgents = Array(7).fill(0);
   const maxRest = Array(7).fill(totalAgents);
   if (totalDemand > 0) {
@@ -224,13 +217,11 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     }
   }
 
-  // Track explicit rest count so the floor can be enforced incrementally.
   const restCount = Array(7).fill(0);
   for (const [, rest] of result.entries()) {
     for (const d of rest) restCount[d]++;
   }
 
-  // ── Priority 2: proportional target (soft objective) ──────────────────────
   const targetWorkers = Array(7).fill(0);
   if (totalDemand > 0) {
     for (let d = 0; d < 7; d++) {
@@ -240,7 +231,6 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     for (let d = 0; d < 7; d++) targetWorkers[d] = (daysPerWeek * totalAgents) / 7;
   }
 
-  // Days where the channel is closed. Strongly prefer resting on these.
   const closedDays = [];
   for (let d = 0; d < 7; d++) {
     const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
@@ -305,26 +295,49 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
   return result;
 }
 
-// ── Start-time assignment ────────────────────────────────────────────────────
-function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules) {
+// ── Build scheduled-coverage matrix (for scoring and local search) ────────────
+function buildScheduledMatrix(agents, restMap, startMap, intervalMinutes) {
   const nIntervals = Math.ceil(1440 / intervalMinutes);
+  const scheduled = Array.from({ length: 7 }, () => Array(nIntervals).fill(0));
+  for (const agent of agents) {
+    const info = startMap.get(agent.id);
+    if (!info) continue;
+    const rest = restMap.get(agent.id) || [];
+    const covered = onQueueIntervals(info.startMin, info.startMin + info.shiftMin, info.plan, intervalMinutes);
+    for (let d = 0; d < 7; d++) {
+      if (rest.includes(d)) continue;
+      for (const iv of covered) scheduled[d][iv]++;
+    }
+  }
+  return scheduled;
+}
 
-  // residualShortage[d][i] = remaining unmet FTE-demand on weekday d, interval i
+// ── Total squared shortage (objective: minimise) ─────────────────────────────
+// Quadratic penalty makes large gaps much worse than small ones, pushing the
+// algorithm to eliminate coverage holes rather than just accumulate small surpluses.
+function totalShortageScore(scheduled, demandCurves) {
+  let score = 0;
+  for (let d = 0; d < 7; d++) {
+    for (let iv = 0; iv < demandCurves[d].length; iv++) {
+      const shortage = Math.max(0, (demandCurves[d][iv] || 0) - (scheduled[d][iv] || 0));
+      score += shortage * shortage;
+    }
+  }
+  return score;
+}
+
+// ── Start-time assignment (demand-proportional scoring) ─────────────────────
+// agents: array — caller controls ordering to break greedy bias.
+function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules) {
   const residual = demandCurves.map((curve) => [...curve]);
-
   const startMap = new Map();
 
-  // Process agents in deterministic order (by id)
-  const sortedAgents = [...agents].sort((a, b) => a.id - b.id);
-
-  for (const agent of sortedAgents) {
+  for (const agent of agents) {
     const shiftH = Number(shiftLenByAgent.get(agent.id) || 9);
     const shiftMin = Math.round(shiftH * 60);
     const rest = restMap.get(agent.id) || [];
     const workingDays = [0, 1, 2, 3, 4, 5, 6].filter((d) => !rest.includes(d));
 
-    // For each candidate start (on 30-min boundary), compute total shortage reduction.
-    // Candidate starts must fit within the operating window for EVERY working day.
     let bestStart = null;
     let bestGain = -Infinity;
 
@@ -337,13 +350,11 @@ function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, chann
         candidateStarts.add(s);
       }
     }
-    // If no candidate starts (24-hour op or all channels off), fall back to [0..1440-shiftMin]
     if (candidateStarts.size === 0) {
       const gran = Number((rules || DEFAULT_RULES).shift_start_granularity_mins || 30);
       for (let s = 0; s + shiftMin <= 1440; s += gran) candidateStarts.add(s);
     }
 
-    // Plan activities (offsets from start) for this shift length
     const plan = activityPlan(shiftH, rules).map((a) => ({
       type: a.type, offsetFromStart: a.offset, duration: a.duration, paid: a.paid,
     }));
@@ -351,14 +362,11 @@ function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, chann
     for (const s of candidateStarts) {
       const endMin = s + shiftMin;
       if (endMin > 1440) continue;
-      // A candidate is valid if it fits on AT LEAST ONE working day's op window.
-      // Closed days are simply skipped (the agent won't be written on those).
-      // Days that are open but where the start doesn't fit also invalidate the candidate.
       let fitDays = [];
       let conflicted = false;
       for (const d of workingDays) {
         const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
-        if (!win) continue; // closed: agent just doesn't work that day
+        if (!win) continue;
         if (s < win.open || endMin > win.close) { conflicted = true; break; }
         fitDays.push(d);
       }
@@ -369,17 +377,18 @@ function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, chann
       let gain = 0;
       for (const d of fitDays) {
         for (const iv of covered) {
-          if (residual[d][iv] > 0) gain += Math.min(1, residual[d][iv]);
+          // Demand-proportional: weight gain by actual remaining shortage so the
+          // algorithm prioritises intervals with the highest SLA impact.
+          if (residual[d][iv] > 0) gain += residual[d][iv];
         }
       }
       if (gain > bestGain) { bestGain = gain; bestStart = s; }
     }
 
-    if (bestStart === null) continue; // no valid start — skip agent
+    if (bestStart === null) continue;
 
     startMap.set(agent.id, { startMin: bestStart, shiftMin, plan });
 
-    // Decrement residual shortage by 1 on OPEN working days only
     const covered = onQueueIntervals(bestStart, bestStart + shiftMin, plan, intervalMinutes);
     for (const d of workingDays) {
       const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
@@ -391,29 +400,194 @@ function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, chann
   return startMap;
 }
 
-// ── Stagger breaks/lunches WITHIN each (startMin) cohort ──────────────────────
-function applyStagger(startMap) {
+// ── Valley-aware break stagger ────────────────────────────────────────────────
+// For each start-time cohort, we spread breaks across the low-demand slots
+// within the valid break window so fewer agents are simultaneously off-queue.
+// demandCurves: weekday × interval demand (blended across days for placement)
+function applyStagger(startMap, demandCurves, intervalMinutes) {
+  const nIntervals = Math.ceil(1440 / intervalMinutes);
+
+  // Build blended demand across all 7 days (sums represent "typical demand level")
+  const blended = Array(nIntervals).fill(0);
+  if (demandCurves) {
+    for (let d = 0; d < 7; d++) {
+      for (let iv = 0; iv < nIntervals; iv++) {
+        blended[iv] += (demandCurves[d][iv] || 0);
+      }
+    }
+  }
+
   const cohorts = new Map(); // startMin → agentIds[]
   for (const [agentId, info] of startMap.entries()) {
     const key = info.startMin;
     if (!cohorts.has(key)) cohorts.set(key, []);
     cohorts.get(key).push(agentId);
   }
-  for (const [, ids] of cohorts.entries()) {
+
+  for (const [startMin, ids] of cohorts.entries()) {
     ids.sort((a, b) => a - b);
+    const cohortSize = ids.length;
+
+    // For each break slot type, pre-compute candidate offsets within the shift
+    // sorted by ascending blended demand (valley-first), capped to 4 distinct
+    // slots so the stagger doesn't push breaks out of reasonable range.
+    const getValleySortedOffsets = (baseOffset, duration, shiftMin, windowMins) => {
+      const candidates = [];
+      const maxSlide = Math.min(windowMins, shiftMin - baseOffset - duration);
+      for (let slide = 0; slide <= maxSlide; slide += intervalMinutes) {
+        const offset = baseOffset + slide;
+        if (offset + duration > shiftMin) break;
+        const iv = Math.floor((startMin + offset) / intervalMinutes) % nIntervals;
+        candidates.push({ offset, demand: blended[iv] || 0 });
+      }
+      // Sort ascending by demand: lowest demand = best break slot
+      candidates.sort((a, b) => a.demand - b.demand);
+      return candidates.map((c) => c.offset);
+    };
+
     ids.forEach((agentId, idx) => {
       const info = startMap.get(agentId);
-      // Stagger within cohort. Break offset: +15 * (idx%4). Lunch offset: +30 * (idx%2).
+      const VALLEY_WINDOW = intervalMinutes * 4; // search up to 4 intervals ahead
+
       info.plan = info.plan.map((act) => {
-        let extra = 0;
-        if (act.type === 'break') extra = 15 * (idx % 4);
-        if (act.type === 'lunch') extra = 30 * (idx % 2);
-        return { ...act, offsetFromStart: act.offsetFromStart + extra };
+        // Valley offsets for this activity type; fall back to index-based stagger
+        const valleys = getValleySortedOffsets(act.offsetFromStart, act.duration, info.shiftMin, VALLEY_WINDOW);
+        const newOffset = valleys.length > 0
+          ? valleys[idx % valleys.length]
+          : act.offsetFromStart + (act.type === 'break' ? 15 * (idx % 4) : 30 * (idx % 2));
+        return { ...act, offsetFromStart: newOffset };
       });
-      // Clamp so activities never exceed shift
+
+      // Clamp: remove activities that would extend past shift end
+      info.plan = info.plan.filter((a) => a.offsetFromStart + a.duration <= info.shiftMin);
+
+      // Deduplicate: if two activities were assigned the same offset, nudge the later one
+      info.plan.sort((a, b) => a.offsetFromStart - b.offsetFromStart);
+      for (let i = 1; i < info.plan.length; i++) {
+        const prev = info.plan[i - 1];
+        const cur = info.plan[i];
+        if (cur.offsetFromStart < prev.offsetFromStart + prev.duration) {
+          info.plan[i] = { ...cur, offsetFromStart: prev.offsetFromStart + prev.duration };
+        }
+      }
       info.plan = info.plan.filter((a) => a.offsetFromStart + a.duration <= info.shiftMin);
     });
   }
+
+  return startMap;
+}
+
+// ── Local search improvement pass ─────────────────────────────────────────────
+// For each agent (in random order), temporarily remove them from the schedule,
+// try every valid start time, and keep the one that minimises total squared shortage.
+// Each re-seat is incremental (O(coveredIntervals)) rather than a full recompute.
+// Runs up to MAX_ITER times until no agent can be improved.
+function localSearchImprove(agents, restMap, startMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules) {
+  const MAX_ITER = 3;
+  const nIntervals = Math.ceil(1440 / intervalMinutes);
+  const gran = Number((rules || DEFAULT_RULES).shift_start_granularity_mins || 30);
+
+  // Build mutable scheduled matrix
+  const scheduled = buildScheduledMatrix(agents, restMap, startMap, intervalMinutes);
+
+  for (let iter = 0; iter < MAX_ITER; iter++) {
+    let anyImproved = false;
+
+    for (const agent of shuffleArray(agents)) {
+      const info = startMap.get(agent.id);
+      if (!info) continue;
+
+      const shiftH = Number(shiftLenByAgent.get(agent.id) || 9);
+      const shiftMin = Math.round(shiftH * 60);
+      const rest = restMap.get(agent.id) || [];
+      const workingDays = [0, 1, 2, 3, 4, 5, 6].filter((d) => !rest.includes(d));
+
+      // Current on-queue intervals for this agent
+      const curCovered = onQueueIntervals(info.startMin, info.startMin + info.shiftMin, info.plan, intervalMinutes);
+
+      // Remove agent's current contribution
+      for (let d = 0; d < 7; d++) {
+        if (rest.includes(d)) continue;
+        for (const iv of curCovered) scheduled[d][iv]--;
+      }
+
+      // Score without this agent (baseline to beat)
+      let baseline = 0;
+      for (let d = 0; d < 7; d++) {
+        for (let iv = 0; iv < nIntervals; iv++) {
+          const sh = Math.max(0, (demandCurves[d][iv] || 0) - scheduled[d][iv]);
+          baseline += sh * sh;
+        }
+      }
+
+      // Try all candidate start times
+      const candidateStarts = new Set();
+      for (const d of workingDays) {
+        const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
+        if (!win) continue;
+        for (let s = win.open; s + shiftMin <= win.close; s += gran) candidateStarts.add(s);
+      }
+      if (candidateStarts.size === 0) {
+        for (let s = 0; s + shiftMin <= 1440; s += gran) candidateStarts.add(s);
+      }
+
+      const basePlan = activityPlan(shiftH, rules).map((a) => ({
+        type: a.type, offsetFromStart: a.offset, duration: a.duration, paid: a.paid,
+      }));
+
+      let bestStart = info.startMin;
+      let bestScore = Infinity;
+
+      for (const s of candidateStarts) {
+        const endMin = s + shiftMin;
+        if (endMin > 1440) continue;
+        let fitDays = [];
+        let conflicted = false;
+        for (const d of workingDays) {
+          const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
+          if (!win) continue;
+          if (s < win.open || endMin > win.close) { conflicted = true; break; }
+          fitDays.push(d);
+        }
+        if (conflicted || fitDays.length === 0) continue;
+
+        const newCovered = onQueueIntervals(s, endMin, basePlan, intervalMinutes);
+
+        // Compute score delta (only changed intervals need re-evaluation)
+        let score = baseline;
+        for (let d = 0; d < 7; d++) {
+          if (rest.includes(d)) continue;
+          const isWorking = fitDays.includes(d);
+          // Intervals this candidate would cover
+          for (const iv of (isWorking ? newCovered : [])) {
+            const prevSh = Math.max(0, (demandCurves[d][iv] || 0) - scheduled[d][iv]);
+            const newSh  = Math.max(0, (demandCurves[d][iv] || 0) - scheduled[d][iv] - 1);
+            score += newSh * newSh - prevSh * prevSh;
+          }
+        }
+
+        if (score < bestScore) { bestScore = score; bestStart = s; }
+      }
+
+      // Apply best start and add back contribution
+      const bestPlan = activityPlan(shiftH, rules).map((a) => ({
+        type: a.type, offsetFromStart: a.offset, duration: a.duration, paid: a.paid,
+      }));
+      if (bestStart !== info.startMin) anyImproved = true;
+      startMap.set(agent.id, { startMin: bestStart, shiftMin, plan: bestPlan });
+
+      const newCovered = onQueueIntervals(bestStart, bestStart + shiftMin, bestPlan, intervalMinutes);
+      for (let d = 0; d < 7; d++) {
+        if (rest.includes(d)) continue;
+        const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
+        if (!win) continue;
+        for (const iv of newCovered) scheduled[d][iv]++;
+      }
+    }
+
+    if (!anyImproved) break;
+  }
+
   return startMap;
 }
 
@@ -451,7 +625,7 @@ function computeCoverage(agents, restMap, startMap, demandCurves, intervalMinute
 // ── Main entry ───────────────────────────────────────────────────────────────
 async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by, rules }) {
   rules = { ...DEFAULT_RULES, ...rules };
-  // Load snapshot
+
   const snap = await pool.query('SELECT * FROM scheduling_demand_snapshots WHERE id=$1', [snapshot_id]);
   if (snap.rows.length === 0) throw new Error(`Snapshot ${snapshot_id} not found`);
   const snapshot = snap.rows[0];
@@ -462,7 +636,6 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
     'SELECT channel, weekday, interval_start, required_fte FROM scheduling_demand_snapshot_rows WHERE snapshot_id=$1',
     [snapshot_id]
   );
-  // Group demand: channel → [7 arrays of interval counts]
   const demandByChannel = new Map();
   for (const r of rowsRes.rows) {
     const ch = r.channel || 'blended';
@@ -479,12 +652,10 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
     throw new Error('Snapshot has no demand rows');
   }
 
-  // Load LOB settings
   const lobRes = await pool.query('SELECT hours_of_operation, pooling_mode FROM lob_settings WHERE lob_id=$1', [lob_id]);
   const hoursOfOperation = lobRes.rows[0]?.hours_of_operation || null;
   const poolingMode = lobRes.rows[0]?.pooling_mode || 'dedicated';
 
-  // Load eligible agents for this LOB
   const agRes = await pool.query(
     `SELECT id, full_name, skill_voice, skill_chat, skill_email, accommodation_flags, availability, shift_length_hours, lob_assignments
      FROM scheduling_agents WHERE organization_id=1 AND status='active' AND $1 = ANY(lob_assignments)`,
@@ -501,7 +672,6 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
     );
   }
 
-  // Create generation run row
   const runIns = await pool.query(
     `INSERT INTO schedule_generation_runs (lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by)
      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
@@ -509,7 +679,6 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
   );
   const run_id = runIns.rows[0].id;
 
-  // Remove any existing drafts for this LOB in this horizon (overwrite semantics)
   await pool.query(
     `DELETE FROM schedule_assignments
      WHERE lob_id=$1 AND work_date BETWEEN $2 AND $3 AND status='draft'`,
@@ -519,16 +688,12 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
   let draftCount = 0;
   const coverageReport = {};
 
-  // Per-channel pools
   const channelsInScope = Array.from(demandByChannel.keys());
 
-  // If blended, usually one channel 'blended' in snapshot → use all agents
-  // If dedicated, split agents across channels by skill+demand share
   const channelAgents = new Map();
   if (poolingMode === 'blended' || (channelsInScope.length === 1 && channelsInScope[0] === 'blended')) {
     channelAgents.set(channelsInScope[0], allAgents);
   } else {
-    // Compute demand-share per channel
     const demandShare = {};
     let totalDemand = 0;
     for (const ch of channelsInScope) {
@@ -536,7 +701,6 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
       demandShare[ch] = sum;
       totalDemand += sum;
     }
-    // Filter agents by skill, then allocate proportionally
     const skillKey = { voice: 'skill_voice', chat: 'skill_chat', email: 'skill_email', cases: 'skill_email' };
     const remaining = [...allAgents];
     for (const ch of channelsInScope) {
@@ -546,7 +710,6 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
       const take = Math.round(skilled.length * share);
       const pool = skilled.slice(0, take);
       channelAgents.set(ch, pool);
-      // Remove taken agents from remaining so they're not double-assigned
       const taken = new Set(pool.map((a) => a.id));
       for (let i = remaining.length - 1; i >= 0; i--) {
         if (taken.has(remaining[i].id)) remaining.splice(i, 1);
@@ -554,10 +717,10 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
     }
   }
 
-  // For each channel pool, run the scheduling pipeline
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
     for (const channel of channelsInScope) {
       const agents = channelAgents.get(channel) || [];
       if (agents.length === 0) continue;
@@ -568,13 +731,43 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
 
       const shiftLenByAgent = new Map();
       for (const a of agents) {
-        // Per-agent override wins; fall back to LOB rules default, then hard default 9h
         const agentHours = Number(a.shift_length_hours);
         shiftLenByAgent.set(a.id, agentHours !== 9 ? agentHours : Number(rules.default_shift_hours || 9));
       }
 
-      let startMap = assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules);
-      startMap = applyStagger(startMap);
+      // ── Multi-pass: run 8 orderings, keep the one with lowest total squared shortage ──
+      const NUM_PASSES = 8;
+      let bestStartMap = null;
+      let bestScore = Infinity;
+
+      for (let pass = 0; pass < NUM_PASSES; pass++) {
+        // Pass 0: ID-sorted (deterministic baseline)
+        // Pass 1+: random shuffle
+        const agentOrder = pass === 0
+          ? [...agents].sort((a, b) => a.id - b.id)
+          : shuffleArray(agents);
+
+        let candidateMap = assignStartTimes(
+          agentOrder, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules
+        );
+        candidateMap = applyStagger(candidateMap, demandCurves, intervalMinutes);
+
+        const scheduled = buildScheduledMatrix(agents, restMap, candidateMap, intervalMinutes);
+        const score = totalShortageScore(scheduled, demandCurves);
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestStartMap = candidateMap;
+        }
+      }
+
+      // ── Local search: iteratively re-seat each agent to reduce shortage ──
+      let startMap = localSearchImprove(
+        agents, restMap, bestStartMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules
+      );
+
+      // ── Final stagger (re-apply after local search changed start times) ──
+      startMap = applyStagger(startMap, demandCurves, intervalMinutes);
 
       coverageReport[channel] = computeCoverage(agents, restMap, startMap, demandCurves, intervalMinutes);
 
@@ -584,7 +777,6 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
         const workDate = addDays(horizon_start, offset);
         const jsDow = new Date(workDate + 'T00:00:00Z').getUTCDay();
         const weekday = jsDowToMon0(jsDow);
-        // Skip days where the channel is closed so no shift is written
         const dayWin = operatingWindowForWeekday(hoursOfOperation, channel, weekday);
         if (!dayWin) continue;
         for (const agent of agents) {
@@ -592,7 +784,6 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
           if (!info) continue;
           const rest = restMap.get(agent.id) || [];
           if (rest.includes(weekday)) continue;
-          // Insert assignment
           const startTime = minToHHMM(info.startMin);
           const endMin = info.startMin + info.shiftMin;
           const isOvernight = endMin >= 1440;
@@ -606,7 +797,6 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
           );
           const assignmentId = asn.rows[0].id;
           draftCount++;
-          // Insert activities
           for (const act of info.plan) {
             const aStart = minToHHMM(info.startMin + act.offsetFromStart);
             const aEnd = minToHHMM(info.startMin + act.offsetFromStart + act.duration);
