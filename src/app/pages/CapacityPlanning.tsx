@@ -13,7 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
 import { toast } from "sonner";
 import {
   ChevronDown, ChevronRight, RotateCcw, Settings2, TrendingDown, AlertTriangle, CheckCircle2, Loader2,
-  Users, UserPlus, Activity, Target, Download,
+  Users, UserPlus, Target, Download,
 } from "lucide-react";
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine,
@@ -962,21 +962,43 @@ export function CapacityPlanning() {
   // ── Hiring need summary
   // Peak Required HC: the highest requiredFTE across the horizon — the roster ceiling.
   // Gross Hiring Need: seats Recruitment must fill = gap to close (start → peak) + attrition replacements.
+  // Hire-by week: first deficit week minus training+nesting lead time — the latest safe hire start date.
   const hiringNeed = useMemo(() => {
-    if (weekCalcs.length === 0) return { peakRequired: 0, grossHireNeed: 0 };
+    const empty = {
+      peakRequired: 0, grossHireNeed: 0, grossBillableHireNeed: 0,
+      hireByRequired: null as WeekCalc | null, hireByRequiredImmediate: false,
+      hireByBillable: null as WeekCalc | null, hireByBillableImmediate: false,
+    };
+    if (weekCalcs.length === 0) return empty;
+    const leadTime = config.rampTrainingWeeks + config.rampNestingWeeks;
     const peakRequired = Math.ceil(Math.max(...weekCalcs.map(w => w.requiredFTE)));
     const gapToClose = Math.max(0, peakRequired - config.startingHc);
     const grossHireNeed = gapToClose + Math.ceil(attritionSummary.totalExits);
-    return { peakRequired, grossHireNeed };
-  }, [weekCalcs, config.startingHc, attritionSummary.totalExits]);
+
+    const grossBillableHireNeed = config.billableFte > 0
+      ? Math.max(0, config.billableFte - config.startingHc) + Math.ceil(attritionSummary.totalExits)
+      : 0;
+
+    const reqDeficitIdx = weekCalcs.findIndex(w => w.gapSurplus < 0);
+    const hireByRequiredImmediate = reqDeficitIdx >= 0 && reqDeficitIdx - leadTime <= 0;
+    const hireByRequired = reqDeficitIdx >= 0
+      ? weekCalcs[Math.max(0, reqDeficitIdx - leadTime)] ?? null
+      : null;
+
+    const billDeficitIdx = config.billableFte > 0
+      ? weekCalcs.findIndex(w => (w.billableGapSurplus ?? 0) < 0)
+      : -1;
+    const hireByBillableImmediate = billDeficitIdx >= 0 && billDeficitIdx - leadTime <= 0;
+    const hireByBillable = billDeficitIdx >= 0
+      ? weekCalcs[Math.max(0, billDeficitIdx - leadTime)] ?? null
+      : null;
+
+    return { peakRequired, grossHireNeed, grossBillableHireNeed, hireByRequired, hireByRequiredImmediate, hireByBillable, hireByBillableImmediate };
+  }, [weekCalcs, config.startingHc, config.billableFte, config.rampTrainingWeeks, config.rampNestingWeeks, attritionSummary.totalExits]);
 
   // ── Bottom-line summary metrics for the hero strip
   const currentGap = weekCalcs[0]?.gapSurplus ?? 0;
-  const planHealth = useMemo(() => {
-    if (weekCalcs.length === 0) return 0;
-    const ok = weekCalcs.filter(w => w.gapSurplus >= 0).length;
-    return Math.round((ok / weekCalcs.length) * 100);
-  }, [weekCalcs]);
+  const currentBillableGap = weekCalcs[0]?.billableGapSurplus ?? null;
   const maxAbsGap = useMemo(
     () => Math.max(1, ...weekCalcs.map(w => Math.abs(w.gapSurplus))),
     [weekCalcs],
@@ -1249,7 +1271,7 @@ export function CapacityPlanning() {
       </Card>
 
       {/* ── Hero Strip — the bottom-line metrics, always the first thing a manager sees */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-4">
+      <div className={`grid gap-2.5 mb-4 ${billableActive ? "grid-cols-2 lg:grid-cols-5" : "grid-cols-2 lg:grid-cols-3"}`}>
         {/* Peak Required FTE */}
         <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-blue-500">
           <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
@@ -1263,56 +1285,79 @@ export function CapacityPlanning() {
           </div>
         </div>
 
-        {/* Current Gap (W1) — the most visceral metric */}
+        {/* Current Gap — Required FTE */}
         <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${
           currentGap >= 0 ? "border-l-green-500" : "border-l-red-500"
         }`}>
           <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
-            <Target className="size-3" /> Current Gap (W1)
+            <Target className="size-3" /> Current Gap — Required
           </div>
-          <div className={`text-2xl font-bold mt-1 leading-none ${
-            currentGap >= 0 ? "text-black dark:text-black" : "text-black dark:text-black"
-          }`}>
+          <div className="text-2xl font-bold mt-1 leading-none text-black dark:text-black">
             {currentGap >= 0 ? `+${fmt1(currentGap)}` : fmt1(currentGap)}
           </div>
           <div className="text-[10px] text-black mt-1">
-            {currentGap >= 0 ? "surplus vs. required" : "understaffed vs. required"}
+            {weekCalcs[0] ? `${weekCalcs[0].label} · ${weekCalcs[0].dateLabel}` : "W1"}&ensp;·&ensp;{currentGap >= 0 ? "surplus" : "understaffed"}
           </div>
         </div>
 
-        {/* Gross Hiring Need */}
+        {/* Current Gap — Billable FTE (only when billable is configured) */}
+        {billableActive && (
+          <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${
+            (currentBillableGap ?? 0) >= 0 ? "border-l-amber-400" : "border-l-orange-500"
+          }`}>
+            <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
+              <Target className="size-3" /> Current Gap — Billable
+            </div>
+            <div className="text-2xl font-bold mt-1 leading-none text-black dark:text-black">
+              {currentBillableGap != null
+                ? currentBillableGap >= 0 ? `+${fmt1(currentBillableGap)}` : fmt1(currentBillableGap)
+                : "—"}
+            </div>
+            <div className="text-[10px] text-black mt-1">
+              {weekCalcs[0] ? `${weekCalcs[0].label} · ${weekCalcs[0].dateLabel}` : "W1"}&ensp;·&ensp;vs {fmt1(config.billableFte)} billable
+            </div>
+          </div>
+        )}
+
+        {/* Gross Hiring Need — Required FTE */}
         <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-violet-500"
           title={`Gap to close: ${Math.max(0, hiringNeed.peakRequired - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
         >
           <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
-            <UserPlus className="size-3" /> Gross Hiring Need
+            <UserPlus className="size-3" /> Gross Hiring — Required
           </div>
           <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
             {hiringNeed.grossHireNeed > 0 ? hiringNeed.grossHireNeed : "—"}
           </div>
           <div className="text-[10px] text-black mt-1">
-            hires for peak + attrition
+            {hiringNeed.hireByRequired
+              ? hiringNeed.hireByRequiredImmediate
+                ? "Hire by: immediately"
+                : `Hire by: ${hiringNeed.hireByRequired.label} · ${hiringNeed.hireByRequired.dateLabel}`
+              : "No deficit — no urgency"}
           </div>
         </div>
 
-        {/* Plan Health */}
-        <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${
-          planHealth >= 80 ? "border-l-green-500" : planHealth >= 50 ? "border-l-amber-500" : "border-l-red-500"
-        }`}>
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
-            <Activity className="size-3" /> Plan Health
+        {/* Gross Hiring Need — Billable FTE (only when billable is configured) */}
+        {billableActive && (
+          <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-amber-500"
+            title={`Gap to close: ${Math.max(0, config.billableFte - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
+          >
+            <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
+              <UserPlus className="size-3" /> Gross Hiring — Billable
+            </div>
+            <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
+              {hiringNeed.grossBillableHireNeed > 0 ? hiringNeed.grossBillableHireNeed : "—"}
+            </div>
+            <div className="text-[10px] text-black mt-1">
+              {hiringNeed.hireByBillable
+                ? hiringNeed.hireByBillableImmediate
+                  ? "Hire by: immediately"
+                  : `Hire by: ${hiringNeed.hireByBillable.label} · ${hiringNeed.hireByBillable.dateLabel}`
+                : "No deficit — no urgency"}
+            </div>
           </div>
-          <div className={`text-2xl font-bold mt-1 leading-none ${
-            planHealth >= 80 ? "text-black dark:text-black"
-              : planHealth >= 50 ? "text-black dark:text-black"
-              : "text-black dark:text-black"
-          }`}>
-            {planHealth}%
-          </div>
-          <div className="text-[10px] text-black mt-1">
-            weeks at-or-above required
-          </div>
-        </div>
+        )}
       </div>
 
       {/* ── Secondary metrics strip */}
