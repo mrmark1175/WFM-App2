@@ -15,6 +15,18 @@
 
 const WEEKDAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
+const DEFAULT_RULES = {
+  default_shift_hours: 9,
+  shift_start_granularity_mins: 30,
+  days_per_week: 5,
+  require_consecutive_rest: true,
+  break_duration_mins: 15,
+  lunch_duration_mins: 60,
+  break_1_after_hours: 2,
+  lunch_after_hours: 4,
+  break_2_after_hours: 7,
+};
+
 // Convert JS Date.getDay() (0=Sun..6=Sat) to our convention (0=Mon..6=Sun)
 function jsDowToMon0(jsDow) { return (jsDow + 6) % 7; }
 
@@ -45,22 +57,29 @@ function dateDiffDays(a, b) {
 
 // ── Break/lunch placement for a given shift length ───────────────────────────
 // Returns activity offsets in minutes from shift start.
-function activityPlan(shiftHours) {
+function activityPlan(shiftHours, rules) {
+  const r = { ...DEFAULT_RULES, ...rules };
+  const b1Mins  = Math.round(r.break_1_after_hours * 60);
+  const lnMins  = Math.round(r.lunch_after_hours * 60);
+  const b2Mins  = Math.round(r.break_2_after_hours * 60);
+  const breakDur = Number(r.break_duration_mins);
+  const lunchDur = Number(r.lunch_duration_mins);
+
   if (shiftHours >= 8.5) {
     return [
-      { type: 'break',  offset: 120, duration: 15, paid: true },   // +2h
-      { type: 'lunch',  offset: 240, duration: 60, paid: false },  // +4h (60 min)
-      { type: 'break',  offset: 420, duration: 15, paid: true },   // +7h (2h after lunch end at +5h)
+      { type: 'break', offset: b1Mins, duration: breakDur, paid: true },
+      { type: 'lunch', offset: lnMins, duration: lunchDur, paid: false },
+      { type: 'break', offset: b2Mins, duration: breakDur, paid: true },
     ];
   }
   if (shiftHours >= 6) {
     return [
-      { type: 'break',  offset: 120, duration: 15, paid: true },
-      { type: 'lunch',  offset: Math.round(shiftHours * 30), duration: 30, paid: false }, // short lunch at mid
+      { type: 'break', offset: b1Mins,                        duration: breakDur,               paid: true },
+      { type: 'lunch', offset: Math.round(shiftHours * 30),   duration: Math.min(lunchDur, 30), paid: false },
     ];
   }
   return [
-    { type: 'break', offset: Math.round(shiftHours * 30), duration: 15, paid: true },
+    { type: 'break', offset: Math.round(shiftHours * 30), duration: breakDur, paid: true },
   ];
 }
 
@@ -124,23 +143,45 @@ function operatingWindowForWeekday(hoursOfOperation, channel, weekday) {
   }
 }
 
-// ── Candidate rest-day pairs (2 consecutive, wrap allowed) ───────────────────
-// Each pair is the two weekday indexes (0=Mon..6=Sun). Sun+Mon wrap included.
-const REST_PAIRS = (() => {
-  const out = [];
-  for (let i = 0; i < 7; i++) out.push([i, (i + 1) % 7]);
-  return out;
-})();
+// ── Candidate rest-day combinations ─────────────────────────────────────────
+// Generates all combinations of `restCount` rest days from 7 days.
+// If consecutiveOnly, only runs of consecutive days (with wrap) are included.
+function buildRestCombinations(restCount, consecutiveOnly) {
+  const all = [];
+  // Generate C(7, restCount) combinations
+  function combine(start, current) {
+    if (current.length === restCount) { all.push([...current]); return; }
+    for (let i = start; i < 7; i++) { current.push(i); combine(i + 1, current); current.pop(); }
+  }
+  combine(0, []);
+
+  if (!consecutiveOnly) return all;
+
+  // Keep only groups that are consecutive (including wrap-around, e.g. [6,0,1])
+  return all.filter((combo) => {
+    const sorted = [...combo].sort((a, b) => a - b);
+    // Check straight consecutive
+    const straight = sorted.every((v, i) => i === 0 || v === sorted[i - 1] + 1);
+    if (straight) return true;
+    // Check wrap-around: e.g. [5,6,0] — gap of 1 between max and (min+7)
+    const max = sorted[sorted.length - 1];
+    const min = sorted[0];
+    if (max - min === 6) return true; // spans full week, always consecutive
+    // Wrap case: [max, …, 6, 0, …, min] all consecutive
+    const wrapped = sorted.filter((v) => v >= min && v <= max);
+    return wrapped.every((v, i) => i === 0 || v === wrapped[i - 1] + 1) &&
+           (max + 1) % 7 === sorted.find((v) => v < min) || false;
+  });
+}
 
 // ── Rest-day assignment ──────────────────────────────────────────────────────
-// Priority 1 (hard): each weekday d must have at least ceil(N × dayWeight[d])
-//   agents working. Equivalently, at most N − ceil(N × dayWeight[d]) agents
-//   may rest on that day. This floor is enforced before any soft objective.
-// Priority 2 (soft): working-agent count per day tracks 5N × dayWeight[d]
-//   (the proportional target assuming each agent works 5 of 7 days).
-// Each agent works 5 days per week (2 consecutive rest days). Work-days-per-week
-//   is currently fixed at 5; future work can make this configurable.
-function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperation, channel) {
+function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperation, channel, rules) {
+  const r = { ...DEFAULT_RULES, ...rules };
+  const restDayCount = 7 - Number(r.days_per_week);
+  const REST_COMBOS = buildRestCombinations(restDayCount, !!r.require_consecutive_rest);
+  // Fallback: if no valid consecutive combos found (edge case), allow any
+  const combos = REST_COMBOS.length > 0 ? REST_COMBOS : buildRestCombinations(restDayCount, false);
+
   const result = new Map();
   const rotationIdx = { i: 0 };
   const flexibleAgents = [];
@@ -148,9 +189,9 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
   // Fixed-rest-day accommodations first
   for (const agent of agents) {
     const fixed = agent.availability?.fixed_rest_days;
-    if (Array.isArray(fixed) && fixed.length === 2) {
+    if (Array.isArray(fixed) && fixed.length === restDayCount) {
       const idxs = fixed.map((d) => WEEKDAY_KEYS.indexOf(String(d).toLowerCase())).filter((i) => i >= 0);
-      if (idxs.length === 2) {
+      if (idxs.length === restDayCount) {
         result.set(agent.id, idxs.sort((a, b) => a - b));
         continue;
       }
@@ -171,10 +212,9 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
 
   const totalAgents = agents.length;
   const totalDemand = demandByWeekday.reduce((a, b) => a + b, 0);
+  const daysPerWeek = Number(r.days_per_week);
 
   // ── Priority 1: minimum agents per day (hard floor) ───────────────────────
-  // minAgents[d] = ceil(N × dayWeight[d]); maxRest[d] = N − minAgents[d].
-  // Σ maxRest ≈ 6N >> 2N (rest slots needed), so this is always feasible.
   const minAgents = Array(7).fill(0);
   const maxRest = Array(7).fill(totalAgents);
   if (totalDemand > 0) {
@@ -185,7 +225,6 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
   }
 
   // Track explicit rest count so the floor can be enforced incrementally.
-  // Initialise from fixed-rest agents already committed above.
   const restCount = Array(7).fill(0);
   for (const [, rest] of result.entries()) {
     for (const d of rest) restCount[d]++;
@@ -195,10 +234,10 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
   const targetWorkers = Array(7).fill(0);
   if (totalDemand > 0) {
     for (let d = 0; d < 7; d++) {
-      targetWorkers[d] = (demandByWeekday[d] / totalDemand) * 5 * totalAgents;
+      targetWorkers[d] = (demandByWeekday[d] / totalDemand) * daysPerWeek * totalAgents;
     }
   } else {
-    for (let d = 0; d < 7; d++) targetWorkers[d] = (5 * totalAgents) / 7;
+    for (let d = 0; d < 7; d++) targetWorkers[d] = (daysPerWeek * totalAgents) / 7;
   }
 
   // Days where the channel is closed. Strongly prefer resting on these.
@@ -208,71 +247,58 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     if (!win) closedDays.push(d);
   }
 
-  // Returns true if assigning this pair does not exhaust any day's rest budget.
-  function pairRespectsBudget(pair) {
-    return pair.every((d) => restCount[d] < maxRest[d]);
+  function comboRespectsBudget(combo) {
+    return combo.every((d) => restCount[d] < maxRest[d]);
   }
 
   if (fairnessEnabled) {
-    // Round-robin rotation. Each agent advances the pointer by 1, but if the
-    // rotation's pair would violate Priority 1 we skip forward to the nearest
-    // valid pair (staying as close to the rotation as possible).
     for (const agent of flexibleAgents) {
-      const baseIdx = rotationIdx.i % REST_PAIRS.length;
+      const baseIdx = rotationIdx.i % combos.length;
       rotationIdx.i++;
 
-      let pair = REST_PAIRS[baseIdx];
+      let combo = combos[baseIdx];
 
-      // If the rotation pair violates Priority 1, find the nearest valid one.
-      if (!pairRespectsBudget(pair)) {
-        const fallback = REST_PAIRS.find((p) => pairRespectsBudget(p));
-        if (fallback) pair = fallback;
-        // else: no valid pair (degenerate — fixed-rest already consumed budget);
-        // keep the rotation pair and accept the minor violation.
+      if (!comboRespectsBudget(combo)) {
+        const fallback = combos.find((c) => comboRespectsBudget(c));
+        if (fallback) combo = fallback;
       }
 
-      // Prefer a pair that covers all closed days when one exists and is valid.
-      if (closedDays.length > 0 && closedDays.some((d) => !pair.includes(d))) {
-        const better = REST_PAIRS.find(
-          (p) => closedDays.every((d) => p.includes(d)) && pairRespectsBudget(p)
+      if (closedDays.length > 0 && closedDays.some((d) => !combo.includes(d))) {
+        const better = combos.find(
+          (c) => closedDays.every((d) => c.includes(d)) && comboRespectsBudget(c)
         );
-        if (better) pair = better;
+        if (better) combo = better;
       }
 
-      result.set(agent.id, [...pair].sort((a, b) => a - b));
-      for (const d of pair) restCount[d]++;
-      for (let d = 0; d < 7; d++) if (!pair.includes(d)) workingAgentCount[d]++;
+      result.set(agent.id, [...combo].sort((a, b) => a - b));
+      for (const d of combo) restCount[d]++;
+      for (let d = 0; d < 7; d++) if (!combo.includes(d)) workingAgentCount[d]++;
     }
   } else {
-    // Best-fit: minimize Σ max(0, target − workingAfter)² (Priority 2 soft),
-    // with a 1e9 penalty per day where Priority 1 rest budget would be exceeded.
     for (const agent of flexibleAgents) {
-      let bestPair = REST_PAIRS[0];
+      let bestCombo = combos[0];
       let bestScore = Infinity;
-      for (const pair of REST_PAIRS) {
-        // Priority 1 hard constraint expressed as a large penalty
+      for (const combo of combos) {
         let p1Penalty = 0;
-        for (const d of pair) {
+        for (const d of combo) {
           if (restCount[d] >= maxRest[d]) p1Penalty += 1e9;
         }
-        // Closed-day penalty (same scale as Priority 1)
         let closedPenalty = 0;
         for (const cd of closedDays) {
-          if (!pair.includes(cd)) closedPenalty += 1e9;
+          if (!combo.includes(cd)) closedPenalty += 1e9;
         }
-        // Priority 2 soft: squared shortage vs proportional target
         let shortageSq = 0;
         for (let d = 0; d < 7; d++) {
-          const newWorking = workingAgentCount[d] + (pair.includes(d) ? 0 : 1);
+          const newWorking = workingAgentCount[d] + (combo.includes(d) ? 0 : 1);
           const shortage = Math.max(0, targetWorkers[d] - newWorking);
           shortageSq += shortage * shortage;
         }
         const score = p1Penalty + closedPenalty + shortageSq;
-        if (score < bestScore) { bestScore = score; bestPair = pair; }
+        if (score < bestScore) { bestScore = score; bestCombo = combo; }
       }
-      result.set(agent.id, [...bestPair].sort((a, b) => a - b));
-      for (const d of bestPair) restCount[d]++;
-      for (let d = 0; d < 7; d++) if (!bestPair.includes(d)) workingAgentCount[d]++;
+      result.set(agent.id, [...bestCombo].sort((a, b) => a - b));
+      for (const d of bestCombo) restCount[d]++;
+      for (let d = 0; d < 7; d++) if (!bestCombo.includes(d)) workingAgentCount[d]++;
     }
   }
 
@@ -280,9 +306,7 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
 }
 
 // ── Start-time assignment ────────────────────────────────────────────────────
-// For each agent, pick the best 30-min start that maximally reduces shortage
-// across their 5 working days. Greedy, online.
-function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent) {
+function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules) {
   const nIntervals = Math.ceil(1440 / intervalMinutes);
 
   // residualShortage[d][i] = remaining unmet FTE-demand on weekday d, interval i
@@ -308,17 +332,19 @@ function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, chann
     for (const d of workingDays) {
       const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
       if (!win) continue;
-      for (let s = win.open; s + shiftMin <= win.close; s += 30) {
+      const gran = Number((rules || DEFAULT_RULES).shift_start_granularity_mins || 30);
+      for (let s = win.open; s + shiftMin <= win.close; s += gran) {
         candidateStarts.add(s);
       }
     }
     // If no candidate starts (24-hour op or all channels off), fall back to [0..1440-shiftMin]
     if (candidateStarts.size === 0) {
-      for (let s = 0; s + shiftMin <= 1440; s += 30) candidateStarts.add(s);
+      const gran = Number((rules || DEFAULT_RULES).shift_start_granularity_mins || 30);
+      for (let s = 0; s + shiftMin <= 1440; s += gran) candidateStarts.add(s);
     }
 
     // Plan activities (offsets from start) for this shift length
-    const plan = activityPlan(shiftH).map((a) => ({
+    const plan = activityPlan(shiftH, rules).map((a) => ({
       type: a.type, offsetFromStart: a.offset, duration: a.duration, paid: a.paid,
     }));
 
@@ -423,7 +449,8 @@ function computeCoverage(agents, restMap, startMap, demandCurves, intervalMinute
 }
 
 // ── Main entry ───────────────────────────────────────────────────────────────
-async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by }) {
+async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by, rules }) {
+  rules = { ...DEFAULT_RULES, ...rules };
   // Load snapshot
   const snap = await pool.query('SELECT * FROM scheduling_demand_snapshots WHERE id=$1', [snapshot_id]);
   if (snap.rows.length === 0) throw new Error(`Snapshot ${snapshot_id} not found`);
@@ -537,12 +564,16 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
       const demandCurves = demandByChannel.get(channel);
       const demandByWeekday = demandCurves.map((arr) => arr.reduce((a, b) => a + b, 0));
 
-      const restMap = assignRestDays(agents, demandByWeekday, fairness_enabled, hoursOfOperation, channel);
+      const restMap = assignRestDays(agents, demandByWeekday, fairness_enabled, hoursOfOperation, channel, rules);
 
       const shiftLenByAgent = new Map();
-      for (const a of agents) shiftLenByAgent.set(a.id, a.shift_length_hours);
+      for (const a of agents) {
+        // Per-agent override wins; fall back to LOB rules default, then hard default 9h
+        const agentHours = Number(a.shift_length_hours);
+        shiftLenByAgent.set(a.id, agentHours !== 9 ? agentHours : Number(rules.default_shift_hours || 9));
+      }
 
-      let startMap = assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent);
+      let startMap = assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules);
       startMap = applyStagger(startMap);
 
       coverageReport[channel] = computeCoverage(agents, restMap, startMap, demandCurves, intervalMinutes);

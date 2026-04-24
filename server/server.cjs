@@ -597,6 +597,26 @@ async function ensureAppTables() {
     )
   `);
 
+  // ── Scheduler rules (per-LOB configurable generation rules) ─────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduler_rules (
+      id                           SERIAL PRIMARY KEY,
+      organization_id              INTEGER NOT NULL DEFAULT 1,
+      lob_id                       INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      default_shift_hours          NUMERIC NOT NULL DEFAULT 9,
+      shift_start_granularity_mins INTEGER NOT NULL DEFAULT 30,
+      days_per_week                INTEGER NOT NULL DEFAULT 5,
+      require_consecutive_rest     BOOLEAN NOT NULL DEFAULT TRUE,
+      break_duration_mins          INTEGER NOT NULL DEFAULT 15,
+      lunch_duration_mins          INTEGER NOT NULL DEFAULT 60,
+      break_1_after_hours          NUMERIC NOT NULL DEFAULT 2,
+      lunch_after_hours            NUMERIC NOT NULL DEFAULT 4,
+      break_2_after_hours          NUMERIC NOT NULL DEFAULT 7,
+      updated_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(organization_id, lob_id)
+    )
+  `);
+
   // ── Auto-Scheduler: extensions to existing tables ─────────────────────────
   await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS shift_length_hours NUMERIC NOT NULL DEFAULT 9`);
   await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS team_name VARCHAR(255)`);
@@ -2176,13 +2196,90 @@ app.post('/api/scheduling/auto-generate', async (req, res) => {
         [lob_id, horizon_start, horizon_end]
       );
     }
+    const rulesRes = await pool.query(
+      'SELECT * FROM scheduler_rules WHERE organization_id=1 AND lob_id=$1',
+      [lob_id]
+    );
+    const rules = rulesRes.rows[0] || SCHEDULER_RULES_DEFAULTS;
     const result = await generateSchedule({
       pool, lob_id, snapshot_id, horizon_start, horizon_end,
       fairness_enabled: !!fairness_enabled, created_by: created_by || null,
+      rules,
     });
     res.json(result);
   } catch (err) {
     console.error('Auto-generate error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Scheduler Rules: GET/PUT ─────────────────────────────────────────────────
+const SCHEDULER_RULES_DEFAULTS = {
+  default_shift_hours: 9,
+  shift_start_granularity_mins: 30,
+  days_per_week: 5,
+  require_consecutive_rest: true,
+  break_duration_mins: 15,
+  lunch_duration_mins: 60,
+  break_1_after_hours: 2,
+  lunch_after_hours: 4,
+  break_2_after_hours: 7,
+};
+
+app.get('/api/scheduling/rules', async (req, res) => {
+  const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
+  if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
+  try {
+    const result = await pool.query(
+      'SELECT * FROM scheduler_rules WHERE organization_id=1 AND lob_id=$1',
+      [lob_id]
+    );
+    res.json(result.rows[0] || { ...SCHEDULER_RULES_DEFAULTS, lob_id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/scheduling/rules', async (req, res) => {
+  const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
+  if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
+  const {
+    default_shift_hours, shift_start_granularity_mins, days_per_week,
+    require_consecutive_rest, break_duration_mins, lunch_duration_mins,
+    break_1_after_hours, lunch_after_hours, break_2_after_hours,
+  } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO scheduler_rules
+         (organization_id, lob_id, default_shift_hours, shift_start_granularity_mins, days_per_week,
+          require_consecutive_rest, break_duration_mins, lunch_duration_mins,
+          break_1_after_hours, lunch_after_hours, break_2_after_hours, updated_at)
+       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+       ON CONFLICT (organization_id, lob_id) DO UPDATE SET
+         default_shift_hours          = EXCLUDED.default_shift_hours,
+         shift_start_granularity_mins = EXCLUDED.shift_start_granularity_mins,
+         days_per_week                = EXCLUDED.days_per_week,
+         require_consecutive_rest     = EXCLUDED.require_consecutive_rest,
+         break_duration_mins          = EXCLUDED.break_duration_mins,
+         lunch_duration_mins          = EXCLUDED.lunch_duration_mins,
+         break_1_after_hours          = EXCLUDED.break_1_after_hours,
+         lunch_after_hours            = EXCLUDED.lunch_after_hours,
+         break_2_after_hours          = EXCLUDED.break_2_after_hours,
+         updated_at                   = NOW()
+       RETURNING *`,
+      [lob_id,
+       default_shift_hours ?? 9,
+       shift_start_granularity_mins ?? 30,
+       days_per_week ?? 5,
+       require_consecutive_rest ?? true,
+       break_duration_mins ?? 15,
+       lunch_duration_mins ?? 60,
+       break_1_after_hours ?? 2,
+       lunch_after_hours ?? 4,
+       break_2_after_hours ?? 7]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

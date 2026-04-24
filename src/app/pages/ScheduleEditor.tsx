@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
@@ -9,7 +10,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle, Eraser } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle, Eraser, Settings2 } from "lucide-react";
 import { erlangC, erlangServiceLevel } from "./intraday-distribution-logic";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
@@ -504,6 +505,7 @@ function PublishDraftsDialog({ open, onClose, lobId, dateStart, dateEnd, agents,
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 export function ScheduleEditor() {
+  const navigate = useNavigate();
   const { activeLob } = useLOB();
 
   const [weekStart, setWeekStart] = useState<Date>(() => getMondayOf(new Date()));
@@ -1288,6 +1290,18 @@ export function ScheduleEditor() {
           >
             {publishing ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
             <span className="hidden sm:inline">{publishing ? "Publishing…" : "Publish"}</span>
+          </Button>
+
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 border-slate-300 text-slate-600 hover:bg-slate-50"
+            disabled={!activeLob}
+            onClick={() => navigate("/scheduling/scheduler-rules")}
+            title="Configure scheduler rules"
+          >
+            <Settings2 className="size-3.5" />
+            <span className="hidden sm:inline">Rules</span>
           </Button>
 
           <Button
