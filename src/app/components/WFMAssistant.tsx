@@ -186,10 +186,10 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
         <button
           onClick={onToggle}
           className="flex flex-col items-center gap-1.5 bg-[#1111D4] text-white px-2 py-4 rounded-l-lg shadow-lg hover:bg-[#0d0db8] transition-colors"
-          title="Open WFM Assistant"
+          title="Ask Mark"
         >
           <Bot className="size-4" />
-          <span className="text-[10px] font-black uppercase tracking-widest [writing-mode:vertical-lr] rotate-180">AI Assistant</span>
+          <span className="text-[10px] font-black uppercase tracking-widest [writing-mode:vertical-lr] rotate-180">Ask Mark</span>
           <ChevronRight className="size-3.5 opacity-70" />
         </button>
       </div>
@@ -202,8 +202,8 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
       <div className="flex items-center gap-2 px-4 py-3 bg-[#1111D4] text-white shrink-0">
         <Bot className="size-4 shrink-0" />
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-bold leading-none">WFM Assistant</div>
-          <div className="text-[10px] text-white/70 mt-0.5 truncate">{pageLabel} context</div>
+          <div className="text-sm font-bold leading-none">Mark</div>
+          <div className="text-[10px] text-white/70 mt-0.5 truncate">WFM Manager · {pageLabel}</div>
         </div>
         <Link to="/configuration/ai-settings" title="AI Settings" className="text-white/70 hover:text-white transition-colors">
           <Settings className="size-3.5" />
@@ -231,7 +231,7 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
                 <Bot className="size-3.5 text-white" />
               </div>
               <div className="bg-muted rounded-2xl rounded-tl-sm px-3 py-2 text-sm text-foreground max-w-[220px]">
-                Hi! I'm your WFM expert. Ask me anything about staffing, forecasting, scheduling, or Erlang math.
+                Hi! I'm Mark, your WFM Manager. Ask me anything about staffing, forecasting, scheduling, or Erlang math.
               </div>
             </div>
 
@@ -300,7 +300,7 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={configured === false ? "Configure API key first…" : "Ask a WFM question…"}
+            placeholder={configured === false ? "Configure API key first…" : "Ask Mark anything…"}
             disabled={streaming || configured === false}
             rows={1}
             className="flex-1 bg-transparent text-sm resize-none outline-none max-h-28 leading-relaxed placeholder:text-muted-foreground disabled:cursor-not-allowed"
