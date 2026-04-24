@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { toast } from "sonner";
 import { calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, getCalculatedVolumes as getCalculatedVolumesBase } from "./forecasting-logic";
 import { buildDemandHelpPrintHtml, demandForecastHelpSections } from "./LongTermForecasting_Demand.help";
+import { useWFMPageData } from "../lib/WFMPageDataContext";
 
 type ShrinkageFrequency = "per_day" | "per_week" | "per_month" | "per_year";
 interface ShrinkageItem {
@@ -2216,6 +2217,50 @@ export default function LongTermForecastingDemand() {
       </div>
     );
   };
+
+  const { setPageData } = useWFMPageData();
+  useEffect(() => {
+    const yr1 = forecastYear - 2;
+    const yr2 = forecastYear - 1;
+    const hist1 = historicalRowsByYear.find((g) => g.year === String(yr1))?.rows ?? [];
+    const hist2 = historicalRowsByYear.find((g) => g.year === String(yr2))?.rows ?? [];
+    setPageData({
+      scenario: activeScenario?.name,
+      forecastYear,
+      forecastMethod,
+      channel: detailChannel,
+      historicalData: {
+        [yr1]: hist1.map((r) => ({ month: r.monthLabel.split(" ")[0], volume: r.finalVolume })),
+        [yr2]: hist2.map((r) => ({ month: r.monthLabel.split(" ")[0], volume: r.finalVolume })),
+      },
+      forecastMonths: allForecastMonths.map((m) => ({
+        month: m.monthLabel,
+        forecast: m.forecastVol,
+        actual: m.actualVol,
+        variancePct: m.variancePct,
+        recutForecast: m.recutVol,
+      })),
+      kpis,
+      assumptions: {
+        aht: assumptions.aht,
+        chatAht: assumptions.chatAht,
+        emailAht: assumptions.emailAht,
+        chatConcurrency: assumptions.chatConcurrency,
+        shrinkage: assumptions.shrinkage,
+        voiceSlaTarget: assumptions.voiceSlaTarget,
+        voiceSlaAnswerSeconds: assumptions.voiceSlaAnswerSeconds,
+        chatSlaTarget: assumptions.chatSlaTarget,
+        emailSlaTarget: assumptions.emailSlaTarget,
+        occupancy: assumptions.occupancy,
+        fteMonthlyHours: assumptions.fteMonthlyHours,
+        operatingHoursPerDay: assumptions.operatingHoursPerDay,
+        operatingDaysPerWeek: assumptions.operatingDaysPerWeek,
+        growthRate: (assumptions as any).growthRate,
+        safetyMargin: assumptions.safetyMargin,
+      },
+    });
+    return () => setPageData(null);
+  }, [forecastYear, forecastMethod, detailChannel, activeScenario, historicalRowsByYear, allForecastMonths, kpis, assumptions, setPageData]);
 
   if (loading) return <PageLayout title="Long Term Forecasting  Demand"><div className="h-[60vh] flex flex-col items-center justify-center gap-4"><Loader2 className="size-12 text-primary animate-spin" /><p className="text-muted-foreground font-medium">Loading demand forecast data...</p></div></PageLayout>;
 

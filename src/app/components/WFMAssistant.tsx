@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Bot, Send, X, ChevronRight, Loader2, RotateCcw, Settings } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { apiUrl } from "../lib/api";
+import { useWFMPageData } from "../lib/WFMPageDataContext";
 
 interface Message {
   role: "user" | "assistant";
@@ -80,6 +81,7 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
 
   const starters = getStarters(location.pathname);
   const pageLabel = getPageLabel(location.pathname);
+  const { pageData } = useWFMPageData();
 
   useEffect(() => {
     fetch(apiUrl("/api/ai-settings"))
@@ -113,7 +115,7 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: nextMessages,
-          pageContext: { page: pageLabel, path: location.pathname },
+          pageContext: { page: pageLabel, path: location.pathname, data: pageData ?? undefined },
         }),
       });
 

@@ -2623,9 +2623,14 @@ app.post('/api/ai/chat', async (req, res) => {
 
   const { provider, model, api_key } = settings;
 
-  const systemPrompt = pageContext
-    ? `${WFM_SYSTEM_PROMPT}\n\nCurrent page context:\n${JSON.stringify(pageContext, null, 2)}`
-    : WFM_SYSTEM_PROMPT;
+  let systemPrompt = WFM_SYSTEM_PROMPT;
+  if (pageContext) {
+    const { data, ...meta } = pageContext;
+    systemPrompt += `\n\nCurrent page: ${JSON.stringify(meta)}`;
+    if (data) {
+      systemPrompt += `\n\nLive page data (use this to answer questions — do not ask the user to re-enter it):\n${JSON.stringify(data, null, 2)}`;
+    }
+  }
 
   // Set up SSE streaming
   res.setHeader('Content-Type', 'text/event-stream');

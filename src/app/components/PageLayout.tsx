@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
 import { WFMAssistant } from "./WFMAssistant";
+import { WFMPageDataProvider } from "../lib/WFMPageDataContext";
 import logo from "../../assets/logo.svg";
 
 interface PageLayoutProps {
@@ -60,6 +61,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
   const pathnames = location.pathname.split("/").filter(Boolean);
 
   return (
+    <WFMPageDataProvider>
     <div className="min-h-screen bg-canvas text-ink">
       <Toaster richColors position="top-right" />
 
@@ -142,5 +144,6 @@ export function PageLayout({ children, title }: PageLayoutProps) {
         <WFMAssistant open={false} onToggle={() => setAssistantOpen(true)} />
       )}
     </div>
+    </WFMPageDataProvider>
   );
 }
