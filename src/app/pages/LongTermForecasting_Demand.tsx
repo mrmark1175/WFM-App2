@@ -1755,61 +1755,6 @@ export default function LongTermForecastingDemand() {
     });
     return { chartData, series };
   }, [assumptions.startDate, includedChannels, effectiveFinalHistoricalDataByChannel, forecastVolumesByChannel]);
-  const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row, futureIdx) => {
-    // Use published recut volumes if available, otherwise fall back to base forecast
-    const voiceBaseVol = forecastVolumesByChannel.voice[futureIdx] ?? row.volume;
-    const voiceVol = recutVolumesByChannel?.voice[futureIdx] ?? voiceBaseVol;
-
-    const emailBaseVol = forecastVolumesByChannel.email[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.email);
-    const emailVol = recutVolumesByChannel?.email[futureIdx] ?? emailBaseVol;
-
-    const chatBaseVol = forecastVolumesByChannel.chat[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.chat);
-    const chatVol = recutVolumesByChannel?.chat[futureIdx] ?? chatBaseVol;
-
-    const casesBaseVol = forecastVolumesByChannel.cases[futureIdx] ?? Math.round(emailBaseVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email);
-    const casesVol = recutVolumesByChannel?.cases[futureIdx] ?? casesBaseVol;
-
-    const channelMetrics: Record<ChannelKey, ChannelStaffingMetrics> = {
-      voice: getChannelStaffingMetrics("voice", voiceVol, assumptions),
-      email: getChannelStaffingMetrics("email", emailVol, assumptions),
-      chat: getChannelStaffingMetrics("chat", chatVol, assumptions),
-      cases: getChannelStaffingMetrics("cases", casesVol, assumptions),
-    };
-    const pools = selectedBlendConfig.pools.map((channels, index) => {
-      const workloadHours = Number(channels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
-      const referenceVolume = channels.reduce((sum, channel) => sum + channelMetrics[channel].volume, 0);
-      const channelMix = channels.map((channel) => ({
-        channel,
-        volume: channelMetrics[channel].volume,
-        workloadHours: channelMetrics[channel].workloadHours,
-        ahtSeconds: getChannelEffectiveAhtSeconds(assumptions, channel),
-      }));
-      return { poolName: `Pool ${String.fromCharCode(65 + index)}`, channels, workloadHours, fte: calculatePooledFTE(workloadHours, referenceVolume, assumptions, channelMix), isShared: channels.length > 1 };
-    });
-    const sharedPools = pools.filter((pool) => pool.isShared);
-    const standalonePools = pools.filter((pool) => !pool.isShared);
-    const includedVolume = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].volume, 0);
-    const includedWorkloadHours = Number(includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
-    const totalIntensity = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].intensity, 0);
-    const totalRawAgents = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].rawAgents, 0);
-    const weightedAht = includedVolume > 0
-      ? roundTo(includedChannels.reduce((sum, channel) => sum + (channelMetrics[channel].volume * getChannelAhtSeconds(assumptions, channel)), 0) / includedVolume, 1)
-      : 0;
-    return {
-      ...row,
-      volume: includedVolume,
-      workloadHours: includedWorkloadHours,
-      aht: weightedAht,
-      occupancy: totalRawAgents > 0 ? roundTo((totalIntensity / totalRawAgents) * 100, 1) : 0,
-      activeBlendPreset: selectedBlendConfig.label,
-      sharedPoolWorkload: Number(sharedPools.reduce((sum, pool) => sum + pool.workloadHours, 0).toFixed(1)),
-      sharedPoolFTE: Number(sharedPools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
-      standalonePoolFTE: Number(standalonePools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
-      totalRequiredFTE: Number(pools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
-      pools,
-      channelMetrics,
-    };
-  }), [forecastData, forecastVolumesByChannel, selectedBlendConfig, assumptions, recutVolumesByChannel]);
   // ── Re-cut helpers ────────────────────────────────────────────────────────────
   // Which forecast month-indices (0-based) are fully in the past?
   const completedMonthIndices = useMemo<number[]>(() => {
@@ -1858,6 +1803,77 @@ export default function LongTermForecastingDemand() {
     return { voice: compute("voice"), email: compute("email"), chat: compute("chat"), cases: compute("cases") };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [completedMonthIndices, demandActuals, forecastVolumesByChannel, assumptions.startDate]);
+
+  const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row, futureIdx) => {
+    // For each channel: prefer published re-cut (for Intraday cross-device sync), then
+    // live-compute from the re-cut factor so Demand Output stays in sync with the
+    // Re-cut Forecast column as soon as actuals are entered (no Publish click required).
+    const isCompletedIdx = completedMonthIndices.includes(futureIdx);
+    const computeVol = (ch: ChannelKey, baseVol: number): number => {
+      if (recutVolumesByChannel) return recutVolumesByChannel[ch][futureIdx] ?? baseVol;
+      // For completed months use the actual directly (same as published re-cut logic)
+      if (isCompletedIdx) {
+        const actual = demandActuals[getActualKey(futureIdx, ch)];
+        if (actual != null && actual > 0) return actual;
+      }
+      // Apply live re-cut factor to future months
+      const factor = recutFactorByChannel[ch];
+      return factor != null ? Math.round(baseVol * factor) : baseVol;
+    };
+
+    const voiceBaseVol = forecastVolumesByChannel.voice[futureIdx] ?? row.volume;
+    const voiceVol = computeVol("voice", voiceBaseVol);
+
+    const emailBaseVol = forecastVolumesByChannel.email[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.email);
+    const emailVol = computeVol("email", emailBaseVol);
+
+    const chatBaseVol = forecastVolumesByChannel.chat[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.chat);
+    const chatVol = computeVol("chat", chatBaseVol);
+
+    const casesBaseVol = forecastVolumesByChannel.cases[futureIdx] ?? Math.round(emailBaseVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email);
+    const casesVol = computeVol("cases", casesBaseVol);
+
+    const channelMetrics: Record<ChannelKey, ChannelStaffingMetrics> = {
+      voice: getChannelStaffingMetrics("voice", voiceVol, assumptions),
+      email: getChannelStaffingMetrics("email", emailVol, assumptions),
+      chat: getChannelStaffingMetrics("chat", chatVol, assumptions),
+      cases: getChannelStaffingMetrics("cases", casesVol, assumptions),
+    };
+    const pools = selectedBlendConfig.pools.map((channels, index) => {
+      const workloadHours = Number(channels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
+      const referenceVolume = channels.reduce((sum, channel) => sum + channelMetrics[channel].volume, 0);
+      const channelMix = channels.map((channel) => ({
+        channel,
+        volume: channelMetrics[channel].volume,
+        workloadHours: channelMetrics[channel].workloadHours,
+        ahtSeconds: getChannelEffectiveAhtSeconds(assumptions, channel),
+      }));
+      return { poolName: `Pool ${String.fromCharCode(65 + index)}`, channels, workloadHours, fte: calculatePooledFTE(workloadHours, referenceVolume, assumptions, channelMix), isShared: channels.length > 1 };
+    });
+    const sharedPools = pools.filter((pool) => pool.isShared);
+    const standalonePools = pools.filter((pool) => !pool.isShared);
+    const includedVolume = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].volume, 0);
+    const includedWorkloadHours = Number(includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].workloadHours, 0).toFixed(1));
+    const totalIntensity = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].intensity, 0);
+    const totalRawAgents = includedChannels.reduce((sum, channel) => sum + channelMetrics[channel].rawAgents, 0);
+    const weightedAht = includedVolume > 0
+      ? roundTo(includedChannels.reduce((sum, channel) => sum + (channelMetrics[channel].volume * getChannelAhtSeconds(assumptions, channel)), 0) / includedVolume, 1)
+      : 0;
+    return {
+      ...row,
+      volume: includedVolume,
+      workloadHours: includedWorkloadHours,
+      aht: weightedAht,
+      occupancy: totalRawAgents > 0 ? roundTo((totalIntensity / totalRawAgents) * 100, 1) : 0,
+      activeBlendPreset: selectedBlendConfig.label,
+      sharedPoolWorkload: Number(sharedPools.reduce((sum, pool) => sum + pool.workloadHours, 0).toFixed(1)),
+      sharedPoolFTE: Number(sharedPools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
+      standalonePoolFTE: Number(standalonePools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
+      totalRequiredFTE: Number(pools.reduce((sum, pool) => sum + pool.fte, 0).toFixed(1)),
+      pools,
+      channelMetrics,
+    };
+  }), [forecastData, forecastVolumesByChannel, selectedBlendConfig, assumptions, recutVolumesByChannel, recutFactorByChannel, completedMonthIndices, demandActuals]);
 
   const activeRecutFactor = recutFactorByChannel[detailChannel];
 
@@ -2847,7 +2863,7 @@ export default function LongTermForecastingDemand() {
                       <CardTitle className="text-sm font-bold">Demand Output — Future Months</CardTitle>
                       <p className="text-xs text-foreground/60 mt-0.5">
                         Per-channel volume forecast for all active channels.{" "}
-                        {recutVolumesByChannel != null && <span className="font-semibold text-foreground">Re-cut volumes applied.</span>}
+                        {(recutVolumesByChannel != null || Object.values(recutFactorByChannel).some(f => f !== null)) && <span className="font-semibold text-foreground">Re-cut volumes applied.</span>}
                       </p>
                     </div>
                   </div>
@@ -2865,7 +2881,7 @@ export default function LongTermForecastingDemand() {
                     </TableHeader>
                     <TableBody>
                       {futureData.map((row) => {
-                        const isRecut = recutVolumesByChannel != null;
+                        const isRecut = recutVolumesByChannel != null || Object.values(recutFactorByChannel).some(f => f !== null);
                         const volClass = isRecut ? "text-foreground font-bold" : "text-primary font-bold";
                         return (
                           <TableRow key={`${row.year}-${row.month}`} className="hover:bg-muted/30">
