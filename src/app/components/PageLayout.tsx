@@ -129,13 +129,18 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           {children}
         </main>
 
-        {/* WFM Assistant — sticky right panel */}
+        {/* WFM Assistant — sticky right panel (always rendered; collapsed tab is position:fixed) */}
         {assistantOpen && (
           <div className="sticky top-11 h-[calc(100vh-44px)] self-start">
             <WFMAssistant open={true} onToggle={() => setAssistantOpen(false)} />
           </div>
         )}
       </div>
+
+      {/* Collapsed tab — rendered outside the grid so position:fixed works */}
+      {!assistantOpen && (
+        <WFMAssistant open={false} onToggle={() => setAssistantOpen(true)} />
+      )}
     </div>
   );
 }
