@@ -30,6 +30,7 @@ interface PlanConfig {
   rampNestingWeeks: number;
   rampNestingPct: number;
   startingHc: number;
+  billableFte: number;
 }
 
 interface WeekInput {
@@ -62,6 +63,7 @@ interface WeekCalc extends WeekMeta {
   knownExits: number; projectedHc: number;
   actualHc: number | null; actualAttrition: number | null;
   gapSurplus: number; actualGapSurplus: number | null;
+  billableGapSurplus: number | null; // Proj. HC − Billable FTE; null when billableFte = 0
   achievedSLAProj: number | null;   // Erlang C SLA% at projected HC; null for email
   achievedSLAActual: number | null; // Erlang C SLA% at actual HC; null if no actual HC or email
 }
@@ -108,6 +110,7 @@ const DEFAULT_CONFIG: PlanConfig = {
   rampNestingWeeks: 2,
   rampNestingPct: 50,
   startingHc: 0,
+  billableFte: 0,
 };
 
 const CHANNEL_LABELS: Record<ChannelKey, string> = { voice: "Voice", chat: "Chat", email: "Email", cases: "Cases" };
@@ -461,6 +464,7 @@ export function CapacityPlanning() {
           rampNestingWeeks: cfgData.ramp_nesting_weeks ?? DEFAULT_CONFIG.rampNestingWeeks,
           rampNestingPct: parseFloat(cfgData.ramp_nesting_pct) ?? DEFAULT_CONFIG.rampNestingPct,
           startingHc: parseFloat(cfgData.starting_hc) ?? DEFAULT_CONFIG.startingHc,
+          billableFte: parseFloat(cfgData.billable_fte) || DEFAULT_CONFIG.billableFte,
         });
       } else {
         setConfig(DEFAULT_CONFIG);
@@ -525,6 +529,7 @@ export function CapacityPlanning() {
             ramp_nesting_weeks: next.rampNestingWeeks,
             ramp_nesting_pct: next.rampNestingPct,
             starting_hc: next.startingHc,
+            billable_fte: next.billableFte,
           }),
         });
       } catch { toast.error("Failed to save plan config."); }
@@ -814,6 +819,7 @@ export function CapacityPlanning() {
 
       const gapSurplus = roundTo(modelProjHC - requiredFTE, 1);
       const actualGapSurplus = actualHc != null ? roundTo(actualHc - requiredFTE, 1) : null;
+      const billableGapSurplus = config.billableFte > 0 ? roundTo(modelProjHC - config.billableFte, 1) : null;
 
       // Helper: compute achieved SLA% from a given FTE headcount (Erlang A when patience > 0)
       function achievedSLFor(hc: number): number | null {
@@ -855,7 +861,7 @@ export function CapacityPlanning() {
         projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
         knownExits, projectedHc: modelProjHC, actualHc, actualAttrition,
-        gapSurplus, actualGapSurplus, achievedSLAProj, achievedSLAActual,
+        gapSurplus, actualGapSurplus, billableGapSurplus, achievedSLAProj, achievedSLAActual,
       };
     });
   }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay,
@@ -893,6 +899,10 @@ export function CapacityPlanning() {
     () => Math.max(1, ...weekCalcs.map(w => Math.abs(w.gapSurplus))),
     [weekCalcs],
   );
+  const maxAbsBillableGap = useMemo(
+    () => Math.max(1, ...weekCalcs.map(w => Math.abs(w.billableGapSurplus ?? 0))),
+    [weekCalcs],
+  );
 
   // ── Chart data: Required FTE vs Projected HC vs Actual HC
   const chartData = useMemo(() => weekCalcs.map(wk => ({
@@ -900,7 +910,8 @@ export function CapacityPlanning() {
     required: Math.ceil(wk.requiredFTE),
     projected: roundTo(wk.projectedHc, 1),
     actual: wk.actualHc,
-  })), [weekCalcs]);
+    billable: config.billableFte > 0 ? config.billableFte : undefined,
+  })), [weekCalcs, config.billableFte]);
 
   // ── LOB switch resets channel tab
   function handleLobSwitch(lobId: number) {
@@ -1010,6 +1021,28 @@ export function CapacityPlanning() {
             <p className="text-xs text-black mt-3">
               Ramp: {config.rampTrainingWeeks}wk training (0%) → {config.rampNestingWeeks}wk nesting ({config.rampNestingPct}%) → full production (100%)
             </p>
+
+            {/* ── Billing Parameters */}
+            <div className="mt-4 pt-3 border-t border-border">
+              <p className="text-xs font-semibold text-black mb-2">Billing Parameters</p>
+              <div className="flex items-end gap-4">
+                <div className="space-y-1">
+                  <Label className="text-xs text-black">Billable FTE (Contract Max)</Label>
+                  <Input
+                    type="number" min={0} step={1}
+                    value={config.billableFte || ""}
+                    placeholder="0 — not set"
+                    onChange={e => updateConfig({ billableFte: parseFloat(e.target.value) || 0 })}
+                    className="h-8 text-xs w-44"
+                  />
+                </div>
+                {config.billableFte > 0 && (
+                  <p className="text-xs text-black pb-1">
+                    Client is billed for up to <span className="font-semibold">{fmt1(config.billableFte)}</span> FTE. The table will show a second gap row against this ceiling.
+                  </p>
+                )}
+              </div>
+            </div>
 
             {/* ── Staffing Parameters (read-only, sourced from LOB Settings & Shrinkage) */}
             <div className="mt-4 pt-3 border-t border-border">
@@ -1170,6 +1203,9 @@ export function CapacityPlanning() {
                 <Line type="monotone" dataKey="required" name="Required FTE" stroke="#dc2626" strokeWidth={2.5} dot={false} />
                 <Line type="monotone" dataKey="projected" name="Projected HC" stroke="#2563eb" strokeWidth={2} strokeDasharray="5 3" dot={false} />
                 <Line type="monotone" dataKey="actual" name="Actual HC" stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                {config.billableFte > 0 && (
+                  <Line type="monotone" dataKey="billable" name="Billable FTE" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                )}
               </ComposedChart>
             </ResponsiveContainer>
           </CardContent>
@@ -1521,13 +1557,13 @@ export function CapacityPlanning() {
 
             </tbody>
 
-            {/* ── STICKY FOOTER: Required FTE + Gap/Surplus — always visible to the manager */}
+            {/* ── STICKY FOOTER: Required FTE + Billable FTE + Gap rows */}
             <tfoot>
-              {/* Required FTE — the number every manager is actually trying to hit */}
+              {/* Required FTE */}
               <tr>
                 <td
                   className="z-30 border-r border-border bg-card border-t-2 border-t-primary px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
-                  style={{ position: "sticky", left: 0, bottom: 36 }}
+                  style={{ position: "sticky", left: 0, bottom: config.billableFte > 0 ? 108 : 36 }}
                 >
                   Required FTE
                 </td>
@@ -1535,34 +1571,79 @@ export function CapacityPlanning() {
                   <td
                     key={wk.weekOffset}
                     className="z-20 bg-card border-t-2 border-t-primary px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
-                    style={{ position: "sticky", bottom: 36 }}
+                    style={{ position: "sticky", bottom: config.billableFte > 0 ? 108 : 36 }}
                   >
                     {fmt1(wk.requiredFTE)}
                   </td>
                 ))}
               </tr>
-              {/* Proj. Gap / Surplus — the manager's scorecard, heat-mapped by magnitude */}
+
+              {/* Billable FTE — only when configured */}
+              {config.billableFte > 0 && (
+                <tr>
+                  <td
+                    className="z-30 border-r border-border bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs font-bold whitespace-nowrap text-amber-700 dark:text-amber-400"
+                    style={{ position: "sticky", left: 0, bottom: 72 }}
+                  >
+                    Billable FTE
+                  </td>
+                  {weekCalcs.map(wk => (
+                    <td
+                      key={wk.weekOffset}
+                      className="z-20 bg-amber-50 dark:bg-amber-950/20 px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-amber-700 dark:text-amber-400"
+                      style={{ position: "sticky", bottom: 72 }}
+                    >
+                      {fmt1(config.billableFte)}
+                    </td>
+                  ))}
+                </tr>
+              )}
+
+              {/* Proj. Gap / Surplus vs Required FTE */}
               <tr>
                 <td
                   className="z-30 border-r border-border bg-card px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
-                  style={{ position: "sticky", left: 0, bottom: 0 }}
+                  style={{ position: "sticky", left: 0, bottom: config.billableFte > 0 ? 36 : 0 }}
                 >
-                  Proj. Gap / Surplus
+                  Proj. Gap / Surplus{config.billableFte > 0 ? " (vs Required)" : ""}
                 </td>
                 {weekCalcs.map(wk => {
                   const v = wk.gapSurplus;
-                  const color = v >= 0 ? "text-black dark:text-black" : "text-black dark:text-black";
                   return (
                     <td
                       key={wk.weekOffset}
-                      className={`z-20 bg-card px-2 py-2 text-right text-xs font-bold whitespace-nowrap ${color}`}
-                      style={{ position: "sticky", bottom: 0, ...gapCellStyle(v, maxAbsGap) }}
+                      className="z-20 bg-card px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
+                      style={{ position: "sticky", bottom: config.billableFte > 0 ? 36 : 0, ...gapCellStyle(v, maxAbsGap) }}
                     >
                       {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
                     </td>
                   );
                 })}
               </tr>
+
+              {/* Proj. Gap / Surplus vs Billable FTE — only when configured */}
+              {config.billableFte > 0 && (
+                <tr>
+                  <td
+                    className="z-30 border-r border-border bg-card px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
+                    style={{ position: "sticky", left: 0, bottom: 0 }}
+                  >
+                    Proj. Gap / Surplus (vs Billable)
+                  </td>
+                  {weekCalcs.map(wk => {
+                    const v = wk.billableGapSurplus ?? 0;
+                    return (
+                      <td
+                        key={wk.weekOffset}
+                        className="z-20 bg-card px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
+                        style={{ position: "sticky", bottom: 0, ...gapCellStyle(v, maxAbsBillableGap) }}
+                      >
+                        {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              )}
             </tfoot>
           </table>
         </div>
