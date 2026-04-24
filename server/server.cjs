@@ -2553,15 +2553,19 @@ app.post('/api/ai-settings/test', async (req, res) => {
       });
       if (!resp.ok) throw new Error(`OpenAI ${resp.status}`);
     } else if (provider === 'gemini') {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}`, {
+      // Always test with the known-good free-tier model regardless of what's selected,
+      // so a bad saved model can't block the key validation
+      const testModel = 'gemini-1.5-flash';
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${api_key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: 'Hi' }] }] }),
       });
       if (!resp.ok) {
-        if (resp.status === 429) throw new Error('Rate limit hit (free tier quota). Your key is valid — just wait 60 seconds and try again, or use Gemini 1.5 Flash 8B which has the highest free quota.');
-        if (resp.status === 400) throw new Error('Invalid model name or request. Try selecting Gemini 1.5 Flash instead.');
-        if (resp.status === 403) throw new Error('API key invalid or Gemini API not enabled. Check your key in Google AI Studio.');
+        if (resp.status === 429) throw new Error('Rate limit hit (free tier quota). Your key is valid — just wait 60 seconds and try again.');
+        if (resp.status === 403) throw new Error('API key invalid or Gemini API not enabled. Check your key in Google AI Studio (aistudio.google.com).');
+        if (resp.status === 404) throw new Error('Gemini endpoint not found. Make sure you are using a Google AI Studio API key (not a GCP key).');
+        if (resp.status === 400) throw new Error('Bad request. Make sure your key is from Google AI Studio, not Google Cloud Console.');
         throw new Error(`Gemini error ${resp.status}`);
       }
     } else if (provider === 'groq') {
