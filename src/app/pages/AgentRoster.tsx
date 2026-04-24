@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { Card, CardContent } from "../components/ui/card";
@@ -12,7 +12,7 @@ import { Switch } from "../components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "../components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { Plus, Pencil, Trash2, Users, Phone, MessageSquare, Mail, Search, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Users, Phone, MessageSquare, Mail, Search, Loader2, ClipboardPaste } from "lucide-react";
 import { toast } from "sonner";
 import { useLOB } from "../lib/lobContext";
 
@@ -99,6 +99,45 @@ function statusColor(s: string) {
   return "bg-muted text-muted-foreground";
 }
 
+// ── Paste-from-spreadsheet helpers ───────────────────────────────────────────
+
+const PASTE_FIELD_OPTIONS = [
+  { value: "skip", label: "— Skip —" },
+  { value: "first_name", label: "First Name" },
+  { value: "last_name", label: "Last Name" },
+  { value: "employee_id", label: "Employee ID" },
+  { value: "email", label: "Email" },
+  { value: "team_leader_name", label: "Team Leader" },
+  { value: "team_name", label: "Team Name" },
+];
+
+const HEADER_MAP: Record<string, string> = {
+  "first name": "first_name", "firstname": "first_name", "first": "first_name", "given name": "first_name",
+  "last name": "last_name", "lastname": "last_name", "last": "last_name", "surname": "last_name", "family name": "last_name",
+  "employee id": "employee_id", "emp id": "employee_id", "employee_id": "employee_id", "emp_id": "employee_id",
+  "email": "email", "e-mail": "email", "email address": "email",
+  "team leader": "team_leader_name", "team lead": "team_leader_name", "tl": "team_leader_name",
+  "leader": "team_leader_name", "supervisor": "team_leader_name", "team_leader": "team_leader_name",
+  "team": "team_name", "team name": "team_name", "team_name": "team_name", "group": "team_name",
+};
+
+function parseTSV(text: string): string[][] {
+  return text.trim().split(/\r?\n/).map((row) => row.split("\t"));
+}
+
+function detectColMapping(headerRow: string[]): string[] {
+  return headerRow.map((h) => HEADER_MAP[h.toLowerCase().trim()] ?? "skip");
+}
+
+function looksLikeHeader(row: string[]): boolean {
+  return detectColMapping(row).some((m) => m !== "skip");
+}
+
+function defaultColMapping(colCount: number): string[] {
+  const defaults = ["first_name", "last_name", "team_leader_name"];
+  return Array.from({ length: colCount }, (_, i) => defaults[i] ?? "skip");
+}
+
 export function AgentRoster() {
   const { lobs } = useLOB();
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -116,6 +155,14 @@ export function AgentRoster() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletingAgent, setDeletingAgent] = useState<Agent | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [rawRows, setRawRows] = useState<string[][]>([]);
+  const [colMapping, setColMapping] = useState<string[]>([]);
+  const [hasHeader, setHasHeader] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ success: number; errors: string[] } | null>(null);
+  const pasteAreaRef = useRef<HTMLTextAreaElement>(null);
 
   const load = () => {
     setLoading(true);
@@ -207,6 +254,58 @@ export function AgentRoster() {
     });
   };
 
+  const dataRows = useMemo(
+    () => (hasHeader ? rawRows.slice(1) : rawRows).filter((r) => r.some((c) => c.trim())),
+    [rawRows, hasHeader]
+  );
+
+  const validImportCount = useMemo(() => {
+    return dataRows.filter((row) => {
+      const a: Record<string, string> = {};
+      colMapping.forEach((field, i) => { if (field !== "skip" && row[i]?.trim()) a[field] = row[i].trim(); });
+      return a.first_name || a.last_name;
+    }).length;
+  }, [dataRows, colMapping]);
+
+  const openPasteDialog = () => {
+    setRawRows([]); setColMapping([]); setHasHeader(true); setImportResult(null);
+    setPasteOpen(true);
+    setTimeout(() => pasteAreaRef.current?.focus(), 80);
+  };
+
+  const handlePasteText = (text: string) => {
+    const rows = parseTSV(text);
+    if (rows.length === 0) return;
+    setRawRows(rows);
+    const isHeader = looksLikeHeader(rows[0]);
+    setHasHeader(isHeader);
+    setColMapping(isHeader ? detectColMapping(rows[0]) : defaultColMapping(rows[0].length));
+    setImportResult(null);
+  };
+
+  const handleBulkImport = async () => {
+    const agentsToImport = dataRows
+      .map((row) => {
+        const a: Record<string, string> = {};
+        colMapping.forEach((field, i) => { if (field !== "skip" && row[i]?.trim()) a[field] = row[i].trim(); });
+        return a;
+      })
+      .filter((a) => a.first_name || a.last_name);
+    if (agentsToImport.length === 0) { toast.error("No valid rows — each row needs at least a first or last name"); return; }
+    setImporting(true);
+    try {
+      const res = await fetch(apiUrl("/api/scheduling/agents/bulk"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agents: agentsToImport }),
+      });
+      const data = await res.json();
+      setImportResult({ success: data.imported, errors: data.errors ?? [] });
+      if (data.imported > 0) { load(); toast.success(`${data.imported} agent${data.imported !== 1 ? "s" : ""} imported`); }
+    } catch { toast.error("Bulk import failed"); }
+    finally { setImporting(false); }
+  };
+
   const stats = useMemo(() => ({
     total: agents.length,
     active: agents.filter((a) => a.status === "active").length,
@@ -267,7 +366,10 @@ export function AgentRoster() {
               <SelectItem value="on_leave">On Leave</SelectItem>
             </SelectContent>
           </Select>
-          <Button className="gap-2 ml-auto" onClick={openAdd}>
+          <Button variant="outline" className="gap-2" onClick={openPasteDialog}>
+            <ClipboardPaste className="size-4" />Import from Spreadsheet
+          </Button>
+          <Button className="gap-2" onClick={openAdd}>
             <Plus className="size-4" />Add Agent
           </Button>
         </div>
@@ -581,6 +683,166 @@ export function AgentRoster() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* Paste-from-spreadsheet import dialog */}
+        <Dialog open={pasteOpen} onOpenChange={setPasteOpen}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <ClipboardPaste className="size-5" />Import from Spreadsheet
+              </DialogTitle>
+            </DialogHeader>
+
+            {rawRows.length === 0 ? (
+              /* ── Step 1: paste zone ── */
+              <div className="flex flex-col items-center gap-4 py-6 px-2">
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <ClipboardPaste className="size-12 text-muted-foreground/30" />
+                  <p className="text-sm font-semibold">Copy cells from Excel or Google Sheets, then paste below</p>
+                  <p className="text-xs text-muted-foreground">
+                    Select your columns (e.g. First Name · Last Name · Team Leader), press <kbd className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">Ctrl+C</kbd>, then click inside the box and press <kbd className="px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono">Ctrl+V</kbd>
+                  </p>
+                </div>
+                <textarea
+                  ref={pasteAreaRef}
+                  rows={5}
+                  className="w-full font-mono text-xs border border-border rounded-md px-3 py-2 bg-background resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground/40"
+                  placeholder="Paste here…"
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const text = e.clipboardData.getData("text/plain");
+                    if (text) handlePasteText(text);
+                  }}
+                  onChange={(e) => {
+                    if (e.target.value.includes("\t")) handlePasteText(e.target.value);
+                  }}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Column order is auto-detected from headers. Supported: First Name, Last Name, Employee ID, Email, Team Leader, Team Name.
+                </p>
+              </div>
+            ) : importResult ? (
+              /* ── Step 3: result ── */
+              <div className="py-4 space-y-3">
+                {importResult.success > 0 && (
+                  <div className="rounded-lg px-4 py-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm font-semibold">
+                    {importResult.success} agent{importResult.success !== 1 ? "s" : ""} imported successfully.
+                  </div>
+                )}
+                {importResult.errors.length > 0 && (
+                  <div className="rounded-lg px-4 py-3 bg-rose-50 border border-rose-200 text-rose-800 text-sm">
+                    <p className="font-semibold mb-1">{importResult.errors.length} row{importResult.errors.length !== 1 ? "s" : ""} skipped:</p>
+                    <ul className="list-disc list-inside text-xs space-y-0.5">
+                      {importResult.errors.map((e, i) => <li key={i}>{e}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* ── Step 2: mapping + preview ── */
+              <div className="space-y-5 py-1">
+                {/* Info bar */}
+                <div className="flex items-center gap-4 bg-muted/40 rounded-lg px-4 py-2 text-sm flex-wrap">
+                  <span className="text-muted-foreground flex-1">
+                    <strong>{dataRows.length}</strong> data row{dataRows.length !== 1 ? "s" : ""} detected
+                  </span>
+                  <label className="flex items-center gap-2 cursor-pointer shrink-0">
+                    <Checkbox checked={hasHeader} onCheckedChange={(v) => setHasHeader(!!v)} />
+                    <span className="text-xs">First row is a header</span>
+                  </label>
+                  <button
+                    className="text-xs text-muted-foreground underline underline-offset-2 shrink-0"
+                    onClick={() => { setRawRows([]); setTimeout(() => pasteAreaRef.current?.focus(), 80); }}
+                  >
+                    Paste again
+                  </button>
+                </div>
+
+                {/* Column mapping */}
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-foreground/50 mb-2">Map Columns</p>
+                  <div className="flex flex-wrap gap-3">
+                    {rawRows[0]?.map((_, colIdx) => (
+                      <div key={colIdx} className="flex flex-col gap-1">
+                        <span className="text-[11px] text-muted-foreground font-medium truncate max-w-[140px]">
+                          {hasHeader && rawRows[0][colIdx] ? rawRows[0][colIdx] : `Column ${colIdx + 1}`}
+                        </span>
+                        <Select
+                          value={colMapping[colIdx] ?? "skip"}
+                          onValueChange={(v) => setColMapping((p) => { const n = [...p]; n[colIdx] = v; return n; })}
+                        >
+                          <SelectTrigger className="h-8 text-xs w-[140px]"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {PASTE_FIELD_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Preview table */}
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-foreground/50 mb-2">
+                    Preview — first {Math.min(dataRows.length, 5)} of {dataRows.length} rows
+                  </p>
+                  <div className="rounded border border-border/50 overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/40">
+                        <tr>
+                          {colMapping.map((field, i) => (
+                            <th key={i} className="px-3 py-2 text-left font-semibold text-foreground/60 whitespace-nowrap">
+                              {PASTE_FIELD_OPTIONS.find((o) => o.value === field)?.label ?? "Skip"}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dataRows.slice(0, 5).map((row, ri) => (
+                          <tr key={ri} className="border-t border-border/30 hover:bg-muted/20">
+                            {colMapping.map((field, ci) => (
+                              <td key={ci} className={`px-3 py-2 ${field === "skip" ? "text-muted-foreground/40 italic" : ""}`}>
+                                {row[ci] ?? ""}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {dataRows.length > 5 && (
+                    <p className="text-[11px] text-muted-foreground mt-1 text-right">…and {dataRows.length - 5} more rows</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <DialogFooter>
+              {!importResult && rawRows.length === 0 && (
+                <Button variant="outline" onClick={() => setPasteOpen(false)}>Cancel</Button>
+              )}
+              {!importResult && rawRows.length > 0 && (
+                <>
+                  <Button variant="outline" onClick={() => setPasteOpen(false)}>Cancel</Button>
+                  <Button onClick={handleBulkImport} disabled={importing || validImportCount === 0}>
+                    {importing && <Loader2 className="size-4 animate-spin mr-2" />}
+                    Import {validImportCount} agent{validImportCount !== 1 ? "s" : ""}
+                  </Button>
+                </>
+              )}
+              {importResult && (
+                <>
+                  {importResult.errors.length > 0 && (
+                    <Button variant="outline" onClick={() => { setRawRows([]); setImportResult(null); setTimeout(() => pasteAreaRef.current?.focus(), 80); }}>
+                      Paste Again
+                    </Button>
+                  )}
+                  <Button onClick={() => setPasteOpen(false)}>Done</Button>
+                </>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </PageLayout>
   );

@@ -1790,6 +1790,46 @@ app.post('/api/scheduling/agents', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.post('/api/scheduling/agents/bulk', async (req, res) => {
+  const { agents } = req.body;
+  if (!Array.isArray(agents) || agents.length === 0) {
+    return res.status(400).json({ error: 'agents array is required' });
+  }
+  const defaultAvail = JSON.stringify({
+    mon: { available: true, start: '08:00', end: '17:00' },
+    tue: { available: true, start: '08:00', end: '17:00' },
+    wed: { available: true, start: '08:00', end: '17:00' },
+    thu: { available: true, start: '08:00', end: '17:00' },
+    fri: { available: true, start: '08:00', end: '17:00' },
+    sat: { available: false, start: '08:00', end: '17:00' },
+    sun: { available: false, start: '08:00', end: '17:00' },
+  });
+  const imported = [];
+  const errors = [];
+  for (const a of agents) {
+    const firstName = (a.first_name || '').trim();
+    const lastName = (a.last_name || '').trim();
+    if (!firstName && !lastName) { errors.push('Skipped: empty name'); continue; }
+    const fullName = [firstName, lastName].filter(Boolean).join(' ');
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO scheduling_agents
+           (organization_id, employee_id, first_name, last_name, full_name, email, contract_type,
+            skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability,
+            status, shift_length_hours, team_name, team_leader_name)
+         VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id, full_name`,
+        [a.employee_id||null, firstName||null, lastName||null, fullName, a.email||null,
+         a.contract_type||'full_time', true, false, false, [], [], defaultAvail,
+         a.status||'active', 9, a.team_name||null, a.team_leader_name||null]
+      );
+      imported.push(rows[0]);
+    } catch (err) {
+      errors.push(`${fullName}: ${err.message}`);
+    }
+  }
+  res.json({ imported: imported.length, errors, results: imported });
+});
+
 app.put('/api/scheduling/agents/:id', async (req, res) => {
   const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name } = req.body;
   const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
