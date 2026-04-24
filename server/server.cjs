@@ -2249,7 +2249,7 @@ app.delete('/api/scheduling/demand-snapshots/:id', async (req, res) => {
 
 // ── Auto-Scheduler: Generate ────────────────────────────────────────────────
 app.post('/api/scheduling/auto-generate', async (req, res) => {
-  const { lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, clear_published, created_by } = req.body;
+  const { lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, clear_published, created_by, template_id } = req.body;
   if (!lob_id || !snapshot_id || !horizon_start || !horizon_end) {
     return res.status(400).json({ error: 'lob_id, snapshot_id, horizon_start, horizon_end required' });
   }
@@ -2269,7 +2269,7 @@ app.post('/api/scheduling/auto-generate', async (req, res) => {
     const result = await generateSchedule({
       pool, lob_id, snapshot_id, horizon_start, horizon_end,
       fairness_enabled: !!fairness_enabled, created_by: created_by || null,
-      rules,
+      rules, template_id: template_id || null,
     });
     res.json(result);
   } catch (err) {

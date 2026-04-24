@@ -73,7 +73,22 @@ function shuffleArray(arr) {
 
 // ── Break/lunch placement for a given shift length ───────────────────────────
 // Returns activity offsets in minutes from shift start.
-function activityPlan(shiftHours, rules) {
+// templateBreakRules: optional array from scheduling_shift_templates.break_rules —
+//   if provided, overrides the rules-based timing with the template's structure.
+function activityPlan(shiftHours, rules, templateBreakRules) {
+  const shiftMin = Math.round(shiftHours * 60);
+
+  if (templateBreakRules && Array.isArray(templateBreakRules) && templateBreakRules.length > 0) {
+    return templateBreakRules
+      .filter((r) => Math.round(r.after_hours * 60) + Number(r.duration_minutes) <= shiftMin)
+      .map((r) => ({
+        type: Number(r.duration_minutes) >= 30 ? 'meal' : 'break',
+        offset: Math.round(r.after_hours * 60),
+        duration: Number(r.duration_minutes),
+        paid: !!r.is_paid,
+      }));
+  }
+
   const r = { ...DEFAULT_RULES, ...rules };
   const b1Mins  = Math.round(r.break_1_after_hours * 60);
   const lnMins  = Math.round(r.lunch_after_hours * 60);
@@ -84,14 +99,14 @@ function activityPlan(shiftHours, rules) {
   if (shiftHours >= 8.5) {
     return [
       { type: 'break', offset: b1Mins, duration: breakDur, paid: true },
-      { type: 'lunch', offset: lnMins, duration: lunchDur, paid: false },
+      { type: 'meal', offset: lnMins, duration: lunchDur, paid: false },
       { type: 'break', offset: b2Mins, duration: breakDur, paid: true },
     ];
   }
   if (shiftHours >= 6) {
     return [
-      { type: 'break', offset: b1Mins,                        duration: breakDur,               paid: true },
-      { type: 'lunch', offset: Math.round(shiftHours * 30),   duration: Math.min(lunchDur, 30), paid: false },
+      { type: 'break', offset: b1Mins,                       duration: breakDur,               paid: true },
+      { type: 'meal', offset: Math.round(shiftHours * 30),   duration: Math.min(lunchDur, 30), paid: false },
     ];
   }
   return [
@@ -328,7 +343,7 @@ function totalShortageScore(scheduled, demandCurves) {
 
 // ── Start-time assignment (demand-proportional scoring) ─────────────────────
 // agents: array — caller controls ordering to break greedy bias.
-function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules) {
+function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules, templateBreakRules) {
   const residual = demandCurves.map((curve) => [...curve]);
   const startMap = new Map();
 
@@ -355,7 +370,7 @@ function assignStartTimes(agents, restMap, demandCurves, hoursOfOperation, chann
       for (let s = 0; s + shiftMin <= 1440; s += gran) candidateStarts.add(s);
     }
 
-    const plan = activityPlan(shiftH, rules).map((a) => ({
+    const plan = activityPlan(shiftH, rules, templateBreakRules).map((a) => ({
       type: a.type, offsetFromStart: a.offset, duration: a.duration, paid: a.paid,
     }));
 
@@ -482,7 +497,7 @@ function applyStagger(startMap, demandCurves, intervalMinutes) {
 // try every valid start time, and keep the one that minimises total squared shortage.
 // Each re-seat is incremental (O(coveredIntervals)) rather than a full recompute.
 // Runs up to MAX_ITER times until no agent can be improved.
-function localSearchImprove(agents, restMap, startMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules) {
+function localSearchImprove(agents, restMap, startMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules, templateBreakRules) {
   const MAX_ITER = 3;
   const nIntervals = Math.ceil(1440 / intervalMinutes);
   const gran = Number((rules || DEFAULT_RULES).shift_start_granularity_mins || 30);
@@ -531,7 +546,7 @@ function localSearchImprove(agents, restMap, startMap, demandCurves, hoursOfOper
         for (let s = 0; s + shiftMin <= 1440; s += gran) candidateStarts.add(s);
       }
 
-      const basePlan = activityPlan(shiftH, rules).map((a) => ({
+      const basePlan = activityPlan(shiftH, rules, templateBreakRules).map((a) => ({
         type: a.type, offsetFromStart: a.offset, duration: a.duration, paid: a.paid,
       }));
 
@@ -570,7 +585,7 @@ function localSearchImprove(agents, restMap, startMap, demandCurves, hoursOfOper
       }
 
       // Apply best start and add back contribution
-      const bestPlan = activityPlan(shiftH, rules).map((a) => ({
+      const bestPlan = activityPlan(shiftH, rules, templateBreakRules).map((a) => ({
         type: a.type, offsetFromStart: a.offset, duration: a.duration, paid: a.paid,
       }));
       if (bestStart !== info.startMin) anyImproved = true;
@@ -623,8 +638,20 @@ function computeCoverage(agents, restMap, startMap, demandCurves, intervalMinute
 }
 
 // ── Main entry ───────────────────────────────────────────────────────────────
-async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by, rules }) {
+async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by, rules, template_id }) {
   rules = { ...DEFAULT_RULES, ...rules };
+
+  let templateBreakRules = null;
+  let templateId = template_id ? Number(template_id) : null;
+  if (templateId) {
+    const tmplRes = await pool.query('SELECT break_rules FROM scheduling_shift_templates WHERE id=$1', [templateId]);
+    if (tmplRes.rows.length > 0) {
+      const br = tmplRes.rows[0].break_rules;
+      templateBreakRules = Array.isArray(br) ? br : (typeof br === 'string' ? JSON.parse(br) : null);
+    } else {
+      templateId = null; // template not found, fall back to rules-based
+    }
+  }
 
   const snap = await pool.query('SELECT * FROM scheduling_demand_snapshots WHERE id=$1', [snapshot_id]);
   if (snap.rows.length === 0) throw new Error(`Snapshot ${snapshot_id} not found`);
@@ -748,7 +775,7 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
           : shuffleArray(agents);
 
         let candidateMap = assignStartTimes(
-          agentOrder, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules
+          agentOrder, restMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules, templateBreakRules
         );
         candidateMap = applyStagger(candidateMap, demandCurves, intervalMinutes);
 
@@ -763,7 +790,7 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
 
       // ── Local search: iteratively re-seat each agent to reduce shortage ──
       let startMap = localSearchImprove(
-        agents, restMap, bestStartMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules
+        agents, restMap, bestStartMap, demandCurves, hoursOfOperation, channel, intervalMinutes, shiftLenByAgent, rules, templateBreakRules
       );
 
       // ── Final stagger (re-apply after local search changed start times) ──
@@ -792,8 +819,8 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
             `INSERT INTO schedule_assignments
                (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time,
                 is_overnight, channel, notes, status, generation_run_id)
-             VALUES (1,$1,$2,NULL,$3,$4,$5,$6,$7,$8,'draft',$9) RETURNING id`,
-            [lob_id, agent.id, workDate, startTime, endTime, isOvernight, channel, `Auto-generated run #${run_id}`, run_id]
+             VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10) RETURNING id`,
+            [lob_id, agent.id, templateId, workDate, startTime, endTime, isOvernight, channel, `Auto-generated run #${run_id}`, run_id]
           );
           const assignmentId = asn.rows[0].id;
           draftCount++;
