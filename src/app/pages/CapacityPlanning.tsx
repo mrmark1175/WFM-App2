@@ -1282,9 +1282,9 @@ export function CapacityPlanning() {
       hiringNeed,
       attritionSummary,
       weekSummary: weekCalcs.slice(0, 12).map((w) => ({
-        label: w.weekLabel,
+        label: w.label,
         requiredFTE: w.requiredFTE,
-        projectedHC: w.modelProjHC,
+        projectedHC: w.projectedHc,
         gap: w.gapSurplus,
       })),
     });

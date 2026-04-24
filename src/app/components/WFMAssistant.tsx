@@ -181,7 +181,7 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
     } finally {
       setStreaming(false);
     }
-  }, [messages, streaming, pageLabel, location.pathname]);
+  }, [messages, streaming, pageLabel, location.pathname, pageData]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
