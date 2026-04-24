@@ -30,6 +30,7 @@ interface PlanConfig {
   rampTrainingWeeks: number;
   rampNestingWeeks: number;
   rampNestingPct: number;
+  trainingGradRate: number;
   startingHc: number;
   billableFte: number;
 }
@@ -114,6 +115,7 @@ const DEFAULT_CONFIG: PlanConfig = {
   rampTrainingWeeks: 4,
   rampNestingWeeks: 2,
   rampNestingPct: 50,
+  trainingGradRate: 100,
   startingHc: 0,
   billableFte: 0,
 };
@@ -511,6 +513,7 @@ export function CapacityPlanning() {
           rampTrainingWeeks: cfgData.ramp_training_weeks ?? DEFAULT_CONFIG.rampTrainingWeeks,
           rampNestingWeeks: cfgData.ramp_nesting_weeks ?? DEFAULT_CONFIG.rampNestingWeeks,
           rampNestingPct: parseFloat(cfgData.ramp_nesting_pct) ?? DEFAULT_CONFIG.rampNestingPct,
+          trainingGradRate: cfgData.training_grad_rate != null ? parseFloat(cfgData.training_grad_rate) : DEFAULT_CONFIG.trainingGradRate,
           startingHc: parseFloat(cfgData.starting_hc) ?? DEFAULT_CONFIG.startingHc,
           billableFte: parseFloat(cfgData.billable_fte) || DEFAULT_CONFIG.billableFte,
         });
@@ -580,6 +583,7 @@ export function CapacityPlanning() {
             ramp_training_weeks: next.rampTrainingWeeks,
             ramp_nesting_weeks: next.rampNestingWeeks,
             ramp_nesting_pct: next.rampNestingPct,
+            training_grad_rate: next.trainingGradRate,
             starting_hc: next.startingHc,
             billable_fte: next.billableFte,
           }),
@@ -814,7 +818,7 @@ export function CapacityPlanning() {
   // ── Full computed calculations per week
   const weekCalcs = useMemo<WeekCalc[]>(() => {
     let projHC = config.startingHc;
-    const { attritionRateMonthly, rampTrainingWeeks, rampNestingWeeks, rampNestingPct } = config;
+    const { attritionRateMonthly, rampTrainingWeeks, rampNestingWeeks, rampNestingPct, trainingGradRate } = config;
     const weeklyAttritionRate = 1 - Math.pow(1 - attritionRateMonthly / 100, 12 / 52);
 
     return weeks.map((wk, w) => {
@@ -876,7 +880,7 @@ export function CapacityPlanning() {
       // Effective new HC delta from ramp (all cohorts)
       let effectiveNewHc = 0;
       for (let h = 0; h <= w; h++) {
-        const cohort = weeklyInputs[h]?.plannedHires ?? 0;
+        const cohort = (weeklyInputs[h]?.plannedHires ?? 0) * (trainingGradRate / 100);
         if (cohort <= 0) continue;
         const ageThis = w - h;
         const agePrev = w - 1 - h;
@@ -1178,7 +1182,7 @@ export function CapacityPlanning() {
         </CardHeader>
         {assumptionsOpen && (
           <CardContent className="pb-4 pt-0">
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
               <div className="space-y-1">
                 <Label className="text-xs text-black">Plan Start Date</Label>
                 <Input type="date" value={config.planStartDate} onChange={e => updateConfig({ planStartDate: e.target.value })} className="h-8 text-xs" />
@@ -1207,9 +1211,13 @@ export function CapacityPlanning() {
                 <Label className="text-xs text-black">Nesting Productivity (%)</Label>
                 <Input type="number" min={0} max={100} value={config.rampNestingPct} onChange={e => updateConfig({ rampNestingPct: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
               </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-black">Training Graduation (%)</Label>
+                <Input type="number" min={1} max={100} step={1} value={config.trainingGradRate} onChange={e => updateConfig({ trainingGradRate: parseFloat(e.target.value) || 100 })} className="h-8 text-xs" />
+              </div>
             </div>
             <p className="text-xs text-black mt-3">
-              Ramp: {config.rampTrainingWeeks}wk training (0%) → {config.rampNestingWeeks}wk nesting ({config.rampNestingPct}%) → full production (100%)
+              Ramp: {config.rampTrainingWeeks}wk training (0%) → {config.rampNestingWeeks}wk nesting ({config.rampNestingPct}%) → full production (100%) · {config.trainingGradRate < 100 ? `${config.trainingGradRate}% of hires graduate` : "100% graduation assumed"}
             </p>
 
             {/* ── Billing Parameters */}
