@@ -929,6 +929,14 @@ export function CapacityPlanning() {
 
   const colSpan = weeks.length + 1;
 
+  // Pixel offsets for frozen thead rows — each row is ~33px tall, week-date header ~40px.
+  const billableActive = config.billableFte > 0;
+  const TOP_WEEK_HDR  = 0;
+  const TOP_REQ_FTE   = 40;
+  const TOP_BILLABLE  = 73;
+  const TOP_GAP_REQ   = billableActive ? 106 : 73;
+  const TOP_GAP_BILL  = 139;
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -1217,19 +1225,113 @@ export function CapacityPlanning() {
         <div className="overflow-auto" style={{ maxHeight: "calc(100vh - 320px)" }}>
           <table className="border-collapse text-xs" style={{ minWidth: `${180 + weeks.length * 80}px` }}>
 
-            {/* Header Row */}
+            {/* ── Frozen header rows */}
             <thead>
+              {/* Row 1 — Week dates */}
               <tr className="bg-card border-b border-border">
-                <th className="sticky left-0 top-0 z-20 bg-card border-r border-border px-3 py-2 text-left text-xs font-semibold text-black w-44 min-w-44">
+                <th
+                  className="bg-card border-r border-border px-3 py-2 text-left text-xs font-semibold text-black w-44 min-w-44"
+                  style={{ position: "sticky", left: 0, top: TOP_WEEK_HDR, zIndex: 30 }}
+                >
                   {isDedicated ? `${activeLob?.lob_name} — ${CHANNEL_LABELS[activeChannel]}` : activeLob?.lob_name}
                 </th>
                 {weeks.map(w => (
-                  <th key={w.weekOffset} className="sticky top-0 z-10 bg-card border-b border-border px-2 py-1 text-right text-xs font-semibold min-w-[80px]">
+                  <th
+                    key={w.weekOffset}
+                    className="bg-card border-b border-border px-2 py-1 text-right text-xs font-semibold min-w-[80px]"
+                    style={{ position: "sticky", top: TOP_WEEK_HDR, zIndex: 20 }}
+                  >
                     <div className="font-semibold">{w.label}</div>
                     <div className="text-[10px] text-black font-normal">{w.dateLabel}</div>
                   </th>
                 ))}
               </tr>
+
+              {/* Row 2 — Required FTE (Based on Demand) */}
+              <tr className="border-b border-border">
+                <td
+                  className="bg-card border-r border-border border-t-2 border-t-primary px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
+                  style={{ position: "sticky", left: 0, top: TOP_REQ_FTE, zIndex: 30 }}
+                >
+                  Required FTE (Based on Demand)
+                </td>
+                {weekCalcs.map(wk => (
+                  <td
+                    key={wk.weekOffset}
+                    className="bg-card border-t-2 border-t-primary px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
+                    style={{ position: "sticky", top: TOP_REQ_FTE, zIndex: 20 }}
+                  >
+                    {fmt1(wk.requiredFTE)}
+                  </td>
+                ))}
+              </tr>
+
+              {/* Row 3 — Billable FTE (conditional) */}
+              {billableActive && (
+                <tr className="border-b border-border">
+                  <td
+                    className="border-r border-border bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs font-bold whitespace-nowrap text-amber-700 dark:text-amber-400"
+                    style={{ position: "sticky", left: 0, top: TOP_BILLABLE, zIndex: 30 }}
+                  >
+                    Billable FTE
+                  </td>
+                  {weekCalcs.map(wk => (
+                    <td
+                      key={wk.weekOffset}
+                      className="bg-amber-50 dark:bg-amber-950/20 px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-amber-700 dark:text-amber-400"
+                      style={{ position: "sticky", top: TOP_BILLABLE, zIndex: 20 }}
+                    >
+                      {fmt1(config.billableFte)}
+                    </td>
+                  ))}
+                </tr>
+              )}
+
+              {/* Row 4 — Proj. Gap / Surplus (vs Required) */}
+              <tr className="border-b border-border">
+                <td
+                  className="bg-card border-r border-border px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
+                  style={{ position: "sticky", left: 0, top: TOP_GAP_REQ, zIndex: 30 }}
+                >
+                  Proj. Gap / Surplus{billableActive ? " (vs Required)" : ""}
+                </td>
+                {weekCalcs.map(wk => {
+                  const v = wk.gapSurplus;
+                  return (
+                    <td
+                      key={wk.weekOffset}
+                      className="bg-card px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
+                      style={{ position: "sticky", top: TOP_GAP_REQ, zIndex: 20, ...gapCellStyle(v, maxAbsGap) }}
+                    >
+                      {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+
+              {/* Row 5 — Proj. Gap / Surplus (vs Billable, conditional) */}
+              {billableActive && (
+                <tr className="border-b-2 border-border">
+                  <td
+                    className="bg-card border-r border-border px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
+                    style={{ position: "sticky", left: 0, top: TOP_GAP_BILL, zIndex: 30 }}
+                  >
+                    Proj. Gap / Surplus (vs Billable)
+                  </td>
+                  {weekCalcs.map(wk => {
+                    const v = wk.billableGapSurplus ?? 0;
+                    return (
+                      <td
+                        key={wk.weekOffset}
+                        className="bg-card px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
+                        style={{ position: "sticky", top: TOP_GAP_BILL, zIndex: 20, ...gapCellStyle(v, maxAbsBillableGap) }}
+                      >
+                        {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              )}
             </thead>
 
             <tbody>
@@ -1556,95 +1658,6 @@ export function CapacityPlanning() {
               </tr>
 
             </tbody>
-
-            {/* ── STICKY FOOTER: Required FTE + Billable FTE + Gap rows */}
-            <tfoot>
-              {/* Required FTE */}
-              <tr>
-                <td
-                  className="z-30 border-r border-border bg-card border-t-2 border-t-primary px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
-                  style={{ position: "sticky", left: 0, bottom: config.billableFte > 0 ? 108 : 36 }}
-                >
-                  Required FTE
-                </td>
-                {weekCalcs.map(wk => (
-                  <td
-                    key={wk.weekOffset}
-                    className="z-20 bg-card border-t-2 border-t-primary px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
-                    style={{ position: "sticky", bottom: config.billableFte > 0 ? 108 : 36 }}
-                  >
-                    {fmt1(wk.requiredFTE)}
-                  </td>
-                ))}
-              </tr>
-
-              {/* Billable FTE — only when configured */}
-              {config.billableFte > 0 && (
-                <tr>
-                  <td
-                    className="z-30 border-r border-border bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs font-bold whitespace-nowrap text-amber-700 dark:text-amber-400"
-                    style={{ position: "sticky", left: 0, bottom: 72 }}
-                  >
-                    Billable FTE
-                  </td>
-                  {weekCalcs.map(wk => (
-                    <td
-                      key={wk.weekOffset}
-                      className="z-20 bg-amber-50 dark:bg-amber-950/20 px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-amber-700 dark:text-amber-400"
-                      style={{ position: "sticky", bottom: 72 }}
-                    >
-                      {fmt1(config.billableFte)}
-                    </td>
-                  ))}
-                </tr>
-              )}
-
-              {/* Proj. Gap / Surplus vs Required FTE */}
-              <tr>
-                <td
-                  className="z-30 border-r border-border bg-card px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
-                  style={{ position: "sticky", left: 0, bottom: config.billableFte > 0 ? 36 : 0 }}
-                >
-                  Proj. Gap / Surplus{config.billableFte > 0 ? " (vs Required)" : ""}
-                </td>
-                {weekCalcs.map(wk => {
-                  const v = wk.gapSurplus;
-                  return (
-                    <td
-                      key={wk.weekOffset}
-                      className="z-20 bg-card px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
-                      style={{ position: "sticky", bottom: config.billableFte > 0 ? 36 : 0, ...gapCellStyle(v, maxAbsGap) }}
-                    >
-                      {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
-                    </td>
-                  );
-                })}
-              </tr>
-
-              {/* Proj. Gap / Surplus vs Billable FTE — only when configured */}
-              {config.billableFte > 0 && (
-                <tr>
-                  <td
-                    className="z-30 border-r border-border bg-card px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
-                    style={{ position: "sticky", left: 0, bottom: 0 }}
-                  >
-                    Proj. Gap / Surplus (vs Billable)
-                  </td>
-                  {weekCalcs.map(wk => {
-                    const v = wk.billableGapSurplus ?? 0;
-                    return (
-                      <td
-                        key={wk.weekOffset}
-                        className="z-20 bg-card px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
-                        style={{ position: "sticky", bottom: 0, ...gapCellStyle(v, maxAbsBillableGap) }}
-                      >
-                        {v >= 0 ? `+${fmt1(v)}` : fmt1(v)}
-                      </td>
-                    );
-                  })}
-                </tr>
-              )}
-            </tfoot>
           </table>
         </div>
       </div>
