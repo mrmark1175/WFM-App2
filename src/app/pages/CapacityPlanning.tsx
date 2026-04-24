@@ -376,16 +376,12 @@ function InputCell({ value, onChange, onReset, placeholder = "", color = "defaul
 
   return (
     <td className="px-1 py-0.5 min-w-[72px] relative">
-      {/* Excel-style triangle indicator when note exists */}
+      {/* Note indicator dot — amber when note exists, faint on hover when empty */}
       {onNoteChange && (
         <Popover open={noteOpen} onOpenChange={open => { if (open) openNote(); else setNoteOpen(false); }}>
           <PopoverTrigger asChild>
             <button
-              className="absolute top-0 right-0 w-0 h-0 border-0 p-0 bg-transparent cursor-pointer focus:outline-none"
-              style={{
-                borderTop: `8px solid ${hasNote ? "#f59e0b" : "transparent"}`,
-                borderLeft: "8px solid transparent",
-              }}
+              className={`absolute top-0.5 right-0.5 w-2 h-2 rounded-sm cursor-pointer focus:outline-none transition-colors ${hasNote ? "bg-amber-400" : "bg-transparent hover:bg-amber-200"}`}
               title={hasNote ? note : "Add note"}
             />
           </PopoverTrigger>
