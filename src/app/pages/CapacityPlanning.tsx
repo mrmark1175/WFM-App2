@@ -12,7 +12,7 @@ import { Badge } from "../components/ui/badge";
 import { toast } from "sonner";
 import {
   ChevronDown, ChevronRight, RotateCcw, Settings2, TrendingDown, AlertTriangle, CheckCircle2, Loader2,
-  Users, UserPlus, Activity, Target,
+  Users, UserPlus, Activity, Target, Download,
 } from "lucide-react";
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine,
@@ -929,6 +929,78 @@ export function CapacityPlanning() {
 
   const colSpan = weeks.length + 1;
 
+  // ── CSV export
+  function exportToCSV() {
+    const lobLabel = isDedicated ? `${activeLob?.lob_name} — ${CHANNEL_LABELS[activeChannel]}` : activeLob?.lob_name ?? "Capacity Plan";
+    const weekHeaders = weekCalcs.map(wk => `${wk.label} (${wk.dateLabel})`);
+    const header = ["Metric", ...weekHeaders];
+
+    function row(label: string, values: (string | number | null | undefined)[]): string[] {
+      return [label, ...values.map(v => (v == null ? "" : String(v)))];
+    }
+
+    const rows: string[][] = [header];
+
+    // ── Demand
+    rows.push(["--- DEMAND ---", ...weekCalcs.map(() => "")]);
+    if (!isDedicated ? enabledChannels.includes("voice") : activeChannel === "voice")
+      rows.push(row("Proj. Volume — Voice", weekCalcs.map(wk => Math.round(wk.effVolVoice))));
+    if (!isDedicated ? enabledChannels.includes("chat") : activeChannel === "chat")
+      rows.push(row("Proj. Volume — Chat", weekCalcs.map(wk => Math.round(wk.effVolChat))));
+    if (!isDedicated ? enabledChannels.includes("email") : activeChannel === "email")
+      rows.push(row("Proj. Volume — Email", weekCalcs.map(wk => Math.round(wk.effVolEmail))));
+    if (!isDedicated ? enabledChannels.includes("cases") : activeChannel === "cases")
+      rows.push(row("Proj. Volume — Cases", weekCalcs.map(wk => Math.round(wk.effVolCases))));
+    if (!isDedicated ? enabledChannels.includes("voice") : activeChannel === "voice")
+      rows.push(row("AHT — Voice (s)", weekCalcs.map(wk => wk.effAhtVoice)));
+    if (!isDedicated ? enabledChannels.includes("chat") : activeChannel === "chat")
+      rows.push(row("AHT — Chat (s)", weekCalcs.map(wk => wk.effAhtChat)));
+    if (!isDedicated ? enabledChannels.includes("email") : activeChannel === "email")
+      rows.push(row("AHT — Email (s)", weekCalcs.map(wk => wk.effAhtEmail)));
+    if (!isDedicated ? enabledChannels.includes("cases") : activeChannel === "cases")
+      rows.push(row("AHT — Cases (s)", weekCalcs.map(wk => wk.effAhtCases)));
+
+    // ── Staffing Requirements
+    rows.push(["--- STAFFING REQUIREMENTS ---", ...weekCalcs.map(() => "")]);
+    rows.push(row("Required FTE", weekCalcs.map(wk => roundTo(wk.requiredFTE, 1))));
+    rows.push(row("Proj. Occupancy %", weekCalcs.map(wk => roundTo(wk.projOccupancyPct, 1))));
+    rows.push(row("Proj. Shrinkage %", weekCalcs.map(wk => roundTo(wk.projShrinkagePct, 1))));
+
+    // ── Headcount Plan
+    rows.push(["--- HEADCOUNT PLAN ---", ...weekCalcs.map(() => "")]);
+    rows.push(row("Planned Hires", weekCalcs.map(wk => wk.plannedHires)));
+    rows.push(row("Effective New HC", weekCalcs.map(wk => roundTo(wk.effectiveNewHc, 1))));
+    rows.push(row("Attrition Decay", weekCalcs.map(wk => roundTo(wk.attritionDecay, 2))));
+    rows.push(row("Known Exits", weekCalcs.map(wk => wk.knownExits)));
+    rows.push(row("Projected HC", weekCalcs.map(wk => roundTo(wk.projectedHc, 1))));
+    if (billableActive)
+      rows.push(row("Billable FTE", weekCalcs.map(() => config.billableFte)));
+    rows.push(row("Actual HC", weekCalcs.map(wk => wk.actualHc)));
+    rows.push(row("Actual Attrition", weekCalcs.map(wk => wk.actualAttrition)));
+
+    // ── Performance Insights
+    rows.push(["--- PERFORMANCE INSIGHTS ---", ...weekCalcs.map(() => "")]);
+    rows.push(row("Proj. Gap / Surplus (vs Required)", weekCalcs.map(wk => roundTo(wk.gapSurplus, 1))));
+    if (billableActive)
+      rows.push(row("Proj. Gap / Surplus (vs Billable)", weekCalcs.map(wk => wk.billableGapSurplus != null ? roundTo(wk.billableGapSurplus, 1) : "")));
+    rows.push(row("Actual Gap / Surplus", weekCalcs.map(wk => wk.actualGapSurplus != null ? roundTo(wk.actualGapSurplus, 1) : "")));
+    rows.push(row("Projected SLA % (Proj. HC)", weekCalcs.map(wk => wk.achievedSLAProj != null ? roundTo(wk.achievedSLAProj, 1) : "")));
+    rows.push(row("Achieved SLA % (Actual HC)", weekCalcs.map(wk => wk.achievedSLAActual != null ? roundTo(wk.achievedSLAActual, 1) : "")));
+
+    const csv = rows.map(r => r.map(cell => {
+      const s = String(cell);
+      return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+    }).join(",")).join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `capacity-plan_${lobLabel.replace(/[^a-z0-9]/gi, "_").toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   // Pixel offsets for frozen thead rows — each row is ~33px tall, week-date header ~40px.
   const billableActive = config.billableFte > 0;
   const TOP_WEEK_HDR  = 0;
@@ -1183,6 +1255,15 @@ export function CapacityPlanning() {
             No demand data — set up Demand Forecasting first
           </Badge>
         )}
+        <button
+          onClick={exportToCSV}
+          disabled={weekCalcs.length === 0}
+          className="ml-auto flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-muted/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Download as CSV (opens in Excel or Google Sheets)"
+        >
+          <Download className="size-3.5" />
+          Export CSV
+        </button>
       </div>
 
       {/* ── Headcount Trajectory Chart — Required FTE vs Projected HC vs Actual HC */}
