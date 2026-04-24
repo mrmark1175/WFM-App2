@@ -1291,7 +1291,6 @@ export function CapacityPlanning() {
                 <ReferenceLine y={config.startingHc} stroke="#9ca3af" strokeDasharray="2 2" label={{ value: "Start HC", fontSize: 9, position: "insideTopRight", fill: "#9ca3af" }} />
                 <Line type="monotone" dataKey="required" name="Required FTE" stroke="#dc2626" strokeWidth={2.5} dot={false} />
                 <Line type="monotone" dataKey="projected" name="Projected HC" stroke="#2563eb" strokeWidth={2} strokeDasharray="5 3" dot={false} />
-                <Line type="monotone" dataKey="actual" name="Actual HC" stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
                 {config.billableFte > 0 && (
                   <Line type="monotone" dataKey="billable" name="Billable FTE" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
                 )}
