@@ -9,6 +9,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { toast } from "sonner";
 import {
   ChevronDown, ChevronRight, RotateCcw, Settings2, TrendingDown, AlertTriangle, CheckCircle2, Loader2,
@@ -36,6 +37,10 @@ interface PlanConfig {
 interface WeekInput {
   plannedHires?: number;
   knownExits?: number;
+  transfersOut?: number;
+  transfersOutNote?: string;
+  promotionsOut?: number;
+  promotionsOutNote?: string;
   actualHc?: number | null;
   actualAttrition?: number | null;
   volVoice?: number | null;
@@ -60,7 +65,7 @@ interface WeekCalc extends WeekMeta {
   projOccupancyPct: number; projShrinkagePct: number;
   requiredFTE: number;
   plannedHires: number; effectiveNewHc: number; attritionDecay: number;
-  knownExits: number; projectedHc: number;
+  knownExits: number; transfersOut: number; promotionsOut: number; projectedHc: number;
   actualHc: number | null; actualAttrition: number | null;
   gapSurplus: number; actualGapSurplus: number | null;
   billableGapSurplus: number | null; // Proj. HC − Billable FTE; null when billableFte = 0
@@ -118,6 +123,8 @@ const FIELD_MAP: Record<string, string> = {
   volVoice: "vol_override_voice", volChat: "vol_override_chat", volEmail: "vol_override_email", volCases: "vol_override_cases",
   ahtVoice: "aht_override_voice", ahtChat: "aht_override_chat", ahtEmail: "aht_override_email", ahtCases: "aht_override_cases",
   plannedHires: "planned_hires", knownExits: "known_exits",
+  transfersOut: "transfers_out", transfersOutNote: "transfers_out_note",
+  promotionsOut: "promotions_out", promotionsOutNote: "promotions_out_note",
   actualHc: "actual_hc", actualAttrition: "actual_attrition",
 };
 
@@ -330,12 +337,15 @@ function ReadOnlyCell({ value, className = "", bold = false }: { value: string; 
   );
 }
 
-function InputCell({ value, onChange, onReset, placeholder = "", color = "default" }: {
+function InputCell({ value, onChange, onReset, placeholder = "", color = "default", note, onNoteChange }: {
   value: number | undefined; onChange: (v: number | null) => void; onReset?: () => void;
   placeholder?: string; color?: "blue" | "orange" | "green" | "default";
+  note?: string; onNoteChange?: (v: string) => void;
 }) {
   const [draft, setDraft] = useState<string>("");
   const [focused, setFocused] = useState(false);
+  const [noteDraft, setNoteDraft] = useState<string>("");
+  const [noteOpen, setNoteOpen] = useState(false);
 
   const colorClass = {
     blue: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800",
@@ -351,10 +361,52 @@ function InputCell({ value, onChange, onReset, placeholder = "", color = "defaul
     if (!isNaN(n)) onChange(n);
   }
 
+  function openNote() {
+    setNoteDraft(note ?? "");
+    setNoteOpen(true);
+  }
+
+  function commitNote() {
+    onNoteChange?.(noteDraft);
+    setNoteOpen(false);
+  }
+
   const displayVal = focused ? draft : (value != null ? String(value) : "");
+  const hasNote = !!note;
 
   return (
-    <td className="px-1 py-0.5 min-w-[72px]">
+    <td className="px-1 py-0.5 min-w-[72px] relative">
+      {/* Excel-style triangle indicator when note exists */}
+      {onNoteChange && (
+        <Popover open={noteOpen} onOpenChange={open => { if (open) openNote(); else setNoteOpen(false); }}>
+          <PopoverTrigger asChild>
+            <button
+              className="absolute top-0 right-0 w-0 h-0 border-0 p-0 bg-transparent cursor-pointer focus:outline-none"
+              style={{
+                borderTop: `8px solid ${hasNote ? "#f59e0b" : "transparent"}`,
+                borderLeft: "8px solid transparent",
+              }}
+              title={hasNote ? note : "Add note"}
+            />
+          </PopoverTrigger>
+          <PopoverContent className="w-56 p-2" side="top" align="end">
+            <p className="text-xs font-medium text-muted-foreground mb-1">Note</p>
+            <textarea
+              autoFocus
+              value={noteDraft}
+              onChange={e => setNoteDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitNote(); } if (e.key === "Escape") setNoteOpen(false); }}
+              className="w-full text-xs border border-border rounded p-1.5 resize-none outline-none focus:ring-1 focus:ring-blue-400 bg-background"
+              rows={3}
+              placeholder="Reason for this change…"
+            />
+            <div className="flex justify-end gap-1 mt-1.5">
+              <button onClick={() => setNoteOpen(false)} className="text-xs px-2 py-0.5 rounded border border-border hover:bg-muted">Cancel</button>
+              <button onClick={commitNote} className="text-xs px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700">Save</button>
+            </div>
+          </PopoverContent>
+        </Popover>
+      )}
       <input
         value={displayVal}
         placeholder={placeholder}
@@ -476,6 +528,10 @@ export function CapacityPlanning() {
           map[row.week_offset] = {
             plannedHires: row.planned_hires != null ? parseFloat(row.planned_hires) : undefined,
             knownExits: row.known_exits != null ? parseFloat(row.known_exits) : undefined,
+            transfersOut: row.transfers_out != null ? parseFloat(row.transfers_out) : undefined,
+            transfersOutNote: row.transfers_out_note ?? undefined,
+            promotionsOut: row.promotions_out != null ? parseFloat(row.promotions_out) : undefined,
+            promotionsOutNote: row.promotions_out_note ?? undefined,
             actualHc: row.actual_hc != null ? parseFloat(row.actual_hc) : null,
             actualAttrition: row.actual_attrition != null ? parseFloat(row.actual_attrition) : null,
             volVoice: row.vol_override_voice != null ? parseFloat(row.vol_override_voice) : null,
@@ -569,6 +625,34 @@ export function CapacityPlanning() {
       [weekOffset]: { ...(prev[weekOffset] ?? {}), [field]: value },
     }));
     saveCell(weekOffset, field, value);
+  }
+
+  function saveCellNote(weekOffset: number, field: keyof WeekInput, value: string) {
+    if (!activeLob) return;
+    const dbField = FIELD_MAP[field];
+    if (!dbField) return;
+    const timerKey = `${weekOffset}:${field}`;
+    const existing = saveTimers.current.get(timerKey);
+    if (existing) clearTimeout(existing);
+    const t = setTimeout(async () => {
+      try {
+        await fetch(apiUrl(`/api/capacity-plan-inputs?lob_id=${activeLob.id}&channel=${apiChannel}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ week_offset: weekOffset, field: dbField, value: value || null }),
+        });
+      } catch { toast.error("Failed to save note."); }
+      saveTimers.current.delete(timerKey);
+    }, 600);
+    saveTimers.current.set(timerKey, t);
+  }
+
+  function setCellNote(weekOffset: number, field: keyof WeekInput, value: string) {
+    setWeeklyInputs(prev => ({
+      ...prev,
+      [weekOffset]: { ...(prev[weekOffset] ?? {}), [field]: value },
+    }));
+    saveCellNote(weekOffset, field, value);
   }
 
   function resetOverride(weekOffset: number, field: keyof WeekInput) {
@@ -808,10 +892,12 @@ export function CapacityPlanning() {
 
       const plannedHires = inp.plannedHires ?? 0;
       const knownExits = inp.knownExits ?? 0;
+      const transfersOut = inp.transfersOut ?? 0;
+      const promotionsOut = inp.promotionsOut ?? 0;
       const actualHc = inp.actualHc ?? null;
       const actualAttrition = inp.actualAttrition ?? null;
 
-      const modelProjHC = Math.max(0, roundTo(projHC + effectiveNewHc - attritionDecay - knownExits, 1));
+      const modelProjHC = Math.max(0, roundTo(projHC + effectiveNewHc - attritionDecay - knownExits - transfersOut - promotionsOut, 1));
       projHC = modelProjHC;
 
       // Re-anchor for the NEXT week only — only when actual is a meaningful positive value.
@@ -860,7 +946,7 @@ export function CapacityPlanning() {
         effAhtVoice, effAhtChat, effAhtEmail, effAhtCases,
         projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
-        knownExits, projectedHc: modelProjHC, actualHc, actualAttrition,
+        knownExits, transfersOut, promotionsOut, projectedHc: modelProjHC, actualHc, actualAttrition,
         gapSurplus, actualGapSurplus, billableGapSurplus, achievedSLAProj, achievedSLAActual,
       };
     });
@@ -871,7 +957,7 @@ export function CapacityPlanning() {
 
   // ── Attrition summary
   const attritionSummary = useMemo(() => {
-    const totalExits = weekCalcs.reduce((s, w) => s + w.attritionDecay + w.knownExits, 0);
+    const totalExits = weekCalcs.reduce((s, w) => s + w.attritionDecay + w.knownExits + w.transfersOut + w.promotionsOut, 0);
     const annualizedPct = config.attritionRateMonthly * 12;
     const totalActualAttrition = weekCalcs.reduce((s, w) => s + (w.actualAttrition ?? 0), 0);
     return { totalExits: roundTo(totalExits), annualizedPct, totalActualAttrition };
@@ -1649,6 +1735,30 @@ export function CapacityPlanning() {
                         value={weeklyInputs[wk.weekOffset]?.knownExits}
                         onChange={v => setCellInput(wk.weekOffset, "knownExits", v ?? 0)}
                         placeholder="0" color="orange"
+                      />
+                    ))}
+                  </tr>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Transfers Out" indent />
+                    {weekCalcs.map(wk => (
+                      <InputCell key={wk.weekOffset}
+                        value={weeklyInputs[wk.weekOffset]?.transfersOut}
+                        onChange={v => setCellInput(wk.weekOffset, "transfersOut", v ?? 0)}
+                        placeholder="0" color="orange"
+                        note={weeklyInputs[wk.weekOffset]?.transfersOutNote}
+                        onNoteChange={v => setCellNote(wk.weekOffset, "transfersOutNote", v)}
+                      />
+                    ))}
+                  </tr>
+                  <tr className="border-b border-border/40 hover:bg-muted/20">
+                    <RowLabel label="Promotions Out" indent />
+                    {weekCalcs.map(wk => (
+                      <InputCell key={wk.weekOffset}
+                        value={weeklyInputs[wk.weekOffset]?.promotionsOut}
+                        onChange={v => setCellInput(wk.weekOffset, "promotionsOut", v ?? 0)}
+                        placeholder="0" color="orange"
+                        note={weeklyInputs[wk.weekOffset]?.promotionsOutNote}
+                        onNoteChange={v => setCellNote(wk.weekOffset, "promotionsOutNote", v)}
                       />
                     ))}
                   </tr>

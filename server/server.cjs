@@ -520,6 +520,10 @@ async function ensureAppTables() {
   `);
   await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS vol_override_cases NUMERIC`);
   await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS aht_override_cases NUMERIC`);
+  await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS transfers_out NUMERIC`);
+  await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS promotions_out NUMERIC`);
+  await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS transfers_out_note TEXT`);
+  await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS promotions_out_note TEXT`);
 
   // ── Schedule Assignments — agent shift assignments per date ──────────────────
   await pool.query(`
@@ -2424,7 +2428,8 @@ app.put('/api/capacity-plan-inputs', async (req, res) => {
   }
   const allowed = ['planned_hires','known_exits','actual_hc','actual_attrition',
     'vol_override_voice','vol_override_chat','vol_override_email','vol_override_cases',
-    'aht_override_voice','aht_override_chat','aht_override_email','aht_override_cases'];
+    'aht_override_voice','aht_override_chat','aht_override_email','aht_override_cases',
+    'transfers_out','transfers_out_note','promotions_out','promotions_out_note'];
   if (!allowed.includes(field)) return res.status(400).json({ error: 'Invalid field' });
   try {
     await pool.query(
