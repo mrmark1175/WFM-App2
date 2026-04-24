@@ -153,6 +153,26 @@ function hoursFromSchedule(
   };
 }
 function roundTo(n: number, dp = 1) { return Math.round(n * 10 ** dp) / 10 ** dp; }
+
+// Mirrors the computeShrinkage function in ShrinkagePlanning.tsx.
+// Items are absence_items or activity_items from the shrinkage_plans DB row.
+function computeShrinkageFromItems(
+  items: Array<{ enabled: boolean; durationMinutes: number; occurrences: number; frequency: string; isHoliday?: boolean }>,
+  hoursPerDay: number,
+  daysPerWeek: number,
+): number {
+  const daysPerYear = daysPerWeek * 52;
+  const minutesPerYear = hoursPerDay * 60 * daysPerYear;
+  if (minutesPerYear <= 0) return 0;
+  const lost = items.filter(i => i.enabled).reduce((sum, item) => {
+    const annual = item.frequency === "per_day" ? item.occurrences * daysPerYear
+      : item.frequency === "per_week"  ? item.occurrences * 52
+      : item.frequency === "per_month" ? item.occurrences * 12
+      : item.occurrences;
+    return sum + annual * item.durationMinutes;
+  }, 0);
+  return Math.min(99, Number(((lost / minutesPerYear) * 100).toFixed(1)));
+}
 function fmtSeconds(s: number): string {
   if (s >= 3600) return `${roundTo(s / 3600, 1)}h`;
   if (s >= 60) return `${Math.round(s / 60)}m`;
@@ -561,6 +581,7 @@ export function CapacityPlanning() {
   const [plannerSnapshot, setPlannerSnapshot] = useState<CapacityPlannerSnapshot | null>(null);
   const [lobSettings, setLobSettings] = useState<LobSettings | null>(null);
   const [hoursPerDay, setHoursPerDay] = useState(7.5);
+  const [computedShrinkagePct, setComputedShrinkagePct] = useState<number | null>(null);
   const [activeChannel, setActiveChannel] = useState<ChannelKey>("voice");
   const [assumptionsOpen, setAssumptionsOpen] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -655,6 +676,21 @@ export function CapacityPlanning() {
 
       if (shrData?.hours_per_day) setHoursPerDay(parseFloat(shrData.hours_per_day));
       else setHoursPerDay(7.5);
+
+      // Compute shrinkage % from the itemized shrinkage plan — same formula as
+      // ShrinkagePlanning.tsx. Uses totalExcl (holidays excluded) to match what
+      // LongTermForecasting_Demand reads from localStorage.
+      if (shrData?.absence_items || shrData?.activity_items) {
+        const hpd = shrData.hours_per_day ? parseFloat(shrData.hours_per_day) : 7.5;
+        const dpw = shrData.days_per_week ? parseFloat(shrData.days_per_week) : 5;
+        const absenceItems = Array.isArray(shrData.absence_items) ? shrData.absence_items : [];
+        const activityItems = Array.isArray(shrData.activity_items) ? shrData.activity_items : [];
+        const absenceExcl = computeShrinkageFromItems(absenceItems.filter((i: { isHoliday?: boolean }) => !i.isHoliday), hpd, dpw);
+        const activityPct = computeShrinkageFromItems(activityItems, hpd, dpw);
+        setComputedShrinkagePct(Number((absenceExcl + activityPct).toFixed(1)));
+      } else {
+        setComputedShrinkagePct(null);
+      }
 
     } catch (err) {
       toast.error("Failed to load capacity plan data.");
@@ -888,7 +924,10 @@ export function CapacityPlanning() {
   }), [lobSettings, demandAssumptions]);
 
   // ── Staffing params
-  const shrinkagePct = demandAssumptions?.shrinkage != null ? Number(demandAssumptions.shrinkage) : 20;
+  // Priority: Shrinkage Planning page computed % → Demand Assumptions manual entry → 20% default.
+  // computedShrinkagePct is derived from absence_items + activity_items in the shrinkage_plans table,
+  // matching the totalExcl (holidays excluded) value displayed on the Shrinkage Planning page.
+  const shrinkagePct = computedShrinkagePct ?? (demandAssumptions?.shrinkage != null ? Number(demandAssumptions.shrinkage) : 20);
 
   // Operating hours: LOB settings (hours_of_operation) is the source of truth.
   // For dedicated LOBs use the active channel's schedule; for blended use voice.
