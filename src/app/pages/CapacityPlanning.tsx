@@ -959,42 +959,48 @@ export function CapacityPlanning() {
     return { totalExits: roundTo(totalExits), annualizedPct, totalActualAttrition };
   }, [weekCalcs, config.attritionRateMonthly]);
 
-  // ── Hiring need summary
-  // Peak Required HC: the highest requiredFTE across the horizon — the roster ceiling.
-  // Gross Hiring Need: seats Recruitment must fill = gap to close (start → peak) + attrition replacements.
-  // Hire-by week: first deficit week minus training+nesting lead time — the latest safe hire start date.
+  // ── Hiring action summary
+  // Focuses on the *next* actionable hiring decision rather than a cumulative horizon total.
+  // hiresNeeded  = magnitude of the first upcoming deficit (residual after planned hires).
+  // deficitWeek  = the first week projected HC falls short.
+  // hireByWeek   = deficitWeek − training+nesting lead time — latest safe start date for recruiting.
+  // hireByPassed = lead time has already expired; recruiting should have started already.
   const hiringNeed = useMemo(() => {
     const empty = {
-      peakRequired: 0, grossHireNeed: 0, grossBillableHireNeed: 0,
-      hireByRequired: null as WeekCalc | null, hireByRequiredImmediate: false,
-      hireByBillable: null as WeekCalc | null, hireByBillableImmediate: false,
+      peakRequired: 0,
+      // Required FTE action
+      reqHiresNeeded: 0, reqDeficitWeek: null as WeekCalc | null,
+      reqHireByWeek: null as WeekCalc | null, reqHireByPassed: false,
+      // Billable FTE action
+      billHiresNeeded: 0, billDeficitWeek: null as WeekCalc | null,
+      billHireByWeek: null as WeekCalc | null, billHireByPassed: false,
     };
     if (weekCalcs.length === 0) return empty;
     const leadTime = config.rampTrainingWeeks + config.rampNestingWeeks;
     const peakRequired = Math.ceil(Math.max(...weekCalcs.map(w => w.requiredFTE)));
-    const gapToClose = Math.max(0, peakRequired - config.startingHc);
-    const grossHireNeed = gapToClose + Math.ceil(attritionSummary.totalExits);
 
-    const grossBillableHireNeed = config.billableFte > 0
-      ? Math.max(0, config.billableFte - config.startingHc) + Math.ceil(attritionSummary.totalExits)
-      : 0;
-
+    // Required FTE: first deficit week
     const reqDeficitIdx = weekCalcs.findIndex(w => w.gapSurplus < 0);
-    const hireByRequiredImmediate = reqDeficitIdx >= 0 && reqDeficitIdx - leadTime <= 0;
-    const hireByRequired = reqDeficitIdx >= 0
+    const reqDeficitWeek = reqDeficitIdx >= 0 ? weekCalcs[reqDeficitIdx] : null;
+    const reqHiresNeeded = reqDeficitWeek ? Math.ceil(Math.abs(reqDeficitWeek.gapSurplus)) : 0;
+    const reqHireByPassed = reqDeficitIdx >= 0 && reqDeficitIdx - leadTime <= 0;
+    const reqHireByWeek = reqDeficitIdx >= 0
       ? weekCalcs[Math.max(0, reqDeficitIdx - leadTime)] ?? null
       : null;
 
+    // Billable FTE: first deficit week
     const billDeficitIdx = config.billableFte > 0
       ? weekCalcs.findIndex(w => (w.billableGapSurplus ?? 0) < 0)
       : -1;
-    const hireByBillableImmediate = billDeficitIdx >= 0 && billDeficitIdx - leadTime <= 0;
-    const hireByBillable = billDeficitIdx >= 0
+    const billDeficitWeek = billDeficitIdx >= 0 ? weekCalcs[billDeficitIdx] : null;
+    const billHiresNeeded = billDeficitWeek ? Math.ceil(Math.abs(billDeficitWeek.billableGapSurplus ?? 0)) : 0;
+    const billHireByPassed = billDeficitIdx >= 0 && billDeficitIdx - leadTime <= 0;
+    const billHireByWeek = billDeficitIdx >= 0
       ? weekCalcs[Math.max(0, billDeficitIdx - leadTime)] ?? null
       : null;
 
-    return { peakRequired, grossHireNeed, grossBillableHireNeed, hireByRequired, hireByRequiredImmediate, hireByBillable, hireByBillableImmediate };
-  }, [weekCalcs, config.startingHc, config.billableFte, config.rampTrainingWeeks, config.rampNestingWeeks, attritionSummary.totalExits]);
+    return { peakRequired, reqHiresNeeded, reqDeficitWeek, reqHireByWeek, reqHireByPassed, billHiresNeeded, billDeficitWeek, billHireByWeek, billHireByPassed };
+  }, [weekCalcs, config.billableFte, config.rampTrainingWeeks, config.rampNestingWeeks]);
 
   // ── Bottom-line summary metrics for the hero strip
   const currentGap = weekCalcs[0]?.gapSurplus ?? 0;
@@ -1319,45 +1325,73 @@ export function CapacityPlanning() {
           </div>
         )}
 
-        {/* Gross Hiring Need — Required FTE */}
-        <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-violet-500"
-          title={`Gap to close: ${Math.max(0, hiringNeed.peakRequired - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
-        >
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
-            <UserPlus className="size-3" /> Gross Hiring — Required
-          </div>
-          <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
-            {hiringNeed.grossHireNeed > 0 ? hiringNeed.grossHireNeed : "—"}
-          </div>
-          <div className="text-[10px] text-black mt-1">
-            {hiringNeed.hireByRequired
-              ? hiringNeed.hireByRequiredImmediate
-                ? "Hire by: immediately"
-                : `Hire by: ${hiringNeed.hireByRequired.label} · ${hiringNeed.hireByRequired.dateLabel}`
-              : "No deficit — no urgency"}
-          </div>
-        </div>
+        {/* Next Hiring Action — Required FTE */}
+        {(() => {
+          const { reqHiresNeeded, reqDeficitWeek, reqHireByWeek, reqHireByPassed } = hiringNeed;
+          const hasDeficit = reqDeficitWeek != null;
+          const accent = !hasDeficit ? "border-l-green-500" : reqHireByPassed ? "border-l-red-500" : "border-l-violet-500";
+          return (
+            <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${accent}`}>
+              <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
+                <UserPlus className="size-3" /> Next Hiring Action — Required
+              </div>
+              {!hasDeficit ? (
+                <>
+                  <div className="text-lg font-bold mt-1 text-black dark:text-black leading-none">Fully staffed</div>
+                  <div className="text-[10px] text-black mt-1">No deficit in {config.horizonWeeks}-wk horizon</div>
+                </>
+              ) : (
+                <>
+                  <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
+                    {reqHiresNeeded} {reqHiresNeeded === 1 ? "hire" : "hires"}
+                  </div>
+                  <div className="text-[10px] text-black mt-1 leading-snug">
+                    {reqHireByPassed
+                      ? <span className="text-red-600 font-semibold">Recruit now</span>
+                      : <>Hire by <span className="font-semibold">{reqHireByWeek?.label}</span> · {reqHireByWeek?.dateLabel}</>
+                    }
+                    <br />
+                    deficit of {reqHiresNeeded} at {reqDeficitWeek.label} · {reqDeficitWeek.dateLabel}
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })()}
 
-        {/* Gross Hiring Need — Billable FTE (only when billable is configured) */}
-        {billableActive && (
-          <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-amber-500"
-            title={`Gap to close: ${Math.max(0, config.billableFte - config.startingHc)} + Attrition replacements: ${Math.ceil(attritionSummary.totalExits)}`}
-          >
-            <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
-              <UserPlus className="size-3" /> Gross Hiring — Billable
+        {/* Next Hiring Action — Billable FTE (only when billable is configured) */}
+        {billableActive && (() => {
+          const { billHiresNeeded, billDeficitWeek, billHireByWeek, billHireByPassed } = hiringNeed;
+          const hasDeficit = billDeficitWeek != null;
+          const accent = !hasDeficit ? "border-l-green-500" : billHireByPassed ? "border-l-red-500" : "border-l-amber-500";
+          return (
+            <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${accent}`}>
+              <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
+                <UserPlus className="size-3" /> Next Hiring Action — Billable
+              </div>
+              {!hasDeficit ? (
+                <>
+                  <div className="text-lg font-bold mt-1 text-black dark:text-black leading-none">Fully staffed</div>
+                  <div className="text-[10px] text-black mt-1">No billable deficit in horizon</div>
+                </>
+              ) : (
+                <>
+                  <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
+                    {billHiresNeeded} {billHiresNeeded === 1 ? "hire" : "hires"}
+                  </div>
+                  <div className="text-[10px] text-black mt-1 leading-snug">
+                    {billHireByPassed
+                      ? <span className="text-red-600 font-semibold">Recruit now</span>
+                      : <>Hire by <span className="font-semibold">{billHireByWeek?.label}</span> · {billHireByWeek?.dateLabel}</>
+                    }
+                    <br />
+                    deficit of {billHiresNeeded} at {billDeficitWeek.label} · {billDeficitWeek.dateLabel}
+                  </div>
+                </>
+              )}
             </div>
-            <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
-              {hiringNeed.grossBillableHireNeed > 0 ? hiringNeed.grossBillableHireNeed : "—"}
-            </div>
-            <div className="text-[10px] text-black mt-1">
-              {hiringNeed.hireByBillable
-                ? hiringNeed.hireByBillableImmediate
-                  ? "Hire by: immediately"
-                  : `Hire by: ${hiringNeed.hireByBillable.label} · ${hiringNeed.hireByBillable.dateLabel}`
-                : "No deficit — no urgency"}
-            </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* ── Secondary metrics strip */}
