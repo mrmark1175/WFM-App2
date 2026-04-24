@@ -641,6 +641,19 @@ async function ensureAppTables() {
       updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // ── AI assistant settings — one row per organization ─────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_settings (
+      id               SERIAL PRIMARY KEY,
+      organization_id  INTEGER NOT NULL DEFAULT 1,
+      provider         TEXT NOT NULL DEFAULT 'anthropic',
+      model            TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
+      api_key          TEXT,
+      updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(organization_id)
+    )
+  `);
 }
 
 async function ensureAdminAuth() {
@@ -2484,6 +2497,225 @@ app.post('/api/ai/normalize-week', (req, res) => {
   });
 
   res.json({ suggestions });
+});
+
+// ── AI Settings ──────────────────────────────────────────────────────────────
+
+app.get('/api/ai-settings', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT provider, model, CASE WHEN api_key IS NOT NULL THEN true ELSE false END AS has_key FROM ai_settings WHERE organization_id = 1 LIMIT 1'
+    );
+    if (rows.length === 0) return res.json({ provider: 'anthropic', model: 'claude-haiku-4-5-20251001', has_key: false });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[ai-settings GET]', err);
+    res.status(500).json({ error: 'Failed to load AI settings' });
+  }
+});
+
+app.put('/api/ai-settings', async (req, res) => {
+  const { provider, model, api_key } = req.body;
+  if (!provider || !model) return res.status(400).json({ error: 'provider and model are required' });
+  try {
+    const existing = await pool.query('SELECT id FROM ai_settings WHERE organization_id = 1 LIMIT 1');
+    if (existing.rows.length === 0) {
+      await pool.query(
+        'INSERT INTO ai_settings (organization_id, provider, model, api_key) VALUES (1, $1, $2, $3)',
+        [provider, model, api_key || null]
+      );
+    } else {
+      const updates = ['provider = $1', 'model = $2', 'updated_at = NOW()'];
+      const params = [provider, model];
+      if (api_key !== undefined) { updates.push(`api_key = $${params.length + 1}`); params.push(api_key); }
+      await pool.query(`UPDATE ai_settings SET ${updates.join(', ')} WHERE organization_id = 1`, params);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[ai-settings PUT]', err);
+    res.status(500).json({ error: 'Failed to save AI settings' });
+  }
+});
+
+app.post('/api/ai-settings/test', async (req, res) => {
+  const { provider, model, api_key } = req.body;
+  if (!api_key) return res.status(400).json({ error: 'api_key required' });
+  try {
+    if (provider === 'anthropic') {
+      const Anthropic = require('@anthropic-ai/sdk');
+      const client = new Anthropic.default({ apiKey: api_key });
+      await client.messages.create({ model, max_tokens: 10, messages: [{ role: 'user', content: 'Hi' }] });
+    } else if (provider === 'openai') {
+      const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${api_key}` },
+        body: JSON.stringify({ model, max_tokens: 10, messages: [{ role: 'user', content: 'Hi' }] }),
+      });
+      if (!resp.ok) throw new Error(`OpenAI ${resp.status}`);
+    } else if (provider === 'gemini') {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${api_key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: 'Hi' }] }] }),
+      });
+      if (!resp.ok) throw new Error(`Gemini ${resp.status}`);
+    } else if (provider === 'groq') {
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${api_key}` },
+        body: JSON.stringify({ model, max_tokens: 10, messages: [{ role: 'user', content: 'Hi' }] }),
+      });
+      if (!resp.ok) throw new Error(`Groq ${resp.status}`);
+    } else {
+      return res.status(400).json({ error: 'Unknown provider' });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Connection failed' });
+  }
+});
+
+// ── AI Chat ───────────────────────────────────────────────────────────────────
+
+const WFM_SYSTEM_PROMPT = `You are an expert Workforce Management (WFM) analyst embedded inside a contact center planning platform called Exordium WFM.
+
+Your expertise covers:
+- Erlang C and Erlang A queuing models for voice, chat (with concurrency), and email (async backlog)
+- Shrinkage calculation (planned and unplanned), FTE gross-up formulas
+- Long-term demand forecasting: Holt-Winters, YoY growth, moving average, linear regression
+- Intraday staffing: interval-level FTE requirements, smoothing, occupancy targets
+- Multi-channel blended and dedicated staffing pool design
+- Service level agreements (SLA), average speed of answer (ASA), abandonment rates
+- Capacity planning: headcount gap analysis, hiring timelines, ramp curves
+- Schedule optimization, shift design, adherence, real-time adherence (RTA)
+
+Rules:
+- Be concise and direct. WFM managers are busy — give the answer first, explanation second.
+- When the user shares numbers from their plan, work with those exact numbers.
+- If asked to calculate something, show your working clearly.
+- Never make up data you were not given.
+- If you don't know something specific to their instance, say so and offer the general principle.`;
+
+app.post('/api/ai/chat', async (req, res) => {
+  const { messages, pageContext } = req.body;
+  if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
+
+  let settings;
+  try {
+    const { rows } = await pool.query('SELECT provider, model, api_key FROM ai_settings WHERE organization_id = 1 LIMIT 1');
+    settings = rows[0];
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to load AI settings' });
+  }
+
+  if (!settings || !settings.api_key) {
+    return res.status(400).json({ error: 'AI assistant not configured. Please add your API key in Configuration → AI Assistant.' });
+  }
+
+  const { provider, model, api_key } = settings;
+
+  const systemPrompt = pageContext
+    ? `${WFM_SYSTEM_PROMPT}\n\nCurrent page context:\n${JSON.stringify(pageContext, null, 2)}`
+    : WFM_SYSTEM_PROMPT;
+
+  // Set up SSE streaming
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const sendChunk = (text) => res.write(`data: ${JSON.stringify({ text })}\n\n`);
+  const sendDone = () => res.write(`data: [DONE]\n\n`);
+  const sendError = (msg) => { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); };
+
+  try {
+    if (provider === 'anthropic') {
+      const Anthropic = require('@anthropic-ai/sdk');
+      const client = new Anthropic.default({ apiKey: api_key });
+      const stream = await client.messages.stream({
+        model,
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages: messages.map(m => ({ role: m.role, content: m.content })),
+      });
+      for await (const chunk of stream) {
+        if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'text_delta') {
+          sendChunk(chunk.delta.text);
+        }
+      }
+      sendDone();
+      res.end();
+
+    } else if (provider === 'openai' || provider === 'groq') {
+      const baseUrl = provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1';
+      const resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${api_key}` },
+        body: JSON.stringify({
+          model, stream: true,
+          messages: [{ role: 'system', content: systemPrompt }, ...messages],
+        }),
+      });
+      if (!resp.ok) { sendError(`${provider} API error: ${resp.status}`); return; }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(data);
+            const text = parsed.choices?.[0]?.delta?.content;
+            if (text) sendChunk(text);
+          } catch {}
+        }
+      }
+      sendDone();
+      res.end();
+
+    } else if (provider === 'gemini') {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${api_key}&alt=sse`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+        }),
+      });
+      if (!resp.ok) { sendError(`Gemini API error: ${resp.status}`); return; }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const parsed = JSON.parse(line.slice(6));
+            const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) sendChunk(text);
+          } catch {}
+        }
+      }
+      sendDone();
+      res.end();
+    } else {
+      sendError('Unknown provider');
+    }
+  } catch (err) {
+    console.error('[ai/chat]', err);
+    sendError(err.message || 'AI request failed');
+  }
 });
 
 app.get('/{*splat}', (req, res) => {

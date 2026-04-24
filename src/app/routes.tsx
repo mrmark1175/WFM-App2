@@ -64,6 +64,10 @@ export const router = createBrowserRouter([
     lazy: () => lazyLoad(async () => { const { LOBSettings } = await import("./pages/LOBSettings"); return { Component: LOBSettings }; }),
   },
   {
+    path: "/configuration/ai-settings",
+    lazy: () => lazyLoad(async () => { const { AISettings } = await import("./pages/AISettings"); return { Component: AISettings }; }),
+  },
+  {
     path: "/scheduling",
     lazy: () => lazyLoad(async () => { const { SchedulingHub } = await import("./pages/SchedulingHub"); return { Component: SchedulingHub }; }),
   },

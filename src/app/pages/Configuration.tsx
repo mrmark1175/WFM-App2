@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { PageLayout } from "../components/PageLayout";
-import { Settings, Database, Plug, Users2, Building2, Lock, ChevronRight, SlidersHorizontal } from "lucide-react";
+import { Settings, Database, Plug, Users2, Building2, Lock, ChevronRight, SlidersHorizontal, Bot } from "lucide-react";
 
 interface ConfigSection {
   title: string;
@@ -25,6 +25,14 @@ export function Configuration() {
       icon: SlidersHorizontal,
       category: "Workforce",
       href: "/configuration/lob-settings",
+    },
+
+    {
+      title: "AI Assistant",
+      description: "Choose your AI provider (Claude, OpenAI, Gemini, Groq), set your API key, pick a model, and test the connection — all without touching any code.",
+      icon: Bot,
+      category: "AI",
+      href: "/configuration/ai-settings",
     },
     {
       title: "System Settings",

@@ -3,6 +3,7 @@ import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock,
 import React, { useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
+import { WFMAssistant } from "./WFMAssistant";
 import logo from "../../assets/logo.svg";
 
 interface PageLayoutProps {
@@ -55,6 +56,7 @@ const CRUMB_NAMES: Record<string, string> = {
 export function PageLayout({ children, title }: PageLayoutProps) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const pathnames = location.pathname.split("/").filter(Boolean);
 
   return (
@@ -125,6 +127,17 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           )}
           {children}
         </main>
+
+        {/* WFM Assistant — sticky right panel */}
+        <div className={`sticky top-11 h-[calc(100vh-44px)] self-start flex ${assistantOpen ? "" : "items-center justify-end"}`}
+          style={{ width: assistantOpen ? 320 : 0, overflow: "visible" }}>
+          {assistantOpen && (
+            <WFMAssistant open={true} onToggle={() => setAssistantOpen(false)} />
+          )}
+          {!assistantOpen && (
+            <WFMAssistant open={false} onToggle={() => setAssistantOpen(true)} />
+          )}
+        </div>
       </div>
     </div>
   );
