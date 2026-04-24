@@ -90,7 +90,8 @@ export function PageLayout({ children, title }: PageLayoutProps) {
         <LOBSelector className="ml-auto" />
       </header>
 
-      <div className={`grid min-h-[calc(100vh-44px)] ${collapsed ? "grid-cols-[56px_1fr]" : "grid-cols-[220px_1fr]"} transition-[grid-template-columns]`}>
+      <div className="grid min-h-[calc(100vh-44px)] transition-[grid-template-columns]"
+        style={{ gridTemplateColumns: `${collapsed ? "56px" : "220px"} 1fr${assistantOpen ? " 320px" : ""}` }}>
         <aside className="sticky top-11 h-[calc(100vh-44px)] bg-[#1111D4] text-white border-r border-[#0a0aa8] py-3 px-2 overflow-y-auto self-start">
           {NAV.map(g => (
             <div key={g.group} className="mt-3 first:mt-0">
@@ -129,15 +130,11 @@ export function PageLayout({ children, title }: PageLayoutProps) {
         </main>
 
         {/* WFM Assistant — sticky right panel */}
-        <div className={`sticky top-11 h-[calc(100vh-44px)] self-start flex ${assistantOpen ? "" : "items-center justify-end"}`}
-          style={{ width: assistantOpen ? 320 : 0, overflow: "visible" }}>
-          {assistantOpen && (
+        {assistantOpen && (
+          <div className="sticky top-11 h-[calc(100vh-44px)] self-start">
             <WFMAssistant open={true} onToggle={() => setAssistantOpen(false)} />
-          )}
-          {!assistantOpen && (
-            <WFMAssistant open={false} onToggle={() => setAssistantOpen(true)} />
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
