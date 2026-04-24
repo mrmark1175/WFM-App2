@@ -648,7 +648,7 @@ async function ensureAppTables() {
       id               SERIAL PRIMARY KEY,
       organization_id  INTEGER NOT NULL DEFAULT 1,
       provider         TEXT NOT NULL DEFAULT 'anthropic',
-      model            TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
+      model            TEXT NOT NULL DEFAULT 'gemini-1.5-flash',
       api_key          TEXT,
       updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(organization_id)
@@ -2558,7 +2558,12 @@ app.post('/api/ai-settings/test', async (req, res) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: 'Hi' }] }] }),
       });
-      if (!resp.ok) throw new Error(`Gemini ${resp.status}`);
+      if (!resp.ok) {
+        if (resp.status === 429) throw new Error('Rate limit hit (free tier quota). Your key is valid — just wait 60 seconds and try again, or use Gemini 1.5 Flash 8B which has the highest free quota.');
+        if (resp.status === 400) throw new Error('Invalid model name or request. Try selecting Gemini 1.5 Flash instead.');
+        if (resp.status === 403) throw new Error('API key invalid or Gemini API not enabled. Check your key in Google AI Studio.');
+        throw new Error(`Gemini error ${resp.status}`);
+      }
     } else if (provider === 'groq') {
       const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
