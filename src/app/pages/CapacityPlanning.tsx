@@ -228,9 +228,11 @@ function calcWeeklyErlangFTE(
   return { fte: roundTo(result.fte * coverageRatio), occupancy: result.occupancy };
 }
 
-// Blended staffing: voice Erlang C sets the base; idle voice capacity absorbs chat
-// (concurrency-adjusted) then email/cases. Only the overflow workload requires extra agents.
-// This matches calculateBlendedTriChannelRequirement in the demand planner.
+// Blended staffing: the dominant real-time channel (voice > chat > email) sets the Erlang C base;
+// idle capacity from that base absorbs the next channel, then email/cases async.
+// When voice is absent, chat Erlang C becomes the base — this matches the fix applied
+// to calculatePooledFTE in LongTermForecasting_Demand.tsx (Bug 2 from commit 0dce6ff).
+// Using pure traffic-intensity for a chat-only pool (the old behavior) under-staffed by ~40-50%.
 function calcWeeklyBlendedFTE(
   voiceVol: number, voiceAht: number,
   chatVol: number, chatAht: number,
@@ -240,9 +242,13 @@ function calcWeeklyBlendedFTE(
   fteHoursPerDay: number,
   slaVoiceTarget: number,
   slaVoiceSec: number,
+  slaChatTarget: number,
+  slaChatSec: number,
+  emailOccupancyPct: number,
   shrinkagePct: number,
   chatConcurrency: number,
   voiceAvgPatienceSec = 0,
+  chatAvgPatienceSec = 0,
 ): { fte: number; occupancy: number } {
   if (daysPerWeek <= 0 || operatingHoursPerDay <= 0) return { fte: 0, occupancy: 0 };
 
@@ -250,44 +256,72 @@ function calcWeeklyBlendedFTE(
   const intervalHours = 0.5;
   const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
   const safeConcurrency = Math.max(1, chatConcurrency);
+  const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
 
   const voiceCPI = voiceVol > 0 ? (voiceVol / daysPerWeek) / intervalsPerDay : 0;
   const chatCPI = chatVol > 0 ? (chatVol / daysPerWeek) / intervalsPerDay : 0;
   const emailCPI = emailVol > 0 ? (emailVol / daysPerWeek) / intervalsPerDay : 0;
 
-  // Voice: Erlang C/A — rawAgents (pre-shrinkage) needed to meet SLA
-  let voiceRawAgents = 0;
-  let voiceOccupancy = 0;
   if (voiceCPI > 0 && voiceAht > 0) {
+    // ── Voice-anchored blended pool (original model) ─────────────────────────
+    // Voice Erlang C/A sets the base; idle capacity absorbs chat then email/cases.
     const vr = computeIntervalFTE(voiceCPI, 30, voiceAht, slaVoiceTarget, slaVoiceSec, 85, 0, "voice", 1, voiceAvgPatienceSec);
-    voiceRawAgents = vr.rawAgents;
-    voiceOccupancy = vr.occupancy;
+    const voiceRawAgents = vr.rawAgents;
+
+    const voiceWorkloadHours = voiceCPI * voiceAht / 3600;
+    const voiceIdleHours = Math.max(0, voiceRawAgents * intervalHours - voiceWorkloadHours);
+
+    const rawChatWorkloadHours = chatCPI * chatAht / 3600;
+    const concurrentChatWorkload = rawChatWorkloadHours / safeConcurrency;
+    const netChatWorkload = Math.max(0, concurrentChatWorkload - voiceIdleHours);
+    const remainingIdle = Math.max(0, voiceIdleHours - concurrentChatWorkload);
+
+    const emailWorkloadHours = emailCPI * emailAht / 3600;
+    const netEmailWorkload = Math.max(0, emailWorkloadHours - remainingIdle);
+
+    const chatExtraAgents = netChatWorkload / intervalHours;
+    const emailExtraAgents = netEmailWorkload / intervalHours;
+    const totalBaseAgents = voiceRawAgents + chatExtraAgents + emailExtraAgents;
+
+    return {
+      fte: roundTo((totalBaseAgents / shrinkFactor) * coverageRatio),
+      occupancy: vr.occupancy,
+    };
   }
 
-  // Idle capacity available after serving voice
-  const voiceWorkloadHours = voiceCPI * voiceAht / 3600;
-  const voiceIdleHours = Math.max(0, voiceRawAgents * intervalHours - voiceWorkloadHours);
+  if (chatCPI > 0 && chatAht > 0) {
+    // ── Chat-anchored blended pool (voice absent) ─────────────────────────────
+    // Run full Erlang C for chat — traffic-intensity model would under-staff by ~40-50%
+    // at typical occupancy because it skips the SLA queuing headroom.
+    const cr = computeIntervalFTE(chatCPI, 30, chatAht, slaChatTarget, slaChatSec, 85, 0, "chat", safeConcurrency, chatAvgPatienceSec);
+    const chatRawAgents = cr.rawAgents;
 
-  // Chat absorbs idle (concurrency lets each agent handle multiple sessions)
-  const rawChatWorkloadHours = chatCPI * chatAht / 3600;
-  const concurrentChatWorkload = rawChatWorkloadHours / safeConcurrency;
-  const netChatWorkload = Math.max(0, concurrentChatWorkload - voiceIdleHours);
-  const remainingIdle = Math.max(0, voiceIdleHours - concurrentChatWorkload);
+    // Idle physical agent capacity after serving chat (concurrency-adjusted workload)
+    const chatPhysicalWorkloadHours = chatCPI * chatAht / (3600 * safeConcurrency);
+    const chatIdleHours = Math.max(0, chatRawAgents * intervalHours - chatPhysicalWorkloadHours);
 
-  // Email/async absorbs remaining idle
-  const emailWorkloadHours = emailCPI * emailAht / 3600;
-  const netEmailWorkload = Math.max(0, emailWorkloadHours - remainingIdle);
+    const emailWorkloadHours = emailCPI * emailAht / 3600;
+    const netEmailWorkload = Math.max(0, emailWorkloadHours - chatIdleHours);
+    const emailExtraAgents = netEmailWorkload / intervalHours;
+    const totalBaseAgents = chatRawAgents + emailExtraAgents;
 
-  // Extra agents needed for overflow only
-  const chatExtraAgents = intervalHours > 0 ? netChatWorkload / intervalHours : 0;
-  const emailExtraAgents = intervalHours > 0 ? netEmailWorkload / intervalHours : 0;
+    return {
+      fte: roundTo((totalBaseAgents / shrinkFactor) * coverageRatio),
+      occupancy: cr.occupancy,
+    };
+  }
 
-  const totalBaseAgents = voiceRawAgents + chatExtraAgents + emailExtraAgents;
-  const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
-  return {
-    fte: roundTo((totalBaseAgents / shrinkFactor) * coverageRatio),
-    occupancy: voiceOccupancy,
-  };
+  // ── Email/cases only ──────────────────────────────────────────────────────────
+  // Use the proper async workload model with occupancy target (not 100% utilisation).
+  if (emailCPI > 0 && emailAht > 0) {
+    const er = computeIntervalFTE(emailCPI, 30, emailAht, 0, 0, emailOccupancyPct, 0, "email");
+    return {
+      fte: roundTo((er.rawAgents / shrinkFactor) * coverageRatio),
+      occupancy: er.occupancy,
+    };
+  }
+
+  return { fte: 0, occupancy: 0 };
 }
 
 function calcRampPct(ageWeeks: number, trainWks: number, nestWks: number, nestPct: number): number {
@@ -760,15 +794,7 @@ export function CapacityPlanning() {
     const chatEnabled = !!sel.chat;
     const emailEnabled = !!sel.email;
     const casesEnabled = !!sel.cases;
-    const recut = plannerSnapshot.recutVolumesByChannel;
-    if (recut?.voice?.length) {
-      return {
-        voice: recut.voice as number[],
-        chat: chatEnabled && recut.chat?.length ? recut.chat as number[] : recut.voice.map(() => 0),
-        email: emailEnabled && recut.email?.length ? recut.email as number[] : recut.voice.map(() => 0),
-        cases: casesEnabled && recut.cases?.length ? recut.cases as number[] : recut.voice.map(() => 0),
-      };
-    }
+
     const { forecastMethod, hwParams, arimaParams, decompParams, assumptions } = plannerSnapshot;
     const apiData = plannerSnapshot.channelHistoricalApiData ?? {};
     const overrides = plannerSnapshot.channelHistoricalOverrides ?? {};
@@ -788,19 +814,32 @@ export function CapacityPlanning() {
     const casesH = applyOv(apiData.cases ?? [], overrides.cases ?? {});
     const voice = getCalculatedVolumes(voiceH, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
     const zeros = voice.map(() => 0);
-    const chat = !chatEnabled ? zeros
+    const statChat = !chatEnabled ? zeros
       : chatH.length > 0
         ? getCalculatedVolumes(chatH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
         : voice.map(v => Math.round(v * 0.3));
-    const email = !emailEnabled ? zeros
+    const statEmail = !emailEnabled ? zeros
       : emailH.length > 0
         ? getCalculatedVolumes(emailH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
         : voice.map(v => Math.round(v * 0.2));
-    const cases = !casesEnabled ? zeros
+    const statCases = !casesEnabled ? zeros
       : casesH.length > 0
         ? getCalculatedVolumes(casesH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
         : voice.map(v => Math.round(v * 0.2));
-    return { voice, chat, email, cases };
+
+    // Apply recut overrides where they exist; fall back to statistical forecast for
+    // channels that have no recut — never zero them out silently.
+    const recut = plannerSnapshot.recutVolumesByChannel;
+    if (recut?.voice?.length) {
+      return {
+        voice: recut.voice as number[],
+        chat: chatEnabled && recut.chat?.length ? recut.chat as number[] : statChat,
+        email: emailEnabled && recut.email?.length ? recut.email as number[] : statEmail,
+        cases: casesEnabled && recut.cases?.length ? recut.cases as number[] : statCases,
+      };
+    }
+
+    return { voice, chat: statChat, email: statEmail, cases: statCases };
   }, [plannerSnapshot]);
 
   // ── Auto volumes from demand snapshot
@@ -849,7 +888,7 @@ export function CapacityPlanning() {
   }), [lobSettings, demandAssumptions]);
 
   // ── Staffing params
-  const shrinkagePct = Number(demandAssumptions?.shrinkage ?? 20) || 20;
+  const shrinkagePct = demandAssumptions?.shrinkage != null ? Number(demandAssumptions.shrinkage) : 20;
 
   // Operating hours: LOB settings (hours_of_operation) is the source of truth.
   // For dedicated LOBs use the active channel's schedule; for blended use voice.
@@ -914,18 +953,22 @@ export function CapacityPlanning() {
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
       } else {
-        // Blended: voice Erlang C sets the base; idle capacity absorbs chat then email/cases.
-        // Summing independent Erlang results per channel would over-staff by treating a
-        // blended pool as three separate dedicated pools.
-        const blendedEmailVol = (enabledChannels.includes("email") ? effVolEmail : 0)
-          + (enabledChannels.includes("cases") ? effVolCases : 0);
-        const blendedEmailAht = effAhtEmail; // email AHT for all async channels
+        // Blended: dominant real-time channel sets the Erlang C base; idle capacity
+        // absorbs the next channel, then email/cases async.
+        const blendedEmailVoiceVol = enabledChannels.includes("email") ? effVolEmail : 0;
+        const blendedEmailCasesVol = enabledChannels.includes("cases") ? effVolCases : 0;
+        const blendedEmailVol = blendedEmailVoiceVol + blendedEmailCasesVol;
+        // Weight-average AHT across email+cases so a cases AHT override is respected
+        const blendedEmailAht = blendedEmailVol > 0
+          ? (blendedEmailVoiceVol * effAhtEmail + blendedEmailCasesVol * effAhtCases) / blendedEmailVol
+          : effAhtEmail;
         const r = calcWeeklyBlendedFTE(
           enabledChannels.includes("voice") ? effVolVoice : 0, effAhtVoice,
           enabledChannels.includes("chat") ? effVolChat : 0, effAhtChat,
           blendedEmailVol, blendedEmailAht,
           daysPerWeek, operatingHoursPerDay, hoursPerDay,
-          slaVoiceTarget, slaVoiceSec, shrinkagePct, chatConcurrency, voiceAvgPatienceSec,
+          slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, emailOccupancy,
+          shrinkagePct, chatConcurrency, voiceAvgPatienceSec, chatAvgPatienceSec,
         );
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
