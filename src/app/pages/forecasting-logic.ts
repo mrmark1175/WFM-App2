@@ -55,14 +55,15 @@ export const calculateHoltWinters = (
   alpha: number = 0.3,
   beta: number = 0.1,
   gamma: number = 0.3,
-  seasonLength: number = 12
+  seasonLength: number = 12,
+  forecastPeriods: number = 12
 ): number[] => {
   if (data.length < seasonLength * 2) {
     // Not enough data for full HW — fall back to linear regression on available data
     return calculateLinearRegression(data);
   }
 
-  const forecastLength = 12;
+  const forecastLength = forecastPeriods;
   const seasons = Math.floor(data.length / seasonLength);
   
   let level = data.slice(0, seasonLength).reduce((a, b) => a + b, 0) / seasonLength;
@@ -330,32 +331,45 @@ export interface Assumptions {
   manualHistoricalData: number[];
   useShrinkageModeler?: boolean;
   shrinkageItems?: unknown[];
+  planningMonths?: number;
 }
 
 // ── Shared forecast dispatcher (used by Demand Planner + Distribution Engine) ─
+// Extends a 12-month base forecast to `periods` months by tiling the seasonal pattern
+// and applying an additional growth multiplier for each extra 12-month cycle.
+const tileForecast = (base12: number[], periods: number, growthRatePct: number): number[] => {
+  if (periods <= 12) return base12.slice(0, periods);
+  const multiplier = growthRatePct === 0 ? 1 : 1 + growthRatePct / 100;
+  return Array.from({ length: periods }, (_, i) => {
+    const extraCycles = Math.floor(i / 12);
+    return Math.round(base12[i % 12] * Math.pow(multiplier, extraCycles));
+  });
+};
+
 export const getCalculatedVolumes = (
   data: number[],
   forecastMethod: string,
   assumptions: Assumptions,
   hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number },
   arimaParams: { p: number; d: number; q: number },
-  decompParams: { trendStrength: number; seasonalityStrength: number }
+  decompParams: { trendStrength: number; seasonalityStrength: number },
+  forecastPeriods: number = 12
 ): number[] => {
-  if (data.length === 0) return Array(12).fill(0);
+  if (data.length === 0) return Array(forecastPeriods).fill(0);
   const applyGrowth = (volumes: number[]) => {
     if (assumptions.growthRate === 0) return volumes;
     const multiplier = 1 + assumptions.growthRate / 100;
     return volumes.map((v) => Math.round(v * multiplier));
   };
   switch (forecastMethod) {
-    case "yoy": return calculateYoY(data.slice(-12), assumptions.growthRate);
-    case "ma": return applyGrowth(calculateMovingAverage(data, 3));
-    case "regression": return applyGrowth(calculateLinearRegression(data));
-    case "holtwinters": return applyGrowth(calculateHoltWinters(data, hwParams.alpha, hwParams.beta, hwParams.gamma, hwParams.seasonLength));
-    case "decomposition": return applyGrowth(calculateDecomposition(data, decompParams.trendStrength, decompParams.seasonalityStrength));
-    case "arima": return applyGrowth(calculateARIMA(data, arimaParams.p, arimaParams.d, arimaParams.q));
+    case "yoy": return tileForecast(calculateYoY(data.slice(-12), assumptions.growthRate), forecastPeriods, assumptions.growthRate);
+    case "ma": return tileForecast(applyGrowth(calculateMovingAverage(data, 3)), forecastPeriods, assumptions.growthRate);
+    case "regression": return tileForecast(applyGrowth(calculateLinearRegression(data)), forecastPeriods, assumptions.growthRate);
+    case "holtwinters": return applyGrowth(calculateHoltWinters(data, hwParams.alpha, hwParams.beta, hwParams.gamma, hwParams.seasonLength, forecastPeriods));
+    case "decomposition": return tileForecast(applyGrowth(calculateDecomposition(data, decompParams.trendStrength, decompParams.seasonalityStrength)), forecastPeriods, assumptions.growthRate);
+    case "arima": return tileForecast(applyGrowth(calculateARIMA(data, arimaParams.p, arimaParams.d, arimaParams.q)), forecastPeriods, assumptions.growthRate);
     case "genesys":
-    default: return applyGrowth(data.slice(-12));
+    default: return tileForecast(applyGrowth(data.slice(-12)), forecastPeriods, assumptions.growthRate);
   }
 };
 

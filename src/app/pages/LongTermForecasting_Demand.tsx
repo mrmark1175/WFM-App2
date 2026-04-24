@@ -271,6 +271,7 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   manualHistoricalData: new Array(12).fill(10000),
   useShrinkageModeler: false,
   shrinkageItems: DEFAULT_SHRINKAGE_ITEMS,
+  planningMonths: 12,
 };
 const EMPTY_CHANNEL_DATA: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [], cases: [] };
 const EMPTY_CHANNEL_OVERRIDES: Record<ChannelKey, Record<number, string>> = { voice: {}, email: {}, chat: {}, cases: {} };
@@ -900,9 +901,10 @@ const calculatePooledFTE = (
 };
 const getCalculatedVolumes = getCalculatedVolumesBase;
 const buildDemandForecastData = (data: number[], assumptions: Assumptions, forecastMethod: string, hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number }, arimaParams: { p: number; d: number; q: number }, decompParams: { trendStrength: number; seasonalityStrength: number }): DemandForecastData[] => {
+  const planningMonths = assumptions.planningMonths ?? 12;
   const historyLength = data.length;
-  const calculatedVolumes = getCalculatedVolumes(data, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
-  const timeline = getTimeline(assumptions.startDate, historyLength, 12);
+  const calculatedVolumes = getCalculatedVolumes(data, forecastMethod, assumptions, hwParams, arimaParams, decompParams, planningMonths);
+  const timeline = getTimeline(assumptions.startDate, historyLength, planningMonths);
   return timeline.map((time, idx) => {
     const isFuture = time.isFuture;
     const historicalVolume = !isFuture ? data[idx] ?? 0 : null;
@@ -963,9 +965,9 @@ export default function LongTermForecastingDemand() {
   const [savedActuals, setSavedActuals] = useState<Set<string>>(new Set());
   const hasHydratedRef = useRef(false);
   const activeScenario = scenarios[selectedScenarioId];
-  const forecastYear = Number.isFinite(new Date(assumptions.startDate).getTime())
-    ? new Date(assumptions.startDate).getFullYear()
-    : new Date().getFullYear();
+  const startDateObj = Number.isFinite(new Date(assumptions.startDate).getTime()) ? new Date(assumptions.startDate) : new Date();
+  const forecastYear = startDateObj.getFullYear();
+  const forecastMonth = startDateObj.getMonth(); // 0-indexed
   const historicalWindowStart = `${forecastYear - 2}-01-01`;
   const historicalWindowEnd = `${forecastYear - 1}-12-31`;
   const historicalApiData = historicalApiDataByChannel.voice;
@@ -1643,20 +1645,21 @@ export default function LongTermForecastingDemand() {
     if (dataSourceMode === "manual") return manualFinalHistoricalDataByChannel;
     return finalHistoricalDataByChannel;
   }, [dataSourceMode, manualFinalHistoricalDataByChannel, finalHistoricalDataByChannel]);
-  // Per-channel 12-month forecast volumes — uses each channel's own history when available
+  // Per-channel forecast volumes — uses each channel's own history when available
   const forecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
-    const voiceForecast = getCalculatedVolumes(effectiveFinalHistoricalDataByChannel.voice, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
+    const pm = assumptions.planningMonths ?? 12;
+    const voiceForecast = getCalculatedVolumes(effectiveFinalHistoricalDataByChannel.voice, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm);
     const emailHistory = effectiveFinalHistoricalDataByChannel.email;
     const chatHistory = effectiveFinalHistoricalDataByChannel.chat;
     const casesHistory = effectiveFinalHistoricalDataByChannel.cases;
     const emailForecast = (dataSourceMode === "manual" ? emailHistory.length > 0 : hasExplicitHistoryByChannel.email)
-      ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
       : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
     const chatForecast = (dataSourceMode === "manual" ? chatHistory.length > 0 : hasExplicitHistoryByChannel.chat)
-      ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
       : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
     const casesForecast = (dataSourceMode === "manual" ? casesHistory.length > 0 : hasExplicitHistoryByChannel.cases)
-      ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+      ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
       : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
     return { voice: voiceForecast, email: emailForecast, chat: chatForecast, cases: casesForecast };
   }, [effectiveFinalHistoricalDataByChannel, dataSourceMode, hasExplicitHistoryByChannel, forecastMethod, assumptions, hwParams, arimaParams, decompParams]);
@@ -1715,7 +1718,7 @@ export default function LongTermForecastingDemand() {
       yearSeries[monthIndex] = includedChannels.reduce((sum, channel) => sum + (effectiveFinalHistoricalDataByChannel[channel][idx] ?? 0), 0);
       actualByYear.set(time.year, yearSeries);
     });
-    const forecastTimeline = getTimeline(assumptions.startDate, 0, 12);
+    const forecastTimeline = getTimeline(assumptions.startDate, 0, assumptions.planningMonths ?? 12);
     forecastTimeline.forEach((time, idx) => {
       const monthIndex = MONTH_NAMES.indexOf(time.month);
       if (monthIndex < 0) return;
@@ -1925,8 +1928,6 @@ export default function LongTermForecastingDemand() {
     }));
     const totalVol = chanVols.reduce((s, c) => s + c.avg, 0);
     const channelMix = chanVols.map((c) => ({ ...c, pct: totalVol > 0 ? Math.round((c.avg / totalVol) * 100) : 0 })).sort((a, b) => b.pct - a.pct);
-    // Method label
-    const methodLabel = FORECAST_MODEL_COPY.holtwinters.label;
     // Growth
     const growthRate = assumptions.growthRate ?? 0;
     const lastRow = futureData[n - 1];
@@ -1938,8 +1939,8 @@ export default function LongTermForecastingDemand() {
       trendDir === "declining" ? "Demand is Easing — Opportunity to Optimize Staffing Levels" :
       "Stable Demand Outlook — A Predictable Staffing Horizon Ahead";
     const trendSentence = trendDir === "stable"
-      ? `The ${methodLabel} model projects a stable staffing trend across the planning horizon, with required FTE holding near ${avgFTE} agents on average.`
-      : `The ${methodLabel} model projects a ${trendDir} trend — required FTE is ${trendDir === "growing" ? "increasing" : "declining"} ${Math.abs(trendPct).toFixed(1)}% from the opening months to close of the planning period.`;
+      ? `The demand forecast projects a stable staffing trend across the planning horizon, with required FTE holding near ${avgFTE} agents on average.`
+      : `The demand forecast projects a ${trendDir} trend — required FTE is ${trendDir === "growing" ? "increasing" : "declining"} ${Math.abs(trendPct).toFixed(1)}% from the opening months to close of the planning period.`;
     const peakSentence = `Staffing pressure is highest in ${peakRow.month} ${peakRow.year} at ${peakRow.totalRequiredFTE.toFixed(1)} FTE, and lowest in ${troughRow.month} ${troughRow.year} at ${troughRow.totalRequiredFTE.toFixed(1)} FTE — a ${fteSpread}% headcount swing across the horizon.`;
     const channelSentence = channelMix.length === 0 ? "" : channelMix.length === 1
       ? `All demand routes through ${channelMix[0].label}, carrying 100% of the blended workload.`
@@ -1949,7 +1950,7 @@ export default function LongTermForecastingDemand() {
       : `No growth rate adjustment is applied — the forecast reflects the model's base projection, reaching ${lastRow.totalRequiredFTE.toFixed(1)} FTE by ${lastPeriod}.`;
     const gapPlaceholder = "Headcount gap analysis not yet connected. Link your active headcount module to unlock coverage risk scoring, over/under-staffing alerts, and hiring timeline recommendations.";
     return { headline, trendSentence, peakSentence, channelSentence, growthSentence, gapPlaceholder, trendDir };
-  }, [futureData, selectedChannels, assumptions.growthRate, forecastMethod]);
+  }, [futureData, selectedChannels, assumptions.growthRate]);
   const requiredStaffingTrendData = useMemo(() => futureData.map((row) => ({
     label: `${row.month} '${row.year.slice(2)}`,
     totalRequiredFTE: row.totalRequiredFTE,
@@ -2005,15 +2006,16 @@ export default function LongTermForecastingDemand() {
       const snapEmailHistory = buildSnapHistory("email");
       const snapChatHistory = buildSnapHistory("chat");
       const snapCasesHistory = buildSnapHistory("cases");
-      const voiceForecast = getCalculatedVolumes(snapVoiceHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams);
+      const snapPm = activeAssumptions.planningMonths ?? 12;
+      const voiceForecast = getCalculatedVolumes(snapVoiceHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm);
       const emailForecast = snapEmailHistory.length > 0
-        ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams)
+        ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
         : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
       const chatForecast = snapChatHistory.length > 0
-        ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams)
+        ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
         : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
       const casesForecast = snapCasesHistory.length > 0
-        ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams)
+        ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
         : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
       const snapBlendConfig = buildBlendConfiguration(activeSelectedChannels, activePoolingMode);
       const snapEmailAht = activeAssumptions.emailAht ?? EMAIL_AHT_SECONDS;
@@ -2419,18 +2421,39 @@ export default function LongTermForecastingDemand() {
                       </button>
                     </div>
                   </div>
-                  {/* Forecast year */}
-                  <div className="w-[110px]">
-                    <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Forecast Year</Label>
-                    <Input
-                      type="number" min={2000} max={2100}
-                      className="mt-1.5 h-9 font-bold"
-                      value={forecastYear}
-                      onChange={(e) => {
-                        const yr = Math.max(2000, Math.min(2100, Number(e.target.value)));
-                        if (Number.isFinite(yr)) setAssumptions((prev) => ({ ...prev, startDate: `${yr}-01-01` }));
-                      }}
-                    />
+                  {/* Start month + year */}
+                  <div className="flex gap-2 items-end">
+                    <div>
+                      <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Start Month</Label>
+                      <select
+                        className="mt-1.5 h-9 rounded-md border border-input bg-background px-2 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-ring"
+                        value={forecastMonth}
+                        onChange={(e) => {
+                          const mo = Number(e.target.value);
+                          const mm = String(mo + 1).padStart(2, "0");
+                          setAssumptions((prev) => ({ ...prev, startDate: `${forecastYear}-${mm}-01` }));
+                        }}
+                      >
+                        {MONTH_NAMES.map((name, idx) => (
+                          <option key={name} value={idx}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="w-[90px]">
+                      <Label className="text-[11px] font-black uppercase tracking-widest text-foreground/60">Year</Label>
+                      <Input
+                        type="number" min={2000} max={2100}
+                        className="mt-1.5 h-9 font-bold"
+                        value={forecastYear}
+                        onChange={(e) => {
+                          const yr = Math.max(2000, Math.min(2100, Number(e.target.value)));
+                          if (Number.isFinite(yr)) {
+                            const mm = String(forecastMonth + 1).padStart(2, "0");
+                            setAssumptions((prev) => ({ ...prev, startDate: `${yr}-${mm}-01` }));
+                          }
+                        }}
+                      />
+                    </div>
                   </div>
                   {/* API action buttons */}
                   {dataSourceMode === "api" && (
@@ -2841,13 +2864,24 @@ export default function LongTermForecastingDemand() {
                 {isAssumptionsOpen && (
                 <CardContent className="p-0 bg-white divide-y divide-[#ebebeb]">
 
-                  {/* ── Section: Planning Start Date ── */}
+                  {/* ── Section: Planning Horizon ── */}
                   <div className="px-4 py-3 space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="startDate" className="text-xs font-medium uppercase text-[#4d4d4d]">Planning Start Date</Label>
+                      <Label htmlFor="planningMonths" className="text-xs font-medium uppercase text-[#4d4d4d]">Planning Horizon (months)</Label>
                       <Calendar className="size-3.5 text-[#0a72ef]" />
                     </div>
-                    <Input id="startDate" type="date" value={assumptions.startDate} onChange={(event) => setAssumptions({ ...assumptions, startDate: event.target.value })} className="h-9 font-bold" />
+                    <Input
+                      id="planningMonths"
+                      type="number"
+                      min={1} max={36}
+                      value={assumptions.planningMonths ?? 12}
+                      onChange={(e) => {
+                        const v = Math.max(1, Math.min(36, Number(e.target.value)));
+                        if (Number.isFinite(v)) setAssumptions((prev) => ({ ...prev, planningMonths: v }));
+                      }}
+                      className="h-9 font-bold"
+                    />
+                    <p className="text-[11px] text-muted-foreground">Number of months to forecast (1–36). Start month is set in the toolbar above.</p>
                   </div>
 
                   {/* ── Group: Forecast Model ── */}
