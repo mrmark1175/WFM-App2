@@ -88,7 +88,7 @@ interface LobSettings {
 }
 
 interface DemandAssumptions {
-  voiceVolume?: number; chatVolume?: number; emailVolume?: number;
+  voiceVolume?: number; chatVolume?: number; emailVolume?: number; casesVolume?: number;
   aht?: number; chatAht?: number; emailAht?: number;
   shrinkage?: number; occupancy?: number;
   operatingDaysPerWeek?: number; operatingHoursPerDay?: number;
@@ -230,6 +230,7 @@ function calcWeeklyErlangFTE(
   channel: "voice" | "chat" | "email",
   concurrency = 1,
   emailOccupancyPct = 85,
+  avgPatienceSeconds = 0,
 ): { fte: number; occupancy: number } {
   if (weeklyVolume <= 0 || ahtSeconds <= 0 || daysPerWeek <= 0 || operatingHoursPerDay <= 0) {
     return { fte: 0, occupancy: 0 };
@@ -240,7 +241,7 @@ function calcWeeklyErlangFTE(
   const result = computeIntervalFTE(
     callsPerInterval, 30, ahtSeconds,
     slaTarget, slaAnswerSeconds, emailOccupancyPct,
-    shrinkagePct, channel, concurrency,
+    shrinkagePct, channel, concurrency, avgPatienceSeconds,
   );
   // result.fte is agents-on-floor per interval, shrinkage-adjusted.
   // Scale to daily FTE: an agent works fteHoursPerDay but the floor needs
@@ -911,7 +912,7 @@ export function CapacityPlanning() {
         voice: monthlyToWeekly(a?.voiceVolume ?? 0, growthPct, w.weekOffset),
         chat: monthlyToWeekly(a?.chatVolume ?? 0, growthPct, w.weekOffset),
         email: monthlyToWeekly(a?.emailVolume ?? 0, growthPct, w.weekOffset),
-        cases: 0,
+        cases: monthlyToWeekly(a?.casesVolume ?? 0, growthPct, w.weekOffset),
       };
     });
   }, [demandAssumptions, weeks, forecastedMonthlyVols, plannerSnapshot, config.planStartDate]);
@@ -989,7 +990,8 @@ export function CapacityPlanning() {
         const conc   = activeChannel === "chat" ? chatConcurrency : 1;
         // cases uses the email (backlog/deferred) model
         const modelChannel: "voice" | "chat" | "email" = activeChannel === "voice" ? "voice" : activeChannel === "chat" ? "chat" : "email";
-        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy);
+        const patience = activeChannel === "voice" ? voiceAvgPatienceSec : activeChannel === "chat" ? chatAvgPatienceSec : 0;
+        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy, patience);
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
       } else {
