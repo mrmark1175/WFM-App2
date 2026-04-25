@@ -72,6 +72,17 @@ function isOvernightTimes(start: string, end: string): boolean {
   return end !== start && timeToMins(end) <= timeToMins(start);
 }
 
+const BREAK_MEAL_DRIFT_LIMIT_MINS = 30;
+const BREAK_MEAL_INCREMENT_MINS = 15;
+
+function getForwardMinsDiff(start: number, end: number): number {
+  return end >= start ? end - start : end + 1440 - start;
+}
+
+function snapToIncrement(mins: number, increment: number): number {
+  return Math.round(mins / increment) * increment;
+}
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 interface Agent {
@@ -598,6 +609,60 @@ export function ScheduleEditor() {
   const dateStart = toDateStr(weekStart);
   const dateEnd = toDateStr(weekDates[6]);
 
+  const clampBreakMealToTemplateWindow = useCallback((rows: Assignment[]): Assignment[] => {
+    if (!templates.length || !Array.isArray(rows)) return rows;
+
+    return rows.map((assignment) => {
+      const tmpl = templates.find(t => t.id === assignment.shift_template_id);
+      if (!tmpl?.break_rules?.length || !assignment.activities?.length) return assignment;
+
+      const shiftStartMins = timeToMins(assignment.start_time);
+      const activities = assignment.activities.map(a => ({ ...a }));
+      const typeIndexes = {
+        break: [] as number[],
+        meal: [] as number[],
+      };
+
+      activities.forEach((act, idx) => {
+        if (act.activity_type === "break") typeIndexes.break.push(idx);
+        if (act.activity_type === "meal") typeIndexes.meal.push(idx);
+      });
+
+      const cursors = { break: 0, meal: 0 };
+      let changed = false;
+
+      for (const rule of tmpl.break_rules) {
+        const expectedType: "break" | "meal" = rule.duration_minutes >= 30 ? "meal" : "break";
+        const nextIdx = typeIndexes[expectedType][cursors[expectedType]];
+        if (nextIdx == null) continue;
+        cursors[expectedType] += 1;
+
+        const act = activities[nextIdx];
+        const actStartMins = timeToMins(act.start_time);
+        const actEndMins = timeToMins(act.end_time);
+        const currentOffset = getForwardMinsDiff(shiftStartMins, actStartMins);
+        const expectedOffset = Math.round(rule.after_hours * 60);
+        const offsetDelta = currentOffset - expectedOffset;
+        const clampedDelta = Math.max(
+          -BREAK_MEAL_DRIFT_LIMIT_MINS,
+          Math.min(BREAK_MEAL_DRIFT_LIMIT_MINS, snapToIncrement(offsetDelta, BREAK_MEAL_INCREMENT_MINS))
+        );
+        const adjustedOffset = expectedOffset + clampedDelta;
+        const adjustedStartMins = shiftStartMins + adjustedOffset;
+        const durationMins = getForwardMinsDiff(actStartMins, actEndMins);
+        const adjustedStart = toTime(adjustedStartMins);
+        const adjustedEnd = toTime(adjustedStartMins + durationMins);
+
+        if (act.start_time !== adjustedStart || act.end_time !== adjustedEnd) {
+          activities[nextIdx] = { ...act, start_time: adjustedStart, end_time: adjustedEnd };
+          changed = true;
+        }
+      }
+
+      return changed ? { ...assignment, activities } : assignment;
+    });
+  }, [templates]);
+
   // ── Data loading ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -617,14 +682,14 @@ export function ScheduleEditor() {
       .then(r => r.json())
       .then(rows => {
         if (Array.isArray(rows)) {
-          setAssignments(rows);
+          setAssignments(clampBreakMealToTemplateWindow(rows));
           setIsDirty(false);
           setUndoStack([]);
         }
       })
       .catch(() => toast.error("Failed to load schedule"))
       .finally(() => setLoading(false));
-  }, [activeLob, dateStart, dateEnd]);
+  }, [activeLob, dateStart, dateEnd, clampBreakMealToTemplateWindow]);
 
   const loadRequiredFte = useCallback(() => {
     if (!activeLob) return;
@@ -939,7 +1004,7 @@ export function ScheduleEditor() {
       });
       if (!res.ok) throw new Error("Publish failed");
       const rows: Assignment[] = await res.json();
-      setAssignments(rows);
+      setAssignments(clampBreakMealToTemplateWindow(rows));
       setIsDirty(false);
       setUndoStack([]);
       toast.success("Schedule published successfully");
@@ -948,7 +1013,7 @@ export function ScheduleEditor() {
     } finally {
       setPublishing(false);
     }
-  }, [activeLob, dateStart, dateEnd, assignments]);
+  }, [activeLob, dateStart, dateEnd, assignments, clampBreakMealToTemplateWindow]);
 
   // ── Selection handlers ───────────────────────────────────────────────────
 
@@ -1620,7 +1685,12 @@ export function ScheduleEditor() {
           if (!activeLob) return;
           fetch(apiUrl(`/api/scheduling/assignments?lob_id=${activeLob.id}&date_start=${dateStart}&date_end=${dateEnd}`))
             .then(r => r.json())
-            .then(rows => { if (Array.isArray(rows)) { setAssignments(rows); setIsDirty(false); } });
+            .then(rows => {
+              if (Array.isArray(rows)) {
+                setAssignments(clampBreakMealToTemplateWindow(rows));
+                setIsDirty(false);
+              }
+            });
         }}
       />
 
@@ -1636,7 +1706,7 @@ export function ScheduleEditor() {
           if (!activeLob) return;
           fetch(apiUrl(`/api/scheduling/assignments?lob_id=${activeLob.id}&date_start=${dateStart}&date_end=${dateEnd}`))
             .then(r => r.json())
-            .then(rows => { if (Array.isArray(rows)) setAssignments(rows); });
+            .then(rows => { if (Array.isArray(rows)) setAssignments(clampBreakMealToTemplateWindow(rows)); });
         }}
       />
 
@@ -1679,7 +1749,7 @@ export function ScheduleEditor() {
                   toast.success(`Cleared ${deleted} shift${deleted === 1 ? "" : "s"}`);
                   const r = await fetch(apiUrl(`/api/scheduling/assignments?lob_id=${activeLob.id}&date_start=${dateStart}&date_end=${dateEnd}`));
                   const rows = await r.json();
-                  if (Array.isArray(rows)) { setAssignments(rows); setIsDirty(false); }
+                  if (Array.isArray(rows)) { setAssignments(clampBreakMealToTemplateWindow(rows)); setIsDirty(false); }
                   setClearWeekOpen(false);
                 } catch (err: any) {
                   toast.error(`Clear failed: ${err?.message || err}`);
