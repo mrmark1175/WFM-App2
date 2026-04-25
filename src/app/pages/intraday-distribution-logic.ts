@@ -102,18 +102,18 @@ function erlangAMetrics(
   // P(abandon) = ν · E[queue] / λ = (ahtSec/patienceSec) · E[queue] / A = β · E[queue] / A
   const abandonRate = A > 0 ? Math.min(1, (beta * eQueue) / A) : 0;
 
-  // SL(T): 1 − P(wait) · exp(−drainRate · T)
-  // The effective queue drain rate combines excess service capacity and abandonment:
-  //   excessCapacity = max(0, N − A_eff) / ahtSec  [agents/s draining the queue]
-  //   nuRate         = 1 / patienceSec              [abandonment drain]
+  // SL(T): 1 − P(wait) · exp(−serviceDrain · T)
+  // SLA = % of calls ANSWERED within T seconds. Abandonments reduce effective load
+  // (A_eff) but do NOT count as SLA successes — only answered calls do.
+  // Using combined (service + abandon) drain in the exponent overcounts SLA by crediting
+  // abandons as cleared within T, requiring fewer agents than are actually needed.
+  // Service-only drain is consistent with Erlang C and with standard WFM SLA measurement.
   const A_eff = A * (1 - abandonRate);
-  const excessCapacity = Math.max(0, nInt - A_eff) / ahtSec;
-  const nuRate = 1 / patienceSec;
-  const drainRate = excessCapacity + nuRate;
+  const serviceDrain = Math.max(0, nInt - A_eff) / ahtSec;
 
   const slFn = (T: number): number => {
     if (nInt <= A_eff) return 0; // under-staffed even after abandonments
-    return Math.min(1, Math.max(0, 1 - pWait * Math.exp(-drainRate * T)));
+    return Math.min(1, Math.max(0, 1 - pWait * Math.exp(-serviceDrain * T)));
   };
 
   return { pWait, abandonRate, slFn };
