@@ -600,7 +600,7 @@ export const IntradayForecast = () => {
       // We pass it only for the email-style workload model which needs a utilisation target.
       emailOccupancy: a.occupancy,
       shrinkage:    a.shrinkage,
-      concurrency:  ch === "chat" ? Math.max(1, a.chatConcurrency ?? 1) : 1,
+      concurrency:  ch === "chat" ? Math.max(1, a.chatConcurrency ?? 2) : 1,
       // Erlang A: mean patience in seconds; 0 = fall back to pure Erlang C
       avgPatienceSeconds: ch === "voice" ? (a.voiceAvgPatienceSeconds ?? 120)
                         : ch === "chat"  ? (a.chatAvgPatienceSeconds  ?? 60)

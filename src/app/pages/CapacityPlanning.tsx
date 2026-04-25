@@ -952,7 +952,7 @@ export function CapacityPlanning() {
   const slaEmailTarget = Number(lobSettings?.email_sla_target ?? snap?.emailSlaTarget ?? 90);
   const slaEmailSec    = Number(lobSettings?.email_sla_seconds ?? snap?.emailSlaAnswerSeconds ?? 14400);
   const emailOccupancy = Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85;
-  const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 1));
+  const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2));
   // Erlang A patience — sourced from demand assumptions; 0 falls back to Erlang C
   const voiceAvgPatienceSec = Number(snap?.voiceAvgPatienceSeconds ?? 120);
   const chatAvgPatienceSec  = Number(snap?.chatAvgPatienceSeconds  ?? 60);
