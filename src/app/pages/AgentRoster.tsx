@@ -139,7 +139,7 @@ function defaultColMapping(colCount: number): string[] {
 }
 
 export function AgentRoster() {
-  const { lobs } = useLOB();
+  const { lobs, activeLob } = useLOB();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -166,14 +166,17 @@ export function AgentRoster() {
 
   const load = () => {
     setLoading(true);
-    fetch(apiUrl("/api/scheduling/agents"))
+    const url = activeLob
+      ? apiUrl(`/api/scheduling/agents?lob_id=${activeLob.id}`)
+      : apiUrl("/api/scheduling/agents");
+    fetch(url)
       .then((r) => r.json())
       .then((rows) => { if (Array.isArray(rows)) setAgents(rows); })
       .catch(() => toast.error("Failed to load agents"))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [activeLob?.id]);
 
   const filtered = useMemo(() => agents.filter((a) => {
     if (search) {
@@ -192,7 +195,11 @@ export function AgentRoster() {
     return true;
   }), [agents, search, filterSkill, filterContract, filterStatus]);
 
-  const openAdd = () => { setEditingAgent(null); setForm(EMPTY_FORM); setDialogOpen(true); };
+  const openAdd = () => {
+    setEditingAgent(null);
+    setForm({ ...EMPTY_FORM, lob_assignments: activeLob ? [activeLob.id] : [] });
+    setDialogOpen(true);
+  };
   const openEdit = (a: Agent) => {
     setEditingAgent(a);
     setForm({
@@ -294,10 +301,13 @@ export function AgentRoster() {
     if (agentsToImport.length === 0) { toast.error("No valid rows — each row needs at least a first or last name"); return; }
     setImporting(true);
     try {
+      const agentsWithLob = activeLob
+        ? agentsToImport.map((a) => ({ ...a, lob_id: activeLob.id }))
+        : agentsToImport;
       const res = await fetch(apiUrl("/api/scheduling/agents/bulk"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agents: agentsToImport }),
+        body: JSON.stringify({ agents: agentsWithLob }),
       });
       const data = await res.json();
       setImportResult({ success: data.imported, errors: data.errors ?? [] });

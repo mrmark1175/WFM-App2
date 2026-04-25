@@ -1769,9 +1769,16 @@ app.put('/api/lob-settings', async (req, res) => {
 // ── Scheduling: Agents ───────────────────────────────────────────────────────
 app.get('/api/scheduling/agents', async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      'SELECT * FROM scheduling_agents WHERE organization_id = 1 ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST, full_name ASC'
-    );
+    const lobId = req.query.lob_id ? parseInt(req.query.lob_id, 10) : null;
+    let query, params;
+    if (lobId) {
+      query = 'SELECT * FROM scheduling_agents WHERE organization_id = 1 AND $1 = ANY(lob_assignments) ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST, full_name ASC';
+      params = [lobId];
+    } else {
+      query = 'SELECT * FROM scheduling_agents WHERE organization_id = 1 ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST, full_name ASC';
+      params = [];
+    }
+    const { rows } = await pool.query(query, params);
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1819,7 +1826,7 @@ app.post('/api/scheduling/agents/bulk', async (req, res) => {
             status, shift_length_hours, team_name, team_leader_name)
          VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id, full_name`,
         [a.employee_id||null, firstName||null, lastName||null, fullName, a.email||null,
-         a.contract_type||'full_time', true, false, false, [], [], defaultAvail,
+         a.contract_type||'full_time', true, false, false, a.lob_id ? [a.lob_id] : [], [], defaultAvail,
          a.status||'active', 9, a.team_name||null, a.team_leader_name||null]
       );
       imported.push(rows[0]);
