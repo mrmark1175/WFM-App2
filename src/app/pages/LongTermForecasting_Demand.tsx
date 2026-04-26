@@ -2242,11 +2242,11 @@ export default function LongTermForecastingDemand() {
     const hist2 = historicalRowsByYear.find((g) => g.year === String(yr2))?.rows ?? [];
     const voiceHistory = effectiveFinalHistoricalDataByChannel.voice;
     const pm = assumptions.planningMonths ?? 12;
-    // All three model outputs on voice for AI model-fit comparison
+    // All three model outputs on voice — keys use app labels only, no underlying algorithm names
     const allModelForecasts = voiceHistory.length >= 4 ? {
-      "CTA (Holt-Winters)": getCalculatedVolumesBase(voiceHistory, "holtwinters", assumptions, hwParams, arimaParams, decompParams, pm),
-      "DVP (ARIMA)": getCalculatedVolumesBase(voiceHistory, "arima", assumptions, hwParams, arimaParams, decompParams, pm),
-      "CBE (Decomposition)": getCalculatedVolumesBase(voiceHistory, "decomposition", assumptions, hwParams, arimaParams, decompParams, pm),
+      "CTA": getCalculatedVolumesBase(voiceHistory, "holtwinters", assumptions, hwParams, arimaParams, decompParams, pm),
+      "DVP": getCalculatedVolumesBase(voiceHistory, "arima", assumptions, hwParams, arimaParams, decompParams, pm),
+      "CBE": getCalculatedVolumesBase(voiceHistory, "decomposition", assumptions, hwParams, arimaParams, decompParams, pm),
     } : null;
     // Scenario comparison — peak and average FTE per scenario
     const scenarioSummary = Object.values(scenarios).map((sc) => {
@@ -2258,8 +2258,6 @@ export default function LongTermForecastingDemand() {
     setPageData({
       scenario: activeScenario?.name,
       forecastYear,
-      activeModel: FORECAST_MODEL_COPY[forecastMethod as keyof typeof FORECAST_MODEL_COPY]?.label ?? forecastMethod,
-      forecastMethod,
       channel: detailChannel,
       historicalData: {
         [yr1]: hist1.map((r) => ({ month: r.monthLabel.split(" ")[0], volume: r.finalVolume })),
@@ -2877,7 +2875,7 @@ export default function LongTermForecastingDemand() {
                   {
                     label: "Explain This Forecast",
                     icon: <Sparkles className="h-3 w-3" />,
-                    prompt: `Analyze my demand forecast data and tell me:\n1. I'm using the ${FORECAST_MODEL_COPY[forecastMethod as keyof typeof FORECAST_MODEL_COPY]?.label ?? forecastMethod} model. Based on my 2-year historical pattern and the three model outputs in the data, is this the best fit or should I switch?\n2. What does the forecast shape (trend direction, seasonality, peak/trough) tell me about what to expect operationally?\n3. What is the single biggest uncertainty I should flag to leadership?\nBe specific — use the actual months and FTE numbers from my plan.`,
+                    prompt: `Analyze my demand forecast and tell me:\n1. Looking at the historical volumes and the projected months — does the forecast look reasonable, or are there months that appear over- or under-estimated?\n2. What does the shape of the forecast (trend direction, seasonality, peak and trough timing) tell me about what to expect operationally?\n3. What is the single biggest uncertainty I should flag to leadership?\nBe specific — use the actual months and FTE numbers from my plan.`,
                   },
                   {
                     label: "Audit My Assumptions",
