@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { BarChart2, Download, Edit2, Eye, EyeOff, LayoutDashboard, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2, SlidersHorizontal, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import { BarChart2, Download, Edit2, Eye, EyeOff, Info, LayoutDashboard, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2, SlidersHorizontal, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
@@ -495,17 +495,57 @@ export const IntradayForecast = () => {
   // ── Distribution computation ───────────────────────────────────────────────
   // Must be declared BEFORE forecastedWeekVolume which reads distributionWeights.dayWeights.
   // useMemo callbacks run synchronously on first render; forward references cause TDZ errors.
+
+  // Synthetic flat pattern built from LOB hours of operation.
+  // Used as a fallback when no real interval data has been loaded yet.
+  // Each enabled day gets uniform weight across every 15-min slot in its operating window.
+  // This produces a rectangular intraday shape — accurate enough for early planning before
+  // actual interaction data is available.
+  const syntheticMedianPattern = useMemo((): { medians: number[][]; sampleCounts: number[] } | null => {
+    // Prefer channel-specific schedule; fall back to voice, then any available channel.
+    const schedule =
+      lobHoursOfOperation?.[selectedChannel] ??
+      lobHoursOfOperation?.["voice"] ??
+      (lobHoursOfOperation ? Object.values(lobHoursOfOperation).find(Boolean) ?? null : null);
+    if (!schedule) return null;
+
+    const DOW_KEYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    const medians: number[][] = Array.from({ length: 7 }, () => new Array(SLOT_COUNT).fill(0));
+    const sampleCounts: number[] = new Array(7).fill(0);
+
+    DOW_KEYS.forEach((key, d) => {
+      const day = (schedule as Record<string, { enabled: boolean; open: string; close: string }>)[key];
+      if (!day?.enabled) return;
+      const [oh, om] = day.open.split(":").map(Number);
+      const [ch, cm] = day.close.split(":").map(Number);
+      const openSlot  = Math.floor((oh * 60 + om) / 15);
+      const closeSlot = Math.floor((ch * 60 + cm) / 15); // last slot that starts before close
+      for (let i = openSlot; i < closeSlot && i < SLOT_COUNT; i++) medians[d][i] = 1;
+      if (closeSlot > openSlot) sampleCounts[d] = 1; // mark this DOW as having data
+    });
+
+    return medians.some((day) => day.some((v) => v > 0))
+      ? { medians, sampleCounts }
+      : null;
+  }, [lobHoursOfOperation, selectedChannel]);
+
+  // True when using the synthetic fallback (no real baseline data loaded yet).
+  const usingFallbackPattern = baselineDataCount === 0 && syntheticMedianPattern !== null;
+
   const medianPattern = useMemo(() => {
-    if (!targetWeekStart) return computeMedianPattern(rawData);
-    // Use week-of-month positional filter when sufficient same-position history exists.
-    // Week 1 often differs from Week 4 (pay-period effects, month-start volume spikes).
-    // Requires ≥ 2 samples per active DOW at this position before activating.
-    const pos = getWeekOfMonth(targetWeekStart);
-    const positional = computeMedianPattern(rawData, pos);
-    const activeCounts = positional.sampleCounts.filter((c) => c > 0);
-    if (activeCounts.length > 0 && Math.min(...activeCounts) >= 2) return positional;
-    return computeMedianPattern(rawData);
-  }, [rawData, targetWeekStart]);
+    if (baselineDataCount > 0) {
+      // Real data path — apply week-of-month positional filter when sufficient history exists.
+      if (!targetWeekStart) return computeMedianPattern(rawData);
+      const pos = getWeekOfMonth(targetWeekStart);
+      const positional = computeMedianPattern(rawData, pos);
+      const activeCounts = positional.sampleCounts.filter((c) => c > 0);
+      if (activeCounts.length > 0 && Math.min(...activeCounts) >= 2) return positional;
+      return computeMedianPattern(rawData);
+    }
+    // Fallback: synthetic flat distribution derived from LOB hours of operation.
+    if (syntheticMedianPattern) return syntheticMedianPattern;
+    return computeMedianPattern(rawData); // empty — no data and no LOB hours
+  }, [rawData, baselineDataCount, targetWeekStart, syntheticMedianPattern]);
   const distributionWeights = useMemo(
     () => computeDistributionWeights(medianPattern.medians),
     [medianPattern]
@@ -1164,8 +1204,8 @@ export const IntradayForecast = () => {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  // Interval pattern data (for intraday shape) always requires baseline
-  const canGenerateForecast = targetMonthlyVolume > 0 && baselineDataCount > 0 && forecastedWeekVolume > 0;
+  // Forecast can be generated when there is real interval data OR the LOB-hours fallback is available.
+  const canGenerateForecast = targetMonthlyVolume > 0 && (baselineDataCount > 0 || usingFallbackPattern) && forecastedWeekVolume > 0;
 
   return (
     <PageLayout title="Intraday Forecast">
@@ -1671,6 +1711,11 @@ export const IntradayForecast = () => {
             <span className="text-xs font-normal text-slate-400">(shapes the intraday curve)</span>
           </h2>
           <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            {usingFallbackPattern && (
+              <Badge variant="outline" className="text-xs text-teal-700 border-teal-300 bg-teal-50">
+                LOB hours fallback — upload data to improve
+              </Badge>
+            )}
             {baselineDataCount > 0 && (
               <Badge variant="secondary" className="text-xs">
                 {baselineDataCount} day{baselineDataCount !== 1 ? "s" : ""} · {totalIntervalCount.toLocaleString()} intervals
@@ -1928,12 +1973,20 @@ export const IntradayForecast = () => {
             </div>
           </div>
         </div>
+        {usingFallbackPattern && (
+          <div className="flex items-center gap-2 px-4 py-2 border-b border-teal-200 bg-teal-50 text-xs text-teal-800">
+            <Info className="h-3.5 w-3.5 shrink-0 text-teal-600" />
+            <span>
+              <strong>Flat distribution · LOB hours fallback</strong> — no historical interval data yet. Volume is distributed uniformly across operating hours. Upload real data in the <em>Interval Pattern Baseline</em> section below to replace this estimate.
+            </span>
+          </div>
+        )}
         <div className="p-4">
           {!canGenerateForecast ? (
             <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
               {targetMonthlyVolume === 0
                 ? "Select a month with forecast data to see the pattern"
-                : baselineDataCount === 0
+                : !usingFallbackPattern && baselineDataCount === 0
                   ? "Upload baseline data or switch to Manual Entry to generate the arrival pattern"
                   : "Select a target week to generate the forecast"}
             </div>
