@@ -6,15 +6,18 @@ import { ThemeProvider } from "./app/components/ThemeProvider.tsx";
 import { LOBProvider } from "./app/lib/lobContext.tsx";
 import { AuthGate } from "./app/components/AuthGate.tsx";
 import { WFMPageDataProvider } from "./app/lib/WFMPageDataContext.tsx";
+import { WhatIfProvider } from "./app/lib/whatIfContext.tsx";
 import "./styles/index.css";
 
 createRoot(document.getElementById("root")!).render(
   <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} storageKey="vite-ui-theme">
     <AuthGate>
       <LOBProvider>
-        <WFMPageDataProvider>
-          <RouterProvider router={router} />
-        </WFMPageDataProvider>
+        <WhatIfProvider>
+          <WFMPageDataProvider>
+            <RouterProvider router={router} />
+          </WFMPageDataProvider>
+        </WhatIfProvider>
       </LOBProvider>
     </AuthGate>
   </ThemeProvider>

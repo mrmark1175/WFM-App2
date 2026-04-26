@@ -251,6 +251,12 @@ async function ensureAppTables() {
       ALTER TABLE demand_planner_scenarios ADD COLUMN IF NOT EXISTS lob_id INTEGER REFERENCES lobs(id) ON DELETE CASCADE;
     EXCEPTION WHEN undefined_column THEN NULL; WHEN undefined_table THEN NULL; END; $$
   `);
+  // demand_planner_scenarios — add is_committed flag
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE demand_planner_scenarios ADD COLUMN IF NOT EXISTS is_committed BOOLEAN NOT NULL DEFAULT false;
+    EXCEPTION WHEN duplicate_column THEN NULL; WHEN undefined_table THEN NULL; END; $$
+  `);
   await pool.query(`
     DO $$ BEGIN
       UPDATE demand_planner_scenarios SET lob_id = (
@@ -1445,7 +1451,7 @@ app.get('/api/demand-planner-scenarios', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT scenario_id, scenario_name, planner_snapshot, updated_at
+      `SELECT scenario_id, scenario_name, planner_snapshot, is_committed, updated_at
        FROM demand_planner_scenarios
        WHERE organization_id = $1 AND (lob_id = $2 OR lob_id IS NULL)
        ORDER BY updated_at ASC`,
@@ -1461,7 +1467,7 @@ app.get('/api/demand-planner-scenarios', async (req, res) => {
 app.put('/api/demand-planner-scenarios/:id', async (req, res) => {
   const user = getCurrentUser(req);
   const { id } = req.params;
-  const { scenario_name, planner_snapshot, lob_id } = req.body;
+  const { scenario_name, planner_snapshot, lob_id, is_committed } = req.body;
   const lobId = lob_id || await getDefaultLobId(user.organization_id);
 
   if (!scenario_name || !planner_snapshot || typeof planner_snapshot !== 'object') {
@@ -1470,15 +1476,16 @@ app.put('/api/demand-planner-scenarios/:id', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `INSERT INTO demand_planner_scenarios (scenario_id, scenario_name, planner_snapshot, organization_id, lob_id, updated_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
+      `INSERT INTO demand_planner_scenarios (scenario_id, scenario_name, planner_snapshot, is_committed, organization_id, lob_id, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
        ON CONFLICT (scenario_id, organization_id) DO UPDATE SET
          scenario_name = EXCLUDED.scenario_name,
          planner_snapshot = EXCLUDED.planner_snapshot,
+         is_committed = EXCLUDED.is_committed,
          lob_id = EXCLUDED.lob_id,
          updated_at = NOW()
-       RETURNING scenario_id, scenario_name, planner_snapshot, updated_at`,
-      [id, scenario_name, JSON.stringify(planner_snapshot), user.organization_id, lobId]
+       RETURNING scenario_id, scenario_name, planner_snapshot, is_committed, updated_at`,
+      [id, scenario_name, JSON.stringify(planner_snapshot), is_committed ?? false, user.organization_id, lobId]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -1500,6 +1507,26 @@ app.delete('/api/demand-planner-scenarios/:id', async (req, res) => {
   } catch (err) {
     console.error('Demand Planner Scenario Delete Error:', err.message);
     res.status(500).json({ error: 'Failed to delete demand planner scenario' });
+  }
+});
+
+app.post('/api/demand-planner-scenarios/:id/commit', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { id } = req.params;
+  const { lob_id } = req.body;
+  const lobId = lob_id || await getDefaultLobId(user.organization_id);
+
+  try {
+    await pool.query(
+      `UPDATE demand_planner_scenarios
+       SET is_committed = (scenario_id = $1)
+       WHERE organization_id = $2 AND (lob_id = $3 OR lob_id IS NULL)`,
+      [id, user.organization_id, lobId]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Demand Planner Scenario Commit Error:', err.message);
+    res.status(500).json({ error: 'Failed to commit scenario' });
   }
 });
 

@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, getCalculatedVolumes as getCalculatedVolumesBase } from "./forecasting-logic";
 import { buildDemandHelpPrintHtml, demandForecastHelpSections } from "./LongTermForecasting_Demand.help";
 import { useWFMPageData } from "../lib/WFMPageDataContext";
+import { useWhatIf } from "../lib/whatIfContext";
 
 type ShrinkageFrequency = "per_day" | "per_week" | "per_month" | "per_year";
 interface ShrinkageItem {
@@ -52,10 +53,10 @@ interface PlannerSnapshot {
   dataSourceMode?: "api" | "manual";
 }
 interface DemandActualRow { year: number; month: number; channel: ChannelKey; actual_volume: number; }
-interface Scenario { id: string; name: string; assumptions: Assumptions; snapshot: PlannerSnapshot; }
+interface Scenario { id: string; name: string; is_committed?: boolean; assumptions: Assumptions; snapshot: PlannerSnapshot; }
 interface HistoricalSourceRow { index: number; monthLabel: string; apiVolume: number; overrideVolume: string; finalVolume: number; variancePct: number | null; isOverridden: boolean; canEdit: boolean; stateLabel: "API" | "Editing" | "Manual"; }
 interface OutlierResult { index: number; monthLabel: string; finalVolume: number; suggestedValue: number; direction: "high" | "low"; severity: "mild" | "extreme"; modZScore: number; reason: string; applied?: boolean; }
-interface DemandPlannerScenarioRecord { scenario_id: string; scenario_name: string; planner_snapshot: Partial<PlannerSnapshot>; }
+interface DemandPlannerScenarioRecord { scenario_id: string; scenario_name: string; is_committed?: boolean; planner_snapshot: Partial<PlannerSnapshot>; }
 interface LongTermActualRecord { year_index: number; month_index: number; volume: number; }
 type ChannelKey = "voice" | "email" | "chat" | "cases";
 type PoolingMode = "dedicated" | "blended";
@@ -765,9 +766,10 @@ function buildPlannerSnapshot(
     dataSourceMode,
   };
 }
-function createScenario(id: string, name: string, snapshot: PlannerSnapshot): Scenario { return ({
+function createScenario(id: string, name: string, snapshot: PlannerSnapshot, is_committed = false): Scenario { return ({
   id,
   name,
+  is_committed,
   assumptions: cloneAssumptions(snapshot.assumptions),
   snapshot: {
     ...snapshot,
@@ -928,6 +930,7 @@ const buildDemandForecastData = (data: number[], assumptions: Assumptions, forec
 
 export default function LongTermForecastingDemand() {
   const { activeLob } = useLOB();
+  const { activeWhatIfId, setActiveWhatIfId, refetch: refetchWhatIfs } = useWhatIf();
   const [isAssumptionsOpen, setIsAssumptionsOpen] = useState(true);
   const [isHistoricalSourceOpen, setIsHistoricalSourceOpen] = useState(false);
   const isBlendedStaffingOpen = false;
@@ -981,7 +984,10 @@ export default function LongTermForecastingDemand() {
       assumptions: DEFAULT_ASSUMPTIONS,
       snapshot: record.planner_snapshot,
     }, record.scenario_id);
-    if (nextScenario) acc[nextScenario.id] = nextScenario;
+    if (nextScenario) {
+      nextScenario.is_committed = record.is_committed ?? false;
+      acc[nextScenario.id] = nextScenario;
+    }
     return acc;
   }, {});
   const applyPlannerSnapshot = (snapshot: PlannerSnapshot) => {
@@ -1154,6 +1160,14 @@ export default function LongTermForecastingDemand() {
     });
   }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, debouncedOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, dataSourceMode, selectedScenarioId]);
 
+  // Context → page: when top-bar what-if selector changes, switch to that what-if
+  useEffect(() => {
+    if (!hasHydratedRef.current) return;
+    if (!activeWhatIfId || activeWhatIfId === selectedScenarioId) return;
+    if (scenarios[activeWhatIfId]) handleScenarioChange(activeWhatIfId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWhatIfId]);
+
   // Sync shrinkage from Shrinkage Planner when planner source is selected
   useEffect(() => {
     const source = assumptions.shrinkageSource;
@@ -1251,6 +1265,7 @@ export default function LongTermForecastingDemand() {
       body: JSON.stringify({
         scenario_name: scenario.name,
         planner_snapshot: scenario.snapshot,
+        is_committed: scenario.is_committed ?? false,
         lob_id: activeLob?.id,
       }),
     });
@@ -1260,6 +1275,7 @@ export default function LongTermForecastingDemand() {
     const scenario = scenarios[nextScenarioId];
     if (!scenario) return;
     setSelectedScenarioId(nextScenarioId);
+    setActiveWhatIfId(nextScenarioId);
     applyPlannerSnapshot(scenario.snapshot);
   };
   const handleRevertToBaseCase = () => {
@@ -1271,28 +1287,29 @@ export default function LongTermForecastingDemand() {
       selectedScenarioId: baseScenario.id,
       plannerSnapshot: baseScenario.snapshot,
     });
-    toast.success("Reverted to Base Case");
+    toast.success("Reverted to Base what-if");
   };
-  const handleSaveScenario = async () => {
+  const handleSaveScenario = async (silent = false) => {
     const id = activeScenario?.id || "base";
     const existing = scenarios[id];
     const snapshot = getCurrentPlannerSnapshot();
-    const updatedScenario = createScenario(id, existing?.name || activeScenario?.name || "Scenario", snapshot);
+    const updatedScenario = createScenario(id, existing?.name || activeScenario?.name || "What-if", snapshot, existing?.is_committed ?? false);
     const updated = { ...scenarios, [id]: updatedScenario };
     setScenarios(updated);
     saveScenariosToStorage(updated);
     setSelectedScenarioId(id);
     try {
       await persistScenario(updatedScenario);
-      toast.success("Scenario saved successfully");
+      if (!silent) toast.success("What-if saved successfully");
+      refetchWhatIfs().catch(() => {/* silent */});
     } catch (error) {
-      console.error("Failed to persist demand scenario", error);
-      toast.error("Scenario saved locally, but cloud save failed");
+      console.error("Failed to persist demand what-if", error);
+      if (!silent) toast.error("What-if saved locally, but cloud save failed");
     }
   };
   const handleDeleteScenario = async (event: React.MouseEvent, id: string) => {
     event.stopPropagation();
-    if (!window.confirm("Are you sure you want to delete this scenario?")) return;
+    if (!window.confirm("Are you sure you want to delete this what-if?")) return;
     const updated = { ...scenarios };
     delete updated[id];
     // If the deleted scenario was active, move selection to the next available one.
@@ -1307,31 +1324,31 @@ export default function LongTermForecastingDemand() {
     setSelectedScenarioId(nextScenarioId);
     try {
       await fetch(apiUrl(`/api/demand-planner-scenarios/${id}`), { method: "DELETE" });
-      toast.success("Scenario deleted");
+      toast.success("What-if deleted");
     } catch (error) {
-      console.error("Failed to delete persisted demand scenario", error);
-      toast.error("Scenario deleted locally, but cloud delete failed");
+      console.error("Failed to delete persisted demand what-if", error);
+      toast.error("What-if deleted locally, but cloud delete failed");
     }
   };
   const handleNewScenario = async () => {
     const id = `scenario-${Date.now()}`;
     const snapshot = getCurrentPlannerSnapshot();
-    const newScenario = createScenario(id, `New Scenario ${Object.keys(scenarios).length + 1}`, snapshot);
+    const newScenario = createScenario(id, `What-if ${Object.keys(scenarios).length + 1}`, snapshot);
     const updated = { ...scenarios, [id]: newScenario };
     setScenarios(updated);
     saveScenariosToStorage(updated);
     setSelectedScenarioId(id);
     try {
       await persistScenario(newScenario);
-      toast.success("New scenario created");
+      toast.success("New what-if created");
     } catch (error) {
-      console.error("Failed to persist new scenario", error);
-      toast.success("New scenario created locally");
+      console.error("Failed to persist new what-if", error);
+      toast.success("New what-if created locally");
     }
   };
   const handleRenameScenario = async () => {
     if (!activeScenario) return;
-    const nextName = window.prompt("Rename scenario:", activeScenario.name);
+    const nextName = window.prompt("Rename what-if:", activeScenario.name);
     if (!nextName || nextName.trim() === "" || nextName.trim() === activeScenario.name) return;
     const renamedScenario = createScenario(activeScenario.id, nextName.trim(), activeScenario.snapshot);
     const updated = { ...scenarios, [activeScenario.id]: renamedScenario };
@@ -1339,10 +1356,31 @@ export default function LongTermForecastingDemand() {
     saveScenariosToStorage(updated);
     try {
       await persistScenario(renamedScenario);
-      toast.success("Scenario renamed");
+      toast.success("What-if renamed");
+      refetchWhatIfs().catch(() => {/* silent */});
     } catch (error) {
-      console.error("Failed to persist renamed demand scenario", error);
-      toast.error("Scenario renamed locally, but cloud save failed");
+      console.error("Failed to persist renamed demand what-if", error);
+      toast.error("What-if renamed locally, but cloud save failed");
+    }
+  };
+  const handleCommitWhatIf = async () => {
+    if (!activeScenario) return;
+    await handleSaveScenario(true);
+    const updated = Object.fromEntries(
+      Object.entries(scenarios).map(([k, v]) => [k, { ...v, is_committed: k === activeScenario.id }])
+    ) as Record<string, Scenario>;
+    setScenarios(updated);
+    saveScenariosToStorage(updated);
+    try {
+      await fetch(apiUrl(`/api/demand-planner-scenarios/${activeScenario.id}/commit`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lob_id: activeLob?.id }),
+      });
+      toast.success(`"${activeScenario.name}" committed as the official plan`);
+      await refetchWhatIfs();
+    } catch {
+      toast.error("Committed locally, but cloud sync failed");
     }
   };
   const runOutlierAnalysis = () => {
@@ -2398,11 +2436,11 @@ export default function LongTermForecastingDemand() {
             )}
           </section>
 
-          {/* ── Scenario Manager ── */}
+          {/* ── What-if Manager ── */}
           <Card className="border border-border/50 shadow-sm">
             <CardContent className="px-4 py-3">
               <div className="flex flex-wrap items-center gap-3">
-                <span className="text-[11px] font-black uppercase tracking-widest text-foreground/60 shrink-0">Scenarios</span>
+                <span className="text-[11px] font-black uppercase tracking-widest text-foreground/60 shrink-0">What-ifs</span>
                 <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
                   {Object.values(scenarios).map((scenario) => (
                     <button
@@ -2415,6 +2453,7 @@ export default function LongTermForecastingDemand() {
                           : "border-border bg-background text-foreground hover:border-primary/50 hover:bg-accent"
                       }`}
                     >
+                      {scenario.is_committed && <CheckCircle2 className="size-3 shrink-0 text-emerald-400" />}
                       <span className="max-w-[160px] truncate">{scenario.name}</span>
                       <X
                         className="size-3 shrink-0 opacity-50 hover:opacity-100"
@@ -2435,6 +2474,16 @@ export default function LongTermForecastingDemand() {
                   <Button
                     variant="outline"
                     size="sm"
+                    className="h-8 gap-1.5 text-xs border-emerald-500/40 text-emerald-700 hover:bg-emerald-50"
+                    onClick={handleCommitWhatIf}
+                    disabled={activeScenario?.is_committed === true}
+                  >
+                    <CheckCircle2 className="size-3.5" />
+                    Commit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     className="h-8 gap-1.5 text-xs"
                     onClick={handleRevertToBaseCase}
                     disabled={!scenarios.base || selectedScenarioId === "base"}
@@ -2442,7 +2491,7 @@ export default function LongTermForecastingDemand() {
                     <RotateCcw className="size-3.5" />
                     Base Case
                   </Button>
-                  <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={handleSaveScenario}>
+                  <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => handleSaveScenario()}>
                     <Save className="size-3.5" />
                     Save
                   </Button>
@@ -2913,7 +2962,7 @@ export default function LongTermForecastingDemand() {
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
                 <Card className="border border-border/50 shadow-md">
                   <CardHeader className="border-b border-border/50 bg-muted/30">
-                    <CardTitle className="text-sm font-bold">Scenario Comparison</CardTitle>
+                    <CardTitle className="text-sm font-bold">What-if Comparison</CardTitle>
                     <p className="text-xs text-foreground/60 mt-1">Required FTE across all saved scenarios. Save a scenario to compare it here.</p>
                   </CardHeader>
                   <CardContent className="p-6 h-[300px]">
@@ -2921,7 +2970,7 @@ export default function LongTermForecastingDemand() {
                       <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
                         <LineChartIcon className="size-8 text-muted-foreground/40" />
                         <div>
-                          <p className="text-sm font-semibold text-muted-foreground">No scenarios to compare yet</p>
+                          <p className="text-sm font-semibold text-muted-foreground">No what-ifs to compare yet</p>
                           <p className="text-xs text-muted-foreground/70 mt-1">Save your current working state, then create a second scenario with different assumptions to see them side-by-side.</p>
                         </div>
                       </div>

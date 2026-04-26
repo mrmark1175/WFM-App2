@@ -3,6 +3,7 @@ import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock,
 import React, { useEffect, useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
+import { WhatIfSelector } from "./WhatIfSelector";
 import { WFMAssistant } from "./WFMAssistant";
 import { useWFMPageData } from "../lib/WFMPageDataContext";
 import logo from "../../assets/logo-new.jpg";
@@ -92,7 +93,10 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           })}
         </nav>
 
-        <LOBSelector className="ml-auto" />
+        <div className="ml-auto flex items-center gap-2">
+          <LOBSelector />
+          <WhatIfSelector />
+        </div>
       </header>
 
       <div className="grid min-h-[calc(100vh-44px)] transition-[grid-template-columns]"
