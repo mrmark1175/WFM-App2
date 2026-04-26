@@ -279,9 +279,7 @@ const EMPTY_CHANNEL_OVERRIDES: Record<ChannelKey, Record<number, string>> = { vo
 const DEFAULT_SELECTED_CHANNELS: Record<ChannelKey, boolean> = { voice: true, email: true, chat: true, cases: false };
 const DEFAULT_HISTORY_MONTHS = 12;
 const DEFAULT_SCENARIOS: Record<string, Scenario> = {
-  base: createScenario("base", "Base Case (Steady)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, EMPTY_CHANNEL_DATA, EMPTY_CHANNEL_OVERRIDES, DEFAULT_SELECTED_CHANNELS, "blended", false, "voice")),
-  "scenario-a": createScenario("scenario-a", "Scenario A (High Growth)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS, growthRate: 15 }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, EMPTY_CHANNEL_DATA, EMPTY_CHANNEL_OVERRIDES, DEFAULT_SELECTED_CHANNELS, "blended", false, "voice")),
-  "scenario-b": createScenario("scenario-b", "Scenario B (Efficiency)", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS, occupancy: 90, safetyMargin: 3 }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, EMPTY_CHANNEL_DATA, EMPTY_CHANNEL_OVERRIDES, DEFAULT_SELECTED_CHANNELS, "blended", false, "voice")),
+  base: createScenario("base", "Base", buildPlannerSnapshot({ ...DEFAULT_ASSUMPTIONS }, "holtwinters", { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 }, { p: 1, d: 1, q: 1 }, { trendStrength: 1, seasonalityStrength: 1 }, EMPTY_CHANNEL_DATA, EMPTY_CHANNEL_OVERRIDES, DEFAULT_SELECTED_CHANNELS, "blended", false, "voice")),
 };
 const BLEND_PRESETS: BlendPreset[] = [
   { id: "voice-only", label: "Voice only", description: "Only voice is included in the staffed pool", pools: [["voice"]] },
@@ -1265,7 +1263,7 @@ export default function LongTermForecastingDemand() {
     applyPlannerSnapshot(scenario.snapshot);
   };
   const handleRevertToBaseCase = () => {
-    const baseScenario = scenarios.base || DEFAULT_SCENARIOS.base;
+    const baseScenario = scenarios.base;
     if (!baseScenario) return;
     setSelectedScenarioId(baseScenario.id);
     applyPlannerSnapshot(baseScenario.snapshot);
@@ -1297,12 +1295,16 @@ export default function LongTermForecastingDemand() {
     if (!window.confirm("Are you sure you want to delete this scenario?")) return;
     const updated = { ...scenarios };
     delete updated[id];
-    if (Object.keys(updated).length === 0) updated.base = DEFAULT_SCENARIOS.base;
-    const nextScenarioId = id === selectedScenarioId || !updated[selectedScenarioId] ? Object.keys(updated)[0] : selectedScenarioId;
+    // If the deleted scenario was active, move selection to the next available one.
+    // Never call applyPlannerSnapshot here — the live working state (assumptions,
+    // overrides, historical data) belongs to the user and must not be overwritten
+    // just because they removed a saved snapshot from the list.
+    const nextScenarioId = id === selectedScenarioId
+      ? (Object.keys(updated)[0] ?? "")
+      : selectedScenarioId;
     setScenarios(updated);
     saveScenariosToStorage(updated);
     setSelectedScenarioId(nextScenarioId);
-    if (updated[nextScenarioId]?.snapshot) applyPlannerSnapshot(updated[nextScenarioId].snapshot);
     try {
       await fetch(apiUrl(`/api/demand-planner-scenarios/${id}`), { method: "DELETE" });
       toast.success("Scenario deleted");
@@ -2435,7 +2437,7 @@ export default function LongTermForecastingDemand() {
                     size="sm"
                     className="h-8 gap-1.5 text-xs"
                     onClick={handleRevertToBaseCase}
-                    disabled={selectedScenarioId === "base"}
+                    disabled={!scenarios.base || selectedScenarioId === "base"}
                   >
                     <RotateCcw className="size-3.5" />
                     Base Case
@@ -2909,6 +2911,46 @@ export default function LongTermForecastingDemand() {
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Workload Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Pool workloads update with the current channel selection and pooling mode.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={pooledWorkloadChartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{selectedBlendConfig.pools.map((_, index) => <Line key={`pool${index + 1}`} type="monotone" dataKey={`pool${index + 1}`} name={`Pool ${String.fromCharCode(65 + index)} Workload`} stroke={["#4f46e5", "#0f766e", "#dc2626"][index % 3]} strokeWidth={3} />)}<Line type="monotone" dataKey="totalWorkloadHours" name="Total Workload" stroke="#94a3b8" strokeDasharray="6 4" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 shadow-md">
+                  <CardHeader className="border-b border-border/50 bg-muted/30">
+                    <CardTitle className="text-sm font-bold">Scenario Comparison</CardTitle>
+                    <p className="text-xs text-foreground/60 mt-1">Required FTE across all saved scenarios. Save a scenario to compare it here.</p>
+                  </CardHeader>
+                  <CardContent className="p-6 h-[300px]">
+                    {Object.keys(scenarios).length < 2 ? (
+                      <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
+                        <LineChartIcon className="size-8 text-muted-foreground/40" />
+                        <div>
+                          <p className="text-sm font-semibold text-muted-foreground">No scenarios to compare yet</p>
+                          <p className="text-xs text-muted-foreground/70 mt-1">Save your current working state, then create a second scenario with different assumptions to see them side-by-side.</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={scenarioComparisonData}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                          <XAxis dataKey="month" tickLine={false} axisLine={false} />
+                          <YAxis tickLine={false} axisLine={false} tickFormatter={(v) => String(Math.round(v))} />
+                          <Tooltip formatter={(value, name) => [value == null ? "—" : Number(value).toFixed(1) + " FTE", name]} />
+                          <Legend />
+                          {Object.values(scenarios).map((sc, index) => (
+                            <Line
+                              key={sc.id}
+                              type="monotone"
+                              dataKey={sc.id}
+                              name={sc.name}
+                              stroke={scenarioColors[index % scenarioColors.length]}
+                              strokeWidth={sc.id === selectedScenarioId ? 3.5 : 2}
+                              strokeDasharray={sc.id === selectedScenarioId ? undefined : "5 3"}
+                              dot={false}
+                              isAnimationActive={false}
+                            />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
               {/* ── Staffing detail — future months ──────────────────────────── */}
               <Card id="section-staffing-detail" className="border border-border/50 shadow-lg bg-card">
