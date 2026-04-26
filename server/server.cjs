@@ -534,6 +534,21 @@ async function ensureAppTables() {
   await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS transfers_out_note TEXT`);
   await pool.query(`ALTER TABLE capacity_plan_weekly_inputs ADD COLUMN IF NOT EXISTS promotions_out_note TEXT`);
 
+  // ── Capacity Planner What-ifs — supply-side PlanConfig snapshots per LOB+channel ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS capacity_planner_whatifs (
+      whatif_id       TEXT NOT NULL,
+      whatif_name     TEXT NOT NULL,
+      organization_id TEXT NOT NULL,
+      lob_id          INTEGER,
+      channel         TEXT NOT NULL DEFAULT 'blended',
+      is_committed    BOOLEAN NOT NULL DEFAULT false,
+      config_snapshot JSONB,
+      updated_at      TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (whatif_id, organization_id)
+    )
+  `);
+
   // ── Schedule Assignments — agent shift assignments per date ──────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schedule_assignments (
@@ -1442,6 +1457,26 @@ app.get('/api/long-term-actuals', async (req, res) => {
   } catch (err) {
     console.error('Long Term Actuals Fetch Error:', err.message);
     res.status(500).json({ error: 'Failed to fetch long term actuals' });
+  }
+});
+
+// Must be registered BEFORE /api/demand-planner-scenarios/:id so Express does not
+// treat the literal string "committed" as a scenario :id param.
+app.get('/api/demand-planner-scenarios/committed', async (req, res) => {
+  const user = getCurrentUser(req);
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  try {
+    const result = await pool.query(
+      `SELECT scenario_id, scenario_name, planner_snapshot
+       FROM demand_planner_scenarios
+       WHERE organization_id = $1 AND (lob_id = $2 OR lob_id IS NULL) AND is_committed = true
+       LIMIT 1`,
+      [user.organization_id, lobId]
+    );
+    res.json(result.rows[0] ?? null);
+  } catch (err) {
+    console.error('Demand Planner Committed Scenario Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch committed scenario' });
   }
 });
 
@@ -2542,6 +2577,91 @@ app.put('/api/capacity-plan-inputs', async (req, res) => {
   } catch (err) {
     console.error('Capacity Plan Input Save Error:', err.message);
     res.status(500).json({ error: 'Failed to save capacity plan input' });
+  }
+});
+
+// ── Capacity Planner What-ifs ─────────────────────────────────────────────────
+
+app.get('/api/capacity-planner-whatifs', async (req, res) => {
+  const user = getCurrentUser(req);
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  const channel = req.query.channel || 'blended';
+  try {
+    const result = await pool.query(
+      `SELECT whatif_id, whatif_name, is_committed, config_snapshot, updated_at
+       FROM capacity_planner_whatifs
+       WHERE organization_id = $1 AND (lob_id = $2 OR lob_id IS NULL) AND channel = $3
+       ORDER BY updated_at ASC`,
+      [user.organization_id, lobId, channel]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Capacity What-if Fetch Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch capacity what-ifs' });
+  }
+});
+
+app.put('/api/capacity-planner-whatifs/:id', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { id } = req.params;
+  const { whatif_name, config_snapshot, is_committed, lob_id, channel } = req.body;
+  const lobId = lob_id || await getDefaultLobId(user.organization_id);
+  const ch = channel || 'blended';
+  try {
+    const result = await pool.query(
+      `INSERT INTO capacity_planner_whatifs
+         (whatif_id, whatif_name, config_snapshot, is_committed, organization_id, lob_id, channel, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       ON CONFLICT (whatif_id, organization_id) DO UPDATE SET
+         whatif_name = EXCLUDED.whatif_name,
+         config_snapshot = EXCLUDED.config_snapshot,
+         is_committed = EXCLUDED.is_committed,
+         lob_id = EXCLUDED.lob_id,
+         channel = EXCLUDED.channel,
+         updated_at = NOW()
+       RETURNING *`,
+      [id, whatif_name, JSON.stringify(config_snapshot), is_committed ?? false,
+       user.organization_id, lobId, ch]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Capacity What-if Save Error:', err.message);
+    res.status(500).json({ error: 'Failed to save capacity what-if' });
+  }
+});
+
+app.delete('/api/capacity-planner-whatifs/:id', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { id } = req.params;
+  try {
+    await pool.query(
+      'DELETE FROM capacity_planner_whatifs WHERE whatif_id = $1 AND organization_id = $2',
+      [id, user.organization_id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Capacity What-if Delete Error:', err.message);
+    res.status(500).json({ error: 'Failed to delete capacity what-if' });
+  }
+});
+
+app.post('/api/capacity-planner-whatifs/:id/commit', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { id } = req.params;
+  const { lob_id, channel } = req.body;
+  const lobId = lob_id || await getDefaultLobId(user.organization_id);
+  const ch = channel || 'blended';
+  try {
+    await pool.query(
+      `UPDATE capacity_planner_whatifs
+       SET is_committed = (whatif_id = $1)
+       WHERE organization_id = $2 AND (lob_id = $3 OR lob_id IS NULL) AND channel = $4`,
+      [id, user.organization_id, lobId, ch]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Capacity What-if Commit Error:', err.message);
+    res.status(500).json({ error: 'Failed to commit capacity what-if' });
   }
 });
 

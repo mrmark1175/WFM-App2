@@ -14,7 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
 import { toast } from "sonner";
 import {
   ChevronDown, ChevronRight, RotateCcw, Settings2, TrendingDown, AlertTriangle, CheckCircle2, Loader2,
-  Users, UserPlus, Target, Download,
+  Users, UserPlus, Target, Download, Plus, Pencil, Save, X,
 } from "lucide-react";
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine,
@@ -104,6 +104,13 @@ interface CapacityPlannerSnapshot {
   channelHistoricalApiData?: Partial<Record<string, number[]>>;
   channelHistoricalOverrides?: Partial<Record<string, Record<number, string>>>;
   recutVolumesByChannel?: Partial<Record<string, number[]>> | null;
+}
+
+interface CapacityWhatIf {
+  id: string;
+  name: string;
+  is_committed?: boolean;
+  configSnapshot: PlanConfig;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -588,6 +595,9 @@ export function CapacityPlanning() {
   const [assumptionsOpen, setAssumptionsOpen] = useState(true);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState({ demand: false, staffing: false, hcPlan: false });
+  const [whatIfs, setWhatIfs] = useState<Record<string, CapacityWhatIf>>({});
+  const [selectedWhatIfId, setSelectedWhatIfId] = useState<string>("base");
+  const [demandSourceName, setDemandSourceName] = useState<string | null>(null);
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const configTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dataLoadedFor = useRef<string | null>(null);
@@ -612,32 +622,54 @@ export function CapacityPlanning() {
   async function loadAllData(lobId: number, channel: string) {
     setLoading(true);
     try {
-      const [configRes, inputsRes, demandRes, lobSettingsRes, shrinkageRes] = await Promise.all([
+      const [configRes, inputsRes, committedRes, activeStateRes, lobSettingsRes, shrinkageRes, wifRes] = await Promise.all([
         fetch(apiUrl(`/api/capacity-plan-config?lob_id=${lobId}&channel=${channel}`)),
         fetch(apiUrl(`/api/capacity-plan-inputs?lob_id=${lobId}&channel=${channel}`)),
+        fetch(apiUrl(`/api/demand-planner-scenarios/committed?lob_id=${lobId}`)),
         fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${lobId}`)),
         fetch(apiUrl(`/api/lob-settings?lob_id=${lobId}`)),
         fetch(apiUrl(`/api/shrinkage-plan?lob_id=${lobId}`)),
+        fetch(apiUrl(`/api/capacity-planner-whatifs?lob_id=${lobId}&channel=${channel}`)),
       ]);
 
-      const [cfgData, inputsData, demandData, lsData, shrData] = await Promise.all([
-        configRes.json(), inputsRes.json(), demandRes.json(), lobSettingsRes.json(), shrinkageRes.json(),
+      const [cfgData, inputsData, committedData, activeStateData, lsData, shrData, wifData] = await Promise.all([
+        configRes.json(), inputsRes.json(), committedRes.json(), activeStateRes.json(),
+        lobSettingsRes.json(), shrinkageRes.json(), wifRes.json(),
       ]);
 
-      if (cfgData) {
-        setConfig({
-          planStartDate: cfgData.plan_start_date?.split("T")[0] ?? DEFAULT_CONFIG.planStartDate,
-          horizonWeeks: cfgData.horizon_weeks ?? DEFAULT_CONFIG.horizonWeeks,
-          attritionRateMonthly: parseFloat(cfgData.attrition_rate_monthly) ?? DEFAULT_CONFIG.attritionRateMonthly,
-          rampTrainingWeeks: cfgData.ramp_training_weeks ?? DEFAULT_CONFIG.rampTrainingWeeks,
-          rampNestingWeeks: cfgData.ramp_nesting_weeks ?? DEFAULT_CONFIG.rampNestingWeeks,
-          rampNestingPct: parseFloat(cfgData.ramp_nesting_pct) ?? DEFAULT_CONFIG.rampNestingPct,
-          trainingGradRate: cfgData.training_grad_rate != null ? parseFloat(cfgData.training_grad_rate) : DEFAULT_CONFIG.trainingGradRate,
-          startingHc: parseFloat(cfgData.starting_hc) ?? DEFAULT_CONFIG.startingHc,
-          billableFte: parseFloat(cfgData.billable_fte) || DEFAULT_CONFIG.billableFte,
-        });
+      // Parse PlanConfig from DB row
+      const loadedConfig: PlanConfig = cfgData ? {
+        planStartDate: cfgData.plan_start_date?.split("T")[0] ?? DEFAULT_CONFIG.planStartDate,
+        horizonWeeks: cfgData.horizon_weeks ?? DEFAULT_CONFIG.horizonWeeks,
+        attritionRateMonthly: parseFloat(cfgData.attrition_rate_monthly) ?? DEFAULT_CONFIG.attritionRateMonthly,
+        rampTrainingWeeks: cfgData.ramp_training_weeks ?? DEFAULT_CONFIG.rampTrainingWeeks,
+        rampNestingWeeks: cfgData.ramp_nesting_weeks ?? DEFAULT_CONFIG.rampNestingWeeks,
+        rampNestingPct: parseFloat(cfgData.ramp_nesting_pct) ?? DEFAULT_CONFIG.rampNestingPct,
+        trainingGradRate: cfgData.training_grad_rate != null ? parseFloat(cfgData.training_grad_rate) : DEFAULT_CONFIG.trainingGradRate,
+        startingHc: parseFloat(cfgData.starting_hc) ?? DEFAULT_CONFIG.startingHc,
+        billableFte: parseFloat(cfgData.billable_fte) || DEFAULT_CONFIG.billableFte,
+      } : DEFAULT_CONFIG;
+
+      // Load capacity what-ifs; seed a "Base" what-if if none exist
+      if (Array.isArray(wifData) && wifData.length > 0) {
+        const wifMap: Record<string, CapacityWhatIf> = {};
+        for (const r of wifData) {
+          wifMap[r.whatif_id] = {
+            id: r.whatif_id, name: r.whatif_name,
+            is_committed: r.is_committed,
+            configSnapshot: r.config_snapshot ?? DEFAULT_CONFIG,
+          };
+        }
+        setWhatIfs(wifMap);
+        const savedId = localStorage.getItem(`capWhatIfId_${lobId}_${channel}`);
+        const validId = savedId && wifMap[savedId] ? savedId : Object.keys(wifMap)[0];
+        setSelectedWhatIfId(validId);
+        setConfig(wifMap[validId].configSnapshot);
       } else {
-        setConfig(DEFAULT_CONFIG);
+        const base: CapacityWhatIf = { id: "base", name: "Base", is_committed: false, configSnapshot: loadedConfig };
+        setWhatIfs({ base });
+        setSelectedWhatIfId("base");
+        setConfig(loadedConfig);
       }
 
       if (Array.isArray(inputsData)) {
@@ -664,6 +696,11 @@ export function CapacityPlanning() {
         }
         setWeeklyInputs(map);
       }
+
+      // Volume source: committed demand what-if takes priority over active state
+      const committedSnap = committedData?.planner_snapshot ?? null;
+      const demandData = committedSnap ? { plannerSnapshot: committedSnap } : activeStateData;
+      setDemandSourceName(committedSnap ? (committedData?.scenario_name ?? null) : null);
 
       const snap = demandData?.plannerSnapshot ?? null;
       if (snap?.assumptions) {
@@ -820,6 +857,100 @@ export function CapacityPlanning() {
       }
     }
     setWeeklyInputs(updated);
+  }
+
+  // ── What-if handlers ──────────────────────────────────────────────────────────
+
+  function handleWhatIfChange(id: string) {
+    const wif = whatIfs[id];
+    if (!wif) return;
+    setSelectedWhatIfId(id);
+    localStorage.setItem(`capWhatIfId_${activeLob?.id}_${apiChannel}`, id);
+    setConfig(wif.configSnapshot);
+    saveConfig(wif.configSnapshot);
+  }
+
+  async function handleSaveWhatIf(silent = false) {
+    const id = selectedWhatIfId || "base";
+    const existing = whatIfs[id];
+    const updated: CapacityWhatIf = {
+      id, name: existing?.name ?? "Base",
+      is_committed: existing?.is_committed ?? false,
+      configSnapshot: config,
+    };
+    setWhatIfs(prev => ({ ...prev, [id]: updated }));
+    try {
+      await fetch(apiUrl(`/api/capacity-planner-whatifs/${id}`), {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ whatif_name: updated.name, config_snapshot: config,
+          is_committed: updated.is_committed, lob_id: activeLob?.id, channel: apiChannel }),
+      });
+      if (!silent) toast.success("What-if saved");
+    } catch { if (!silent) toast.error("What-if saved locally, cloud sync failed"); }
+  }
+
+  async function handleNewWhatIf() {
+    const id = `cap-${Date.now()}`;
+    const name = `What-if ${Object.keys(whatIfs).length + 1}`;
+    const newWif: CapacityWhatIf = { id, name, is_committed: false, configSnapshot: config };
+    setWhatIfs(prev => ({ ...prev, [id]: newWif }));
+    setSelectedWhatIfId(id);
+    localStorage.setItem(`capWhatIfId_${activeLob?.id}_${apiChannel}`, id);
+    try {
+      await fetch(apiUrl(`/api/capacity-planner-whatifs/${id}`), {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ whatif_name: name, config_snapshot: config,
+          is_committed: false, lob_id: activeLob?.id, channel: apiChannel }),
+      });
+      toast.success("New what-if created");
+    } catch { toast.success("New what-if created locally"); }
+  }
+
+  async function handleDeleteWhatIf(e: React.MouseEvent, id: string) {
+    e.stopPropagation();
+    if (!window.confirm("Delete this what-if?")) return;
+    const updated = { ...whatIfs }; delete updated[id];
+    const nextId = id === selectedWhatIfId ? (Object.keys(updated)[0] ?? "") : selectedWhatIfId;
+    setWhatIfs(updated);
+    setSelectedWhatIfId(nextId);
+    // NOTE: do NOT call setConfig here — live working state belongs to the user
+    try {
+      await fetch(apiUrl(`/api/capacity-planner-whatifs/${id}`), { method: "DELETE" });
+      toast.success("What-if deleted");
+    } catch { toast.error("What-if deleted locally, cloud sync failed"); }
+  }
+
+  async function handleRenameWhatIf() {
+    const active = whatIfs[selectedWhatIfId];
+    if (!active) return;
+    const next = window.prompt("Rename what-if:", active.name);
+    if (!next || next.trim() === "" || next.trim() === active.name) return;
+    const renamed: CapacityWhatIf = { ...active, name: next.trim() };
+    setWhatIfs(prev => ({ ...prev, [active.id]: renamed }));
+    try {
+      await fetch(apiUrl(`/api/capacity-planner-whatifs/${active.id}`), {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ whatif_name: renamed.name, config_snapshot: renamed.configSnapshot,
+          is_committed: renamed.is_committed, lob_id: activeLob?.id, channel: apiChannel }),
+      });
+      toast.success("What-if renamed");
+    } catch { toast.error("What-if renamed locally, cloud sync failed"); }
+  }
+
+  async function handleCommitWhatIf() {
+    await handleSaveWhatIf(true);
+    const committed = Object.fromEntries(
+      Object.entries(whatIfs).map(([k, v]) => [k, { ...v, is_committed: k === selectedWhatIfId }])
+    ) as Record<string, CapacityWhatIf>;
+    setWhatIfs(committed);
+    const name = whatIfs[selectedWhatIfId]?.name ?? "";
+    try {
+      await fetch(apiUrl(`/api/capacity-planner-whatifs/${selectedWhatIfId}/commit`), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lob_id: activeLob?.id, channel: apiChannel }),
+      });
+      toast.success(`"${name}" committed as the official capacity plan`);
+    } catch { toast.error("Committed locally, cloud sync failed"); }
   }
 
   // ── Computed weeks
@@ -1097,6 +1228,34 @@ export function CapacityPlanning() {
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
       emailOccupancy, chatConcurrency, voiceAvgPatienceSec, chatAvgPatienceSec]);
 
+  // ── What-if comparison — re-project HC for each what-if using its configSnapshot
+  const whatIfComparisons = useMemo(() => {
+    if (Object.keys(whatIfs).length < 2) return null;
+    return Object.values(whatIfs).map(wif => {
+      const c = wif.configSnapshot;
+      const weeklyAttrRate = 1 - Math.pow(1 - c.attritionRateMonthly / 100, 12 / 52);
+      let hc = c.startingHc;
+      const weeklyHC = weeks.map((_, w) => {
+        const inp = weeklyInputs[w] ?? {};
+        const attrDecay = w > 0 ? roundTo(hc * weeklyAttrRate, 2) : 0;
+        let effNew = 0;
+        for (let h = 0; h <= w; h++) {
+          const cohort = (weeklyInputs[h]?.plannedHires ?? 0) * (c.trainingGradRate / 100);
+          if (cohort <= 0) continue;
+          const pT = calcRampPct(w - h, c.rampTrainingWeeks, c.rampNestingWeeks, c.rampNestingPct);
+          const pP = w - 1 - h >= 0
+            ? calcRampPct(w - 1 - h, c.rampTrainingWeeks, c.rampNestingWeeks, c.rampNestingPct)
+            : 0;
+          effNew += cohort * (pT - pP);
+        }
+        hc = Math.max(0, hc - attrDecay + roundTo(effNew, 1)
+          - (inp.knownExits ?? 0) - (inp.transfersOut ?? 0) - (inp.promotionsOut ?? 0));
+        return roundTo(hc, 1);
+      });
+      return { id: wif.id, name: wif.name, is_committed: wif.is_committed ?? false, weeklyHC };
+    });
+  }, [whatIfs, weeks, weeklyInputs]);
+
   // ── Attrition summary
   const attritionSummary = useMemo(() => {
     const totalExits = weekCalcs.reduce((s, w) => s + w.attritionDecay + w.knownExits + w.transfersOut + w.promotionsOut, 0);
@@ -1349,9 +1508,15 @@ export function CapacityPlanning() {
       <Card className="mb-4">
         <CardHeader className="py-3 px-4 cursor-pointer" onClick={() => setAssumptionsOpen(v => !v)}>
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Settings2 className="size-4 text-black" />
               <CardTitle className="text-sm font-semibold">Plan Assumptions</CardTitle>
+              {demandSourceName && (
+                <Badge className="bg-emerald-50 text-emerald-800 border border-emerald-200 gap-1 text-[10px] font-normal">
+                  <CheckCircle2 className="size-3" />
+                  Volume locked to: "{demandSourceName}"
+                </Badge>
+              )}
             </div>
             {assumptionsOpen ? <ChevronDown className="size-4 text-black" /> : <ChevronRight className="size-4 text-black" />}
           </div>
@@ -1639,6 +1804,77 @@ export function CapacityPlanning() {
                 {config.billableFte > 0 && (
                   <Line type="monotone" dataKey="billable" name="Billable FTE" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
                 )}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── What-if Manager ── */}
+      <Card className="border border-border/50 shadow-sm mb-4">
+        <CardContent className="px-4 py-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-[11px] font-black uppercase tracking-widest text-foreground/60 shrink-0">What-ifs</span>
+            <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+              {Object.values(whatIfs).map(wif => (
+                <button key={wif.id} type="button" onClick={() => handleWhatIfChange(wif.id)}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-semibold transition-colors ${
+                    wif.id === selectedWhatIfId
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "border-border bg-background text-foreground hover:border-primary/50 hover:bg-accent"
+                  }`}>
+                  {wif.is_committed && <CheckCircle2 className="size-3 shrink-0 text-emerald-400" />}
+                  <span className="max-w-[160px] truncate">{wif.name}</span>
+                  <X className="size-3 shrink-0 opacity-50 hover:opacity-100"
+                    onClick={e => handleDeleteWhatIf(e, wif.id)} />
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={handleNewWhatIf}>
+                <Plus className="size-3.5" />New
+              </Button>
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={handleRenameWhatIf}>
+                <Pencil className="size-3.5" />Rename
+              </Button>
+              <Button variant="outline" size="sm"
+                className="h-8 gap-1.5 text-xs border-emerald-500/40 text-emerald-700 hover:bg-emerald-50"
+                onClick={handleCommitWhatIf}
+                disabled={whatIfs[selectedWhatIfId]?.is_committed === true}>
+                <CheckCircle2 className="size-3.5" />Commit
+              </Button>
+              <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => handleSaveWhatIf()}>
+                <Save className="size-3.5" />Save
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── What-if Comparison Chart ── */}
+      {whatIfComparisons && (
+        <Card className="mb-4">
+          <CardContent className="py-3 px-4">
+            <div className="text-xs font-semibold text-black mb-2">What-if Comparison — Projected HC</div>
+            <ResponsiveContainer width="100%" height={180}>
+              <ComposedChart data={weeks.map((wk, i) => ({
+                label: wk.label,
+                requiredFTE: roundTo(weekCalcs[i]?.requiredFTE ?? 0, 1),
+                ...Object.fromEntries(whatIfComparisons.map(w => [w.id, w.weeklyHC[i] ?? 0])),
+              }))} margin={{ top: 8, right: 16, bottom: 0, left: -8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 10 }} width={40} />
+                <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} labelStyle={{ fontWeight: 600 }} />
+                <Legend wrapperStyle={{ fontSize: 11 }} iconType="line" />
+                <Line type="monotone" dataKey="requiredFTE" name="Required FTE" stroke="#dc2626" strokeWidth={2} strokeDasharray="4 2" dot={false} />
+                {whatIfComparisons.map((w, i) => (
+                  <Line key={w.id} type="monotone" dataKey={w.id} name={w.name}
+                    stroke={["#2563eb","#16a34a","#d97706","#7c3aed"][i % 4]}
+                    strokeWidth={w.is_committed ? 3 : 1.5}
+                    strokeDasharray={w.is_committed ? undefined : "5 3"}
+                    dot={false} />
+                ))}
               </ComposedChart>
             </ResponsiveContainer>
           </CardContent>
