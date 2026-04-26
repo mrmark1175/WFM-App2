@@ -2234,15 +2234,31 @@ export default function LongTermForecastingDemand() {
     );
   };
 
-  const { setPageData } = useWFMPageData();
+  const { setPageData, setPendingPrompt, triggerOpenAssistant } = useWFMPageData();
   useEffect(() => {
     const yr1 = forecastYear - 2;
     const yr2 = forecastYear - 1;
     const hist1 = historicalRowsByYear.find((g) => g.year === String(yr1))?.rows ?? [];
     const hist2 = historicalRowsByYear.find((g) => g.year === String(yr2))?.rows ?? [];
+    const voiceHistory = effectiveFinalHistoricalDataByChannel.voice;
+    const pm = assumptions.planningMonths ?? 12;
+    // All three model outputs on voice for AI model-fit comparison
+    const allModelForecasts = voiceHistory.length >= 4 ? {
+      "CTA (Holt-Winters)": getCalculatedVolumesBase(voiceHistory, "holtwinters", assumptions, hwParams, arimaParams, decompParams, pm),
+      "DVP (ARIMA)": getCalculatedVolumesBase(voiceHistory, "arima", assumptions, hwParams, arimaParams, decompParams, pm),
+      "CBE (Decomposition)": getCalculatedVolumesBase(voiceHistory, "decomposition", assumptions, hwParams, arimaParams, decompParams, pm),
+    } : null;
+    // Scenario comparison — peak and average FTE per scenario
+    const scenarioSummary = Object.values(scenarios).map((sc) => {
+      const scFuture = scenarioComparisonData.map((pt) => (pt[sc.id] as number) ?? 0);
+      const peak = Math.max(...scFuture);
+      const avg = scFuture.length > 0 ? Number((scFuture.reduce((s, v) => s + v, 0) / scFuture.length).toFixed(1)) : 0;
+      return { id: sc.id, name: sc.name, peakFTE: Number(peak.toFixed(1)), avgFTE: avg };
+    });
     setPageData({
       scenario: activeScenario?.name,
       forecastYear,
+      activeModel: FORECAST_MODEL_COPY[forecastMethod as keyof typeof FORECAST_MODEL_COPY]?.label ?? forecastMethod,
       forecastMethod,
       channel: detailChannel,
       historicalData: {
@@ -2256,6 +2272,8 @@ export default function LongTermForecastingDemand() {
         variancePct: m.variancePct,
         recutForecast: m.recutVol,
       })),
+      allModelForecasts,
+      scenarioSummary,
       kpis,
       assumptions: {
         aht: assumptions.aht,
@@ -2266,17 +2284,20 @@ export default function LongTermForecastingDemand() {
         voiceSlaTarget: assumptions.voiceSlaTarget,
         voiceSlaAnswerSeconds: assumptions.voiceSlaAnswerSeconds,
         chatSlaTarget: assumptions.chatSlaTarget,
+        chatSlaAnswerSeconds: assumptions.chatSlaAnswerSeconds,
         emailSlaTarget: assumptions.emailSlaTarget,
+        emailSlaAnswerSeconds: assumptions.emailSlaAnswerSeconds,
         occupancy: assumptions.occupancy,
         fteMonthlyHours: assumptions.fteMonthlyHours,
         operatingHoursPerDay: assumptions.operatingHoursPerDay,
         operatingDaysPerWeek: assumptions.operatingDaysPerWeek,
         growthRate: (assumptions as any).growthRate,
         safetyMargin: assumptions.safetyMargin,
+        planningMonths: pm,
       },
     });
     return () => setPageData(null);
-  }, [forecastYear, forecastMethod, detailChannel, activeScenario, historicalRowsByYear, allForecastMonths, kpis, assumptions, setPageData]);
+  }, [forecastYear, forecastMethod, detailChannel, activeScenario, historicalRowsByYear, allForecastMonths, kpis, assumptions, setPageData, effectiveFinalHistoricalDataByChannel, hwParams, arimaParams, decompParams, scenarios, scenarioComparisonData]);
 
   if (loading) return <PageLayout title="Long Term Forecasting  Demand"><div className="h-[60vh] flex flex-col items-center justify-center gap-4"><Loader2 className="size-12 text-primary animate-spin" /><p className="text-muted-foreground font-medium">Loading demand forecast data...</p></div></PageLayout>;
 
@@ -2849,6 +2870,42 @@ export default function LongTermForecastingDemand() {
           </Card>
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_304px] gap-6 items-start">
             <div className="space-y-6">
+              {/* ── Ask Mark AI actions ──────────────────────────────────── */}
+              <div className="flex items-center gap-2 flex-wrap px-1">
+                <span className="text-[11px] font-black uppercase tracking-widest text-muted-foreground mr-1">Ask Mark</span>
+                {([
+                  {
+                    label: "Explain This Forecast",
+                    icon: <Sparkles className="h-3 w-3" />,
+                    prompt: `Analyze my demand forecast data and tell me:\n1. I'm using the ${FORECAST_MODEL_COPY[forecastMethod as keyof typeof FORECAST_MODEL_COPY]?.label ?? forecastMethod} model. Based on my 2-year historical pattern and the three model outputs in the data, is this the best fit or should I switch?\n2. What does the forecast shape (trend direction, seasonality, peak/trough) tell me about what to expect operationally?\n3. What is the single biggest uncertainty I should flag to leadership?\nBe specific — use the actual months and FTE numbers from my plan.`,
+                  },
+                  {
+                    label: "Audit My Assumptions",
+                    icon: <ShieldAlert className="h-3 w-3" />,
+                    prompt: `Review my demand planning assumptions and flag anything unusual for a BPO contact center:\n- Voice AHT: ${assumptions.aht}s, Chat AHT: ${assumptions.chatAht ?? 450}s, Email AHT: ${assumptions.emailAht ?? 600}s\n- Voice SLA: ${assumptions.voiceSlaTarget}% in ${assumptions.voiceSlaAnswerSeconds}s, Chat SLA: ${assumptions.chatSlaTarget}% in ${assumptions.chatSlaAnswerSeconds}s, Email SLA: ${assumptions.emailSlaTarget}%\n- Shrinkage: ${assumptions.shrinkage}%, Occupancy target: ${assumptions.occupancy}%, Safety margin: ${assumptions.safetyMargin}%\n- Chat concurrency: ${assumptions.chatConcurrency}, Operating: ${assumptions.operatingHoursPerDay}h/day ${assumptions.operatingDaysPerWeek}d/week\nFor each flag: state what's typical, why mine stands out, and what I should double-check.`,
+                  },
+                  {
+                    label: "Compare My Scenarios",
+                    icon: <LineChartIcon className="h-3 w-3" />,
+                    prompt: `Using my scenario data, answer:\n1. What is the FTE delta between the lowest and highest scenario at their peak month — name the specific month and number.\n2. Which assumption is driving the most variance between scenarios?\n3. If you had to bet on one scenario being closest to reality 12 months from now, which one and why?\nDon't be vague — use the actual scenario names and FTE numbers from my plan.`,
+                  },
+                ] as { label: string; icon: React.ReactNode; prompt: string }[]).map(({ label, icon, prompt }) => (
+                  <Button
+                    key={label}
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs border-[#1111D4]/30 text-[#1111D4] hover:bg-[#1111D4]/5 hover:border-[#1111D4]/60 gap-1.5"
+                    onClick={() => {
+                      setPendingPrompt(prompt);
+                      triggerOpenAssistant();
+                    }}
+                  >
+                    {icon}
+                    {label}
+                  </Button>
+                ))}
+              </div>
+
               {/* ── Four charts in 2×2 grid ───────────────────────────────── */}
               <div id="section-charts" className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>

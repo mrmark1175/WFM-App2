@@ -1,9 +1,10 @@
 import { Link, useLocation } from "react-router-dom";
 import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock, Building2, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart3 } from "lucide-react";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
 import { WFMAssistant } from "./WFMAssistant";
+import { useWFMPageData } from "../lib/WFMPageDataContext";
 import logo from "../../assets/logo.svg";
 
 interface PageLayoutProps {
@@ -57,6 +58,8 @@ export function PageLayout({ children, title }: PageLayoutProps) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const { registerOpenAssistant } = useWFMPageData();
+  useEffect(() => { registerOpenAssistant(() => setAssistantOpen(true)); }, []);
   const pathnames = location.pathname.split("/").filter(Boolean);
 
   return (

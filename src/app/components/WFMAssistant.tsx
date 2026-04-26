@@ -81,7 +81,7 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
 
   const starters = getStarters(location.pathname);
   const pageLabel = getPageLabel(location.pathname);
-  const { pageData } = useWFMPageData();
+  const { pageData, pendingPrompt, setPendingPrompt } = useWFMPageData();
 
   useEffect(() => {
     fetch(apiUrl("/api/ai-settings"))
@@ -97,6 +97,16 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
   useEffect(() => {
     if (open) inputRef.current?.focus();
   }, [open]);
+
+  // Auto-fire a prompt injected by a page-level "Ask Mark" button
+  useEffect(() => {
+    if (!open || !pendingPrompt) return;
+    const prompt = pendingPrompt;
+    setPendingPrompt(null);
+    // Small delay so the panel finishes opening before we start streaming
+    const t = setTimeout(() => sendMessage(prompt), 150);
+    return () => clearTimeout(t);
+  }, [open, pendingPrompt]);
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || streaming) return;
