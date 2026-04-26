@@ -496,6 +496,10 @@ export const IntradayForecast = () => {
   // Must be declared BEFORE forecastedWeekVolume which reads distributionWeights.dayWeights.
   // useMemo callbacks run synchronously on first render; forward references cause TDZ errors.
 
+  // Declared here (not near the grid helpers below) to avoid TDZ: syntheticMedianPattern,
+  // usingFallbackPattern, and medianPattern all read this value.
+  const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
+
   // Synthetic flat pattern built from LOB hours of operation.
   // Used as a fallback when no real interval data has been loaded yet.
   // Each enabled day gets uniform weight across every 15-min slot in its operating window.
@@ -880,7 +884,6 @@ export const IntradayForecast = () => {
     }
   }
 
-  const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
   // Sorted date keys for the inline grid columns
   const gridDates = useMemo(() => Object.keys(rawData).sort(), [rawData]);
 
