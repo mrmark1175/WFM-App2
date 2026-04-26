@@ -98,14 +98,15 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
     if (open) inputRef.current?.focus();
   }, [open]);
 
-  // Auto-fire a prompt injected by a page-level "Ask Mark" button
+  // Auto-fire a prompt injected by a page-level "Ask Mark" button.
+  // Call sendMessage synchronously — no setTimeout. A timeout changes the
+  // effect deps (via setPendingPrompt null re-render), runs cleanup, and
+  // cancels itself before it fires.
   useEffect(() => {
     if (!open || !pendingPrompt) return;
     const prompt = pendingPrompt;
-    setPendingPrompt(null);
-    // Small delay so the panel finishes opening before we start streaming
-    const t = setTimeout(() => sendMessage(prompt), 150);
-    return () => clearTimeout(t);
+    setPendingPrompt(null); // clear context; sendMessage must be called before this re-renders
+    sendMessage(prompt);
   }, [open, pendingPrompt]);
 
   const sendMessage = useCallback(async (text: string) => {
