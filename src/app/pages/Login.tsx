@@ -5,7 +5,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 import { Eye, EyeOff, KeyRound, Loader2, Lock, ShieldCheck } from "lucide-react";
-import logo from "../../assets/logo.svg";
+import logo from "../../assets/logo-new.jpg";
 
 type View = "login" | "recover" | "recover-done";
 

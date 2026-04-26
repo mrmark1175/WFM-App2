@@ -1,7 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { User, Users, Settings, ChevronRight } from "lucide-react";
-import logo from "../../assets/logo.svg";
+import logo from "../../assets/logo-new.jpg";
 
 export function Home() {
   const navigationCards = [
