@@ -182,7 +182,7 @@ export function computeIntervalFTE(
   const intervalSeconds = grainMinutes * 60;
   const shrinkFactor = Math.max(0.01, 1 - shrinkage / 100);
 
-  if (channel === "email" || channel === "cases") {
+  if (channel === "email") {
     // Async workload — no SLA queue; utilisation target fills agent time
     const occupancyFactor = Math.max(0.01, emailOccupancy / 100);
     const workloadSec = callsPerInterval * ahtSec;
@@ -198,6 +198,7 @@ export function computeIntervalFTE(
       abandonRate: 0,
     };
   }
+  // Cases uses Erlang C (SLA-driven queue model), not the async email model.
 
   // Voice / Chat — Erlang A when patience configured, Erlang C otherwise.
   // Occupancy is strictly an OUTPUT here; SLA alone drives the agent count.
@@ -372,7 +373,13 @@ function median(values: number[]): number {
 // ── Step A ────────────────────────────────────────────────────────────────────
 // For each (dayOfWeek 0-6 in Mon-Sun order, intervalIndex 0-95), compute the
 // median volume across all dates in the GridData that fall on that day of week.
-export function computeMedianPattern(data: GridData): {
+/**
+ * @param weekOfMonthFilter  When provided, only use dates from weeks at this
+ *   week-of-month position (0 = first week, 1 = second, …). Requires ≥ 2
+ *   same-position weeks in the dataset to be meaningful — callers should fall
+ *   back to the global (unfiltered) pattern when sample counts are too low.
+ */
+export function computeMedianPattern(data: GridData, weekOfMonthFilter?: number): {
   medians: number[][];    // [7][96] — outer=dow(0=Mon…6=Sun), inner=intervalIndex
   sampleCounts: number[]; // [7] — how many dates contributed per dow
 } {
@@ -383,6 +390,14 @@ export function computeMedianPattern(data: GridData): {
   );
 
   for (const [dateStr, slots] of Object.entries(data)) {
+    // Positional filter: only include dates from weeks at the target week-of-month
+    // position so that, e.g., "Week 1 of month" patterns (often higher due to
+    // pay-period effects) don't dilute the shape of other week positions.
+    if (weekOfMonthFilter !== undefined) {
+      const monday = getISOMonday(new Date(dateStr + "T12:00:00"));
+      if (getWeekOfMonth(formatDate(monday)) !== weekOfMonthFilter) continue;
+    }
+
     const date = new Date(dateStr + "T12:00:00"); // noon to avoid DST edge cases
     const jsDay = date.getDay(); // 0=Sun, 1=Mon, …, 6=Sat
     const dowIdx = jsDay === 0 ? 6 : jsDay - 1; // remap: Mon=0, …, Sun=6

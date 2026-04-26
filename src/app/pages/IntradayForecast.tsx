@@ -17,7 +17,7 @@ import {
   aggregateTo30Min, aggregateTo60Min, buildChartData, generateMonthLabels, monthFromOffset,
   makeIntervals, getWeeksInMonth, parseExcelPaste, parseIntervalGridPaste,
   getISOWeekNumber, getISOWeeksInYear, getWeekDateStrings, remapGridToWeek,
-  computeIntervalFTE, IntervalFTEResult, smoothFTEValues,
+  computeIntervalFTE, IntervalFTEResult, smoothFTEValues, getWeekOfMonth,
 } from "./intraday-distribution-logic";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -71,6 +71,14 @@ interface IntradayPrefs {
   smoothFTE: boolean;
   smoothWindow: number;
   patternShiftHours: number;
+  /** Per-day volume multipliers [Mon…Sun]. 0 = holiday, 1.5 = +50%, etc. */
+  dayOverrideMultipliers: number[];
+  /** Which historical window to use for the API-sourced baseline pattern. */
+  apiBaselinePreset: "last28" | "sameWeekLastYear" | "custom";
+  apiBaselineCustomStart: string;
+  apiBaselineCustomEnd: string;
+  /** Show FTE table with global-max heatmap coloring (vs row-relative). */
+  showFteHeatmap: boolean;
 }
 
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
@@ -90,6 +98,11 @@ const DEFAULT_PREFS: IntradayPrefs = {
   smoothFTE: false,
   smoothWindow: 2,
   patternShiftHours: 0,
+  dayOverrideMultipliers: [1, 1, 1, 1, 1, 1, 1],
+  apiBaselinePreset: "last28",
+  apiBaselineCustomStart: "",
+  apiBaselineCustomEnd: "",
+  showFteHeatmap: false,
 };
 const DOW_COLORS = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#9333ea", "#e11d48", "#94a3b8"];
 
@@ -128,7 +141,10 @@ export const IntradayForecast = () => {
   const [prefs, setPrefs] = usePagePreferences<IntradayPrefs>("intraday_forecast", DEFAULT_PREFS);
   const { targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource,
           baselineYear, baselineStartWeek, manualRawData, manualWeeklyVolumes, editableWeights,
-          hideBlankRows, smoothFTE, smoothWindow, patternShiftHours = 0 } = prefs;
+          hideBlankRows, smoothFTE, smoothWindow, patternShiftHours = 0,
+          dayOverrideMultipliers = [1,1,1,1,1,1,1],
+          apiBaselinePreset = "last28", apiBaselineCustomStart = "", apiBaselineCustomEnd = "",
+          showFteHeatmap = false } = prefs;
 
   // Reset target month/week when global channel changes
   const prevChannelRef = React.useRef(selectedChannel);
@@ -172,14 +188,25 @@ export const IntradayForecast = () => {
   const ROW_HEIGHT = 36;
   const VIS_ROWS = 20;
 
-  // ── Derived 4-week date range ──────────────────────────────────────────────
+  // ── Derived baseline date range — reactive to user-selected preset ────────
   const { baselineStart, baselineEnd } = useMemo(() => {
+    const fmt = (d: Date) => d.toISOString().split("T")[0];
+    if (apiBaselinePreset === "sameWeekLastYear") {
+      const end = new Date();
+      end.setFullYear(end.getFullYear() - 1);
+      const start = new Date(end);
+      start.setDate(start.getDate() - 27);
+      return { baselineStart: fmt(start), baselineEnd: fmt(end) };
+    }
+    if (apiBaselinePreset === "custom" && apiBaselineCustomStart && apiBaselineCustomEnd) {
+      return { baselineStart: apiBaselineCustomStart, baselineEnd: apiBaselineCustomEnd };
+    }
+    // Default: last 28 days
     const end = new Date();
     const start = new Date(end);
-    start.setDate(start.getDate() - 27); // 28 days inclusive
-    const fmt = (d: Date) => d.toISOString().split("T")[0];
+    start.setDate(start.getDate() - 27);
     return { baselineStart: fmt(start), baselineEnd: fmt(end) };
-  }, []);
+  }, [apiBaselinePreset, apiBaselineCustomStart, apiBaselineCustomEnd]);
 
   // ── Load forecast state (falls back to LOB settings if no Demand Planner state) ──
   useEffect(() => {
@@ -316,11 +343,12 @@ export const IntradayForecast = () => {
     const empty = { voice: [] as number[], email: [] as number[], chat: [] as number[], cases: [] as number[] };
     if (!plannerSnapshot) return empty;
 
-    // When a re-cut has been published from the Demand page, use those volumes directly.
+    // Per-channel: use published recut where available; fall back to algorithm per channel.
+    // Guard uses .length > 0 — Array.isArray([]) is truthy so an empty array must be
+    // rejected explicitly, otherwise a partly-initialised recut silently zeroes months.
     const recut = (plannerSnapshot as Record<string, unknown>).recutVolumesByChannel as Record<ChannelKey, number[]> | null | undefined;
-    if (recut && recut.voice && recut.email && recut.chat && recut.cases) {
-      return { voice: recut.voice, email: recut.email, chat: recut.chat, cases: recut.cases };
-    }
+    const hasRecut = (ch: ChannelKey): boolean =>
+      Array.isArray(recut?.[ch]) && (recut![ch]!.length > 0);
 
     const { forecastMethod, hwParams, arimaParams, decompParams, assumptions,
             channelHistoricalApiData = {} as Record<ChannelKey, number[]>,
@@ -334,16 +362,24 @@ export const IntradayForecast = () => {
     const chatHistory = getHistory("chat");
     const casesHistory = getHistory("cases");
 
-    const voiceForecast = getCalculatedVolumes(voiceHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
-    const emailForecast = emailHistory.length > 0
-      ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-      : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
-    const chatForecast = chatHistory.length > 0
-      ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-      : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
-    const casesForecast = casesHistory.length > 0
-      ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-      : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
+    const voiceForecast = hasRecut("voice")
+      ? recut!.voice
+      : getCalculatedVolumes(voiceHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
+    const emailForecast = hasRecut("email")
+      ? recut!.email
+      : emailHistory.length > 0
+        ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
+    const chatForecast = hasRecut("chat")
+      ? recut!.chat
+      : chatHistory.length > 0
+        ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
+    const casesForecast = hasRecut("cases")
+      ? recut!.cases
+      : casesHistory.length > 0
+        ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
+        : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
 
     return { voice: voiceForecast, email: emailForecast, chat: chatForecast, cases: casesForecast };
   }, [plannerSnapshot]);
@@ -459,7 +495,17 @@ export const IntradayForecast = () => {
   // ── Distribution computation ───────────────────────────────────────────────
   // Must be declared BEFORE forecastedWeekVolume which reads distributionWeights.dayWeights.
   // useMemo callbacks run synchronously on first render; forward references cause TDZ errors.
-  const medianPattern = useMemo(() => computeMedianPattern(rawData), [rawData]);
+  const medianPattern = useMemo(() => {
+    if (!targetWeekStart) return computeMedianPattern(rawData);
+    // Use week-of-month positional filter when sufficient same-position history exists.
+    // Week 1 often differs from Week 4 (pay-period effects, month-start volume spikes).
+    // Requires ≥ 2 samples per active DOW at this position before activating.
+    const pos = getWeekOfMonth(targetWeekStart);
+    const positional = computeMedianPattern(rawData, pos);
+    const activeCounts = positional.sampleCounts.filter((c) => c > 0);
+    if (activeCounts.length > 0 && Math.min(...activeCounts) >= 2) return positional;
+    return computeMedianPattern(rawData);
+  }, [rawData, targetWeekStart]);
   const distributionWeights = useMemo(
     () => computeDistributionWeights(medianPattern.medians),
     [medianPattern]
@@ -540,11 +586,21 @@ export const IntradayForecast = () => {
     ]);
   }, [weekForecast, patternShiftHours]);
 
+  // Apply per-day override multipliers (0 = holiday, 1.5 = +50% campaign push, etc.)
+  const adjustedWeekForecast = useMemo((): number[][] => {
+    const mults = dayOverrideMultipliers.length === 7 ? dayOverrideMultipliers : [1,1,1,1,1,1,1];
+    if (mults.every((m) => m === 1)) return shiftedWeekForecast;
+    return shiftedWeekForecast.map((dayData, d) => {
+      const m = mults[d] ?? 1;
+      return m === 1 ? dayData : dayData.map((v) => v * m);
+    });
+  }, [shiftedWeekForecast, dayOverrideMultipliers]);
+
   const displayForecast = useMemo(() => {
-    if (grain === 60) return aggregateTo60Min(shiftedWeekForecast);
-    if (grain === 30) return aggregateTo30Min(shiftedWeekForecast);
-    return shiftedWeekForecast;
-  }, [shiftedWeekForecast, grain]);
+    if (grain === 60) return aggregateTo60Min(adjustedWeekForecast);
+    if (grain === 30) return aggregateTo30Min(adjustedWeekForecast);
+    return adjustedWeekForecast;
+  }, [adjustedWeekForecast, grain]);
 
   // ── Operating hours mask: zero out intervals outside the channel's LOB schedule ──
   // DOW_LABELS order: Mon=0 … Sun=6; matches schedule keys monday…sunday.
@@ -838,10 +894,11 @@ export const IntradayForecast = () => {
     [rawData]
   );
 
-  // Daily totals for the forecast table
+  // Daily totals — derived from the fully-adjusted, masked display values so the
+  // totals row always matches what's shown in the cells (overrides + operating hours).
   const dailyTotals = useMemo(() =>
-    weekForecast.map((day) => day.reduce((sum, v) => sum + v, 0)),
-    [weekForecast]
+    maskedDisplayForecast.map((day) => day.reduce((sum, v) => sum + v, 0)),
+    [maskedDisplayForecast]
   );
   const grandTotal = useMemo(() => dailyTotals.reduce((sum, v) => sum + v, 0), [dailyTotals]);
 
@@ -1052,6 +1109,28 @@ export const IntradayForecast = () => {
     return w;
   }, [distributionWeights.intervalWeights, grain]);
 
+  // Global FTE max across all days/intervals — used for week-level heatmap scale.
+  const maxFTEGlobal = useMemo(() => {
+    if (!smoothedFteTable) return 0;
+    return Math.max(0, ...smoothedFteTable.flatMap((day) => day.map((r) => r?.fte ?? 0)));
+  }, [smoothedFteTable]);
+
+  // Volume tier: was this month sourced from a published recut, or is it a forecast?
+  const volumeSourceLabel = useMemo((): { label: string; color: string } => {
+    const recut = (plannerSnapshot as Record<string, unknown>)?.recutVolumesByChannel as Record<ChannelKey, number[]> | null | undefined;
+    if (Array.isArray(recut?.[selectedChannel]) && recut![selectedChannel]!.length > 0) {
+      return { label: "Recut", color: "text-blue-700 bg-blue-50 border-blue-200" };
+    }
+    if (plannerSnapshot?.assumptions?.startDate) {
+      const { year, month } = monthFromOffset(plannerSnapshot.assumptions.startDate, safeOffset);
+      const today = new Date();
+      if (new Date(year, month, 1) < new Date(today.getFullYear(), today.getMonth(), 1)) {
+        return { label: "Forecast · past month", color: "text-slate-600 bg-slate-100 border-slate-200" };
+      }
+    }
+    return { label: "Forecast", color: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+  }, [plannerSnapshot, selectedChannel, safeOffset]);
+
   const { setPageData } = useWFMPageData();
   useEffect(() => {
     const a = plannerSnapshot?.assumptions;
@@ -1173,12 +1252,19 @@ export const IntradayForecast = () => {
             {/* Monthly volume display */}
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-semibold text-foreground">Monthly Volume</span>
-              <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold min-w-[100px]">
-                {isLoadingForecast
-                  ? <span className="text-muted-foreground animate-pulse">Loading...</span>
-                  : targetMonthlyVolume > 0
-                    ? targetMonthlyVolume.toLocaleString()
-                    : <span className="text-muted-foreground">&mdash;</span>}
+              <div className="flex flex-col gap-0.5">
+                <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold min-w-[100px]">
+                  {isLoadingForecast
+                    ? <span className="text-muted-foreground animate-pulse">Loading...</span>
+                    : targetMonthlyVolume > 0
+                      ? targetMonthlyVolume.toLocaleString()
+                      : <span className="text-muted-foreground">&mdash;</span>}
+                </div>
+                {targetMonthlyVolume > 0 && (
+                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${volumeSourceLabel.color}`}>
+                    {volumeSourceLabel.label}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1271,6 +1357,79 @@ export const IntradayForecast = () => {
               )}
             </div>
           )}
+
+          {/* ── Per-Day Volume Override ── */}
+          {forecastedWeekVolume > 0 && (() => {
+            const mults = dayOverrideMultipliers.length === 7 ? dayOverrideMultipliers : [1,1,1,1,1,1,1];
+            const anyOverride = mults.some((m) => m !== 1);
+            return (
+              <div className="mt-4 pt-4 border-t">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <SlidersHorizontal className="h-3.5 w-3.5 text-violet-500" />
+                    <span className="text-sm font-semibold">Per-Day Override</span>
+                    {anyOverride ? (
+                      <Badge className="text-xs bg-violet-100 text-violet-700 border border-violet-300 hover:bg-violet-100">
+                        Active
+                      </Badge>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">optional — set 0 for holidays, 1.5 for +50% campaigns</span>
+                    )}
+                  </div>
+                  {anyOverride && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs text-muted-foreground h-7"
+                      onClick={() => setPrefs({ dayOverrideMultipliers: [1,1,1,1,1,1,1] })}
+                    >
+                      <RotateCcw className="h-3 w-3 mr-1" />Reset
+                    </Button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {DOW_LABELS.map((label, d) => {
+                    const m = mults[d] ?? 1;
+                    const baseVol = maskedDisplayForecast[d]?.reduce((s, v) => s + v, 0) ?? 0;
+                    const adjustedVol = baseVol > 0 ? baseVol / (m || 1) * m : 0;
+                    const isModified = m !== 1;
+                    return (
+                      <div key={label} className="flex flex-col items-center gap-1">
+                        <span className={`text-xs font-semibold ${isModified ? "text-violet-700" : "text-muted-foreground"}`}
+                          style={{ color: isModified ? undefined : DOW_COLORS[d] }}>
+                          {label}
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={10}
+                          step={0.1}
+                          value={m}
+                          onChange={(e) => {
+                            const val = Math.max(0, Math.min(10, parseFloat(e.target.value) || 0));
+                            const next = [...mults];
+                            next[d] = +val.toFixed(2);
+                            setPrefs({ dayOverrideMultipliers: next });
+                          }}
+                          className={`w-16 h-8 text-sm text-center rounded-md border font-mono ${
+                            isModified
+                              ? m === 0
+                                ? "border-red-400 bg-red-50 text-red-700"
+                                : "border-violet-400 bg-violet-50 text-violet-700"
+                              : "border-border bg-background"
+                          }`}
+                          title={`${label} multiplier — ${m === 0 ? "holiday (no volume)" : m === 1 ? "normal" : `×${m} (${m > 1 ? "+" : ""}${((m-1)*100).toFixed(0)}%)`}`}
+                        />
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          {m === 0 ? "holiday" : adjustedVol > 0 ? Math.round(adjustedVol).toLocaleString() : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ── Manual Weekly Volume Entry (always visible in this panel) ── */}
           <div className="mt-5 pt-4 border-t">
@@ -1450,13 +1609,53 @@ export const IntradayForecast = () => {
                 })()}
               </div>
             ) : (
-              <div className="text-xs text-muted-foreground">
-                {isLoadingBaseline
-                  ? <span className="animate-pulse">Loading last 4 weeks from API...</span>
-                  : weekBuckets.length > 0
-                    ? <span><span className="text-foreground font-medium">{weekBuckets.length} week{weekBuckets.length !== 1 ? "s" : ""}</span> of actual data loaded automatically from the Interaction Arrival data ({baselineStart} &rarr; {baselineEnd}).</span>
-                    : <span className="text-amber-600">No interval data found for this LOB/channel in the last 28 days. Switch to <strong>Manual</strong> to enter weekly volumes, or upload data via the Historical Baseline section below.</span>
-                }
+              <div className="space-y-2">
+                {/* Baseline window preset selector */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground font-medium">Baseline window:</span>
+                  {([
+                    { key: "last28", label: "Last 4 weeks" },
+                    { key: "sameWeekLastYear", label: "Same 4 weeks · last year" },
+                    { key: "custom", label: "Custom range" },
+                  ] as const).map((opt) => (
+                    <button
+                      key={opt.key}
+                      onClick={() => setPrefs({ apiBaselinePreset: opt.key })}
+                      className={`px-2.5 py-1 rounded border text-xs font-medium transition-colors ${
+                        apiBaselinePreset === opt.key
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-muted-foreground border-border hover:border-primary/50"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                  {apiBaselinePreset === "custom" && (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="date"
+                        value={apiBaselineCustomStart}
+                        onChange={(e) => setPrefs({ apiBaselineCustomStart: e.target.value })}
+                        className="h-7 text-xs rounded border border-border px-2"
+                      />
+                      <span className="text-xs text-muted-foreground">→</span>
+                      <input
+                        type="date"
+                        value={apiBaselineCustomEnd}
+                        onChange={(e) => setPrefs({ apiBaselineCustomEnd: e.target.value })}
+                        className="h-7 text-xs rounded border border-border px-2"
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {isLoadingBaseline
+                    ? <span className="animate-pulse">Loading from API ({baselineStart} → {baselineEnd})...</span>
+                    : weekBuckets.length > 0
+                      ? <span><span className="text-foreground font-medium">{weekBuckets.length} week{weekBuckets.length !== 1 ? "s" : ""}</span> of actual data ({baselineStart} &rarr; {baselineEnd}).</span>
+                      : <span className="text-amber-600">No interval data found for this LOB/channel in the selected window. Try a different date range or switch to <strong>Manual</strong>.</span>
+                  }
+                </div>
               </div>
             )}
           </div>
@@ -1902,7 +2101,7 @@ export const IntradayForecast = () => {
               {fteParams ? (
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-6 py-2 border-b text-xs text-muted-foreground bg-muted/20">
                   <span><span className="font-semibold text-foreground">AHT</span> {fteParams.ahtSec}s</span>
-                  {selectedChannel !== "email" && selectedChannel !== "cases" && (
+                  {selectedChannel !== "email" && (
                     <span><span className="font-semibold text-foreground">SLA</span> {fteParams.slaTarget}% in {fteParams.slaSec}s</span>
                   )}
                   <span><span className="font-semibold text-foreground">Shrinkage</span> {fteParams.shrinkage}%</span>
@@ -1914,14 +2113,28 @@ export const IntradayForecast = () => {
                   )}
                   <span><span className="font-semibold text-foreground">FTE hrs/day</span> {shrinkageHoursPerDay}h</span>
                   <span className="text-[10px] italic">
-                    {selectedChannel === "email" || selectedChannel === "cases"
-                      ? "Email/Cases: workload ÷ available agent-seconds per interval"
+                    {selectedChannel === "email"
+                      ? "Email: workload ÷ available agent-seconds per interval"
                       : selectedChannel === "chat"
                       ? "Chat: Erlang C with concurrency-adjusted demand"
+                      : selectedChannel === "cases"
+                      ? "Cases: Erlang C queuing model (SLA-driven)"
                       : "Voice: Erlang C queuing model"}
                   </span>
-                  {/* Smooth toggle + window slider + Commit button */}
+                  {/* Smooth toggle + heatmap + window slider + Commit button */}
                   <div className="ml-auto flex items-center gap-2">
+                    <button
+                      onClick={() => setPrefs({ showFteHeatmap: !showFteHeatmap })}
+                      className={`flex items-center gap-1 px-2 py-0.5 rounded border text-xs transition-colors ${
+                        showFteHeatmap
+                          ? "bg-red-100 border-red-300 text-red-700"
+                          : "border-border text-muted-foreground hover:text-foreground"
+                      }`}
+                      title="Heatmap: color scale is week-wide (red = peak across all days) instead of row-relative"
+                    >
+                      <LayoutDashboard className="h-3 w-3" />
+                      Heatmap
+                    </button>
                     <button
                       onClick={() => setPrefs({ smoothFTE: !smoothFTE })}
                       className={`flex items-center gap-1 px-2 py-0.5 rounded border text-xs transition-colors ${
@@ -2034,7 +2247,7 @@ export const IntradayForecast = () => {
                     {intervals.map((iv, idx) => {
                       if (hideBlankRows && blankIntervalSet.has(idx)) return null;
                       const rowVals = DOW_LABELS.map((_, d) => smoothedFteTable[d]?.[idx]);
-                      const maxFTE = Math.max(...rowVals.map((r) => r?.fte ?? 0));
+                      const rowMaxFTE = Math.max(...rowVals.map((r) => r?.fte ?? 0));
                       return (
                         <TableRow key={idx}>
                           <TableCell className="text-xs text-foreground py-1.5 sticky left-0 bg-background font-mono">
@@ -2043,19 +2256,29 @@ export const IntradayForecast = () => {
                           {rowVals.map((result, d) => {
                             const fte = result?.fte ?? 0;
                             const roundedFte = roundedRequiredFteTable[d]?.[idx] ?? 0;
-                            const intensity = maxFTE > 0 ? fte / maxFTE : 0;
+                            // Heatmap: intensity relative to weekly peak so hot spots are
+                            // visible across all days (not just within each row).
+                            const denominator = showFteHeatmap ? maxFTEGlobal : rowMaxFTE;
+                            const intensity = denominator > 0 ? fte / denominator : 0;
+                            let bgColor: string | undefined;
+                            if (roundedFte > 0) {
+                              if (showFteHeatmap) {
+                                // Red (peak) → amber (mid) → green (low)
+                                const r = Math.round(22 + intensity * (239 - 22));
+                                const g = Math.round(197 - intensity * (197 - 68));
+                                bgColor = `rgba(${r},${g},22,${0.15 + intensity * 0.55})`;
+                              } else {
+                                bgColor = `rgba(249, 115, 22, ${0.1 + intensity * 0.45})`;
+                              }
+                            }
                             return (
                               <TableCell
                                 key={d}
                                 className="text-xs text-right py-1.5 font-mono"
                                 title={result && result.rawAgents > 0
-                                  ? `Required FTE: ${roundedFte} | On-phone agents: ${result.rawAgents} | A=${result.erlangs} Erl${selectedChannel !== "email" && selectedChannel !== "cases" ? ` | SL: ${result.achievedSL}% | Occ: ${result.occupancy}%` : ` | Occ: ${result.occupancy}%`}`
+                                  ? `Required FTE: ${roundedFte} | On-phone agents: ${result.rawAgents} | A=${result.erlangs} Erl${selectedChannel !== "email" ? ` | SL: ${result.achievedSL}% | Occ: ${result.occupancy}%` : ` | Occ: ${result.occupancy}%`}`
                                   : undefined}
-                                style={{
-                                  backgroundColor: roundedFte > 0
-                                    ? `rgba(249, 115, 22, ${0.1 + intensity * 0.45})`
-                                    : undefined,
-                                }}
+                                style={{ backgroundColor: bgColor }}
                               >
                                 {roundedFte > 0 ? String(roundedFte) : ""}
                               </TableCell>
@@ -2102,7 +2325,7 @@ export const IntradayForecast = () => {
                         Exp. SLA
                       </TableCell>
                       {DOW_LABELS.map((_, d) => {
-                        if (selectedChannel === "email" || selectedChannel === "cases") {
+                        if (selectedChannel === "email") {
                           return <TableCell key={d} className="text-xs text-right py-2 text-muted-foreground">N/A</TableCell>;
                         }
                         let weightedSL = 0, totalCalls = 0;
