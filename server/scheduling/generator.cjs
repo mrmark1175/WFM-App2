@@ -443,15 +443,16 @@ function applyStagger(startMap, demandCurves, intervalMinutes) {
     ids.sort((a, b) => a - b);
     const cohortSize = ids.length;
 
-    // For each break slot type, pre-compute candidate offsets within the shift
-    // sorted by ascending blended demand (valley-first), capped to 4 distinct
-    // slots so the stagger doesn't push breaks out of reasonable range.
-    const getValleySortedOffsets = (baseOffset, duration, shiftMin, windowMins) => {
+    // For each break slot type, pre-compute candidate offsets within ±30 min of
+    // the template position, in 15-min increments only, sorted valley-first.
+    const STAGGER_MAX_DEVIATION = 30;
+    const STAGGER_STEP = 15;
+    const getValleySortedOffsets = (baseOffset, duration, shiftMin) => {
       const candidates = [];
-      const maxSlide = Math.min(windowMins, shiftMin - baseOffset - duration);
-      for (let slide = 0; slide <= maxSlide; slide += intervalMinutes) {
+      for (let slide = -STAGGER_MAX_DEVIATION; slide <= STAGGER_MAX_DEVIATION; slide += STAGGER_STEP) {
         const offset = baseOffset + slide;
-        if (offset + duration > shiftMin) break;
+        if (offset < 0) continue;
+        if (offset + duration > shiftMin) continue;
         const iv = Math.floor((startMin + offset) / intervalMinutes) % nIntervals;
         candidates.push({ offset, demand: blended[iv] || 0 });
       }
@@ -462,14 +463,13 @@ function applyStagger(startMap, demandCurves, intervalMinutes) {
 
     ids.forEach((agentId, idx) => {
       const info = startMap.get(agentId);
-      const VALLEY_WINDOW = intervalMinutes * 4; // search up to 4 intervals ahead
 
       info.plan = info.plan.map((act) => {
-        // Valley offsets for this activity type; fall back to index-based stagger
-        const valleys = getValleySortedOffsets(act.offsetFromStart, act.duration, info.shiftMin, VALLEY_WINDOW);
+        // Valley offsets within ±30 min of template position; fall back to original offset
+        const valleys = getValleySortedOffsets(act.offsetFromStart, act.duration, info.shiftMin);
         const newOffset = valleys.length > 0
           ? valleys[idx % valleys.length]
-          : act.offsetFromStart + (act.type === 'break' ? 15 * (idx % 4) : 30 * (idx % 2));
+          : act.offsetFromStart;
         return { ...act, offsetFromStart: newOffset };
       });
 
