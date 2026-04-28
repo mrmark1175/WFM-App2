@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageLayout } from "../components/PageLayout";
 import { apiUrl } from "../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -13,9 +13,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
 import {
   ChevronDown, ChevronRight, Cloud, CloudOff, Loader2,
-  Phone, Mail, MessageSquare, Clock, SlidersHorizontal, ClipboardList,
+  Phone, Mail, MessageSquare, Clock, SlidersHorizontal, ClipboardList, Globe,
 } from "lucide-react";
 import { toast } from "sonner";
+import { getUTCOffsetMinutes, getTZLabel, TIMEZONE_OPTIONS } from "../lib/timezone";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ChannelKey = "voice" | "email" | "chat" | "cases";
@@ -53,6 +54,8 @@ interface LobSettings {
   email_sla_seconds: number;
   email_occupancy: number;
   hours_of_operation: HoursOfOperation;
+  demand_timezone: string;
+  supply_timezone: string;
   updated_at?: string;
 }
 
@@ -120,6 +123,8 @@ function applyDefaults(raw: Partial<LobSettings> & { lob_id: number; lob_name: s
     email_sla_seconds: raw.email_sla_seconds  ?? 14400,
     email_occupancy:   raw.email_occupancy    ?? 85,
     hours_of_operation: mergeHours(raw.hours_of_operation as Partial<HoursOfOperation> | null),
+    demand_timezone:   raw.demand_timezone   ?? "America/New_York",
+    supply_timezone:   raw.supply_timezone   ?? "Asia/Manila",
     updated_at:        raw.updated_at,
   };
 }
@@ -355,6 +360,73 @@ function HoursTable({ s, onUpdateHours, onUpdate }: { s: LobSettings; onUpdateHo
   );
 }
 
+// ── TimezoneSection — module-level ───────────────────────────────────────────
+function TimezoneSection({ s, onUpdate }: { s: LobSettings; onUpdate: UpdateFn }) {
+  const now = useMemo(() => new Date(), []);
+  const demandOffsetMin = getUTCOffsetMinutes(s.demand_timezone, now);
+  const supplyOffsetMin = getUTCOffsetMinutes(s.supply_timezone, now);
+  const demandLabel = getTZLabel(s.demand_timezone, now);
+  const supplyLabel = getTZLabel(s.supply_timezone, now);
+  const diffHours = (supplyOffsetMin - demandOffsetMin) / 60;
+  const diffStr = diffHours === 0
+    ? "same UTC offset"
+    : `${supplyLabel} is ${Math.abs(diffHours)}h ${diffHours > 0 ? "ahead of" : "behind"} ${demandLabel}`;
+
+  function fmtOffset(min: number) {
+    const sign = min >= 0 ? "+" : "-";
+    const abs = Math.abs(min);
+    const h = Math.floor(abs / 60).toString().padStart(2, "0");
+    const m = (abs % 60).toString().padStart(2, "0");
+    return `UTC${sign}${h}:${m}`;
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Configure the timezone for customer demand and the timezone where agents work.
+        Used to detect DST transitions that affect scheduling.
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
+            Demand Timezone (customers)
+          </Label>
+          <select
+            value={s.demand_timezone}
+            onChange={(e) => onUpdate(s.lob_id, "demand_timezone", e.target.value)}
+            className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          >
+            {TIMEZONE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            Current: {demandLabel} ({fmtOffset(demandOffsetMin)})
+          </p>
+        </div>
+        <div className="space-y-2">
+          <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
+            Supply Timezone (agents)
+          </Label>
+          <select
+            value={s.supply_timezone}
+            onChange={(e) => onUpdate(s.lob_id, "supply_timezone", e.target.value)}
+            className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          >
+            {TIMEZONE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            Current: {supplyLabel} ({fmtOffset(supplyOffsetMin)})
+          </p>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground border-t border-border/50 pt-3">{diffStr}</p>
+    </div>
+  );
+}
+
 // ── LobCard — module-level ────────────────────────────────────────────────────
 interface LobCardProps {
   s: LobSettings;
@@ -418,6 +490,9 @@ function LobCard({ s, isOpen, isSaving, hasError, onToggle, onUpdate, onUpdateHo
                 </TabsTrigger>
                 <TabsTrigger value="hours" className="gap-1.5">
                   <Clock className="size-3.5" />Hours of Operation
+                </TabsTrigger>
+                <TabsTrigger value="timezone" className="gap-1.5">
+                  <Globe className="size-3.5" />Timezone
                 </TabsTrigger>
               </TabsList>
 
@@ -485,6 +560,11 @@ function LobCard({ s, isOpen, isSaving, hasError, onToggle, onUpdate, onUpdateHo
                   Set operating hours per channel per day. The totals row feeds into Demand Planner operating hours/days defaults.
                 </p>
                 <HoursTable s={s} onUpdateHours={onUpdateHours} onUpdate={onUpdate} />
+              </TabsContent>
+
+              {/* ── Tab 3: Timezone ── */}
+              <TabsContent value="timezone" className="mt-0">
+                <TimezoneSection s={s} onUpdate={onUpdate} />
               </TabsContent>
             </Tabs>
           </CardContent>

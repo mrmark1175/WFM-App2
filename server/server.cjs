@@ -376,6 +376,18 @@ async function ensureAppTables() {
     )
   `);
 
+  // ── demand_timezone / supply_timezone on lob_settings ───────────────────────
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE lob_settings ADD COLUMN IF NOT EXISTS demand_timezone TEXT NOT NULL DEFAULT 'America/New_York';
+    EXCEPTION WHEN duplicate_column THEN NULL; WHEN undefined_table THEN NULL; END; $$
+  `);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE lob_settings ADD COLUMN IF NOT EXISTS supply_timezone TEXT NOT NULL DEFAULT 'Asia/Manila';
+    EXCEPTION WHEN duplicate_column THEN NULL; WHEN undefined_table THEN NULL; END; $$
+  `);
+
   // ── demand_actuals — per-LOB, per-channel actual volumes for re-cut ──────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS demand_actuals (
@@ -1745,7 +1757,7 @@ app.get('/api/lob-settings', async (req, res) => {
                 ls.voice_aht, ls.voice_sla_target, ls.voice_sla_seconds, ls.voice_shrinkage, ls.voice_max_occupancy,
                 ls.chat_aht, ls.chat_sla_target, ls.chat_sla_seconds, ls.chat_concurrency, ls.chat_shrinkage,
                 ls.email_aht, ls.email_sla_target, ls.email_sla_seconds, ls.email_occupancy, ls.email_shrinkage,
-                ls.hours_of_operation, ls.updated_at
+                ls.hours_of_operation, ls.demand_timezone, ls.supply_timezone, ls.updated_at
          FROM lobs l
          LEFT JOIN lob_settings ls ON ls.lob_id = l.id AND ls.organization_id = $1
          WHERE l.id = $2 AND l.organization_id = $1`,
@@ -1760,7 +1772,7 @@ app.get('/api/lob-settings', async (req, res) => {
                 ls.voice_aht, ls.voice_sla_target, ls.voice_sla_seconds, ls.voice_shrinkage, ls.voice_max_occupancy,
                 ls.chat_aht, ls.chat_sla_target, ls.chat_sla_seconds, ls.chat_concurrency, ls.chat_shrinkage,
                 ls.email_aht, ls.email_sla_target, ls.email_sla_seconds, ls.email_occupancy, ls.email_shrinkage,
-                ls.hours_of_operation, ls.updated_at
+                ls.hours_of_operation, ls.demand_timezone, ls.supply_timezone, ls.updated_at
          FROM lobs l
          LEFT JOIN lob_settings ls ON ls.lob_id = l.id AND ls.organization_id = $1
          WHERE l.organization_id = $1
@@ -1785,6 +1797,7 @@ app.put('/api/lob-settings', async (req, res) => {
     chat_aht, chat_sla_target, chat_sla_seconds, chat_concurrency,
     email_aht, email_sla_target, email_sla_seconds, email_occupancy,
     hours_of_operation,
+    demand_timezone, supply_timezone,
   } = req.body;
   try {
     await pool.query(
@@ -1793,8 +1806,8 @@ app.put('/api/lob-settings', async (req, res) => {
           voice_aht, voice_sla_target, voice_sla_seconds,
           chat_aht, chat_sla_target, chat_sla_seconds, chat_concurrency,
           email_aht, email_sla_target, email_sla_seconds, email_occupancy,
-          hours_of_operation, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
+          hours_of_operation, demand_timezone, supply_timezone, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
        ON CONFLICT (organization_id, lob_id) DO UPDATE SET
          channels_enabled   = EXCLUDED.channels_enabled,
          pooling_mode       = EXCLUDED.pooling_mode,
@@ -1810,6 +1823,8 @@ app.put('/api/lob-settings', async (req, res) => {
          email_sla_seconds  = EXCLUDED.email_sla_seconds,
          email_occupancy    = EXCLUDED.email_occupancy,
          hours_of_operation = EXCLUDED.hours_of_operation,
+         demand_timezone    = EXCLUDED.demand_timezone,
+         supply_timezone    = EXCLUDED.supply_timezone,
          updated_at         = NOW()`,
       [
         user.organization_id, lobId,
@@ -1819,6 +1834,8 @@ app.put('/api/lob-settings', async (req, res) => {
         chat_aht ?? 450, chat_sla_target ?? 80, chat_sla_seconds ?? 30, chat_concurrency ?? 2,
         email_aht ?? 600, email_sla_target ?? 90, email_sla_seconds ?? 14400, email_occupancy ?? 85,
         JSON.stringify(hours_of_operation ?? {}),
+        demand_timezone ?? 'America/New_York',
+        supply_timezone ?? 'Asia/Manila',
       ]
     );
     res.json({ success: true });

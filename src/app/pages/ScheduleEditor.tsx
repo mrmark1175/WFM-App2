@@ -10,8 +10,9 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle, Eraser, Settings2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle, Eraser, Settings2, AlertTriangle } from "lucide-react";
 import { erlangC, erlangServiceLevel } from "./intraday-distribution-logic";
+import { getDSTWarning } from "../lib/timezone";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
 import { WeeklyScheduleGrid } from "../components/schedule/WeeklyScheduleGrid";
@@ -578,6 +579,11 @@ export function ScheduleEditor() {
   const [absenceDialogAgentId, setAbsenceDialogAgentId] = useState<number | null>(null);
   const [absenceInput, setAbsenceInput] = useState("");
 
+  // Timezone (for DST banner)
+  const [demandTZ, setDemandTZ] = useState("America/New_York");
+  const [supplyTZ, setSupplyTZ] = useState("Asia/Manila");
+  const [dstBannerDismissed, setDstBannerDismissed] = useState(false);
+
   // Local-first: dirty tracking + publish
   const [isDirty, setIsDirty]         = useState(false);
   const [publishing, setPublishing]   = useState(false);
@@ -606,6 +612,11 @@ export function ScheduleEditor() {
     [weekStart]
   );
   const activeDate = toDateStr(weekDates[activeDayIdx]);
+
+  const dstWarning = useMemo(
+    () => getDSTWarning(demandTZ, supplyTZ, weekStart),
+    [demandTZ, supplyTZ, weekStart]
+  );
   const dateStart = toDateStr(weekStart);
   const dateEnd = toDateStr(weekDates[6]);
 
@@ -690,6 +701,21 @@ export function ScheduleEditor() {
       .catch(() => toast.error("Failed to load schedule"))
       .finally(() => setLoading(false));
   }, [activeLob, dateStart, dateEnd, clampBreakMealToTemplateWindow]);
+
+  // Fetch LOB timezone settings
+  useEffect(() => {
+    if (!activeLob) return;
+    fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`))
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.demand_timezone) setDemandTZ(data.demand_timezone as string);
+        if (data?.supply_timezone) setSupplyTZ(data.supply_timezone as string);
+      })
+      .catch(() => {});
+  }, [activeLob]);
+
+  // Reset DST banner dismissal when the week changes
+  useEffect(() => { setDstBannerDismissed(false); }, [weekStart]);
 
   const loadRequiredFte = useCallback(() => {
     if (!activeLob) return;
@@ -1455,6 +1481,21 @@ export function ScheduleEditor() {
           <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs font-medium">
             <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
             You have unsaved changes. Click <strong>Publish</strong> to save to the database.
+          </div>
+        )}
+
+        {/* ── DST transition banner ────────────────────────────────────────── */}
+        {dstWarning && !dstBannerDismissed && (
+          <div className="flex items-start justify-between gap-3 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
+              <span>{dstWarning.bannerMessage} {dstWarning.suggestion}</span>
+            </div>
+            <button
+              onClick={() => setDstBannerDismissed(true)}
+              className="shrink-0 text-amber-500 hover:text-amber-800 font-bold leading-none"
+              title="Dismiss"
+            >✕</button>
           </div>
         )}
 

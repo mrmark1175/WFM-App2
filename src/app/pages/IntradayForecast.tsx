@@ -8,6 +8,7 @@ import { useWFMPageData } from "../lib/WFMPageDataContext";
 import { usePagePreferences } from "../lib/usePagePreferences";
 import { PageLayout } from "../components/PageLayout";
 import { getCalculatedVolumes, Assumptions } from "./forecasting-logic";
+import { getDSTWarning } from "../lib/timezone";
 import {
   GridData, DOW_LABELS, SLOT_COUNT,
   computeMedianPattern, computeDistributionWeights,
@@ -179,6 +180,8 @@ export const IntradayForecast = () => {
   const [showDistributionTable, setShowDistributionTable] = useState(false);
   const [shrinkageHoursPerDay, setShrinkageHoursPerDay] = useState<number>(7.5);
   const [lobHoursOfOperation, setLobHoursOfOperation] = useState<Record<string, Record<string, { enabled: boolean; open: string; close: string }>> | null>(null);
+  const [demandTZ, setDemandTZ] = useState<string>("America/New_York");
+  const [supplyTZ, setSupplyTZ] = useState<string>("Asia/Manila");
   const [commitStatus, setCommitStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [approveStatus, setApproveStatus] = useState<"idle" | "saving" | "saved">("idle");
 
@@ -227,6 +230,8 @@ export const IntradayForecast = () => {
       if (lobSettings?.hours_of_operation) {
         setLobHoursOfOperation(lobSettings.hours_of_operation as Record<string, Record<string, { enabled: boolean; open: string; close: string }>>);
       }
+      if (lobSettings?.demand_timezone) setDemandTZ(lobSettings.demand_timezone as string);
+      if (lobSettings?.supply_timezone) setSupplyTZ(lobSettings.supply_timezone as string);
       if (snapshot) {
         setPlannerSnapshot(snapshot);
       } else if (lobSettings) {
@@ -421,6 +426,20 @@ export const IntradayForecast = () => {
   const weekOutlierFence = useMemo(() => computeWeekOutlierFence(weekBuckets), [weekBuckets]);
 
   const hasEnoughWeeklyData = weekBuckets.length >= 4;
+
+  // ── DST transition warnings per week bucket ────────────────────────────────
+  const dstWarnings = useMemo(() => {
+    const map: Record<string, ReturnType<typeof getDSTWarning>> = {};
+    weekBuckets.forEach((w) => {
+      map[w.weekStart] = getDSTWarning(demandTZ, supplyTZ, new Date(w.weekStart));
+    });
+    return map;
+  }, [demandTZ, supplyTZ, weekBuckets]);
+
+  const targetWeekDSTWarning = useMemo(
+    () => targetWeekStart ? getDSTWarning(demandTZ, supplyTZ, new Date(targetWeekStart)) : null,
+    [demandTZ, supplyTZ, targetWeekStart]
+  );
 
   // ── Manual volume outlier stats ────────────────────────────────────────────
   // Poisson self-referential fence: flag entries that deviate > 2σ from the
@@ -1338,6 +1357,14 @@ export const IntradayForecast = () => {
             </div>
           </div>
 
+          {/* DST transition warning for the selected target week */}
+          {targetWeekDSTWarning && (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-sm text-amber-800 dark:text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{targetWeekDSTWarning.bannerMessage} {targetWeekDSTWarning.suggestion}</span>
+            </div>
+          )}
+
           {/* Weekly distribution summary */}
           {weekBuckets.length > 0 && dataSource === "api" && targetMonthlyVolume > 0 && (
             <div className="mt-4 p-3 rounded-lg border bg-muted/20">
@@ -1357,12 +1384,7 @@ export const IntradayForecast = () => {
                 {weekBuckets.map((wb, i) => {
                   const isSelected = wb.weekStart === targetWeekStart;
                   const isOutlier = weekOutlierFence.outlierSet.has(wb.weekStart);
-                  const pos = Array.from(weekOutlierFence.fenceByPosition.entries())
-                    .find(([, v]) => v !== undefined) && (() => {
-                      // find fence for this week's position — imported getWeekOfMonth not available
-                      // use the fenceByPosition map keyed by position; just show global stats
-                      return null;
-                    })();
+                  const hasDST = !!dstWarnings[wb.weekStart];
                   return (
                     <button
                       key={wb.weekStart}
@@ -1376,10 +1398,19 @@ export const IntradayForecast = () => {
                             : "border-border hover:border-blue-300 bg-background"
                       }`}
                       onClick={() => setPrefs({ targetWeekStart: wb.weekStart })}
-                      title={isOutlier ? `Statistical outlier — volume ${wb.volume.toLocaleString()} is outside the expected Poisson range for this week-of-month position` : undefined}
+                      title={
+                        hasDST
+                          ? dstWarnings[wb.weekStart]!.bannerMessage
+                          : isOutlier
+                            ? `Statistical outlier — volume ${wb.volume.toLocaleString()} is outside the expected Poisson range for this week-of-month position`
+                            : undefined
+                      }
                     >
-                      {isOutlier && (
+                      {isOutlier && !hasDST && (
                         <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-white text-[8px] font-bold">!</span>
+                      )}
+                      {hasDST && (
+                        <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-400 text-white text-[8px] font-bold">⏰</span>
                       )}
                       <div className="font-medium">Wk {i + 1}: {wb.weekStart}</div>
                       <div className="text-muted-foreground">
