@@ -160,6 +160,44 @@ function hoursFromSchedule(
     hoursPerDay: Math.round((totalHrs / enabled.length) * 10) / 10,
   };
 }
+
+function mergeChannelSchedules(
+  hoo: Record<string, Record<string, DaySchedule>> | undefined,
+  channels: ChannelKey[],
+): Record<string, DaySchedule> | null {
+  if (!hoo || channels.length === 0) return null;
+  const dayKeys = new Set<string>();
+  for (const ch of channels) {
+    const sched = hoo[ch];
+    if (!sched) continue;
+    Object.keys(sched).forEach(d => dayKeys.add(d));
+  }
+  if (dayKeys.size === 0) return null;
+
+  const toMins = (t: string) => {
+    const [h, m] = String(t || "00:00").split(":").map(Number);
+    return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
+  };
+  const toTime = (mins: number) => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+
+  const out: Record<string, DaySchedule> = {};
+  for (const day of dayKeys) {
+    let minOpen = Number.POSITIVE_INFINITY;
+    let maxClose = Number.NEGATIVE_INFINITY;
+    let anyEnabled = false;
+    for (const ch of channels) {
+      const ds = hoo[ch]?.[day];
+      if (!ds?.enabled) continue;
+      anyEnabled = true;
+      minOpen = Math.min(minOpen, toMins(ds.open));
+      maxClose = Math.max(maxClose, toMins(ds.close));
+    }
+    out[day] = anyEnabled
+      ? { enabled: true, open: toTime(minOpen), close: toTime(maxClose) }
+      : { enabled: false, open: "00:00", close: "00:00" };
+  }
+  return out;
+}
 function roundTo(n: number, dp = 1) { return Math.round(n * 10 ** dp) / 10 ** dp; }
 
 // Mirrors the computeShrinkage function in ShrinkagePlanning.tsx.
@@ -283,6 +321,7 @@ function calcWeeklyBlendedFTE(
   const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
   const safeConcurrency = Math.max(1, chatConcurrency);
   const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
+  const idleAbsorptionFactor = 0.6; // conservative: only 60% of nominal idle time can be reused cross-channel
 
   const voiceCPI = voiceVol > 0 ? (voiceVol / daysPerWeek) / intervalsPerDay : 0;
   const chatCPI = chatVol > 0 ? (chatVol / daysPerWeek) / intervalsPerDay : 0;
@@ -295,7 +334,7 @@ function calcWeeklyBlendedFTE(
     const voiceRawAgents = vr.rawAgents;
 
     const voiceWorkloadHours = voiceCPI * voiceAht / 3600;
-    const voiceIdleHours = Math.max(0, voiceRawAgents * intervalHours - voiceWorkloadHours);
+    const voiceIdleHours = Math.max(0, voiceRawAgents * intervalHours - voiceWorkloadHours) * idleAbsorptionFactor;
 
     const rawChatWorkloadHours = chatCPI * chatAht / 3600;
     const concurrentChatWorkload = rawChatWorkloadHours / safeConcurrency;
@@ -324,7 +363,7 @@ function calcWeeklyBlendedFTE(
 
     // Idle physical agent capacity after serving chat (concurrency-adjusted workload)
     const chatPhysicalWorkloadHours = chatCPI * chatAht / (3600 * safeConcurrency);
-    const chatIdleHours = Math.max(0, chatRawAgents * intervalHours - chatPhysicalWorkloadHours);
+    const chatIdleHours = Math.max(0, chatRawAgents * intervalHours - chatPhysicalWorkloadHours) * idleAbsorptionFactor;
 
     const emailWorkloadHours = emailCPI * emailAht / 3600;
     const netEmailWorkload = Math.max(0, emailWorkloadHours - chatIdleHours);
@@ -1060,14 +1099,15 @@ export function CapacityPlanning() {
   const shrinkagePct = computedShrinkagePct ?? (demandAssumptions?.shrinkage != null ? Number(demandAssumptions.shrinkage) : 20);
 
   // Operating hours: LOB settings (hours_of_operation) is the source of truth.
-  // For dedicated LOBs use the active channel's schedule; for blended use voice.
+  // Dedicated: active channel schedule. Blended: merged schedule across enabled channels.
   // Falls back to demand assumptions, then hard defaults.
   const lobOpHours = useMemo(() => {
     const hoo = lobSettings?.hours_of_operation;
     if (!hoo) return null;
-    const channelKey = isDedicated ? activeChannel : "voice";
-    return hoursFromSchedule(hoo[channelKey]);
-  }, [lobSettings, isDedicated, activeChannel]);
+    if (isDedicated) return hoursFromSchedule(hoo[activeChannel]);
+    const merged = mergeChannelSchedules(hoo, enabledChannels);
+    return merged ? hoursFromSchedule(merged) : null;
+  }, [lobSettings, isDedicated, activeChannel, enabledChannels]);
 
   const daysPerWeek = lobOpHours?.daysPerWeek ?? demandAssumptions?.operatingDaysPerWeek ?? 5;
   const operatingHoursPerDay = lobOpHours?.hoursPerDay ?? demandAssumptions?.operatingHoursPerDay ?? 8;
@@ -1080,7 +1120,8 @@ export function CapacityPlanning() {
   const slaEmailTarget = Number(lobSettings?.email_sla_target ?? snap?.emailSlaTarget ?? 90);
   const slaEmailSec    = Number(lobSettings?.email_sla_seconds ?? snap?.emailSlaAnswerSeconds ?? 14400);
   const emailOccupancy = Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85;
-  const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2) );  // ── Full computed calculations per week
+  const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2));
+  // ── Full computed calculations per week
   const weekCalcs = useMemo<WeekCalc[]>(() => {
     let projHC = config.startingHc;
     const { attritionRateMonthly, rampTrainingWeeks, rampNestingWeeks, rampNestingPct, trainingGradRate } = config;
@@ -2346,6 +2387,8 @@ export function CapacityPlanning() {
     </PageLayout>
   );
 }
+
+
 
 
 
