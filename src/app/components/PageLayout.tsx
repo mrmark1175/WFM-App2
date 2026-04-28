@@ -129,9 +129,9 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           </button>
         </aside>
 
-        <main className="bg-canvas overflow-auto pl-6">
+        <main className="bg-canvas overflow-auto px-4 sm:px-6 lg:px-8 xl:px-10">
           {title && (
-            <div className="px-[18px] py-4 border-b border-hairline">
+            <div className="py-4 border-b border-hairline">
               <h1 className="text-[20px] font-semibold tracking-tight text-ink">{title}</h1>
             </div>
           )}
