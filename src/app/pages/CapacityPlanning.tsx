@@ -150,10 +150,21 @@ function hoursFromSchedule(
   if (!schedule) return null;
   const enabled = Object.values(schedule).filter(d => d.enabled);
   if (!enabled.length) return null;
+  const toMins = (t: string) => {
+    const [h, m] = String(t || "00:00").split(":").map(Number);
+    return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
+  };
+  const spanHours = (open: string, close: string) => {
+    const openMins = toMins(open);
+    const closeMins = toMins(close);
+    // Equal open/close on an enabled day is treated as 24h coverage.
+    if (openMins === closeMins) return 24;
+    const diff = closeMins - openMins;
+    const minutes = diff > 0 ? diff : diff + 24 * 60; // overnight wrap support
+    return Math.max(0, minutes / 60);
+  };
   const totalHrs = enabled.reduce((sum, d) => {
-    const [oh, om] = d.open.split(":").map(Number);
-    const [ch, cm] = d.close.split(":").map(Number);
-    return sum + Math.max(0, (ch + cm / 60) - (oh + om / 60));
+    return sum + spanHours(d.open, d.close);
   }, 0);
   return {
     daysPerWeek: enabled.length,
