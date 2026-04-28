@@ -237,7 +237,6 @@ function calcWeeklyErlangFTE(
   channel: "voice" | "chat" | "email",
   concurrency = 1,
   emailOccupancyPct = 85,
-  avgPatienceSeconds = 0,
 ): { fte: number; occupancy: number } {
   if (weeklyVolume <= 0 || ahtSeconds <= 0 || daysPerWeek <= 0 || operatingHoursPerDay <= 0) {
     return { fte: 0, occupancy: 0 };
@@ -248,7 +247,7 @@ function calcWeeklyErlangFTE(
   const result = computeIntervalFTE(
     callsPerInterval, 30, ahtSeconds,
     slaTarget, slaAnswerSeconds, emailOccupancyPct,
-    shrinkagePct, channel, concurrency, avgPatienceSeconds,
+    shrinkagePct, channel, concurrency, 0,
   );
   // result.fte is agents-on-floor per interval, shrinkage-adjusted.
   // Scale to daily FTE: an agent works fteHoursPerDay but the floor needs
@@ -276,8 +275,6 @@ function calcWeeklyBlendedFTE(
   emailOccupancyPct: number,
   shrinkagePct: number,
   chatConcurrency: number,
-  voiceAvgPatienceSec = 0,
-  chatAvgPatienceSec = 0,
 ): { fte: number; occupancy: number } {
   if (daysPerWeek <= 0 || operatingHoursPerDay <= 0) return { fte: 0, occupancy: 0 };
 
@@ -293,8 +290,8 @@ function calcWeeklyBlendedFTE(
 
   if (voiceCPI > 0 && voiceAht > 0) {
     // ── Voice-anchored blended pool (original model) ─────────────────────────
-    // Voice Erlang C/A sets the base; idle capacity absorbs chat then email/cases.
-    const vr = computeIntervalFTE(voiceCPI, 30, voiceAht, slaVoiceTarget, slaVoiceSec, 85, 0, "voice", 1, voiceAvgPatienceSec);
+    // Voice Erlang C sets the base; idle capacity absorbs chat then email/cases.
+    const vr = computeIntervalFTE(voiceCPI, 30, voiceAht, slaVoiceTarget, slaVoiceSec, 85, 0, "voice", 1, 0);
     const voiceRawAgents = vr.rawAgents;
 
     const voiceWorkloadHours = voiceCPI * voiceAht / 3600;
@@ -322,7 +319,7 @@ function calcWeeklyBlendedFTE(
     // ── Chat-anchored blended pool (voice absent) ─────────────────────────────
     // Run full Erlang C for chat — traffic-intensity model would under-staff by ~40-50%
     // at typical occupancy because it skips the SLA queuing headroom.
-    const cr = computeIntervalFTE(chatCPI, 30, chatAht, slaChatTarget, slaChatSec, 85, 0, "chat", safeConcurrency, chatAvgPatienceSec);
+    const cr = computeIntervalFTE(chatCPI, 30, chatAht, slaChatTarget, slaChatSec, 85, 0, "chat", safeConcurrency, 0);
     const chatRawAgents = cr.rawAgents;
 
     // Idle physical agent capacity after serving chat (concurrency-adjusted workload)
@@ -1083,12 +1080,7 @@ export function CapacityPlanning() {
   const slaEmailTarget = Number(lobSettings?.email_sla_target ?? snap?.emailSlaTarget ?? 90);
   const slaEmailSec    = Number(lobSettings?.email_sla_seconds ?? snap?.emailSlaAnswerSeconds ?? 14400);
   const emailOccupancy = Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85;
-  const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2));
-  // Erlang A patience — sourced from demand assumptions; 0 falls back to Erlang C
-  const voiceAvgPatienceSec = Number(snap?.voiceAvgPatienceSeconds ?? 120);
-  const chatAvgPatienceSec  = Number(snap?.chatAvgPatienceSeconds  ?? 60);
-
-  // ── Full computed calculations per week
+  const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2) );  // ── Full computed calculations per week
   const weekCalcs = useMemo<WeekCalc[]>(() => {
     let projHC = config.startingHc;
     const { attritionRateMonthly, rampTrainingWeeks, rampNestingWeeks, rampNestingPct, trainingGradRate } = config;
@@ -1121,8 +1113,7 @@ export function CapacityPlanning() {
         const conc   = activeChannel === "chat" ? chatConcurrency : 1;
         // cases uses the email (backlog/deferred) model
         const modelChannel: "voice" | "chat" | "email" = activeChannel === "voice" ? "voice" : activeChannel === "chat" ? "chat" : "email";
-        const patience = activeChannel === "voice" ? voiceAvgPatienceSec : activeChannel === "chat" ? chatAvgPatienceSec : 0;
-        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy, patience);
+        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy);
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
       } else {
@@ -1140,8 +1131,7 @@ export function CapacityPlanning() {
           enabledChannels.includes("chat") ? effVolChat : 0, effAhtChat,
           blendedEmailVol, blendedEmailAht,
           daysPerWeek, operatingHoursPerDay, hoursPerDay,
-          slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, emailOccupancy,
-          shrinkagePct, chatConcurrency, voiceAvgPatienceSec, chatAvgPatienceSec,
+          slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, emailOccupancy, shrinkagePct, chatConcurrency,
         );
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
@@ -1180,7 +1170,7 @@ export function CapacityPlanning() {
       const actualGapSurplus = actualHc != null ? roundTo(actualHc - requiredFTE, 1) : null;
       const billableGapSurplus = config.billableFte > 0 ? roundTo(modelProjHC - config.billableFte, 1) : null;
 
-      // Helper: compute achieved SLA% from a given FTE headcount (Erlang A when patience > 0)
+      // Helper: compute achieved SLA% from a given FTE headcount (Erlang C)
       function achievedSLFor(hc: number): number | null {
         if (isDedicated) {
           if (activeChannel === "email" || activeChannel === "cases") return null;
@@ -1188,17 +1178,16 @@ export function CapacityPlanning() {
           const aht = activeChannel === "voice" ? effAhtVoice : effAhtChat;
           const sec = activeChannel === "voice" ? slaVoiceSec : slaChatSec;
           const conc = activeChannel === "chat" ? chatConcurrency : 1;
-          const patience = activeChannel === "voice" ? voiceAvgPatienceSec : chatAvgPatienceSec;
-          return computeAchievedSLFromFTE(vol, aht, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, sec, shrinkagePct, activeChannel, conc, patience);
+          return computeAchievedSLFromFTE(vol, aht, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, sec, shrinkagePct, activeChannel, conc, 0);
         } else {
           // Blended: volume-weighted average SLA across non-email enabled channels
           let weightedSL = 0, totalVol = 0;
           if (enabledChannels.includes("voice") && effVolVoice > 0) {
-            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice", 1, voiceAvgPatienceSec);
+            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice", 1, 0);
             if (sl != null) { weightedSL += sl * effVolVoice; totalVol += effVolVoice; }
           }
           if (enabledChannels.includes("chat") && effVolChat > 0) {
-            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency, chatAvgPatienceSec);
+            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency, 0);
             if (sl != null) { weightedSL += sl * effVolChat; totalVol += effVolChat; }
           }
           return totalVol > 0 ? +(weightedSL / totalVol).toFixed(1) : null;
@@ -1226,7 +1215,7 @@ export function CapacityPlanning() {
   }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay,
       shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
-      emailOccupancy, chatConcurrency, voiceAvgPatienceSec, chatAvgPatienceSec]);
+      emailOccupancy, chatConcurrency]);
 
   // ── What-if comparison — re-project HC for each what-if using its configSnapshot
   const whatIfComparisons = useMemo(() => {
@@ -2357,4 +2346,6 @@ export function CapacityPlanning() {
     </PageLayout>
   );
 }
+
+
 
