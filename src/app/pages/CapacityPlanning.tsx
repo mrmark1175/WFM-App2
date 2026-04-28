@@ -1931,7 +1931,7 @@ export function CapacityPlanning() {
               {billableActive && (
                 <tr className="border-b border-border">
                   <td
-                    className="border-r border-border bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs font-bold whitespace-nowrap text-amber-700 dark:text-amber-400"
+                    className="border-r border-border bg-white px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
                     style={{ position: "sticky", left: 0, top: TOP_BILLABLE, zIndex: 30 }}
                   >
                     Billable FTE
@@ -1939,7 +1939,7 @@ export function CapacityPlanning() {
                   {weekCalcs.map(wk => (
                     <td
                       key={wk.weekOffset}
-                      className="bg-amber-50 dark:bg-amber-950/20 px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-amber-700 dark:text-amber-400"
+                      className="bg-white px-2 py-2 text-right text-xs font-bold whitespace-nowrap text-black"
                       style={{ position: "sticky", top: TOP_BILLABLE, zIndex: 20 }}
                     >
                       {fmt1(config.billableFte)}
@@ -2357,5 +2357,4 @@ export function CapacityPlanning() {
     </PageLayout>
   );
 }
-
 
