@@ -68,7 +68,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
       <Toaster richColors position="top-right" />
 
       {/* ── Topbar (44px, near-black) ── */}
-      <header className="sticky top-0 z-40 h-11 bg-[#1111D4] text-white border-b border-[#0a0aa8] flex items-center px-3 gap-3">
+      <header className="sticky top-0 z-40 h-11 bg-[#0072B1] text-white border-b border-[#005a8c] flex items-center px-3 gap-3">
         <div className={`flex items-center ${collapsed ? "w-[52px]" : "w-[208px]"} transition-[width] overflow-hidden`}>
           <div className="bg-white rounded-md px-2 py-0.5 shrink-0">
             <img src={logo} alt="Exordium WFM" className="h-[28px] w-auto" />
@@ -101,7 +101,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
 
       <div className="grid min-h-[calc(100vh-44px)] transition-[grid-template-columns]"
         style={{ gridTemplateColumns: `${collapsed ? "56px" : "220px"} 1fr${assistantOpen ? " 320px" : ""}` }}>
-        <aside className="sticky top-11 h-[calc(100vh-44px)] bg-[#1111D4] text-white border-r border-[#0a0aa8] py-3 px-2 overflow-y-auto self-start">
+        <aside className="sticky top-11 h-[calc(100vh-44px)] bg-[#0072B1] text-white border-r border-[#005a8c] py-3 px-2 overflow-y-auto self-start">
           {NAV.map(g => (
             <div key={g.group} className="mt-3 first:mt-0">
               <div className={`font-mono text-[10px] text-white/70 uppercase tracking-[.14em] px-2.5 pb-1.5 ${collapsed ? "invisible h-0 p-0" : ""}`}>{g.group}</div>

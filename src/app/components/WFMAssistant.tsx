@@ -207,7 +207,7 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
       <div className="fixed right-0 top-1/2 -translate-y-1/2 z-30">
         <button
           onClick={onToggle}
-          className="flex flex-col items-center gap-1.5 bg-[#1111D4] text-white px-2 py-4 rounded-l-lg shadow-lg hover:bg-[#0d0db8] transition-colors"
+          className="flex flex-col items-center gap-1.5 bg-[#0072B1] text-white px-2 py-4 rounded-l-lg shadow-lg hover:bg-[#005a8c] transition-colors"
           title="Ask Mark"
         >
           <Bot className="size-4" />
@@ -221,7 +221,7 @@ export function WFMAssistant({ open, onToggle }: WFMAssistantProps) {
   return (
     <div className="flex flex-col bg-white border-l border-border h-full w-[320px] shrink-0">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 bg-[#1111D4] text-white shrink-0">
+      <div className="flex items-center gap-2 px-4 py-3 bg-[#0072B1] text-white shrink-0">
         <Bot className="size-4 shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-bold leading-none">Mark</div>
