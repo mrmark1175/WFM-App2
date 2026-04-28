@@ -73,6 +73,9 @@ interface WeekCalc extends WeekMeta {
   billableGapSurplus: number | null; // Proj. HC − Billable FTE; null when billableFte = 0
   achievedSLAProj: number | null;   // Erlang C SLA% at projected HC; null for email
   achievedSLAActual: number | null; // Erlang C SLA% at actual HC; null if no actual HC or email
+  reqRawAgents: number | null;      // per-interval physical agents before shrinkage/coverage
+  reqAfterShrinkFte: number | null; // per-interval schedulable FTE after shrinkage
+  reqCoverageRatio: number | null;  // opHoursPerDay / fteHoursPerDay
 }
 
 interface DaySchedule { enabled: boolean; open: string; close: string; }
@@ -286,9 +289,9 @@ function calcWeeklyErlangFTE(
   channel: "voice" | "chat" | "email",
   concurrency = 1,
   emailOccupancyPct = 85,
-): { fte: number; occupancy: number } {
+): { fte: number; occupancy: number; rawAgents: number; afterShrinkFte: number; coverageRatio: number } {
   if (weeklyVolume <= 0 || ahtSeconds <= 0 || daysPerWeek <= 0 || operatingHoursPerDay <= 0) {
-    return { fte: 0, occupancy: 0 };
+    return { fte: 0, occupancy: 0, rawAgents: 0, afterShrinkFte: 0, coverageRatio: 1 };
   }
   const dailyCalls = weeklyVolume / daysPerWeek;
   const intervalsPerDay = operatingHoursPerDay * 2; // 30-min intervals
@@ -302,7 +305,13 @@ function calcWeeklyErlangFTE(
   // Scale to daily FTE: an agent works fteHoursPerDay but the floor needs
   // coverage for operatingHoursPerDay, so multiply by the coverage ratio.
   const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
-  return { fte: roundTo(result.fte * coverageRatio), occupancy: result.occupancy };
+  return {
+    fte: roundTo(result.fte * coverageRatio),
+    occupancy: result.occupancy,
+    rawAgents: result.rawAgents,
+    afterShrinkFte: result.fte,
+    coverageRatio,
+  };
 }
 
 // Blended staffing: the dominant real-time channel (voice > chat > email) sets the Erlang C base;
@@ -1157,6 +1166,9 @@ export function CapacityPlanning() {
       // Required FTE via Erlang C — occupancy is an OUTPUT, SLA drives the agent count.
       let requiredFTE = 0;
       let erlangOccupancy = 0;
+      let reqRawAgents: number | null = null;
+      let reqAfterShrinkFte: number | null = null;
+      let reqCoverageRatio: number | null = null;
       if (isDedicated) {
         const vol = activeChannel === "voice" ? effVolVoice : activeChannel === "chat" ? effVolChat : activeChannel === "cases" ? effVolCases : effVolEmail;
         const aht = activeChannel === "voice" ? effAhtVoice : activeChannel === "chat" ? effAhtChat : activeChannel === "cases" ? effAhtCases : effAhtEmail;
@@ -1168,6 +1180,11 @@ export function CapacityPlanning() {
         const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy);
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
+        if (activeChannel === "chat") {
+          reqRawAgents = r.rawAgents;
+          reqAfterShrinkFte = r.afterShrinkFte;
+          reqCoverageRatio = r.coverageRatio;
+        }
       } else {
         // Blended: dominant real-time channel sets the Erlang C base; idle capacity
         // absorbs the next channel, then email/cases async.
@@ -1259,6 +1276,7 @@ export function CapacityPlanning() {
         autoAhtVoice: autoAhts.voice, autoAhtChat: autoAhts.chat, autoAhtEmail: autoAhts.email, autoAhtCases: autoAhts.cases,
         effAhtVoice, effAhtChat, effAhtEmail, effAhtCases,
         projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
+        reqRawAgents, reqAfterShrinkFte, reqCoverageRatio,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
         knownExits, transfersOut, promotionsOut, projectedHc: modelProjHC, actualHc, actualAttrition,
         gapSurplus, actualGapSurplus, billableGapSurplus, achievedSLAProj, achievedSLAActual,
@@ -1493,11 +1511,13 @@ export function CapacityPlanning() {
     return () => setPageData(null);
   }, [activeChannel, config, shrinkagePct, hoursPerDay, demandAssumptions, hiringNeed, attritionSummary, weekCalcs, setPageData]);
 
+  const showChatFteBreakdown = isDedicated && activeChannel === "chat";
   const TOP_WEEK_HDR  = 0;
   const TOP_REQ_FTE   = 40;
-  const TOP_BILLABLE  = 73;
-  const TOP_GAP_REQ   = billableActive ? 106 : 73;
-  const TOP_GAP_BILL  = 139;
+  const TOP_REQ_BREAK = 73;
+  const TOP_BILLABLE  = showChatFteBreakdown ? 106 : 73;
+  const TOP_GAP_REQ   = showChatFteBreakdown ? (billableActive ? 139 : 106) : (billableActive ? 106 : 73);
+  const TOP_GAP_BILL  = showChatFteBreakdown ? 172 : 139;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1967,6 +1987,28 @@ export function CapacityPlanning() {
                   </td>
                 ))}
               </tr>
+
+              {showChatFteBreakdown && (
+                <tr className="border-b border-border">
+                  <td
+                    className="bg-card border-r border-border px-3 py-1.5 text-[10px] font-semibold whitespace-nowrap text-black"
+                    style={{ position: "sticky", left: 0, top: TOP_REQ_BREAK, zIndex: 30 }}
+                  >
+                    FTE Breakdown (Raw → Shrinkage → Coverage)
+                  </td>
+                  {weekCalcs.map(wk => (
+                    <td
+                      key={wk.weekOffset}
+                      className="bg-card px-2 py-1.5 text-right text-[10px] font-medium whitespace-nowrap text-black"
+                      style={{ position: "sticky", top: TOP_REQ_BREAK, zIndex: 20 }}
+                    >
+                      {wk.reqRawAgents != null && wk.reqAfterShrinkFte != null && wk.reqCoverageRatio != null
+                        ? `${fmt1(wk.reqRawAgents, "—")} → ${fmt1(wk.reqAfterShrinkFte, "—")} × ${roundTo(wk.reqCoverageRatio, 2)}`
+                        : "—"}
+                    </td>
+                  ))}
+                </tr>
+              )}
 
               {/* Row 3 — Billable FTE (conditional) */}
               {billableActive && (
