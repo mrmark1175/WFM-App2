@@ -75,6 +75,11 @@ function isOvernightTimes(start: string, end: string): boolean {
 
 const BREAK_MEAL_DRIFT_LIMIT_MINS = 30;
 const BREAK_MEAL_INCREMENT_MINS = 15;
+const DEFAULT_BREAK_RULES: Array<{ name: string; duration_minutes: number; after_hours: number; is_paid: boolean }> = [
+  { name: "Break", duration_minutes: 15, after_hours: 2, is_paid: true },
+  { name: "Lunch", duration_minutes: 60, after_hours: 4, is_paid: false },
+  { name: "Break", duration_minutes: 15, after_hours: 7, is_paid: true },
+];
 
 function getForwardMinsDiff(start: number, end: number): number {
   return end >= start ? end - start : end + 1440 - start;
@@ -621,11 +626,12 @@ export function ScheduleEditor() {
   const dateEnd = toDateStr(weekDates[6]);
 
   const clampBreakMealToTemplateWindow = useCallback((rows: Assignment[]): Assignment[] => {
-    if (!templates.length || !Array.isArray(rows)) return rows;
+    if (!Array.isArray(rows)) return rows;
 
     return rows.map((assignment) => {
       const tmpl = templates.find(t => t.id === assignment.shift_template_id);
-      if (!tmpl?.break_rules?.length || !assignment.activities?.length) return assignment;
+      if (!assignment.activities?.length) return assignment;
+      const breakRules = tmpl?.break_rules?.length ? tmpl.break_rules : DEFAULT_BREAK_RULES;
 
       const shiftStartMins = timeToMins(assignment.start_time);
       const activities = assignment.activities.map(a => ({ ...a }));
@@ -642,7 +648,7 @@ export function ScheduleEditor() {
       const cursors = { break: 0, meal: 0 };
       let changed = false;
 
-      for (const rule of tmpl.break_rules) {
+      for (const rule of breakRules) {
         const expectedType: "break" | "meal" = rule.duration_minutes >= 30 ? "meal" : "break";
         const nextIdx = typeIndexes[expectedType][cursors[expectedType]];
         if (nextIdx == null) continue;
@@ -813,11 +819,7 @@ export function ScheduleEditor() {
     const shiftStartMins = timeToMins(fields.start_time);
     const breakRules = tmpl?.break_rules?.length
       ? tmpl.break_rules
-      : [
-          { name: "Break", duration_minutes: 15, after_hours: 2, is_paid: true },
-          { name: "Lunch", duration_minutes: 60, after_hours: 4, is_paid: false },
-          { name: "Break", duration_minutes: 15, after_hours: 6, is_paid: true },
-        ];
+      : DEFAULT_BREAK_RULES;
 
     for (const rule of breakRules) {
       const breakStartMins = shiftStartMins + rule.after_hours * 60;
