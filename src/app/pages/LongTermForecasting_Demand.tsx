@@ -935,6 +935,9 @@ export default function LongTermForecastingDemand() {
   const [isHistoricalSourceOpen, setIsHistoricalSourceOpen] = useState(false);
   const isBlendedStaffingOpen = false;
   const [isInsightNarrativeOpen, setIsInsightNarrativeOpen] = useState(false);
+  const [aiNarrative, setAiNarrative] = useState<string>("");
+  const [isGeneratingNarrative, setIsGeneratingNarrative] = useState(false);
+  const narrativeAbortRef = useRef<AbortController | null>(null);
   // Sidebar section open/close states
   const [sbForecast,      setSbForecast]      = useState(true);
   const [sbGrowth,        setSbGrowth]        = useState(true);
@@ -1963,51 +1966,6 @@ export default function LongTermForecastingDemand() {
     };
   }, [forecastData]);
 
-  const insightNarrative = useMemo(() => {
-    if (futureData.length === 0) return null;
-    const n = futureData.length;
-    // Trend: compare avg FTE of first 3 vs last 3 months
-    const first3 = futureData.slice(0, Math.min(3, n));
-    const last3 = futureData.slice(Math.max(0, n - 3));
-    const first3Avg = first3.reduce((s, r) => s + r.totalRequiredFTE, 0) / first3.length;
-    const last3Avg = last3.reduce((s, r) => s + r.totalRequiredFTE, 0) / last3.length;
-    const trendPct = first3Avg > 0 ? ((last3Avg - first3Avg) / first3Avg) * 100 : 0;
-    const trendDir: "growing" | "stable" | "declining" = Math.abs(trendPct) < 3 ? "stable" : trendPct > 0 ? "growing" : "declining";
-    // Peak / trough
-    const peakRow = futureData.reduce((a, b) => a.totalRequiredFTE >= b.totalRequiredFTE ? a : b);
-    const troughRow = futureData.reduce((a, b) => a.totalRequiredFTE <= b.totalRequiredFTE ? a : b);
-    const fteSpread = peakRow.totalRequiredFTE > 0 ? Math.round(((peakRow.totalRequiredFTE - troughRow.totalRequiredFTE) / peakRow.totalRequiredFTE) * 100) : 0;
-    // Channel mix
-    const activeKeys = (Object.keys(selectedChannels) as ChannelKey[]).filter((k) => selectedChannels[k]);
-    const chanVols = activeKeys.map((ch) => ({
-      label: ch === "voice" ? "Voice" : ch === "chat" ? "Chat" : "Email",
-      avg: futureData.reduce((s, r) => s + r.channelMetrics[ch].volume, 0) / n,
-    }));
-    const totalVol = chanVols.reduce((s, c) => s + c.avg, 0);
-    const channelMix = chanVols.map((c) => ({ ...c, pct: totalVol > 0 ? Math.round((c.avg / totalVol) * 100) : 0 })).sort((a, b) => b.pct - a.pct);
-    // Growth
-    const growthRate = assumptions.growthRate ?? 0;
-    const lastRow = futureData[n - 1];
-    const lastPeriod = `${lastRow.month} ${lastRow.year}`;
-    const avgFTE = Number((futureData.reduce((s, r) => s + r.totalRequiredFTE, 0) / n).toFixed(1));
-    // Build sentences
-    const headline =
-      trendDir === "growing" ? "Demand is Rising — Plan for Sustained Headcount Growth" :
-      trendDir === "declining" ? "Demand is Easing — Opportunity to Optimize Staffing Levels" :
-      "Stable Demand Outlook — A Predictable Staffing Horizon Ahead";
-    const trendSentence = trendDir === "stable"
-      ? `The demand forecast projects a stable staffing trend across the planning horizon, with required FTE holding near ${avgFTE} agents on average.`
-      : `The demand forecast projects a ${trendDir} trend — required FTE is ${trendDir === "growing" ? "increasing" : "declining"} ${Math.abs(trendPct).toFixed(1)}% from the opening months to close of the planning period.`;
-    const peakSentence = `Staffing pressure is highest in ${peakRow.month} ${peakRow.year} at ${peakRow.totalRequiredFTE.toFixed(1)} FTE, and lowest in ${troughRow.month} ${troughRow.year} at ${troughRow.totalRequiredFTE.toFixed(1)} FTE — a ${fteSpread}% headcount swing across the horizon.`;
-    const channelSentence = channelMix.length === 0 ? "" : channelMix.length === 1
-      ? `All demand routes through ${channelMix[0].label}, carrying 100% of the blended workload.`
-      : `Channel mix: ${channelMix.map((c) => `${c.label} ${c.pct}%`).join(" · ")}. Align training pipelines and scheduling capacity to reflect this distribution.`;
-    const growthSentence = growthRate !== 0
-      ? `At the current ${Math.abs(growthRate).toFixed(1)}% ${growthRate > 0 ? "growth" : "decline"} rate applied to the model output, projected FTE by ${lastPeriod} is ${lastRow.totalRequiredFTE.toFixed(1)}. ${growthRate > 0 ? "Build your recruiting pipeline now to avoid coverage shortfalls." : "Manage attrition carefully to maintain service levels during the contraction."}`
-      : `No growth rate adjustment is applied — the forecast reflects the model's base projection, reaching ${lastRow.totalRequiredFTE.toFixed(1)} FTE by ${lastPeriod}.`;
-    const gapPlaceholder = "Headcount gap analysis not yet connected. Link your active headcount module to unlock coverage risk scoring, over/under-staffing alerts, and hiring timeline recommendations.";
-    return { headline, trendSentence, peakSentence, channelSentence, growthSentence, gapPlaceholder, trendDir };
-  }, [futureData, selectedChannels, assumptions.growthRate]);
   const requiredStaffingTrendData = useMemo(() => futureData.map((row) => ({
     label: `${row.month} '${row.year.slice(2)}`,
     totalRequiredFTE: row.totalRequiredFTE,
@@ -2274,6 +2232,138 @@ export default function LongTermForecastingDemand() {
     );
   };
 
+  const generateAiNarrative = async () => {
+    if (futureData.length === 0) return;
+    narrativeAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    narrativeAbortRef.current = ctrl;
+    setAiNarrative("");
+    setIsGeneratingNarrative(true);
+    setIsInsightNarrativeOpen(true);
+
+    const n = futureData.length;
+    const peakRow = futureData.reduce((a, b) => a.volume >= b.volume ? a : b);
+    const troughRow = futureData.reduce((a, b) => a.volume <= b.volume ? a : b);
+    const volumeSwingPct = peakRow.volume > 0
+      ? Math.round(((peakRow.volume - troughRow.volume) / peakRow.volume) * 100) : 0;
+    const peakSI = seasonalityTrend.length > 0
+      ? seasonalityTrend.reduce((a, b) => a.seasonalityIndex >= b.seasonalityIndex ? a : b)
+      : null;
+    const troughSI = seasonalityTrend.length > 0
+      ? seasonalityTrend.reduce((a, b) => a.seasonalityIndex <= b.seasonalityIndex ? a : b)
+      : null;
+
+    const activeChannels = (Object.keys(selectedChannels) as ChannelKey[]).filter(k => selectedChannels[k]);
+    const totalChVol = futureData.reduce((s, r) => s + r.volume, 0);
+    const channelMixStr = activeChannels.length <= 1
+      ? `${(activeChannels[0] ?? "voice").charAt(0).toUpperCase() + (activeChannels[0] ?? "voice").slice(1)} (100%)`
+      : activeChannels.map(ch => {
+          const chVol = futureData.reduce((s, r) => s + (r.channelMetrics[ch]?.volume ?? 0), 0);
+          return `${ch.charAt(0).toUpperCase() + ch.slice(1)} ${totalChVol > 0 ? Math.round((chVol / totalChVol) * 100) : 0}%`;
+        }).join(" · ");
+
+    const yr1 = forecastYear - 2;
+    const yr2 = forecastYear - 1;
+    const hist1Rows = historicalRowsByYear.find(g => g.year === String(yr1))?.rows ?? [];
+    const hist2Rows = historicalRowsByYear.find(g => g.year === String(yr2))?.rows ?? [];
+    const hist1Avg = hist1Rows.length > 0 ? Math.round(hist1Rows.reduce((s, r) => s + r.finalVolume, 0) / hist1Rows.length) : null;
+    const hist2Avg = hist2Rows.length > 0 ? Math.round(hist2Rows.reduce((s, r) => s + r.finalVolume, 0) / hist2Rows.length) : null;
+    const histStr = [
+      hist1Avg != null ? `${yr1} avg ${hist1Avg.toLocaleString()}/mo` : null,
+      hist2Avg != null ? `${yr2} avg ${hist2Avg.toLocaleString()}/mo` : null,
+    ].filter(Boolean).join(" · ") || "No historical data loaded";
+
+    const outlierStr = outlierResults && outlierResults.length > 0
+      ? outlierResults.map(o => `${o.monthLabel} flagged ${o.direction} (${o.modZScore.toFixed(1)}σ — ${o.reason})`).join("; ")
+      : "None detected";
+
+    const scenarioNames = Object.values(scenarios).map(s => s.name);
+    const scenarioStr = scenarioNames.length <= 1
+      ? "Single scenario (Base)"
+      : `${scenarioNames.length} scenarios: ${scenarioNames.join(", ")}`;
+
+    const growthRate = (assumptions as any).growthRate ?? 0;
+    const growthStr = growthRate !== 0
+      ? `${growthRate > 0 ? "+" : ""}${Number(growthRate).toFixed(1)}% applied post-model`
+      : "None (base model output only)";
+
+    const modelLabel: Record<string, string> = {
+      holtwinters: "CTA (Cyclical Trend Analysis)",
+      arima: "DVP (Dynamic Variance Projection)",
+      decomposition: "CBE (Core Baseline Extraction)",
+    };
+    const horizon = n > 0
+      ? `${futureData[0].month} ${futureData[0].year} – ${futureData[n - 1].month} ${futureData[n - 1].year} (${n} months)`
+      : "No data";
+    const monthlyVolumeList = futureData.map(r => `${r.month} ${r.year}: ${r.volume.toLocaleString()}`).join(" · ");
+
+    const prompt =
+`You are a senior WFM demand planning advisor for a BPO contact center.
+Below is live demand forecast data. Write a concise executive-level insight narrative about DEMAND VOLUME ONLY — do not mention staffing, FTE, agents, or headcount anywhere in your response.
+
+Format:
+- First line: the single most important headline takeaway for a VP or operations director (plain text, no markdown symbols)
+- Then 3–5 focused insight sentences covering: volume trajectory with specific numbers, seasonal risk calendar (which months spike and by how much), channel mix velocity (if multi-channel), and one concrete planning action within 30 days
+
+Forecast data:
+Model: ${modelLabel[forecastMethod] ?? forecastMethod}
+Horizon: ${horizon}
+Average monthly volume: ${kpis.avgVolume.toLocaleString()}
+Volume range: ${troughRow.volume.toLocaleString()} (${troughRow.month} ${troughRow.year}) → ${peakRow.volume.toLocaleString()} (${peakRow.month} ${peakRow.year}) — ${volumeSwingPct}% peak-to-trough swing
+Seasonality index: peak ${peakSI ? `${peakSI.seasonalityIndex} in ${peakSI.label}` : "N/A"} · trough ${troughSI ? `${troughSI.seasonalityIndex} in ${troughSI.label}` : "N/A"}
+Channel mix: ${channelMixStr}
+Growth rate: ${growthStr}
+Historical context: ${histStr}
+Detected outliers: ${outlierStr}
+Scenarios: ${scenarioStr}
+Monthly volumes: ${monthlyVolumeList}
+
+Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/headcount language.`;
+
+    try {
+      const resp = await fetch(apiUrl("/api/ai/chat"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          messages: [{ role: "user", content: prompt }],
+          pageContext: { page: "Demand Forecasting", path: "/wfm/long-term-forecasting-demand" },
+        }),
+      });
+
+      if (!resp.ok || !resp.body) {
+        const err = await resp.json().catch(() => ({ error: "Request failed" }));
+        setAiNarrative(`⚠ ${(err as any).error ?? "Request failed"}`);
+        setIsGeneratingNarrative(false);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.text) setAiNarrative(prev => prev + parsed.text);
+          } catch {}
+        }
+      }
+    } catch (err: any) {
+      if (err?.name !== "AbortError") setAiNarrative("⚠ Network error. Please try again.");
+    } finally {
+      setIsGeneratingNarrative(false);
+    }
+  };
+
   const { setPageData, setPendingPrompt, triggerOpenAssistant } = useWFMPageData();
   useEffect(() => {
     const yr1 = forecastYear - 2;
@@ -2399,39 +2489,61 @@ export default function LongTermForecastingDemand() {
               })()}
             </div>
             {/* Insight Narrative */}
-            {insightNarrative && (
-              <div className="mt-4 pt-4 border-t border-slate-200">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Sparkles className="size-3.5 text-violet-500 shrink-0" />
-                    <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Insight Narrative</span>
-                    <span className="hidden sm:inline text-[10px] text-slate-400">· Exordium Private AI Engine · runs on your isolated server</span>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsInsightNarrativeOpen((open) => !open)}
-                    className="h-7 px-2 text-[10px] text-slate-600 hover:bg-slate-100 hover:text-slate-800 shrink-0"
-                  >
-                    {isInsightNarrativeOpen ? "Collapse" : "Expand"}
-                    {isInsightNarrativeOpen ? <ChevronUp className="size-3.5 ml-1" /> : <ChevronDown className="size-3.5 ml-1" />}
-                  </Button>
+            <div className="mt-4 pt-4 border-t border-slate-200">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Sparkles className="size-3.5 text-violet-500 shrink-0" />
+                  <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Insight Narrative</span>
+                  <span className="hidden sm:inline text-[10px] text-slate-400">· Exordium AI · your isolated server</span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {isGeneratingNarrative ? (
+                    <span className="flex items-center gap-1 text-[10px] text-violet-600">
+                      <Loader2 className="size-3 animate-spin" /> Analyzing…
+                    </span>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={generateAiNarrative}
+                      disabled={futureData.length === 0}
+                      className="h-7 px-2 text-[10px] gap-1 text-violet-600 hover:bg-violet-50 hover:text-violet-800"
+                    >
+                      <Sparkles className="size-3 shrink-0" />
+                      {aiNarrative ? "Regenerate" : "Generate Insights"}
+                    </Button>
+                  )}
+                  {(aiNarrative || isGeneratingNarrative) && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setIsInsightNarrativeOpen(o => !o)}
+                      className="h-7 px-2 text-[10px] text-slate-600 hover:bg-slate-100 hover:text-slate-800"
+                    >
+                      {isInsightNarrativeOpen ? "Collapse" : "Expand"}
+                      {isInsightNarrativeOpen ? <ChevronUp className="size-3.5 ml-1" /> : <ChevronDown className="size-3.5 ml-1" />}
+                    </Button>
+                  )}
                 </div>
               </div>
-            )}
-            {insightNarrative && isInsightNarrativeOpen && (
-              <div className="mt-3">
-                <p className={`text-sm font-bold mb-2 ${insightNarrative.trendDir === "growing" ? "text-foreground" : insightNarrative.trendDir === "declining" ? "text-rose-600" : "text-sky-700"}`}>
-                  {insightNarrative.headline}
+              {!aiNarrative && !isGeneratingNarrative && (
+                <p className="mt-2 text-[11px] text-slate-400 italic">
+                  Generate an AI-powered narrative from your current demand data.
                 </p>
-                <div className="text-xs text-slate-600 space-y-1.5 leading-relaxed">
-                  <p>{insightNarrative.trendSentence}</p>
-                  <p>{insightNarrative.peakSentence}</p>
-                  {insightNarrative.channelSentence && <p>{insightNarrative.channelSentence}</p>}
-                  <p>{insightNarrative.growthSentence}</p>
-                  <p className="text-slate-400 italic text-[11px]">⚠ {insightNarrative.gapPlaceholder}</p>
-                </div>
+              )}
+            </div>
+            {(aiNarrative || isGeneratingNarrative) && isInsightNarrativeOpen && (
+              <div className="mt-3">
+                {aiNarrative.split("\n").filter(l => l.trim()).map((line, i) => (
+                  <p key={i} className={i === 0 ? "text-sm font-bold text-slate-800 mb-2" : "text-xs text-slate-600 mb-1.5 leading-relaxed"}>
+                    {line}
+                  </p>
+                ))}
+                {isGeneratingNarrative && (
+                  <span className="inline-block w-1.5 h-3.5 bg-slate-600 opacity-70 ml-0.5 animate-pulse rounded-sm" />
+                )}
               </div>
             )}
           </section>
