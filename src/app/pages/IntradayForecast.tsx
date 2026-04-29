@@ -130,7 +130,7 @@ function applyHistoricalOverrides(apiData: number[], overrides: Record<number, s
     const api = apiData[i] ?? 0;
     const ov = overrides[i];
     if (!ov || ov === "") return api;
-    const parsed = parseInt(ov, 10);
+    const parsed = Math.round(parseFloat(ov));
     return Number.isFinite(parsed) && parsed > 0 ? parsed : api;
   });
 }
@@ -790,14 +790,14 @@ export const IntradayForecast = () => {
     const erlangs_dates: Record<string, number[]> = {};
     const erlangs_weekdays: Record<string, number[]> = {};
     for (let d = 0; d < 7; d++) {
-      const dayRoundedFTEs = roundedRequiredFteTable[d];
-      if (!dayRoundedFTEs) continue;
+      const daySmoothed = smoothedFteTable![d];
+      if (!daySmoothed) continue;
 
       const expanded = new Array(96).fill(0) as number[];
       const expandedErlangs = new Array(96).fill(0) as number[];
-      for (let i = 0; i < dayRoundedFTEs.length; i++) {
-        const val = dayRoundedFTEs[i] ?? 0;
-        const erl = smoothedFteTable![d]?.[i]?.erlangs ?? 0;
+      for (let i = 0; i < daySmoothed.length; i++) {
+        const val = parseFloat((daySmoothed[i]?.fte ?? 0).toFixed(2));
+        const erl = daySmoothed[i]?.erlangs ?? 0;
         for (let s = 0; s < subSlots; s++) {
           const idx = i * subSlots + s;
           if (idx < 96) { expanded[idx] = val; expandedErlangs[idx] = erl; }
@@ -859,9 +859,9 @@ export const IntradayForecast = () => {
 
     const rows: Array<{ channel: string; weekday: number; interval_start: string; required_fte: number }> = [];
     for (let d = 0; d < 7; d++) {
-      const dayData = roundedRequiredFteTable[d] || [];
-      for (let i = 0; i < Math.min(slotsPerDay, dayData.length); i++) {
-        const val = dayData[i] ?? 0;
+      const daySmoothed = smoothedFteTable![d] ?? [];
+      for (let i = 0; i < Math.min(slotsPerDay, daySmoothed.length); i++) {
+        const val = parseFloat((daySmoothed[i]?.fte ?? 0).toFixed(2));
         if (val > 0) {
           rows.push({
             channel: selectedChannel,
@@ -2020,9 +2020,11 @@ export const IntradayForecast = () => {
             <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
               {targetMonthlyVolume === 0
                 ? "Select a month with forecast data to see the pattern"
-                : !usingFallbackPattern && baselineDataCount === 0
-                  ? "Upload baseline data or switch to Manual Entry to generate the arrival pattern"
-                  : "Select a target week to generate the forecast"}
+                : dataSource === "manual" && manualWeeklyVolumes.filter(v => v > 0).length < 4
+                  ? "Enter at least 4 weeks of manual volume to generate the arrival pattern"
+                  : !usingFallbackPattern && baselineDataCount === 0
+                    ? "Upload baseline data or switch to Manual Entry to generate the arrival pattern"
+                    : "Select a target week to generate the forecast"}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={320}>

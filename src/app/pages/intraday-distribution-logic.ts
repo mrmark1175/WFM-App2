@@ -388,6 +388,11 @@ export function computeMedianPattern(data: GridData, weekOfMonthFilter?: number)
   const buckets: number[][][] = Array.from({ length: 7 }, () =>
     Array.from({ length: SLOT_COUNT }, () => [] as number[])
   );
+  // Track how many distinct dates contributed to each DOW directly in the loop.
+  // Using dowBuckets[0].length was wrong: if the API omits zero-volume midnight
+  // records the count underestimates the true number of observed days, causing the
+  // positional filter to fall back to the global pattern unnecessarily.
+  const dateCounts: number[] = new Array(7).fill(0);
 
   for (const [dateStr, slots] of Object.entries(data)) {
     // Positional filter: only include dates from weeks at the target week-of-month
@@ -401,6 +406,7 @@ export function computeMedianPattern(data: GridData, weekOfMonthFilter?: number)
     const date = new Date(dateStr + "T12:00:00"); // noon to avoid DST edge cases
     const jsDay = date.getDay(); // 0=Sun, 1=Mon, …, 6=Sat
     const dowIdx = jsDay === 0 ? 6 : jsDay - 1; // remap: Mon=0, …, Sun=6
+    dateCounts[dowIdx]++;
     for (let i = 0; i < SLOT_COUNT; i++) {
       const volume = slots[i]?.volume ?? 0;
       buckets[dowIdx][i].push(volume);
@@ -414,7 +420,7 @@ export function computeMedianPattern(data: GridData, weekOfMonthFilter?: number)
   const medians: number[][] = buckets.map((dowBuckets) =>
     dowBuckets.map((vals) => median(vals.filter((v) => v > 0)))
   );
-  const sampleCounts: number[] = buckets.map((dowBuckets) => dowBuckets[0]?.length ?? 0);
+  const sampleCounts: number[] = dateCounts;
 
   return { medians, sampleCounts };
 }
@@ -618,16 +624,18 @@ export function distributeMonthlyToWeekViaDailyDOW(
   }
   if (monthWeightSum === 0) return monthlyVolume / 4.33; // should never happen
 
-  // Sum DOW weights for the 7 days of the target week
+  // Sum DOW weights only for days of the target week that fall within the target month
   const twMon = new Date(targetWeekStart + "T12:00:00");
   let weekWeightSum = 0;
   for (let i = 0; i < 7; i++) {
     const d = new Date(twMon);
     d.setDate(d.getDate() + i);
+    if (d.getFullYear() !== year || d.getMonth() !== month) continue;
     const jsDay = d.getDay();
     const dowIdx = jsDay === 0 ? 6 : jsDay - 1;
     weekWeightSum += w(dowIdx);
   }
+  if (weekWeightSum === 0) return 0;
 
   return monthlyVolume * (weekWeightSum / monthWeightSum);
 }
@@ -683,23 +691,6 @@ export function distributeWeeklyVolumeToIntervals(
 ): number[][] {
   return dayWeights.map((dw, d) =>
     intervalWeights[d].map((iw) => dw * iw * weeklyVolume)
-  );
-}
-
-// Legacy function: distribute monthly volume to a representative week
-// (kept for backward compat)
-export function distributeMonthlyVolumeToWeek(
-  monthlyVolume: number,
-  targetYear: number,
-  targetMonth: number, // 0-11
-  dayWeights: number[],
-  intervalWeights: number[][]
-): number[][] {
-  const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
-  const weeklyFraction = daysInMonth / 7;
-
-  return dayWeights.map((dw, d) =>
-    intervalWeights[d].map((iw) => dw * iw * monthlyVolume * weeklyFraction)
   );
 }
 
