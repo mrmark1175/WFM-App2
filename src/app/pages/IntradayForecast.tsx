@@ -625,6 +625,39 @@ export const IntradayForecast = () => {
       weeksInMonth, distributionWeights.dayWeights, targetYear, targetMonthIndex]);
   const activeIntervalWeights = editableWeights ?? distributionWeights.intervalWeights;
 
+  // Volume breakdown for every week in the target month — drives the new summary table.
+  const allWeeksBreakdown = useMemo(() => {
+    if (targetMonthlyVolume === 0 || weeksInMonth.length === 0) return [];
+    const dw = distributionWeights.dayWeights;
+    const totalDowWeight = dw.reduce((s, w) => s + w, 0) || 1;
+    return weeksInMonth.map((week, i) => {
+      let weekVol = 0;
+      if (dataSource === "manual") {
+        const allVols = manualWeeklyVolumes.filter(v => v > 0);
+        if (allVols.length >= 4) {
+          const cl = weeksInMonth.length;
+          const cycleAvgs = Array.from({ length: cl }, (_, pos) => {
+            const vals: number[] = [];
+            for (let c = 0; c * cl + pos < allVols.length; c++) vals.push(allVols[c * cl + pos]);
+            return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+          });
+          const totalAvg = cycleAvgs.reduce((a, b) => a + b, 0);
+          if (totalAvg > 0) weekVol = targetMonthlyVolume * cycleAvgs[i] / totalAvg;
+        }
+      } else {
+        const hasDOW = dw.some(w => w > 0);
+        weekVol = hasDOW
+          ? distributeMonthlyToWeekViaDailyDOW(targetMonthlyVolume, targetYear, targetMonthIndex, week.start, dw)
+          : weekBuckets.length > 0
+            ? distributeMonthlyToTargetWeek(targetMonthlyVolume, weekBuckets, week.start)
+            : targetMonthlyVolume / weeksInMonth.length;
+      }
+      const dailyVols = dw.map(w => weekVol * w / totalDowWeight);
+      return { week, weekVol: Math.round(weekVol), dailyVols, pct: targetMonthlyVolume > 0 ? weekVol / targetMonthlyVolume : 0 };
+    });
+  }, [targetMonthlyVolume, weeksInMonth, dataSource, manualWeeklyVolumes,
+      distributionWeights.dayWeights, weekBuckets, targetYear, targetMonthIndex]);
+
   // Distribute the forecasted week volume to interval-level
   const weekForecast = useMemo(
     () => distributeWeeklyVolumeToIntervals(
@@ -726,6 +759,10 @@ export const IntradayForecast = () => {
                         : 0,
     };
   }, [plannerSnapshot, selectedChannel]);
+
+  const erlangModel = (selectedChannel === "email" || selectedChannel === "cases")
+    ? "Erlang C"
+    : (fteParams?.avgPatienceSeconds ?? 0) > 0 ? "Erlang A" : "Erlang C";
 
   const fteTable = useMemo((): IntervalFTEResult[][] | null => {
     if (!fteParams) return null;
@@ -1261,6 +1298,20 @@ export const IntradayForecast = () => {
         </div>
       )}
 
+      {/* ── No demand forecast ── */}
+      {activeLob && !isLoadingForecast && !plannerSnapshot && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-6 py-6 flex items-start gap-4">
+          <AlertTriangle className="h-6 w-6 text-red-500 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold text-red-800">No demand forecast found for this LOB</p>
+            <p className="text-sm text-red-700 mt-1">
+              Go to <strong>Demand Forecasting</strong> first, enter historical volume data, run the forecast, then return here.
+              This page uses the monthly totals from the Demand Planner to generate weekly and interval-level breakdowns.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ── Forecast Source Panel ── */}
       <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200">
@@ -1333,10 +1384,17 @@ export const IntradayForecast = () => {
             {/* Weekly volume display */}
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-semibold text-foreground">Week Volume</span>
-              <div className="h-8 flex items-center px-3 rounded-md border bg-blue-50 dark:bg-blue-950/30 text-sm font-bold text-blue-900 dark:text-blue-100 min-w-[100px]">
-                {forecastedWeekVolume > 0
-                  ? Math.round(forecastedWeekVolume).toLocaleString()
-                  : <span className="text-muted-foreground font-normal">&mdash;</span>}
+              <div className="flex flex-col gap-0.5">
+                <div className="h-8 flex items-center px-3 rounded-md border bg-blue-50 dark:bg-blue-950/30 text-sm font-bold text-blue-900 dark:text-blue-100 min-w-[100px]">
+                  {forecastedWeekVolume > 0
+                    ? Math.round(forecastedWeekVolume).toLocaleString()
+                    : <span className="text-muted-foreground font-normal">&mdash;</span>}
+                </div>
+                {forecastedWeekVolume > 0 && (dayOverrideMultipliers ?? [1,1,1,1,1,1,1]).some(m => m !== 1) && (
+                  <span className="text-[10px] text-violet-700 font-medium px-1">
+                    Adj: {Math.round(grandTotal).toLocaleString()} (overrides active)
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1510,7 +1568,15 @@ export const IntradayForecast = () => {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <ClipboardPaste className="h-4 w-4 text-orange-500" />
-                <span className="text-sm font-semibold">Last 4 Weeks — Actual Volume</span>
+                <span className="text-sm font-semibold">
+                  {dataSource === "api"
+                    ? weekBuckets.length > 0
+                      ? `${weekBuckets.length}-Week Baseline (API)`
+                      : "Baseline Volume"
+                    : manualWeeklyVolumes.filter(v => v > 0).length > 0
+                      ? `${manualWeeklyVolumes.filter(v => v > 0).length}-Week Actual Volume`
+                      : "Manual Weekly Volume"}
+                </span>
                 <Badge variant="outline" className="text-xs">
                   {dataSource === "api" ? "Auto from API" : "Manual Entry"}
                 </Badge>
@@ -1735,6 +1801,101 @@ export const IntradayForecast = () => {
           </div>
         </div>
       </section>
+
+      {/* ── Monthly → Weekly Breakdown ── */}
+      {targetMonthlyVolume > 0 && weeksInMonth.length > 0 && (
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+            <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-blue-500" />
+              Monthly → Weekly Breakdown
+              <span className="text-xs font-normal text-slate-400">{monthLabels[safeOffset]}</span>
+            </h2>
+            <span className="text-xs text-muted-foreground">
+              Monthly total: <span className="font-bold text-slate-700">{targetMonthlyVolume.toLocaleString()}</span>
+            </span>
+          </div>
+          <div className="overflow-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b bg-muted/30">
+                  <th className="text-left px-4 py-2 font-semibold">Week</th>
+                  <th className="text-left px-4 py-2 font-semibold">Dates</th>
+                  <th className="text-right px-4 py-2 font-semibold">Volume</th>
+                  <th className="text-right px-4 py-2 font-semibold w-32">Share</th>
+                  {DOW_LABELS.map((label, d) => (
+                    <th key={label} className="text-right px-2 py-2 font-semibold min-w-[52px]" style={{ color: DOW_COLORS[d] }}>
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {allWeeksBreakdown.map(({ week, weekVol, dailyVols, pct }, i) => {
+                  const isSelected = week.start === targetWeekStart;
+                  return (
+                    <tr
+                      key={week.start}
+                      onClick={() => setPrefs({ targetWeekStart: week.start })}
+                      className={`border-b cursor-pointer transition-colors ${isSelected ? "bg-blue-50 dark:bg-blue-950/30" : "hover:bg-muted/30"}`}
+                    >
+                      <td className={`px-4 py-2 font-semibold ${isSelected ? "text-blue-700" : ""}`}>
+                        Wk {i + 1}
+                        {isSelected && <span className="ml-1.5 text-[10px] text-blue-500 font-normal">← selected</span>}
+                      </td>
+                      <td className="px-4 py-2 text-muted-foreground font-mono">{week.label}</td>
+                      <td className="px-4 py-2 text-right font-mono font-bold">{weekVol.toLocaleString()}</td>
+                      <td className="px-4 py-2 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <div className="h-1.5 rounded-full bg-blue-400" style={{ width: `${Math.round(pct * 64)}px` }} />
+                          <span className="font-mono text-blue-700 font-semibold w-10 text-right">{(pct * 100).toFixed(1)}%</span>
+                        </div>
+                      </td>
+                      {dailyVols.map((vol, d) => (
+                        <td key={d} className="px-2 py-2 text-right font-mono text-muted-foreground">
+                          {vol > 0 ? Math.round(vol).toLocaleString() : "—"}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+                <tr className="bg-muted/20">
+                  <td colSpan={2} className="px-4 py-2 font-bold">Month Total</td>
+                  <td className="px-4 py-2 text-right font-mono font-black text-blue-700">
+                    {allWeeksBreakdown.reduce((s, w) => s + w.weekVol, 0).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono font-bold text-blue-700">
+                    {(allWeeksBreakdown.reduce((s, w) => s + w.pct, 0) * 100).toFixed(1)}%
+                  </td>
+                  {DOW_LABELS.map((_, d) => (
+                    <td key={d} className="px-2 py-2 text-right font-mono" style={{ color: DOW_COLORS[d] }}>
+                      {Math.round(allWeeksBreakdown.reduce((s, w) => s + (w.dailyVols[d] ?? 0), 0)).toLocaleString()}
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {distributionWeights.dayWeights.some(w => w > 0) && (
+            <div className="px-4 py-3 border-t border-slate-100 bg-muted/10">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Day-of-Week Weights</span>
+                {usingFallbackPattern && (
+                  <Badge variant="outline" className="text-[10px] py-0 text-teal-700 border-teal-300">from LOB hours</Badge>
+                )}
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {DOW_LABELS.map((label, d) => (
+                  <div key={label} className="text-center">
+                    <div className="text-[10px] font-semibold mb-0.5" style={{ color: DOW_COLORS[d] }}>{label}</div>
+                    <div className="text-xs font-bold text-slate-700">{(distributionWeights.dayWeights[d] * 100).toFixed(1)}%</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* ── Baseline Panel — Interval Pattern Data ── */}
       <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -2179,7 +2340,7 @@ export const IntradayForecast = () => {
               <Table2 className="h-4 w-4 text-orange-500" />
               Required FTE per Interval
               <span className="text-xs font-normal text-slate-400">
-                (Erlang C — min. agents to meet SLA, grossed up for shrinkage)
+                ({erlangModel} — min. agents to meet SLA, grossed up for shrinkage)
               </span>
             </h2>
             {showFTETable ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -2205,10 +2366,10 @@ export const IntradayForecast = () => {
                     {selectedChannel === "email"
                       ? "Email: workload ÷ available agent-seconds per interval"
                       : selectedChannel === "chat"
-                      ? "Chat: Erlang C with concurrency-adjusted demand"
+                      ? `Chat: ${erlangModel} with concurrency-adjusted demand`
                       : selectedChannel === "cases"
                       ? "Cases: Erlang C queuing model (SLA-driven)"
-                      : "Voice: Erlang C queuing model"}
+                      : `Voice: ${erlangModel} queuing model`}
                   </span>
                   {/* Smooth toggle + heatmap + window slider + Commit button */}
                   <div className="ml-auto flex items-center gap-2">
@@ -2256,49 +2417,6 @@ export const IntradayForecast = () => {
                         </span>
                       </div>
                     )}
-                    <div className="h-4 w-px bg-border" />
-                    <button
-                      onClick={handleCommitClick}
-                      disabled={commitStatus === "saving"}
-                      className={`flex items-center gap-1 px-2.5 py-0.5 rounded border text-xs font-medium transition-colors ${
-                        commitStatus === "saved"
-                          ? "bg-emerald-100 border-emerald-300 text-emerald-700"
-                          : commitStatus === "saving"
-                          ? "opacity-60 cursor-not-allowed border-border text-muted-foreground"
-                          : grain !== 15
-                          ? "bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100"
-                          : "bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
-                      }`}
-                      title="Save this FTE plan to the Schedule Editor's Required row"
-                    >
-                      {commitStatus === "saved" ? (
-                        <><Save className="h-3 w-3" /> Committed</>
-                      ) : commitStatus === "saving" ? (
-                        <><RotateCcw className="h-3 w-3 animate-spin" /> Saving…</>
-                      ) : (
-                        <><Save className="h-3 w-3" /> Commit to Scheduling{grain !== 15 ? " ⚠" : ""}</>
-                      )}
-                    </button>
-                    <button
-                      onClick={saveApproveForScheduler}
-                      disabled={approveStatus === "saving"}
-                      className={`flex items-center gap-1 px-2.5 py-0.5 rounded border text-xs font-medium transition-colors ${
-                        approveStatus === "saved"
-                          ? "bg-emerald-100 border-emerald-300 text-emerald-700"
-                          : approveStatus === "saving"
-                          ? "opacity-60 cursor-not-allowed border-border text-muted-foreground"
-                          : "bg-violet-50 border-violet-300 text-violet-700 hover:bg-violet-100"
-                      }`}
-                      title="Freeze this Required-FTE curve as a scheduler snapshot for auto-generation"
-                    >
-                      {approveStatus === "saved" ? (
-                        <><Save className="h-3 w-3" /> Approved</>
-                      ) : approveStatus === "saving" ? (
-                        <><RotateCcw className="h-3 w-3 animate-spin" /> Approving…</>
-                      ) : (
-                        <><Save className="h-3 w-3" /> Approve for Scheduler</>
-                      )}
-                    </button>
                   </div>
                 </div>
               ) : (
@@ -2389,10 +2507,8 @@ export const IntradayForecast = () => {
                       </TableCell>
                       {DOW_LABELS.map((_, d) => {
                         const grainHours = grain / 60;
-                        const sumFTE = intervals.reduce((sum, _, idx) => {
-                          if (hideBlankRows && blankIntervalSet.has(idx)) return sum;
-                          return sum + (smoothedFteTable[d]?.[idx]?.fte ?? 0);
-                        }, 0);
+                        const sumFTE = intervals.reduce((sum, _, idx) =>
+                          sum + (smoothedFteTable[d]?.[idx]?.fte ?? 0), 0);
                         const dailyFTE = sumFTE * grainHours / shrinkageHoursPerDay;
                         return (
                           <TableCell
@@ -2481,27 +2597,74 @@ export const IntradayForecast = () => {
         </section>
       )}
 
-      {/* ── Day Weights Summary ── */}
-      {baselineDataCount > 0 && (
+      {/* ── Save FTE Plan ── */}
+      {canGenerateForecast && smoothedFteTable && (
         <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center px-4 py-3 border-b border-slate-200">
-            <h2 className="text-sm font-semibold text-slate-700">Day-of-Week Weights</h2>
+            <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+              <Save className="h-4 w-4 text-green-500" />
+              Save FTE Plan
+            </h2>
           </div>
-          <div className="p-4">
-            <div className="grid grid-cols-7 gap-2">
-              {DOW_LABELS.map((label, d) => (
-                <div key={label} className="text-center">
-                  <div
-                    className="text-xs font-semibold mb-1"
-                    style={{ color: DOW_COLORS[d] }}
-                  >
-                    {label}
-                  </div>
-                  <div className="text-sm font-bold text-slate-700">
-                    {(distributionWeights.dayWeights[d] * 100).toFixed(1)}%
-                  </div>
-                </div>
-              ))}
+          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 flex flex-col gap-3">
+              <div>
+                <p className="text-sm font-semibold text-blue-800">Commit to Scheduling</p>
+                <p className="text-xs text-blue-700 mt-1">
+                  Writes the Required FTE row in the <strong>Schedule Editor</strong> for the selected week ({targetWeekStart || "—"}).
+                  Overwrites the previous commit for this week.
+                  {grain !== 15 && <span className="ml-1 text-amber-700 font-semibold">Best results at 15-min grain.</span>}
+                </p>
+              </div>
+              <button
+                onClick={handleCommitClick}
+                disabled={commitStatus === "saving"}
+                className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-sm font-medium transition-colors ${
+                  commitStatus === "saved"
+                    ? "bg-emerald-100 border-emerald-300 text-emerald-700"
+                    : commitStatus === "saving"
+                    ? "opacity-60 cursor-not-allowed border-border text-muted-foreground bg-white"
+                    : grain !== 15
+                    ? "bg-amber-50 border-amber-400 text-amber-800 hover:bg-amber-100"
+                    : "bg-blue-600 border-blue-700 text-white hover:bg-blue-700"
+                }`}
+              >
+                {commitStatus === "saved" ? (
+                  <><Save className="h-4 w-4" /> Committed</>
+                ) : commitStatus === "saving" ? (
+                  <><RotateCcw className="h-4 w-4 animate-spin" /> Saving…</>
+                ) : (
+                  <><Save className="h-4 w-4" /> Commit to Scheduling{grain !== 15 ? " ⚠" : ""}</>
+                )}
+              </button>
+            </div>
+            <div className="rounded-lg border border-violet-200 bg-violet-50 p-4 flex flex-col gap-3">
+              <div>
+                <p className="text-sm font-semibold text-violet-800">Approve for Scheduler</p>
+                <p className="text-xs text-violet-700 mt-1">
+                  Creates a frozen <strong>demand snapshot</strong> used by the auto-scheduler during schedule generation to know
+                  how many agents are needed per interval.
+                </p>
+              </div>
+              <button
+                onClick={saveApproveForScheduler}
+                disabled={approveStatus === "saving"}
+                className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-sm font-medium transition-colors ${
+                  approveStatus === "saved"
+                    ? "bg-emerald-100 border-emerald-300 text-emerald-700"
+                    : approveStatus === "saving"
+                    ? "opacity-60 cursor-not-allowed border-border text-muted-foreground bg-white"
+                    : "bg-violet-600 border-violet-700 text-white hover:bg-violet-700"
+                }`}
+              >
+                {approveStatus === "saved" ? (
+                  <><Save className="h-4 w-4" /> Approved</>
+                ) : approveStatus === "saving" ? (
+                  <><RotateCcw className="h-4 w-4 animate-spin" /> Approving…</>
+                ) : (
+                  <><Save className="h-4 w-4" /> Approve for Scheduler</>
+                )}
+              </button>
             </div>
           </div>
         </section>
@@ -2516,9 +2679,9 @@ export const IntradayForecast = () => {
           >
             <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
               <Table2 className="h-4 w-4 text-teal-500" />
-              Table 1 — Median Pattern
+              Historical Median Pattern
               <span className="text-xs font-normal text-slate-400">
-                (median volume per interval &amp; day)
+                (median volume per interval &amp; day from baseline)
               </span>
             </h2>
             <span className="flex items-center gap-2">
@@ -2633,9 +2796,9 @@ export const IntradayForecast = () => {
           >
             <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
               <Table2 className="h-4 w-4 text-purple-500" />
-              Table 2 — Arrival Pattern Model
+              Interval Distribution Weights
               <span className="text-xs font-normal text-slate-400">
-                (% distribution weights)
+                (% share per slot used to spread weekly volume to intervals)
               </span>
             </h2>
             <span className="flex items-center gap-2">
@@ -2745,16 +2908,17 @@ export const IntradayForecast = () => {
               variant="outline"
               size="sm"
               onClick={() => setIsEditingWeights((v) => !v)}
-              disabled={baselineDataCount === 0}
+              disabled={baselineDataCount === 0 && !usingFallbackPattern}
             >
               {isEditingWeights ? <><X className="h-3.5 w-3.5 mr-1.5" />Close</> : <><Edit2 className="h-3.5 w-3.5 mr-1.5" />Edit Weights</>}
             </Button>
           </div>
         </div>
-        {isEditingWeights && baselineDataCount > 0 && (
+        {isEditingWeights && (baselineDataCount > 0 || usingFallbackPattern) && (
           <div>
             <p className="text-xs text-slate-400 px-6 pt-3 pb-2">
               Values are % of daily volume for each interval. Changes are applied immediately to the chart and table above.
+              {usingFallbackPattern && " Starting weights are derived from LOB operating hours because no baseline interval data is loaded."}
             </p>
             <div
               ref={editorContainerRef}
