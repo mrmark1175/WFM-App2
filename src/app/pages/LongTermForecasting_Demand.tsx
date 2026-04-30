@@ -938,6 +938,8 @@ export default function LongTermForecastingDemand() {
   const [aiNarrative, setAiNarrative] = useState<string>("");
   const [isGeneratingNarrative, setIsGeneratingNarrative] = useState(false);
   const narrativeAbortRef = useRef<AbortController | null>(null);
+  const [savedNarrativeFingerprint, setSavedNarrativeFingerprint] = useState<string | null>(null);
+  const pendingNarrativeRef = useRef<{ text: string; fp: string } | null>(null);
   // Sidebar section open/close states
   const [sbForecast,      setSbForecast]      = useState(true);
   const [sbGrowth,        setSbGrowth]        = useState(true);
@@ -1052,12 +1054,17 @@ export default function LongTermForecastingDemand() {
     if (!activeLob) { setLoading(false); return; }
     hasHydratedRef.current = false;
     const hydratePlanner = async () => {
-      // Fire all three API calls in parallel — was sequential before (3 round trips → 1)
+      setAiNarrative("");
+      setSavedNarrativeFingerprint(null);
+      setIsInsightNarrativeOpen(false);
+      pendingNarrativeRef.current = null;
+      // Fire all four API calls in parallel
       const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-      const [scenariosData, lobSettingsData, activeStateData] = await Promise.all([
+      const [scenariosData, lobSettingsData, activeStateData, narrativePrefData] = await Promise.all([
         fetch(apiUrl(`/api/demand-planner-scenarios?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
         fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
         fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch(apiUrl(`/api/user-preferences?page_key=demand_narrative&lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
       ]);
 
       // ── Scenarios ────────────────────────────────────────────────────────────
@@ -1139,6 +1146,9 @@ export default function LongTermForecastingDemand() {
           setSelectedChannels(normalizeSelectedChannels(fetchedLobDefaults.channels_enabled));
           setPoolingMode(fetchedLobDefaults.pooling_mode === "dedicated" ? "dedicated" : "blended");
         }
+        if (narrativePrefData?.narrative && narrativePrefData?.fingerprint) {
+          pendingNarrativeRef.current = { text: narrativePrefData.narrative, fp: narrativePrefData.fingerprint };
+        }
       } catch (error) {
         console.error("Failed to load demand user inputs", error);
       } finally {
@@ -1162,6 +1172,33 @@ export default function LongTermForecastingDemand() {
       plannerSnapshot: getCurrentPlannerSnapshot(),
     });
   }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, debouncedOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, dataSourceMode, selectedScenarioId]);
+
+  // Narrative persistence: restore saved narrative if fingerprint still matches,
+  // or wipe it as soon as any input that drives the narrative changes.
+  useEffect(() => {
+    if (!hasHydratedRef.current) return;
+    if (pendingNarrativeRef.current) {
+      const { text, fp } = pendingNarrativeRef.current;
+      pendingNarrativeRef.current = null;
+      if (fp === narrativeFingerprint && text) {
+        setAiNarrative(text);
+        setSavedNarrativeFingerprint(fp);
+        setIsInsightNarrativeOpen(true);
+      }
+      return;
+    }
+    if (savedNarrativeFingerprint && narrativeFingerprint !== savedNarrativeFingerprint) {
+      setAiNarrative("");
+      setSavedNarrativeFingerprint(null);
+      if (activeLob?.id) {
+        fetch(apiUrl(`/api/user-preferences?page_key=demand_narrative&lob_id=${activeLob.id}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preferences: {} }),
+        }).catch(() => {});
+      }
+    }
+  }, [narrativeFingerprint, savedNarrativeFingerprint, activeLob?.id]);
 
   // Context → page: when top-bar what-if selector changes, switch to that what-if
   useEffect(() => {
@@ -1982,6 +2019,20 @@ export default function LongTermForecastingDemand() {
     });
     return point;
   }), [futureData]);
+  const narrativeFingerprint = useMemo(() => {
+    if (futureData.length === 0) return "";
+    const key = JSON.stringify({
+      fm: forecastMethod,
+      fy: forecastYear,
+      gr: (assumptions as any).growthRate ?? 0,
+      sc: Object.entries(selectedChannels).filter(([, v]) => v).map(([k]) => k).sort().join(","),
+      vols: futureData.map(r => `${r.month}${r.year}:${r.volume}`).join("|"),
+    });
+    let h = 5381;
+    for (let i = 0; i < key.length; i++) h = (((h << 5) + h) ^ key.charCodeAt(i)) >>> 0;
+    return h.toString(16);
+  }, [futureData, forecastMethod, forecastYear, assumptions, selectedChannels]);
+
   const seasonalityTrend = useMemo(() => {
     // row.volume is already the sum of all included channel volumes (set as includedVolume in futureData).
     // The previous per-channel reduce was adding email/chat on top of a row.volume that already
@@ -2341,6 +2392,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
+      let finalText = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -2353,9 +2405,21 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
           if (data === "[DONE]") continue;
           try {
             const parsed = JSON.parse(data);
-            if (parsed.text) setAiNarrative(prev => prev + parsed.text);
+            if (parsed.text) {
+              finalText += parsed.text;
+              setAiNarrative(prev => prev + parsed.text);
+            }
           } catch {}
         }
+      }
+      if (finalText && !ctrl.signal.aborted && activeLob?.id) {
+        const fp = narrativeFingerprint;
+        setSavedNarrativeFingerprint(fp);
+        fetch(apiUrl(`/api/user-preferences?page_key=demand_narrative&lob_id=${activeLob.id}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preferences: { narrative: finalText, fingerprint: fp } }),
+        }).catch(() => {});
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") setAiNarrative("⚠ Network error. Please try again.");
