@@ -2479,11 +2479,6 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                       <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgVolume.toLocaleString()}</p>
                       <div className="mt-0.5 flex items-center gap-2">{trendChip(kpiTrends?.volume)}</div>
                     </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Workload Hours</p>
-                      <p className="mt-1 text-xl font-bold text-slate-800 tabular-nums">{kpis.avgWorkloadHours.toLocaleString()}</p>
-                      <div className="mt-0.5 flex items-center gap-2">{trendChip(kpiTrends?.workload)}</div>
-                    </div>
                   </>
                 );
               })()}
