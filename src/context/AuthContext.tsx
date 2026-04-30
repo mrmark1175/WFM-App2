@@ -9,6 +9,7 @@ export interface AuthUser {
   full_name: string | null;
   role: UserRole;
   organization_id: number;
+  must_change_password?: boolean;
 }
 
 interface AuthContextValue {
@@ -16,6 +17,7 @@ interface AuthContextValue {
   status: "checking" | "authenticated" | "unauthenticated";
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
   hasRole: (...roles: UserRole[]) => boolean;
 }
 
@@ -52,6 +54,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStatus("authenticated");
   }
 
+  async function refreshUser() {
+    const r = await fetch(apiUrl("/api/auth/me"), { credentials: "include" });
+    if (r.ok) {
+      const data = await r.json();
+      if (data?.id) setUser(data as AuthUser);
+    }
+  }
+
   async function logout() {
     await fetch(apiUrl("/api/auth/logout"), { method: "POST", credentials: "include" });
     setUser(null);
@@ -63,7 +73,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, status, login, logout, hasRole }}>
+    <AuthContext.Provider value={{ user, status, login, logout, refreshUser, hasRole }}>
       {children}
     </AuthContext.Provider>
   );

@@ -648,6 +648,9 @@ async function ensureAppTables() {
       UNIQUE (organization_id, email)
     )
   `);
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false
+  `);
 
   // ── Sessions (for future token revocation) ────────────────────────────────────
   await pool.query(`
@@ -688,7 +691,7 @@ app.get('/api/auth/me', async (req, res) => {
   if (!payload || !payload.userId) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const result = await pool.query(
-      'SELECT id, email, full_name, role, organization_id, is_active FROM users WHERE id = $1 AND is_active = true',
+      'SELECT id, email, full_name, role, organization_id, is_active, must_change_password FROM users WHERE id = $1 AND is_active = true',
       [payload.userId]
     );
     if (!result.rows[0]) return res.status(401).json({ error: 'User not found or inactive' });
@@ -704,7 +707,7 @@ app.post('/api/auth/login', async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   try {
     const result = await pool.query(
-      'SELECT id, email, password_hash, full_name, role, organization_id, is_active FROM users WHERE email = $1',
+      'SELECT id, email, password_hash, full_name, role, organization_id, is_active, must_change_password FROM users WHERE email = $1',
       [email.toLowerCase().trim()]
     );
     const user = result.rows[0];
@@ -714,7 +717,7 @@ app.post('/api/auth/login', async (req, res) => {
     await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
     const token = signToken({ userId: user.id, email: user.email, role: user.role, organizationId: user.organization_id });
     setAuthCookie(res, token);
-    res.json({ ok: true, user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role, organization_id: user.organization_id } });
+    res.json({ ok: true, user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role, organization_id: user.organization_id, must_change_password: user.must_change_password } });
   } catch (err) {
     console.error('Login error:', err.message);
     res.status(500).json({ error: 'Server error' });
@@ -741,6 +744,23 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Change password error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/auth/set-initial-password', authenticateToken, async (req, res) => {
+  const { newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 8)
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  try {
+    const result = await pool.query('SELECT must_change_password FROM users WHERE id = $1', [req.user.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: 'User not found' });
+    if (!result.rows[0].must_change_password) return res.status(403).json({ error: 'No password change required' });
+    const hash = await bcrypt.hash(newPassword, 12);
+    await pool.query('UPDATE users SET password_hash = $1, must_change_password = false, updated_at = NOW() WHERE id = $2', [hash, req.user.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Set initial password error:', err.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -775,7 +795,7 @@ app.post('/api/users', requireRole('super_admin', 'client_admin'), async (req, r
   try {
     const hash = await bcrypt.hash(password, 12);
     const result = await pool.query(
-      'INSERT INTO users (organization_id, email, password_hash, full_name, role) VALUES ($1, $2, $3, $4, $5) RETURNING id, organization_id, email, full_name, role, is_active, created_at',
+      'INSERT INTO users (organization_id, email, password_hash, full_name, role, must_change_password) VALUES ($1, $2, $3, $4, $5, true) RETURNING id, organization_id, email, full_name, role, is_active, created_at',
       [orgId, email.toLowerCase().trim(), hash, full_name || null, role]
     );
     res.status(201).json(result.rows[0]);

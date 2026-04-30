@@ -8,10 +8,11 @@ import { LOBProvider } from "./app/lib/lobContext.tsx";
 import { WFMPageDataProvider } from "./app/lib/WFMPageDataContext.tsx";
 import { WhatIfProvider } from "./app/lib/whatIfContext.tsx";
 import { LoginPage } from "./app/pages/Login.tsx";
+import { ForceChangePassword } from "./app/components/ForceChangePassword.tsx";
 import "./styles/index.css";
 
 function AppShell() {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
 
   if (status === "checking") {
     return (
@@ -30,6 +31,7 @@ function AppShell() {
       <WhatIfProvider>
         <WFMPageDataProvider>
           <RouterProvider router={router} />
+          {user?.must_change_password && <ForceChangePassword />}
         </WFMPageDataProvider>
       </WhatIfProvider>
     </LOBProvider>

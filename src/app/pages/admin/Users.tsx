@@ -17,7 +17,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "../../components/ui/select";
-import { UserPlus, Pencil, UserX, ChevronDown, ChevronUp } from "lucide-react";
+import { UserPlus, Pencil, UserX, ChevronDown, ChevronUp, RefreshCw, Copy, Check } from "lucide-react";
 
 const ROLE_DEFINITIONS: Record<UserRole, { label: string; description: string; can: string[]; cannot: string[] }> = {
   super_admin: {
@@ -84,6 +84,8 @@ export function UsersPage() {
   const [addForm, setAddForm] = useState({ email: "", full_name: "", password: "", role: "read_only" as UserRole });
   const [addError, setAddError] = useState("");
   const [addLoading, setAddLoading] = useState(false);
+  const [showAddPassword, setShowAddPassword] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Edit user dialog
   const [editUser, setEditUser] = useState<UserRow | null>(null);
@@ -111,6 +113,23 @@ export function UsersPage() {
 
   useEffect(() => { fetchUsers(); }, []);
 
+  function generatePassword() {
+    const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
+    const array = new Uint8Array(14);
+    crypto.getRandomValues(array);
+    const pw = Array.from(array, b => charset[b % charset.length]).join("");
+    setAddForm(f => ({ ...f, password: pw }));
+    setShowAddPassword(true);
+    setCopied(false);
+  }
+
+  function copyPassword() {
+    navigator.clipboard.writeText(addForm.password).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setAddError("");
@@ -126,6 +145,8 @@ export function UsersPage() {
       if (!res.ok) { setAddError(data.error || "Failed to create user"); return; }
       setAddOpen(false);
       setAddForm({ email: "", full_name: "", password: "", role: "read_only" });
+      setShowAddPassword(false);
+      setCopied(false);
       await fetchUsers();
     } catch {
       setAddError("Network error");
@@ -293,7 +314,7 @@ export function UsersPage() {
         </div>
 
         {/* Add User Dialog */}
-        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <Dialog open={addOpen} onOpenChange={v => { setAddOpen(v); if (!v) { setAddForm({ email: "", full_name: "", password: "", role: "read_only" }); setShowAddPassword(false); setCopied(false); setAddError(""); } }}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Add User</DialogTitle>
@@ -309,7 +330,37 @@ export function UsersPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>Temporary Password *</Label>
-                <Input type="password" required minLength={8} value={addForm.password} onChange={e => setAddForm(f => ({ ...f, password: e.target.value }))} placeholder="Min 8 characters" />
+                <div className="flex gap-1.5">
+                  <div className="relative flex-1">
+                    <Input
+                      type={showAddPassword ? "text" : "password"}
+                      required
+                      minLength={8}
+                      value={addForm.password}
+                      onChange={e => { setAddForm(f => ({ ...f, password: e.target.value })); setCopied(false); }}
+                      placeholder="Min 8 characters"
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAddPassword(v => !v)}
+                      className="absolute inset-y-0 right-2.5 flex items-center text-muted-foreground hover:text-foreground"
+                      tabIndex={-1}
+                    >
+                      {showAddPassword
+                        ? <svg xmlns="http://www.w3.org/2000/svg" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                        : <svg xmlns="http://www.w3.org/2000/svg" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      }
+                    </button>
+                  </div>
+                  <Button type="button" variant="outline" size="icon" onClick={generatePassword} title="Generate password">
+                    <RefreshCw className="size-3.5" />
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={copyPassword} disabled={!addForm.password} title="Copy password">
+                    {copied ? <Check className="size-3.5 text-green-600" /> : <Copy className="size-3.5" />}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">The user must set a new password on first login.</p>
               </div>
               <div className="space-y-1.5">
                 <Label>Role *</Label>
