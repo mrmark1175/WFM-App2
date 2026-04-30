@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
-import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock, Building2, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart3 } from "lucide-react";
+import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock, Building2, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart3, Shield } from "lucide-react";
 import React, { useEffect, useState } from "react";
+import { useAuth, type UserRole } from "@/context/AuthContext";
 import { Toaster } from "./ui/sonner";
 import { LOBSelector } from "./LOBSelector";
 import { WhatIfSelector } from "./WhatIfSelector";
@@ -13,7 +14,7 @@ interface PageLayoutProps {
   title?: string; // now optional — pages own their own headers
 }
 
-const NAV: { group: string; items: { to: string; label: string; icon: React.ElementType; badge?: string }[] }[] = [
+const NAV: { group: string; items: { to: string; label: string; icon: React.ElementType; badge?: string; roles?: UserRole[] }[] }[] = [
   { group: "Forecasting", items: [
     { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting", icon: LineChart },
     { to: "/wfm/shrinkage",                    label: "Shrinkage Planning", icon: Layers },
@@ -35,6 +36,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: React.Elem
   { group: "Settings", items: [
     { to: "/configuration",                    label: "Configuration",      icon: Settings },
     { to: "/configuration/lob-management",     label: "LOB Management",     icon: Building2 },
+    { to: "/admin/users",                      label: "User Management",    icon: Shield, roles: ["super_admin"] },
     { to: "/my-account",                       label: "My Account",         icon: User },
   ]},
 ];
@@ -53,10 +55,13 @@ const CRUMB_NAMES: Record<string, string> = {
   agents: "Agent Roster",
   shifts: "Shift Templates",
   "labor-laws": "Labor Law Rules",
+  admin: "Admin",
+  users: "User Management",
 };
 
 export function PageLayout({ children, title }: PageLayoutProps) {
   const location = useLocation();
+  const { user } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const { registerOpenAssistant } = useWFMPageData();
@@ -105,7 +110,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
           {NAV.map(g => (
             <div key={g.group} className="mt-3 first:mt-0">
               <div className={`font-mono text-[10px] text-white/70 uppercase tracking-[.14em] px-2.5 pb-1.5 ${collapsed ? "invisible h-0 p-0" : ""}`}>{g.group}</div>
-              {g.items.map(it => {
+              {g.items.filter(it => !it.roles || (user && it.roles.includes(user.role))).map(it => {
                 const Icon = it.icon;
                 const active = location.pathname === it.to;
                 return (
