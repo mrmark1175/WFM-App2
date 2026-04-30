@@ -1767,54 +1767,7 @@ export default function LongTermForecastingDemand() {
   const forecastData = useMemo(() => buildDemandForecastData(effectiveFinalHistoricalDataByChannel.voice, { ...assumptions, planningMonths: effectivePlanningMonths }, forecastMethod, hwParams, arimaParams, decompParams), [effectiveFinalHistoricalDataByChannel, assumptions, effectivePlanningMonths, forecastMethod, hwParams, arimaParams, decompParams]);
   const selectedBlendConfig = useMemo(() => buildBlendConfiguration(selectedChannels, poolingMode), [selectedChannels, poolingMode]);
   const includedChannels = useMemo(() => selectedBlendConfig.includedChannels, [selectedBlendConfig]);
-  const volumeTrendComparison = useMemo(() => {
-    const historyLength = includedChannels.reduce((max, channel) => Math.max(max, effectiveFinalHistoricalDataByChannel[channel].length), 0);
-    const actualByYear = new Map<string, Array<number | null>>();
-    const forecastByYear = new Map<string, Array<number | null>>();
-    const actualTimeline = getTimeline(assumptions.startDate, historyLength, 0);
-    actualTimeline.forEach((time, idx) => {
-      const monthIndex = MONTH_NAMES.indexOf(time.month);
-      if (monthIndex < 0) return;
-      const yearSeries = actualByYear.get(time.year) ?? new Array<number | null>(12).fill(null);
-      yearSeries[monthIndex] = includedChannels.reduce((sum, channel) => sum + (effectiveFinalHistoricalDataByChannel[channel][idx] ?? 0), 0);
-      actualByYear.set(time.year, yearSeries);
-    });
-    const forecastTimeline = getTimeline(assumptions.startDate, 0, effectivePlanningMonths);
-    forecastTimeline.forEach((time, idx) => {
-      const monthIndex = MONTH_NAMES.indexOf(time.month);
-      if (monthIndex < 0) return;
-      const yearSeries = forecastByYear.get(time.year) ?? new Array<number | null>(12).fill(null);
-      yearSeries[monthIndex] = includedChannels.reduce((sum, channel) => sum + (combinedForecastVolumesByChannel[channel][idx] ?? 0), 0);
-      forecastByYear.set(time.year, yearSeries);
-    });
-    const actualYears = Array.from(actualByYear.keys()).sort((left, right) => Number(left) - Number(right));
-    const forecastYears = Array.from(forecastByYear.keys()).sort((left, right) => Number(left) - Number(right));
-    const series: VolumeTrendSeriesMeta[] = [
-      ...actualYears.map((year, index) => ({
-        key: `actual_${year}`,
-        label: `Actual ${year}`,
-        stroke: VOLUME_TREND_ACTUAL_COLORS[index % VOLUME_TREND_ACTUAL_COLORS.length],
-        isForecast: false,
-      })),
-      ...forecastYears.map((year, index) => ({
-        key: `forecast_${year}`,
-        label: `Forecast ${year}`,
-        stroke: VOLUME_TREND_FORECAST_COLORS[index % VOLUME_TREND_FORECAST_COLORS.length],
-        isForecast: true,
-      })),
-    ];
-    const chartData = MONTH_NAMES.map((month, monthIndex) => {
-      const point: Record<string, string | number | null> = { month };
-      actualYears.forEach((year) => {
-        point[`actual_${year}`] = actualByYear.get(year)?.[monthIndex] ?? null;
-      });
-      forecastYears.forEach((year) => {
-        point[`forecast_${year}`] = forecastByYear.get(year)?.[monthIndex] ?? null;
-      });
-      return point;
-    });
-    return { chartData, series };
-  }, [assumptions.startDate, effectivePlanningMonths, includedChannels, effectiveFinalHistoricalDataByChannel, combinedForecastVolumesByChannel]);
+
   // ── Re-cut helpers ────────────────────────────────────────────────────────────
   // Which forecast month-indices (0-based) are fully in the past?
   const completedMonthIndices = useMemo<number[]>(() => {
@@ -1908,6 +1861,54 @@ export default function LongTermForecastingDemand() {
     };
   }, [isTwoYear, forecastVolumesByChannel, forecastVolumesByChannelYear2]);
 
+  const volumeTrendComparison = useMemo(() => {
+    const historyLength = includedChannels.reduce((max, channel) => Math.max(max, effectiveFinalHistoricalDataByChannel[channel].length), 0);
+    const actualByYear = new Map<string, Array<number | null>>();
+    const forecastByYear = new Map<string, Array<number | null>>();
+    const actualTimeline = getTimeline(assumptions.startDate, historyLength, 0);
+    actualTimeline.forEach((time, idx) => {
+      const monthIndex = MONTH_NAMES.indexOf(time.month);
+      if (monthIndex < 0) return;
+      const yearSeries = actualByYear.get(time.year) ?? new Array<number | null>(12).fill(null);
+      yearSeries[monthIndex] = includedChannels.reduce((sum, channel) => sum + (effectiveFinalHistoricalDataByChannel[channel][idx] ?? 0), 0);
+      actualByYear.set(time.year, yearSeries);
+    });
+    const forecastTimeline = getTimeline(assumptions.startDate, 0, effectivePlanningMonths);
+    forecastTimeline.forEach((time, idx) => {
+      const monthIndex = MONTH_NAMES.indexOf(time.month);
+      if (monthIndex < 0) return;
+      const yearSeries = forecastByYear.get(time.year) ?? new Array<number | null>(12).fill(null);
+      yearSeries[monthIndex] = includedChannels.reduce((sum, channel) => sum + (combinedForecastVolumesByChannel[channel][idx] ?? 0), 0);
+      forecastByYear.set(time.year, yearSeries);
+    });
+    const actualYears = Array.from(actualByYear.keys()).sort((left, right) => Number(left) - Number(right));
+    const forecastYears = Array.from(forecastByYear.keys()).sort((left, right) => Number(left) - Number(right));
+    const series: VolumeTrendSeriesMeta[] = [
+      ...actualYears.map((year, index) => ({
+        key: `actual_${year}`,
+        label: `Actual ${year}`,
+        stroke: VOLUME_TREND_ACTUAL_COLORS[index % VOLUME_TREND_ACTUAL_COLORS.length],
+        isForecast: false,
+      })),
+      ...forecastYears.map((year, index) => ({
+        key: `forecast_${year}`,
+        label: `Forecast ${year}`,
+        stroke: VOLUME_TREND_FORECAST_COLORS[index % VOLUME_TREND_FORECAST_COLORS.length],
+        isForecast: true,
+      })),
+    ];
+    const chartData = MONTH_NAMES.map((month, monthIndex) => {
+      const point: Record<string, string | number | null> = { month };
+      actualYears.forEach((year) => {
+        point[`actual_${year}`] = actualByYear.get(year)?.[monthIndex] ?? null;
+      });
+      forecastYears.forEach((year) => {
+        point[`forecast_${year}`] = forecastByYear.get(year)?.[monthIndex] ?? null;
+      });
+      return point;
+    });
+    return { chartData, series };
+  }, [assumptions.startDate, effectivePlanningMonths, includedChannels, effectiveFinalHistoricalDataByChannel, combinedForecastVolumesByChannel]);
   const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row, futureIdx) => {
     // For each channel: prefer published re-cut (for Intraday cross-device sync), then
     // live-compute from the re-cut factor so Demand Output stays in sync with the
