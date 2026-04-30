@@ -174,6 +174,7 @@ export const IntradayForecast = () => {
   const [csvError, setCsvError] = useState<string | null>(null);
   const [pasteText, setPasteText] = useState("");
   const [gridFocused, setGridFocused] = useState(false);
+  const [isEditingBaselineValues, setIsEditingBaselineValues] = useState(false);
   const [showForecastTable, setShowForecastTable] = useState(true);
   const [showFTETable, setShowFTETable] = useState(true);
   const [showMedianTable, setShowMedianTable] = useState(false);
@@ -1145,6 +1146,27 @@ export const IntradayForecast = () => {
     );
   }, [baselineYear, baselineStartWeek, manualRawData, setPrefs]);
 
+  const handleBaselineVolumeChange = useCallback((date: string, slotIndex: number, value: string) => {
+    if (dataSource !== "manual") return;
+    const parsed = value.trim() === "" ? 0 : parseFloat(value.replace(/[,$]/g, ""));
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+
+    const next: GridData = { ...(manualRawData ?? {}) };
+    next[date] = { ...(next[date] ?? {}) };
+    const previous = next[date][slotIndex];
+    next[date][slotIndex] = {
+      volume: parsed,
+      aht: previous?.aht ?? 0,
+    };
+
+    const buckets = computeWeeklyBuckets(next);
+    setPrefs({
+      manualRawData: next,
+      editableWeights: null,
+      manualWeeklyVolumes: buckets.map((b) => Math.round(b.volume)),
+    });
+  }, [dataSource, manualRawData, setPrefs]);
+
   // ── Weight editor cell change ──────────────────────────────────────────────
   const handleWeightChange = (dow: number, slotIndex: number, value: string) => {
     const parsed = parseFloat(value);
@@ -1948,12 +1970,25 @@ export const IntradayForecast = () => {
                 <Button variant="outline" size="sm" onClick={() => setCsvModalOpen(true)}>
                   <Upload className="h-3.5 w-3.5 mr-1.5" />Upload CSV
                 </Button>
+                {dataSource === "manual" && baselineDataCount > 0 && (
+                  <Button
+                    variant={isEditingBaselineValues ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setIsEditingBaselineValues((v) => !v)}
+                  >
+                    {isEditingBaselineValues ? (
+                      <><Save className="h-3.5 w-3.5 mr-1.5" />Done Editing</>
+                    ) : (
+                      <><Edit2 className="h-3.5 w-3.5 mr-1.5" />Edit Values</>
+                    )}
+                  </Button>
+                )}
                 {baselineDataCount > 0 && (
                   <Button
                     variant="ghost"
                     size="sm"
                     className="text-destructive hover:text-destructive"
-                    onClick={() => { setPrefs({ manualRawData: {}, editableWeights: null }); toast.success("Baseline cleared"); }}
+                    onClick={() => { setIsEditingBaselineValues(false); setPrefs({ manualRawData: {}, editableWeights: null }); toast.success("Baseline cleared"); }}
                   >
                     <X className="h-3.5 w-3.5 mr-1.5" />Clear
                   </Button>
@@ -2027,11 +2062,13 @@ export const IntradayForecast = () => {
                     ? "bg-muted/40 text-muted-foreground border-border"
                     : "bg-transparent text-muted-foreground/40 border-transparent"
               }`}>
-                {gridFocused
-                  ? "Ready — press Ctrl+V / Cmd+V to paste your Excel data"
-                  : baselineDataCount === 0
-                    ? "Select a week above, click anywhere in this grid, then paste from Excel (Ctrl+V) · Each week is added to the dataset"
-                    : "Select the next week above, click grid + Ctrl+V to add more weeks to the model"
+                {isEditingBaselineValues
+                  ? "Editing enabled - click any value to update pasted actual volume. Weekly totals update automatically."
+                  : gridFocused
+                    ? "Ready - press Ctrl+V / Cmd+V to paste your Excel data"
+                    : baselineDataCount === 0
+                      ? "Select a week above, click anywhere in this grid, then paste from Excel (Ctrl+V). Each week is added to the dataset"
+                      : "Select the next week above, click grid + Ctrl+V to add more weeks to the model"
                 }
               </div>
 
@@ -2083,18 +2120,32 @@ export const IntradayForecast = () => {
                             {iv.label}
                           </TableCell>
                           {rowVals.map((val, ci) => {
+                            const dataDate = gridColumns[ci]?.dataDate;
                             const intensity = maxVal > 0 ? val / maxVal : 0;
                             return (
                               <TableCell
                                 key={ci}
-                                className="text-xs text-center py-0.5 font-mono"
+                                className={`text-xs text-center py-0.5 font-mono ${isEditingBaselineValues ? "px-1" : ""}`}
                                 style={{
-                                  backgroundColor: val > 0
+                                  backgroundColor: !isEditingBaselineValues && val > 0
                                     ? `rgba(34,197,94,${intensity * 0.45})`
                                     : undefined,
                                 }}
                               >
-                                {val > 0 ? (val % 1 === 0 ? val : val.toFixed(2)) : ""}
+                                {isEditingBaselineValues && dataSource === "manual" && dataDate ? (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    value={val > 0 ? String(val % 1 === 0 ? val : Number(val.toFixed(2))) : ""}
+                                    onChange={(e) => handleBaselineVolumeChange(dataDate, idx, e.target.value)}
+                                    onPaste={(e) => e.stopPropagation()}
+                                    className="h-6 w-16 rounded border border-slate-200 bg-white px-1 text-center text-xs font-mono text-slate-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+                                    placeholder="0"
+                                  />
+                                ) : (
+                                  val > 0 ? (val % 1 === 0 ? val : val.toFixed(2)) : ""
+                                )}
                               </TableCell>
                             );
                           })}
