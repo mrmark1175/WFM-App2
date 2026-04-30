@@ -214,6 +214,10 @@ function mergeChannelSchedules(
   return out;
 }
 function roundTo(n: number, dp = 1) { return Math.round(n * 10 ** dp) / 10 ** dp; }
+function ceilTo(n: number, dp = 0) {
+  const factor = 10 ** dp;
+  return Math.ceil((n - Number.EPSILON) * factor) / factor;
+}
 
 // Mirrors the computeShrinkage function in ShrinkagePlanning.tsx.
 // Items are absence_items or activity_items from the shrinkage_plans DB row.
@@ -302,15 +306,18 @@ function calcWeeklyErlangFTE(
     slaTarget, slaAnswerSeconds, emailOccupancyPct,
     shrinkagePct, channel, concurrency, 0,
   );
-  // result.fte is agents-on-floor per interval, shrinkage-adjusted.
-  // Scale to daily FTE: an agent works fteHoursPerDay but the floor needs
+  // Capacity Planning commits to whole schedulable FTE. Use the exact raw-agent
+  // requirement here instead of the display-rounded interval FTE from Intraday.
+  const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
+  const afterShrinkFte = result.rawAgents / shrinkFactor;
+  // Scale to daily FTE: one FTE works fteHoursPerDay but the floor needs
   // coverage for operatingHoursPerDay, so multiply by the coverage ratio.
   const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
   return {
-    fte: roundTo(result.fte * coverageRatio),
+    fte: ceilTo(afterShrinkFte * coverageRatio),
     occupancy: result.occupancy,
     rawAgents: result.rawAgents,
-    afterShrinkFte: result.fte,
+    afterShrinkFte,
     coverageRatio,
   };
 }
@@ -336,8 +343,9 @@ function calcWeeklyBlendedFTE(
   shrinkagePct: number,
   chatConcurrency: number,
   taskSwitchMultiplier = 1.05, // AHT inflation for async work in blended queues
-): { fte: number; occupancy: number } {
-  if (daysPerWeek <= 0 || operatingHoursPerDay <= 0) return { fte: 0, occupancy: 0 };
+): { fte: number; occupancy: number; rawAgents: number; afterShrinkFte: number; coverageRatio: number; voiceRawAgents: number; chatRawAgents: number } {
+  const empty = { fte: 0, occupancy: 0, rawAgents: 0, afterShrinkFte: 0, coverageRatio: 1, voiceRawAgents: 0, chatRawAgents: 0 };
+  if (daysPerWeek <= 0 || operatingHoursPerDay <= 0) return empty;
 
   const intervalsPerDay = operatingHoursPerDay * 2; // 30-min intervals
   const intervalHours = 0.5;
@@ -375,9 +383,15 @@ function calcWeeklyBlendedFTE(
     const emailExtraAgents = rhoMax > 0 ? netEmailWorkload / (rhoMax * intervalHours) : 0;
 
     const totalBaseAgents = voiceRawAgents + chatExtraAgents + emailExtraAgents;
+    const afterShrinkFte = totalBaseAgents / shrinkFactor;
     return {
-      fte: roundTo((totalBaseAgents / shrinkFactor) * coverageRatio),
+      fte: ceilTo(afterShrinkFte * coverageRatio),
       occupancy: vr.occupancy,
+      rawAgents: totalBaseAgents,
+      afterShrinkFte,
+      coverageRatio,
+      voiceRawAgents,
+      chatRawAgents: chatExtraAgents,
     };
   }
 
@@ -395,9 +409,15 @@ function calcWeeklyBlendedFTE(
     const emailExtraAgents = rhoMax > 0 ? netEmailWorkload / (rhoMax * intervalHours) : 0;
     const totalBaseAgents = chatRawAgents + emailExtraAgents;
 
+    const afterShrinkFte = totalBaseAgents / shrinkFactor;
     return {
-      fte: roundTo((totalBaseAgents / shrinkFactor) * coverageRatio),
+      fte: ceilTo(afterShrinkFte * coverageRatio),
       occupancy: cr.occupancy,
+      rawAgents: totalBaseAgents,
+      afterShrinkFte,
+      coverageRatio,
+      voiceRawAgents: 0,
+      chatRawAgents,
     };
   }
 
@@ -406,13 +426,19 @@ function calcWeeklyBlendedFTE(
   // No task-switch penalty here — agents work email exclusively, no context switching.
   if (emailCPI > 0 && emailAht > 0) {
     const er = computeIntervalFTE(emailCPI, 30, emailAht, 0, 0, emailOccupancyPct, 0, "email");
+    const afterShrinkFte = er.rawAgents / shrinkFactor;
     return {
-      fte: roundTo((er.rawAgents / shrinkFactor) * coverageRatio),
+      fte: ceilTo(afterShrinkFte * coverageRatio),
       occupancy: er.occupancy,
+      rawAgents: er.rawAgents,
+      afterShrinkFte,
+      coverageRatio,
+      voiceRawAgents: 0,
+      chatRawAgents: 0,
     };
   }
 
-  return { fte: 0, occupancy: 0 };
+  return empty;
 }
 
 function calcRampPct(ageWeeks: number, trainWks: number, nestWks: number, nestPct: number): number {
@@ -1187,11 +1213,9 @@ export function CapacityPlanning() {
         const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy);
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
-        if (activeChannel === "chat") {
-          reqRawAgents = r.rawAgents;
-          reqAfterShrinkFte = r.afterShrinkFte;
-          reqCoverageRatio = r.coverageRatio;
-        }
+        reqRawAgents = r.rawAgents;
+        reqAfterShrinkFte = r.afterShrinkFte;
+        reqCoverageRatio = r.coverageRatio;
       } else {
         // Blended: dominant real-time channel sets the Erlang C base; idle capacity
         // absorbs the next channel, then email/cases async.
@@ -1211,6 +1235,9 @@ export function CapacityPlanning() {
         );
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
+        reqRawAgents = r.rawAgents;
+        reqAfterShrinkFte = r.afterShrinkFte;
+        reqCoverageRatio = r.coverageRatio;
       }
 
       // Attrition decay
@@ -1256,14 +1283,33 @@ export function CapacityPlanning() {
           const conc = activeChannel === "chat" ? chatConcurrency : 1;
           return computeAchievedSLFromFTE(vol, aht, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, sec, shrinkagePct, activeChannel, conc, 0);
         } else {
-          // Blended: volume-weighted average SLA across non-email enabled channels
+          // Blended: reserve enough real-time capacity for the other live channel
+          // before measuring each channel's SLA. This avoids the invalid shortcut
+          // of giving both voice and chat the full blended pool simultaneously.
+          const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
+          const coverageRatio = hoursPerDay > 0 ? operatingHoursPerDay / hoursPerDay : 1;
+          const floorAgents = (hc / coverageRatio) * shrinkFactor;
+          const intervalCount = operatingHoursPerDay * 2;
+          const voiceCPI = intervalCount > 0 ? (effVolVoice / daysPerWeek) / intervalCount : 0;
+          const chatCPI = intervalCount > 0 ? (effVolChat / daysPerWeek) / intervalCount : 0;
+          const voiceRaw = enabledChannels.includes("voice") && voiceCPI > 0 && effAhtVoice > 0
+            ? computeIntervalFTE(voiceCPI, 30, effAhtVoice, slaVoiceTarget, slaVoiceSec, 85, 0, "voice", 1, 0).rawAgents
+            : 0;
+          const chatRaw = enabledChannels.includes("chat") && chatCPI > 0 && effAhtChat > 0
+            ? computeIntervalFTE(chatCPI, 30, effAhtChat, slaChatTarget, slaChatSec, 85, 0, "chat", chatConcurrency, 0).rawAgents
+            : 0;
+
           let weightedSL = 0, totalVol = 0;
           if (enabledChannels.includes("voice") && effVolVoice > 0) {
-            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice", 1, 0);
+            const voiceAvailableAgents = Math.max(0, floorAgents - chatRaw);
+            const voiceEquivalentFTE = (voiceAvailableAgents / shrinkFactor) * coverageRatio;
+            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, voiceEquivalentFTE, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice", 1, 0);
             if (sl != null) { weightedSL += sl * effVolVoice; totalVol += effVolVoice; }
           }
           if (enabledChannels.includes("chat") && effVolChat > 0) {
-            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency, 0);
+            const chatAvailableAgents = Math.max(0, floorAgents - voiceRaw);
+            const chatEquivalentFTE = (chatAvailableAgents / shrinkFactor) * coverageRatio;
+            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, chatEquivalentFTE, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency, 0);
             if (sl != null) { weightedSL += sl * effVolChat; totalVol += effVolChat; }
           }
           return totalVol > 0 ? +(weightedSL / totalVol).toFixed(1) : null;
@@ -1518,13 +1564,13 @@ export function CapacityPlanning() {
     return () => setPageData(null);
   }, [activeChannel, config, shrinkagePct, hoursPerDay, demandAssumptions, hiringNeed, attritionSummary, weekCalcs, setPageData]);
 
-  const showChatFteBreakdown = isDedicated && activeChannel === "chat";
+  const showFteBreakdown = true;
   const TOP_WEEK_HDR  = 0;
   const TOP_REQ_FTE   = 40;
   const TOP_REQ_BREAK = 73;
-  const TOP_BILLABLE  = showChatFteBreakdown ? 106 : 73;
-  const TOP_GAP_REQ   = showChatFteBreakdown ? (billableActive ? 139 : 106) : (billableActive ? 106 : 73);
-  const TOP_GAP_BILL  = showChatFteBreakdown ? 172 : 139;
+  const TOP_BILLABLE  = showFteBreakdown ? 106 : 73;
+  const TOP_GAP_REQ   = showFteBreakdown ? (billableActive ? 139 : 106) : (billableActive ? 106 : 73);
+  const TOP_GAP_BILL  = showFteBreakdown ? 172 : 139;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1998,13 +2044,13 @@ export function CapacityPlanning() {
                 ))}
               </tr>
 
-              {showChatFteBreakdown && (
+              {showFteBreakdown && (
                 <tr className="border-b border-border">
                   <td
                     className="bg-card border-r border-border px-3 py-1.5 text-[10px] font-semibold whitespace-nowrap text-black"
                     style={{ position: "sticky", left: 0, top: TOP_REQ_BREAK, zIndex: 30 }}
                   >
-                    FTE Breakdown (Raw → Shrinkage → Coverage)
+                    Required FTE Math (Raw - Shrinkage - Coverage)
                   </td>
                   {weekCalcs.map(wk => (
                     <td
@@ -2450,8 +2496,4 @@ export function CapacityPlanning() {
     </PageLayout>
   );
 }
-
-
-
-
 
