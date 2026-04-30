@@ -2,9 +2,12 @@ const express = require('express');
 const path = require('path');
 const cors = require('cors');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const { getCurrentUser } = require('./auth.cjs');
 const { pool } = require('./db.cjs');
 const { generate: generateSchedule } = require('./scheduling/generator.cjs');
+const { authenticateToken, signToken, verifyToken, parseCookies, setAuthCookie } = require('./middleware/auth.cjs');
+const { requireRole } = require('./middleware/rbac.cjs');
 
 const app = express();
 const distPath = path.resolve(__dirname, '../dist');
@@ -12,73 +15,10 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// ── Admin Auth helpers ────────────────────────────────────────────────────────
-const SESSION_SECRET = process.env.SESSION_SECRET || (() => {
-  const s = crypto.randomBytes(32).toString('hex');
-  console.warn('[auth] SESSION_SECRET not set — sessions will reset on every restart. Add SESSION_SECRET to .env for persistence.');
-  return s;
-})();
-const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
-const IS_PROD = process.env.NODE_ENV === 'production';
-
-function hashPw(password, salt) {
-  return crypto.scryptSync(password, salt, 64).toString('hex');
-}
-function storePw(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  return `${salt}:${hashPw(password, salt)}`;
-}
-function checkPw(password, stored) {
-  try {
-    const [salt, hash] = stored.split(':');
-    const computed = hashPw(password, salt);
-    return computed.length === hash.length &&
-      crypto.timingSafeEqual(Buffer.from(computed, 'hex'), Buffer.from(hash, 'hex'));
-  } catch { return false; }
-}
-
-function signToken(payload) {
-  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const body = Buffer.from(JSON.stringify({ ...payload, iat: Date.now() })).toString('base64url');
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(`${header}.${body}`).digest('base64url');
-  return `${header}.${body}.${sig}`;
-}
-function verifyToken(token) {
-  if (!token) return null;
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const [header, body, sig] = parts;
-    const expected = crypto.createHmac('sha256', SESSION_SECRET).update(`${header}.${body}`).digest('base64url');
-    if (sig.length !== expected.length) return null;
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-    const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
-    if (Date.now() - payload.iat > TOKEN_TTL_MS) return null;
-    return payload;
-  } catch { return null; }
-}
-function parseCookies(cookieHeader) {
-  if (!cookieHeader) return {};
-  return Object.fromEntries(cookieHeader.split(';').map(c => {
-    const [k, ...v] = c.trim().split('=');
-    return [k.trim(), decodeURIComponent(v.join('='))];
-  }));
-}
-function requireAuth(req, res, next) {
-  const token = parseCookies(req.headers.cookie).wfm_token;
-  if (!verifyToken(token)) return res.status(401).json({ error: 'Unauthorized' });
-  next();
-}
-function setAuthCookie(res, token) {
-  res.setHeader('Set-Cookie',
-    `wfm_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${12 * 3600}${IS_PROD ? '; Secure' : ''}`
-  );
-}
-
 // Protect all /api/* routes except /api/auth/*
 app.use('/api', (req, res, next) => {
   if (req.path.startsWith('/auth/')) return next();
-  requireAuth(req, res, next);
+  authenticateToken(req, res, next);
 });
 
 async function ensureAppTables() {
@@ -668,13 +608,50 @@ async function ensureAppTables() {
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS generation_run_id INTEGER REFERENCES schedule_generation_runs(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS absence_type VARCHAR(100) NULL`);
 
-  // ── Admin auth ────────────────────────────────────────────────────────────────
+  // ── Organizations ─────────────────────────────────────────────────────────────
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS admin_auth (
+    CREATE TABLE IF NOT EXISTS organizations (
+      id         SERIAL PRIMARY KEY,
+      name       VARCHAR(255) NOT NULL,
+      slug       VARCHAR(100) UNIQUE NOT NULL,
+      is_active  BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // ── User role enum + users table ──────────────────────────────────────────────
+  await pool.query(`
+    DO $$ BEGIN
+      CREATE TYPE user_role AS ENUM ('super_admin', 'client_admin', 'supervisor', 'read_only');
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END; $$
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
       id              SERIAL PRIMARY KEY,
-      password_hash   TEXT NOT NULL,
-      recovery_key_hash TEXT NOT NULL,
-      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      email           VARCHAR(255) NOT NULL,
+      password_hash   VARCHAR NOT NULL,
+      full_name       VARCHAR(255),
+      role            user_role NOT NULL DEFAULT 'read_only',
+      is_active       BOOLEAN NOT NULL DEFAULT true,
+      totp_secret     VARCHAR,
+      last_login_at   TIMESTAMPTZ,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, email)
+    )
+  `);
+
+  // ── Sessions (for future token revocation) ────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id         SERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash VARCHAR NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 
@@ -692,42 +669,47 @@ async function ensureAppTables() {
   `);
 }
 
-async function ensureAdminAuth() {
-  const existing = await pool.query('SELECT id FROM admin_auth LIMIT 1');
-  if (existing.rows.length > 0) return;
-  const defaultPassword = process.env.ADMIN_PASSWORD || 'admin123';
-  const recoveryKey = crypto.randomBytes(16).toString('hex');
-  await pool.query(
-    'INSERT INTO admin_auth (password_hash, recovery_key_hash) VALUES ($1, $2)',
-    [storePw(defaultPassword), storePw(recoveryKey)]
-  );
-  console.log('\n' + '═'.repeat(60));
-  console.log('  Admin auth initialized for the first time.');
-  console.log(`  Default password : ${defaultPassword}`);
-  console.log(`  Recovery key     : ${recoveryKey}`);
-  console.log('  Please change the password after your first login.');
-  console.log('  (Recovery key is also used if you forget your password.)');
-  console.log('═'.repeat(60) + '\n');
-}
-
 // ── Auth endpoints ────────────────────────────────────────────────────────────
 
 app.get('/api/auth/status', (req, res) => {
   const token = parseCookies(req.headers.cookie).wfm_token;
-  res.json({ authenticated: !!verifyToken(token) });
+  const payload = verifyToken(token);
+  res.json({ authenticated: !!(payload && payload.userId) });
+});
+
+app.get('/api/auth/me', async (req, res) => {
+  const token = parseCookies(req.headers.cookie).wfm_token;
+  const payload = verifyToken(token);
+  if (!payload || !payload.userId) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const result = await pool.query(
+      'SELECT id, email, full_name, role, organization_id, is_active FROM users WHERE id = $1 AND is_active = true',
+      [payload.userId]
+    );
+    if (!result.rows[0]) return res.status(401).json({ error: 'User not found or inactive' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Auth me error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { password } = req.body || {};
-  if (!password) return res.status(400).json({ error: 'Password required' });
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   try {
-    const result = await pool.query('SELECT password_hash FROM admin_auth LIMIT 1');
-    if (!result.rows[0]) return res.status(500).json({ error: 'Auth not initialized' });
-    if (!checkPw(password, result.rows[0].password_hash)) {
-      return res.status(401).json({ error: 'Incorrect password' });
-    }
-    setAuthCookie(res, signToken({ auth: true }));
-    res.json({ ok: true });
+    const result = await pool.query(
+      'SELECT id, email, password_hash, full_name, role, organization_id, is_active FROM users WHERE email = $1',
+      [email.toLowerCase().trim()]
+    );
+    const user = result.rows[0];
+    if (!user || !user.is_active) return res.status(401).json({ error: 'Invalid credentials' });
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+    const token = signToken({ userId: user.id, email: user.email, role: user.role, organizationId: user.organization_id });
+    setAuthCookie(res, token);
+    res.json({ ok: true, user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role, organization_id: user.organization_id } });
   } catch (err) {
     console.error('Login error:', err.message);
     res.status(500).json({ error: 'Server error' });
@@ -739,15 +721,18 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/auth/change-password', requireAuth, async (req, res) => {
+// Applies authenticateToken directly since /api/auth/* is excluded from global middleware
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
-  if (!newPassword || newPassword.length < 6)
-    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  if (!newPassword || newPassword.length < 8)
+    return res.status(400).json({ error: 'New password must be at least 8 characters' });
   try {
-    const result = await pool.query('SELECT password_hash FROM admin_auth LIMIT 1');
-    if (!checkPw(currentPassword, result.rows[0].password_hash))
-      return res.status(401).json({ error: 'Current password is incorrect' });
-    await pool.query('UPDATE admin_auth SET password_hash = $1, updated_at = NOW()', [storePw(newPassword)]);
+    const result = await pool.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: 'User not found' });
+    const valid = await bcrypt.compare(currentPassword || '', result.rows[0].password_hash);
+    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    const hash = await bcrypt.hash(newPassword, 12);
+    await pool.query('UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2', [hash, req.user.id]);
     res.json({ ok: true });
   } catch (err) {
     console.error('Change password error:', err.message);
@@ -755,27 +740,160 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/auth/recover', async (req, res) => {
-  const { recoveryKey, newPassword } = req.body || {};
-  if (!newPassword || newPassword.length < 6)
-    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+// ── User management endpoints ─────────────────────────────────────────────────
+
+app.get('/api/users', requireRole('super_admin', 'client_admin'), async (req, res) => {
   try {
-    const result = await pool.query('SELECT recovery_key_hash FROM admin_auth LIMIT 1');
-    if (!result.rows[0] || !checkPw(recoveryKey, result.rows[0].recovery_key_hash))
-      return res.status(401).json({ error: 'Invalid recovery key' });
-    const newRecoveryKey = crypto.randomBytes(16).toString('hex');
-    await pool.query(
-      'UPDATE admin_auth SET password_hash = $1, recovery_key_hash = $2, updated_at = NOW()',
-      [storePw(newPassword), storePw(newRecoveryKey)]
+    const orgId = (req.user.role === 'super_admin' && req.query.organization_id)
+      ? parseInt(req.query.organization_id)
+      : req.user.organization_id;
+    const result = await pool.query(
+      'SELECT id, organization_id, email, full_name, role, is_active, last_login_at, created_at FROM users WHERE organization_id = $1 ORDER BY created_at ASC',
+      [orgId]
     );
-    console.log('\n' + '═'.repeat(60));
-    console.log('  Password recovered via recovery key.');
-    console.log(`  New recovery key : ${newRecoveryKey}`);
-    console.log('  Save this key somewhere safe!');
-    console.log('═'.repeat(60) + '\n');
-    res.json({ ok: true, newRecoveryKey });
+    res.json(result.rows);
   } catch (err) {
-    console.error('Recover error:', err.message);
+    console.error('List users error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/users', requireRole('super_admin', 'client_admin'), async (req, res) => {
+  const { email, password, full_name, role } = req.body || {};
+  if (!email || !password || !role) return res.status(400).json({ error: 'Email, password, and role are required' });
+  if (req.user.role === 'client_admin' && ['super_admin', 'client_admin'].includes(role)) {
+    return res.status(403).json({ error: 'Client admins can only create supervisor or read_only users' });
+  }
+  const orgId = (req.user.role === 'super_admin' && req.body.organization_id)
+    ? parseInt(req.body.organization_id)
+    : req.user.organization_id;
+  try {
+    const hash = await bcrypt.hash(password, 12);
+    const result = await pool.query(
+      'INSERT INTO users (organization_id, email, password_hash, full_name, role) VALUES ($1, $2, $3, $4, $5) RETURNING id, organization_id, email, full_name, role, is_active, created_at',
+      [orgId, email.toLowerCase().trim(), hash, full_name || null, role]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A user with this email already exists in this organization' });
+    console.error('Create user error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/users/:id', requireRole('super_admin', 'client_admin'), async (req, res) => {
+  const userId = parseInt(req.params.id);
+  const { full_name, role, is_active } = req.body || {};
+  try {
+    const existing = await pool.query('SELECT organization_id, role FROM users WHERE id = $1', [userId]);
+    if (!existing.rows[0]) return res.status(404).json({ error: 'User not found' });
+    if (req.user.role !== 'super_admin' && existing.rows[0].organization_id !== req.user.organization_id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (req.user.role === 'client_admin' && role && ['super_admin', 'client_admin'].includes(role)) {
+      return res.status(403).json({ error: 'Client admins cannot assign super_admin or client_admin roles' });
+    }
+    const updates = [];
+    const values = [];
+    let idx = 1;
+    if (full_name !== undefined) { updates.push(`full_name = $${idx++}`); values.push(full_name); }
+    if (role !== undefined) { updates.push(`role = $${idx++}`); values.push(role); }
+    if (is_active !== undefined) { updates.push(`is_active = $${idx++}`); values.push(is_active); }
+    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    updates.push('updated_at = NOW()');
+    values.push(userId);
+    const result = await pool.query(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${idx} RETURNING id, organization_id, email, full_name, role, is_active, last_login_at, created_at`,
+      values
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Update user error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/users/:id', requireRole('super_admin', 'client_admin'), async (req, res) => {
+  const userId = parseInt(req.params.id);
+  if (userId === req.user.id) return res.status(400).json({ error: 'Cannot deactivate your own account' });
+  try {
+    const existing = await pool.query('SELECT organization_id FROM users WHERE id = $1', [userId]);
+    if (!existing.rows[0]) return res.status(404).json({ error: 'User not found' });
+    if (req.user.role !== 'super_admin' && existing.rows[0].organization_id !== req.user.organization_id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    await pool.query('UPDATE users SET is_active = false, updated_at = NOW() WHERE id = $1', [userId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Deactivate user error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── Organization endpoints (super_admin only) ─────────────────────────────────
+
+app.get('/api/organizations', requireRole('super_admin'), async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM organizations ORDER BY created_at ASC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/organizations', requireRole('super_admin'), async (req, res) => {
+  const { name, slug } = req.body || {};
+  if (!name || !slug) return res.status(400).json({ error: 'Name and slug are required' });
+  const cleanSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  try {
+    const result = await pool.query(
+      'INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING *',
+      [name, cleanSlug]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Slug already taken' });
+    console.error('Create org error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/organizations/:id', requireRole('super_admin'), async (req, res) => {
+  const { name, is_active } = req.body || {};
+  const updates = [];
+  const values = [];
+  let idx = 1;
+  if (name !== undefined) { updates.push(`name = $${idx++}`); values.push(name); }
+  if (is_active !== undefined) { updates.push(`is_active = $${idx++}`); values.push(is_active); }
+  if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+  updates.push('updated_at = NOW()');
+  values.push(parseInt(req.params.id));
+  try {
+    const result = await pool.query(
+      `UPDATE organizations SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Organization not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Update org error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/organizations/:id/users', requireRole('super_admin'), async (req, res) => {
+  const { email, password, full_name } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+  try {
+    const hash = await bcrypt.hash(password, 12);
+    const result = await pool.query(
+      'INSERT INTO users (organization_id, email, password_hash, full_name, role) VALUES ($1, $2, $3, $4, $5) RETURNING id, organization_id, email, full_name, role, is_active, created_at',
+      [parseInt(req.params.id), email.toLowerCase().trim(), hash, full_name || null, 'client_admin']
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already exists in this organization' });
+    console.error('Create org user error:', err.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2949,7 +3067,6 @@ app.get('/{*splat}', (req, res) => {
 });
 
 ensureAppTables()
-  .then(() => ensureAdminAuth())
   .then(() => {
     app.listen(process.env.PORT || 5000, "0.0.0.0", () => {
       console.log(`Backend Server is running on http://0.0.0.0:${process.env.PORT || 5000}`);

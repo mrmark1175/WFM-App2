@@ -1,31 +1,10 @@
-
 /**
- * Mock authentication system.
- * Allows a request-scoped organization override while keeping org 1 as the
- * backward-compatible default until real authentication is implemented.
+ * Compatibility shim: all routes call getCurrentUser(req) to get the
+ * authenticated user. Now that real auth sets req.user via authenticateToken,
+ * this just returns req.user directly.
  */
-function getDefaultOrganizationId() {
-  const value = Number(process.env.DEFAULT_ORGANIZATION_ID);
-  return Number.isInteger(value) && value > 0 ? value : 1;
-}
-
 function getCurrentUser(req) {
-  const headerOrgId = Number(
-    req?.headers?.['x-organization-id'] ?? req?.headers?.['x-org-id']
-  );
-  const organizationId =
-    Number.isInteger(headerOrgId) && headerOrgId > 0
-      ? headerOrgId
-      : getDefaultOrganizationId();
-
-  return {
-    id: 1,
-    organization_id: organizationId,
-    role: 'ADMIN',
-    name: 'Mock Admin'
-  };
+  return req.user || { id: null, organization_id: 1, role: 'read_only', name: 'Unknown' };
 }
 
-module.exports = {
-  getCurrentUser
-};
+module.exports = { getCurrentUser };

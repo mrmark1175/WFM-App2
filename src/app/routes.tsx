@@ -95,4 +95,8 @@ export const router = createBrowserRouter([
     path: "/help/auto-scheduler",
     lazy: () => lazyLoad(async () => { const { HelpAutoScheduler } = await import("./pages/HelpAutoScheduler"); return { Component: HelpAutoScheduler }; }),
   },
+  {
+    path: "/admin/users",
+    lazy: () => lazyLoad(async () => { const { UsersPage } = await import("./pages/admin/Users"); return { Component: UsersPage }; }),
+  },
 ]);
