@@ -87,6 +87,7 @@ interface LobSettings {
   voice_aht?: number; voice_sla_target?: number; voice_sla_seconds?: number;
   chat_aht?: number; chat_sla_target?: number; chat_sla_seconds?: number; chat_concurrency?: number;
   email_aht?: number; email_sla_target?: number; email_sla_seconds?: number; email_occupancy?: number;
+  task_switch_multiplier?: number;
   hours_of_operation?: Record<string, Record<string, DaySchedule>>;
 }
 
@@ -314,11 +315,12 @@ function calcWeeklyErlangFTE(
   };
 }
 
-// Blended staffing: the dominant real-time channel (voice > chat > email) sets the Erlang C base;
-// idle capacity from that base absorbs the next channel, then email/cases async.
-// When voice is absent, chat Erlang C becomes the base — this matches the fix applied
-// to calculatePooledFTE in LongTermForecasting_Demand.tsx (Bug 2 from commit 0dce6ff).
-// Using pure traffic-intensity for a chat-only pool (the old behavior) under-staffed by ~40-50%.
+// Blended staffing using the Idle Time Utilization Method (instructions.txt):
+//   Voice Erlang C establishes the base; usable idle = N × (ρmax − ρv) absorbs email/cases.
+//   Chat is an independent Erlang C additive block — it does NOT absorb voice idle time
+//   because live chat has its own SLA clock and would miss SL during voice spikes.
+//   Email/cases AHT is inflated by taskSwitchMultiplier to account for context-switching latency.
+//   Surplus email/cases beyond usable idle is staffed at ρmax occupancy (not 100%).
 function calcWeeklyBlendedFTE(
   voiceVol: number, voiceAht: number,
   chatVol: number, chatAht: number,
@@ -330,9 +332,10 @@ function calcWeeklyBlendedFTE(
   slaVoiceSec: number,
   slaChatTarget: number,
   slaChatSec: number,
-  emailOccupancyPct: number,
+  emailOccupancyPct: number,   // ρmax — max blended occupancy ceiling (also used for email-only pools)
   shrinkagePct: number,
   chatConcurrency: number,
+  taskSwitchMultiplier = 1.05, // AHT inflation for async work in blended queues
 ): { fte: number; occupancy: number } {
   if (daysPerWeek <= 0 || operatingHoursPerDay <= 0) return { fte: 0, occupancy: 0 };
 
@@ -341,33 +344,37 @@ function calcWeeklyBlendedFTE(
   const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
   const safeConcurrency = Math.max(1, chatConcurrency);
   const coverageRatio = fteHoursPerDay > 0 ? operatingHoursPerDay / fteHoursPerDay : 1;
-  const idleAbsorptionFactor = 0.6; // conservative: only 60% of nominal idle time can be reused cross-channel
+  const rhoMax = Math.max(0.01, Math.min(1, emailOccupancyPct / 100));
 
   const voiceCPI = voiceVol > 0 ? (voiceVol / daysPerWeek) / intervalsPerDay : 0;
   const chatCPI = chatVol > 0 ? (chatVol / daysPerWeek) / intervalsPerDay : 0;
   const emailCPI = emailVol > 0 ? (emailVol / daysPerWeek) / intervalsPerDay : 0;
+  const effectiveEmailAht = emailAht * taskSwitchMultiplier;
 
   if (voiceCPI > 0 && voiceAht > 0) {
-    // ── Voice-anchored blended pool (original model) ─────────────────────────
-    // Voice Erlang C sets the base; idle capacity absorbs chat then email/cases.
+    // ── Voice-anchored blended pool ───────────────────────────────────────────
+    // Step 1-2: Voice Erlang C base
     const vr = computeIntervalFTE(voiceCPI, 30, voiceAht, slaVoiceTarget, slaVoiceSec, 85, 0, "voice", 1, 0);
     const voiceRawAgents = vr.rawAgents;
-
     const voiceWorkloadHours = voiceCPI * voiceAht / 3600;
-    const voiceIdleHours = Math.max(0, voiceRawAgents * intervalHours - voiceWorkloadHours) * idleAbsorptionFactor;
+    const voiceOccupancy = voiceRawAgents > 0 ? voiceWorkloadHours / (voiceRawAgents * intervalHours) : 0;
 
-    const rawChatWorkloadHours = chatCPI * chatAht / 3600;
-    const concurrentChatWorkload = rawChatWorkloadHours / safeConcurrency;
-    const netChatWorkload = Math.max(0, concurrentChatWorkload - voiceIdleHours);
-    const remainingIdle = Math.max(0, voiceIdleHours - concurrentChatWorkload);
+    // Step 4: Usable idle = capacity headroom below ρmax ceiling (not raw idle × absorption factor)
+    const voiceUsableIdleHours = Math.max(0, voiceRawAgents * intervalHours * (rhoMax - voiceOccupancy));
 
-    const emailWorkloadHours = emailCPI * emailAht / 3600;
-    const netEmailWorkload = Math.max(0, emailWorkloadHours - remainingIdle);
+    // Chat: Erlang C additive block — independent of voice idle absorption
+    let chatExtraAgents = 0;
+    if (chatCPI > 0 && chatAht > 0) {
+      const cr = computeIntervalFTE(chatCPI, 30, chatAht, slaChatTarget, slaChatSec, 85, 0, "chat", safeConcurrency, 0);
+      chatExtraAgents = cr.rawAgents;
+    }
 
-    const chatExtraAgents = netChatWorkload / intervalHours;
-    const emailExtraAgents = netEmailWorkload / intervalHours;
+    // Step 3-5: Email/cases — absorb voice idle, surplus staffed at ρmax
+    const emailWorkloadHours = emailCPI * effectiveEmailAht / 3600;
+    const netEmailWorkload = Math.max(0, emailWorkloadHours - voiceUsableIdleHours);
+    const emailExtraAgents = rhoMax > 0 ? netEmailWorkload / (rhoMax * intervalHours) : 0;
+
     const totalBaseAgents = voiceRawAgents + chatExtraAgents + emailExtraAgents;
-
     return {
       fte: roundTo((totalBaseAgents / shrinkFactor) * coverageRatio),
       occupancy: vr.occupancy,
@@ -376,18 +383,16 @@ function calcWeeklyBlendedFTE(
 
   if (chatCPI > 0 && chatAht > 0) {
     // ── Chat-anchored blended pool (voice absent) ─────────────────────────────
-    // Run full Erlang C for chat — traffic-intensity model would under-staff by ~40-50%
-    // at typical occupancy because it skips the SLA queuing headroom.
+    // Full Erlang C for chat; email absorbs chat idle using same ρmax formula.
     const cr = computeIntervalFTE(chatCPI, 30, chatAht, slaChatTarget, slaChatSec, 85, 0, "chat", safeConcurrency, 0);
     const chatRawAgents = cr.rawAgents;
-
-    // Idle physical agent capacity after serving chat (concurrency-adjusted workload)
     const chatPhysicalWorkloadHours = chatCPI * chatAht / (3600 * safeConcurrency);
-    const chatIdleHours = Math.max(0, chatRawAgents * intervalHours - chatPhysicalWorkloadHours) * idleAbsorptionFactor;
+    const chatOccupancy = chatRawAgents > 0 ? chatPhysicalWorkloadHours / (chatRawAgents * intervalHours) : 0;
+    const chatUsableIdleHours = Math.max(0, chatRawAgents * intervalHours * (rhoMax - chatOccupancy));
 
-    const emailWorkloadHours = emailCPI * emailAht / 3600;
-    const netEmailWorkload = Math.max(0, emailWorkloadHours - chatIdleHours);
-    const emailExtraAgents = netEmailWorkload / intervalHours;
+    const emailWorkloadHours = emailCPI * effectiveEmailAht / 3600;
+    const netEmailWorkload = Math.max(0, emailWorkloadHours - chatUsableIdleHours);
+    const emailExtraAgents = rhoMax > 0 ? netEmailWorkload / (rhoMax * intervalHours) : 0;
     const totalBaseAgents = chatRawAgents + emailExtraAgents;
 
     return {
@@ -397,7 +402,8 @@ function calcWeeklyBlendedFTE(
   }
 
   // ── Email/cases only ──────────────────────────────────────────────────────────
-  // Use the proper async workload model with occupancy target (not 100% utilisation).
+  // Async backlog model: emailOccupancyPct is the utilisation target (no SLA queue).
+  // No task-switch penalty here — agents work email exclusively, no context switching.
   if (emailCPI > 0 && emailAht > 0) {
     const er = computeIntervalFTE(emailCPI, 30, emailAht, 0, 0, emailOccupancyPct, 0, "email");
     return {
@@ -1141,6 +1147,7 @@ export function CapacityPlanning() {
   const slaEmailSec    = Number(lobSettings?.email_sla_seconds ?? snap?.emailSlaAnswerSeconds ?? 14400);
   const emailOccupancy = Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85;
   const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2));
+  const taskSwitchMultiplier = Number(lobSettings?.task_switch_multiplier ?? snap?.taskSwitchMultiplier ?? 1.05) || 1.05;
   // ── Full computed calculations per week
   const weekCalcs = useMemo<WeekCalc[]>(() => {
     let projHC = config.startingHc;
@@ -1200,7 +1207,7 @@ export function CapacityPlanning() {
           enabledChannels.includes("chat") ? effVolChat : 0, effAhtChat,
           blendedEmailVol, blendedEmailAht,
           daysPerWeek, operatingHoursPerDay, hoursPerDay,
-          slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, emailOccupancy, shrinkagePct, chatConcurrency,
+          slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, emailOccupancy, shrinkagePct, chatConcurrency, taskSwitchMultiplier,
         );
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
@@ -1285,7 +1292,7 @@ export function CapacityPlanning() {
   }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay,
       shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
-      emailOccupancy, chatConcurrency]);
+      emailOccupancy, chatConcurrency, taskSwitchMultiplier]);
 
   // ── What-if comparison — re-project HC for each what-if using its configSnapshot
   const whatIfComparisons = useMemo(() => {
@@ -1675,7 +1682,10 @@ export function CapacityPlanning() {
                         <span className="text-black">· {chatConcurrency}× concurrency</span>
                       )}
                       {ch === "email" && (
-                        <span className="text-black">· {emailOccupancy}% utilisation</span>
+                        <span className="text-black">· {emailOccupancy}% max async occ.</span>
+                      )}
+                      {ch === "email" && !isDedicated && taskSwitchMultiplier !== 1 && (
+                        <span className="text-black">· {taskSwitchMultiplier}× AHT switch penalty</span>
                       )}
                     </div>
                   );

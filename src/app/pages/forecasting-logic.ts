@@ -333,6 +333,7 @@ export interface Assumptions {
   shrinkageItems?: unknown[];
   planningMonths?: number;
   forecastHorizon?: 1 | 2;
+  taskSwitchMultiplier?: number; // AHT inflation for blended async work (email/cases) due to context-switching; default 1.05
 }
 
 // ── Shared forecast dispatcher (used by Demand Planner + Distribution Engine) ─

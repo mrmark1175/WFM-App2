@@ -327,6 +327,11 @@ async function ensureAppTables() {
       ALTER TABLE lob_settings ADD COLUMN IF NOT EXISTS supply_timezone TEXT NOT NULL DEFAULT 'Asia/Manila';
     EXCEPTION WHEN duplicate_column THEN NULL; WHEN undefined_table THEN NULL; END; $$
   `);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE lob_settings ADD COLUMN IF NOT EXISTS task_switch_multiplier NUMERIC(5,3) NOT NULL DEFAULT 1.05;
+    EXCEPTION WHEN duplicate_column THEN NULL; WHEN undefined_table THEN NULL; END; $$
+  `);
 
   // ── demand_actuals — per-LOB, per-channel actual volumes for re-cut ──────────
   await pool.query(`
@@ -1875,6 +1880,7 @@ app.get('/api/lob-settings', async (req, res) => {
                 ls.voice_aht, ls.voice_sla_target, ls.voice_sla_seconds, ls.voice_shrinkage, ls.voice_max_occupancy,
                 ls.chat_aht, ls.chat_sla_target, ls.chat_sla_seconds, ls.chat_concurrency, ls.chat_shrinkage,
                 ls.email_aht, ls.email_sla_target, ls.email_sla_seconds, ls.email_occupancy, ls.email_shrinkage,
+                ls.task_switch_multiplier,
                 ls.hours_of_operation, ls.demand_timezone, ls.supply_timezone, ls.updated_at
          FROM lobs l
          LEFT JOIN lob_settings ls ON ls.lob_id = l.id AND ls.organization_id = $1
@@ -1890,6 +1896,7 @@ app.get('/api/lob-settings', async (req, res) => {
                 ls.voice_aht, ls.voice_sla_target, ls.voice_sla_seconds, ls.voice_shrinkage, ls.voice_max_occupancy,
                 ls.chat_aht, ls.chat_sla_target, ls.chat_sla_seconds, ls.chat_concurrency, ls.chat_shrinkage,
                 ls.email_aht, ls.email_sla_target, ls.email_sla_seconds, ls.email_occupancy, ls.email_shrinkage,
+                ls.task_switch_multiplier,
                 ls.hours_of_operation, ls.demand_timezone, ls.supply_timezone, ls.updated_at
          FROM lobs l
          LEFT JOIN lob_settings ls ON ls.lob_id = l.id AND ls.organization_id = $1
@@ -1914,6 +1921,7 @@ app.put('/api/lob-settings', async (req, res) => {
     voice_aht, voice_sla_target, voice_sla_seconds,
     chat_aht, chat_sla_target, chat_sla_seconds, chat_concurrency,
     email_aht, email_sla_target, email_sla_seconds, email_occupancy,
+    task_switch_multiplier,
     hours_of_operation,
     demand_timezone, supply_timezone,
   } = req.body;
@@ -1924,8 +1932,9 @@ app.put('/api/lob-settings', async (req, res) => {
           voice_aht, voice_sla_target, voice_sla_seconds,
           chat_aht, chat_sla_target, chat_sla_seconds, chat_concurrency,
           email_aht, email_sla_target, email_sla_seconds, email_occupancy,
+          task_switch_multiplier,
           hours_of_operation, demand_timezone, supply_timezone, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
        ON CONFLICT (organization_id, lob_id) DO UPDATE SET
          channels_enabled   = EXCLUDED.channels_enabled,
          pooling_mode       = EXCLUDED.pooling_mode,
@@ -1939,11 +1948,12 @@ app.put('/api/lob-settings', async (req, res) => {
          email_aht          = EXCLUDED.email_aht,
          email_sla_target   = EXCLUDED.email_sla_target,
          email_sla_seconds  = EXCLUDED.email_sla_seconds,
-         email_occupancy    = EXCLUDED.email_occupancy,
-         hours_of_operation = EXCLUDED.hours_of_operation,
-         demand_timezone    = EXCLUDED.demand_timezone,
-         supply_timezone    = EXCLUDED.supply_timezone,
-         updated_at         = NOW()`,
+         email_occupancy        = EXCLUDED.email_occupancy,
+         task_switch_multiplier = EXCLUDED.task_switch_multiplier,
+         hours_of_operation     = EXCLUDED.hours_of_operation,
+         demand_timezone        = EXCLUDED.demand_timezone,
+         supply_timezone        = EXCLUDED.supply_timezone,
+         updated_at             = NOW()`,
       [
         user.organization_id, lobId,
         JSON.stringify(channels_enabled ?? { voice: true, email: false, chat: false, cases: false }),
@@ -1951,6 +1961,7 @@ app.put('/api/lob-settings', async (req, res) => {
         voice_aht ?? 300, voice_sla_target ?? 80, voice_sla_seconds ?? 20,
         chat_aht ?? 450, chat_sla_target ?? 80, chat_sla_seconds ?? 30, chat_concurrency ?? 2,
         email_aht ?? 600, email_sla_target ?? 90, email_sla_seconds ?? 14400, email_occupancy ?? 85,
+        task_switch_multiplier ?? 1.05,
         JSON.stringify(hours_of_operation ?? {}),
         demand_timezone ?? 'America/New_York',
         supply_timezone ?? 'Asia/Manila',

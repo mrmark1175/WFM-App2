@@ -103,25 +103,25 @@ interface BlendedFteInputs {
   chatVolume: number;
   chatAhtSeconds: number;
   chatConcurrency: number;
+  chatTargetServiceLevelPct: number;
+  chatTargetAnswerTimeSeconds: number;
   emailVolume: number;
   emailAhtSeconds: number;
   intervalHours: number;
   shrinkagePct: number;
+  maxBlendedOccupancyPct?: number; // ρmax — max occupancy ceiling for blended pool; default 85
+  taskSwitchMultiplier?: number;   // AHT inflation on email/cases when in blended queue; default 1.05
   safetyMarginPct?: number;
 }
 interface BlendedFteResult {
   voiceErlang: ErlangCStaffingResult;
   baseVoiceStaff: number;
   voiceWorkloadHours: number;
-  voiceAvailableHours: number;
-  voiceIdleHours: number;
-  rawChatWorkloadHours: number;
-  concurrentChatWorkloadHours: number;
-  netChatWorkloadHours: number;
-  remainingIdleHours: number;
-  emailWorkloadHours: number;
+  voiceOccupancy: number;
+  voiceUsableIdleHours: number;
+  chatErlangStaff: number;
+  adjustedEmailWorkloadHours: number;
   netEmailWorkloadHours: number;
-  chatEquivalentStaff: number;
   emailEquivalentStaff: number;
   totalBaseStaff: number;
   totalFteAfterShrinkage: number;
@@ -145,6 +145,7 @@ interface LobSettingsDefaults {
   email_sla_target: number;
   email_sla_seconds: number;
   email_occupancy: number;
+  task_switch_multiplier?: number;
   channels_enabled: Record<ChannelKey, boolean>;
   pooling_mode: PoolingMode;
   hours_of_operation?: Record<string, Record<string, { enabled: boolean; open: string; close: string }>>;
@@ -235,6 +236,7 @@ function lobSettingsToAssumptionDefaults(s: LobSettingsDefaults): Partial<Assump
     emailSlaTarget:         s.email_sla_target,
     emailSlaAnswerSeconds:  s.email_sla_seconds,
     occupancy:              s.email_occupancy,
+    taskSwitchMultiplier:   s.task_switch_multiplier ?? 1.05,
     // shrinkage is owned by Shrinkage Planning, not LOB Settings
     operatingDaysPerWeek:   deriveOperatingDaysPerWeek(s.hours_of_operation?.voice),
     operatingHoursPerDay:   deriveOperatingHoursPerDay(s.hours_of_operation?.voice),
@@ -261,6 +263,7 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   voiceAvgPatienceSeconds: 120,
   chatAvgPatienceSeconds: 60,
   occupancy: 85,
+  taskSwitchMultiplier: 1.05,
   growthRate: 5,
   safetyMargin: 5,
   currency: "USD",
@@ -519,15 +522,22 @@ export const calculateBlendedTriChannelRequirement = ({
   chatVolume,
   chatAhtSeconds,
   chatConcurrency,
+  chatTargetServiceLevelPct,
+  chatTargetAnswerTimeSeconds,
   emailVolume,
   emailAhtSeconds,
   intervalHours,
   shrinkagePct,
+  maxBlendedOccupancyPct = 85,
+  taskSwitchMultiplier = 1.05,
   safetyMarginPct = 0,
 }: BlendedFteInputs): BlendedFteResult => {
   const safeIntervalHours = Math.max(intervalHours, 0);
   const safeShrinkageFactor = 1 - shrinkagePct / 100;
   const safeChatConcurrency = chatConcurrency > 0 ? chatConcurrency : 1;
+  const rhoMax = Math.max(0.01, Math.min(1, maxBlendedOccupancyPct / 100));
+
+  // Step 1-2: Voice Erlang C establishes the base staffing level
   const voiceErlang = calculateErlangCStaffing({
     volume: voiceVolume,
     ahtSeconds: voiceAhtSeconds,
@@ -537,34 +547,48 @@ export const calculateBlendedTriChannelRequirement = ({
   });
   const baseVoiceStaff = voiceErlang.agents;
   const voiceWorkloadHours = Math.max(0, (voiceVolume * Math.max(voiceAhtSeconds, 0)) / 3600);
-  const voiceAvailableHours = baseVoiceStaff * safeIntervalHours;
-  const voiceIdleHours = Math.max(0, voiceAvailableHours - voiceWorkloadHours);
-  const rawChatWorkloadHours = Math.max(0, (chatVolume * Math.max(chatAhtSeconds, 0)) / 3600);
-  const concurrentChatWorkloadHours = rawChatWorkloadHours / safeChatConcurrency;
-  const netChatWorkloadHours = Math.max(0, concurrentChatWorkloadHours - voiceIdleHours);
-  const remainingIdleHours = Math.max(0, voiceIdleHours - concurrentChatWorkloadHours);
-  const emailWorkloadHours = Math.max(0, (emailVolume * Math.max(emailAhtSeconds, 0)) / 3600);
-  const netEmailWorkloadHours = Math.max(0, emailWorkloadHours - remainingIdleHours);
-  const chatEquivalentStaff = safeIntervalHours > 0 ? netChatWorkloadHours / safeIntervalHours : 0;
-  const emailEquivalentStaff = safeIntervalHours > 0 ? netEmailWorkloadHours / safeIntervalHours : 0;
-  const totalBaseStaff = baseVoiceStaff + chatEquivalentStaff + emailEquivalentStaff;
+  const voiceOccupancy = baseVoiceStaff > 0 && safeIntervalHours > 0
+    ? voiceWorkloadHours / (baseVoiceStaff * safeIntervalHours)
+    : 0;
+
+  // Step 4: Usable idle = capacity headroom below the ρmax ceiling (not raw idle)
+  const voiceUsableIdleHours = Math.max(0, baseVoiceStaff * safeIntervalHours * (rhoMax - voiceOccupancy));
+
+  // Chat: Erlang C additive block — does NOT absorb voice idle time.
+  // Live chat has its own SLA target; relying on voice idle would fail SL during voice spikes.
+  const chatErlang = chatVolume > 0 && safeIntervalHours > 0
+    ? calculateErlangCStaffing({
+        volume: chatVolume,
+        ahtSeconds: chatAhtSeconds / safeChatConcurrency,
+        targetServiceLevelPct: chatTargetServiceLevelPct,
+        targetAnswerTimeSeconds: chatTargetAnswerTimeSeconds,
+        intervalHours: safeIntervalHours,
+      })
+    : null;
+  const chatErlangStaff = chatErlang?.agents ?? 0;
+
+  // Step 3-5: Email/cases — apply task-switch AHT penalty, absorb voice idle, staff remainder at ρmax
+  const adjustedEmailAhtSeconds = emailAhtSeconds * taskSwitchMultiplier;
+  const adjustedEmailWorkloadHours = Math.max(0, (emailVolume * Math.max(adjustedEmailAhtSeconds, 0)) / 3600);
+  const netEmailWorkloadHours = Math.max(0, adjustedEmailWorkloadHours - voiceUsableIdleHours);
+  const emailEquivalentStaff = safeIntervalHours > 0 && rhoMax > 0
+    ? netEmailWorkloadHours / (rhoMax * safeIntervalHours)
+    : 0;
+
+  const totalBaseStaff = baseVoiceStaff + chatErlangStaff + emailEquivalentStaff;
   const totalFteAfterShrinkage = safeShrinkageFactor > 0 ? totalBaseStaff / safeShrinkageFactor : 9999.9;
   const totalFteWithSafetyMargin = Number.isFinite(totalFteAfterShrinkage)
     ? totalFteAfterShrinkage * (1 + Math.max(safetyMarginPct, 0) / 100)
     : 9999.9;
   return {
     voiceErlang,
-    baseVoiceStaff,
+    baseVoiceStaff: roundTo(baseVoiceStaff, 3),
     voiceWorkloadHours: roundTo(voiceWorkloadHours, 3),
-    voiceAvailableHours: roundTo(voiceAvailableHours, 3),
-    voiceIdleHours: roundTo(voiceIdleHours, 3),
-    rawChatWorkloadHours: roundTo(rawChatWorkloadHours, 3),
-    concurrentChatWorkloadHours: roundTo(concurrentChatWorkloadHours, 3),
-    netChatWorkloadHours: roundTo(netChatWorkloadHours, 3),
-    remainingIdleHours: roundTo(remainingIdleHours, 3),
-    emailWorkloadHours: roundTo(emailWorkloadHours, 3),
+    voiceOccupancy: roundTo(voiceOccupancy, 3),
+    voiceUsableIdleHours: roundTo(voiceUsableIdleHours, 3),
+    chatErlangStaff: roundTo(chatErlangStaff, 3),
+    adjustedEmailWorkloadHours: roundTo(adjustedEmailWorkloadHours, 3),
     netEmailWorkloadHours: roundTo(netEmailWorkloadHours, 3),
-    chatEquivalentStaff: roundTo(chatEquivalentStaff, 3),
     emailEquivalentStaff: roundTo(emailEquivalentStaff, 3),
     totalBaseStaff: roundTo(totalBaseStaff, 3),
     totalFteAfterShrinkage: roundTo(totalFteAfterShrinkage, 3),
@@ -891,10 +915,14 @@ const calculatePooledFTE = (
       chatVolume: chatEntry?.volume ?? 0,
       chatAhtSeconds: assumptions.chatAht,
       chatConcurrency: Math.max(1, assumptions.chatConcurrency),
+      chatTargetServiceLevelPct: assumptions.chatSlaTarget,
+      chatTargetAnswerTimeSeconds: assumptions.chatSlaAnswerSeconds,
       emailVolume: emailLikeEntries.reduce((sum, entry) => sum + entry.volume, 0),
       emailAhtSeconds: assumptions.emailAht,
       intervalHours: getOpenHoursPerMonth(assumptions),
       shrinkagePct: assumptions.shrinkage,
+      maxBlendedOccupancyPct: assumptions.occupancy,
+      taskSwitchMultiplier: assumptions.taskSwitchMultiplier ?? 1.05,
       safetyMarginPct: assumptions.safetyMargin,
     });
     return getGrossRequiredFTE(blendedRequirement.totalBaseStaff, assumptions);

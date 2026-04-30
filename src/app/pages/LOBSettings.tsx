@@ -48,11 +48,12 @@ interface LobSettings {
   chat_sla_target: number;
   chat_sla_seconds: number;
   chat_concurrency: number;
-  // Email — utilisation IS an input (async backlog model, no queue)
+  // Email / blended async — email_occupancy doubles as ρmax for voice+email blended pools
   email_aht: number;
   email_sla_target: number;
   email_sla_seconds: number;
   email_occupancy: number;
+  task_switch_multiplier: number;
   hours_of_operation: HoursOfOperation;
   demand_timezone: string;
   supply_timezone: string;
@@ -121,7 +122,8 @@ function applyDefaults(raw: Partial<LobSettings> & { lob_id: number; lob_name: s
     email_aht:         raw.email_aht          ?? 600,
     email_sla_target:  raw.email_sla_target   ?? 90,
     email_sla_seconds: raw.email_sla_seconds  ?? 14400,
-    email_occupancy:   raw.email_occupancy    ?? 85,
+    email_occupancy:        raw.email_occupancy        ?? 85,
+    task_switch_multiplier: raw.task_switch_multiplier ?? 1.05,
     hours_of_operation: mergeHours(raw.hours_of_operation as Partial<HoursOfOperation> | null),
     demand_timezone:   raw.demand_timezone   ?? "America/New_York",
     supply_timezone:   raw.supply_timezone   ?? "Asia/Manila",
@@ -237,9 +239,12 @@ function ChannelStaffingSection({
           <NumericField label="SLA Seconds" value={s.email_sla_seconds} unit="s" min={60} max={259200}
             onChange={(v) => onUpdate(s.lob_id, "email_sla_seconds", v)}
             tooltip="Target handling time for email (e.g. 14400 = 4 hours). No queue model — email uses a backlog/async model." />
-          <NumericField label="Utilisation Target" value={s.email_occupancy} unit="%" min={1} max={100}
+          <NumericField label="Max Async Occupancy" value={s.email_occupancy} unit="%" min={1} max={100}
             onChange={(v) => onUpdate(s.lob_id, "email_occupancy", v)}
-            tooltip="Target agent utilisation % for email. Unlike voice, this IS an input — email has no queue, so utilisation drives the backlog model." />
+            tooltip="Maximum occupancy (ρmax) for async work. For email-only pools this drives the backlog model. For blended voice+email pools it caps the occupancy ceiling used to calculate usable idle time." />
+          <NumericField label="Task-Switch Multiplier" value={s.task_switch_multiplier} unit="×" min={1} max={1.5} step={0.01}
+            onChange={(v) => onUpdate(s.lob_id, "task_switch_multiplier", v)}
+            tooltip="AHT inflation factor for email/cases in a blended queue. Agents lose context when switching from a call back to an email. Range: 1.00 (no penalty) to 1.15. Default: 1.05." />
         </div>
       )}
       {channel === "cases" && (
