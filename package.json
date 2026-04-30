@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "check": "npm run build",
     "dev": "vite",
+    "preview": "vite preview",
     "start": "node server/server.cjs",
     "migrate:supabase": "node server/migrate_to_supabase.cjs"
   },
