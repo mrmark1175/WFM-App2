@@ -332,6 +332,7 @@ export interface Assumptions {
   useShrinkageModeler?: boolean;
   shrinkageItems?: unknown[];
   planningMonths?: number;
+  forecastHorizon?: 1 | 2;
 }
 
 // ── Shared forecast dispatcher (used by Demand Planner + Distribution Engine) ─

@@ -274,6 +274,7 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   useShrinkageModeler: false,
   shrinkageItems: DEFAULT_SHRINKAGE_ITEMS,
   planningMonths: 12,
+  forecastHorizon: 1,
 };
 const EMPTY_CHANNEL_DATA: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [], cases: [] };
 const EMPTY_CHANNEL_OVERRIDES: Record<ChannelKey, Record<number, string>> = { voice: {}, email: {}, chat: {}, cases: {} };
@@ -975,6 +976,9 @@ export default function LongTermForecastingDemand() {
   const startDateObj = Number.isFinite(new Date(assumptions.startDate).getTime()) ? new Date(assumptions.startDate) : new Date();
   const forecastYear = startDateObj.getFullYear();
   const forecastMonth = startDateObj.getMonth(); // 0-indexed
+  const isTwoYear = (assumptions.forecastHorizon ?? 1) === 2;
+  const forecastYear2 = forecastYear + 1;
+  const effectivePlanningMonths = isTwoYear ? 24 : (assumptions.planningMonths ?? 12);
   const historicalWindowStart = `${forecastYear - 2}-01-01`;
   const historicalWindowEnd = `${forecastYear - 1}-12-31`;
   const historicalApiData = historicalApiDataByChannel.voice;
@@ -1628,14 +1632,17 @@ export default function LongTermForecastingDemand() {
     const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
     const published: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [], cases: [] };
     for (const ch of channels) {
-      const vols = forecastVolumesByChannel[ch];
+      const vols = combinedForecastVolumesByChannel[ch];
       const factor = recutFactorByChannel[ch];
       published[ch] = vols.map((v, i) => {
-        if (completedMonthIndices.includes(i)) {
+        const isYear2 = isTwoYear && i >= 12;
+        if (!isYear2 && completedMonthIndices.includes(i)) {
           // Use actual if available, else original forecast
           const key = getActualKey(i, ch);
           return demandActuals[key] ?? v;
         }
+        // Year 2 months: use two-pass base directly (re-cut factor already baked into history)
+        if (isYear2) return v;
         return factor != null ? Math.round(v * factor) : v;
       });
     }
@@ -1757,7 +1764,7 @@ export default function LongTermForecastingDemand() {
     }
     return groups;
   }, [historicalSourceRows]);
-  const forecastData = useMemo(() => buildDemandForecastData(effectiveFinalHistoricalDataByChannel.voice, assumptions, forecastMethod, hwParams, arimaParams, decompParams), [effectiveFinalHistoricalDataByChannel, assumptions, forecastMethod, hwParams, arimaParams, decompParams]);
+  const forecastData = useMemo(() => buildDemandForecastData(effectiveFinalHistoricalDataByChannel.voice, { ...assumptions, planningMonths: effectivePlanningMonths }, forecastMethod, hwParams, arimaParams, decompParams), [effectiveFinalHistoricalDataByChannel, assumptions, effectivePlanningMonths, forecastMethod, hwParams, arimaParams, decompParams]);
   const selectedBlendConfig = useMemo(() => buildBlendConfiguration(selectedChannels, poolingMode), [selectedChannels, poolingMode]);
   const includedChannels = useMemo(() => selectedBlendConfig.includedChannels, [selectedBlendConfig]);
   const volumeTrendComparison = useMemo(() => {
@@ -1772,12 +1779,12 @@ export default function LongTermForecastingDemand() {
       yearSeries[monthIndex] = includedChannels.reduce((sum, channel) => sum + (effectiveFinalHistoricalDataByChannel[channel][idx] ?? 0), 0);
       actualByYear.set(time.year, yearSeries);
     });
-    const forecastTimeline = getTimeline(assumptions.startDate, 0, assumptions.planningMonths ?? 12);
+    const forecastTimeline = getTimeline(assumptions.startDate, 0, effectivePlanningMonths);
     forecastTimeline.forEach((time, idx) => {
       const monthIndex = MONTH_NAMES.indexOf(time.month);
       if (monthIndex < 0) return;
       const yearSeries = forecastByYear.get(time.year) ?? new Array<number | null>(12).fill(null);
-      yearSeries[monthIndex] = includedChannels.reduce((sum, channel) => sum + (forecastVolumesByChannel[channel][idx] ?? 0), 0);
+      yearSeries[monthIndex] = includedChannels.reduce((sum, channel) => sum + (combinedForecastVolumesByChannel[channel][idx] ?? 0), 0);
       forecastByYear.set(time.year, yearSeries);
     });
     const actualYears = Array.from(actualByYear.keys()).sort((left, right) => Number(left) - Number(right));
@@ -1807,7 +1814,7 @@ export default function LongTermForecastingDemand() {
       return point;
     });
     return { chartData, series };
-  }, [assumptions.startDate, includedChannels, effectiveFinalHistoricalDataByChannel, forecastVolumesByChannel]);
+  }, [assumptions.startDate, effectivePlanningMonths, includedChannels, effectiveFinalHistoricalDataByChannel, combinedForecastVolumesByChannel]);
   // ── Re-cut helpers ────────────────────────────────────────────────────────────
   // Which forecast month-indices (0-based) are fully in the past?
   const completedMonthIndices = useMemo<number[]>(() => {
@@ -1857,33 +1864,83 @@ export default function LongTermForecastingDemand() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [completedMonthIndices, demandActuals, forecastVolumesByChannel, assumptions.startDate]);
 
+  // Year 1 effective volumes: actuals where available, re-cut factor applied for future months.
+  // Used as extended history input for the two-pass Year 2 computation.
+  const year1EffectiveVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
+    const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
+    const result = {} as Record<ChannelKey, number[]>;
+    for (const ch of channels) {
+      result[ch] = (forecastVolumesByChannel[ch] ?? []).map((v, i) => {
+        if (recutVolumesByChannel) return recutVolumesByChannel[ch][i] ?? v;
+        if (completedMonthIndices.includes(i)) {
+          const actual = demandActuals[getActualKey(i, ch)];
+          if (actual != null && actual > 0) return actual;
+        }
+        const factor = recutFactorByChannel[ch];
+        return factor != null ? Math.round(v * factor) : v;
+      });
+    }
+    return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forecastVolumesByChannel, recutVolumesByChannel, completedMonthIndices, demandActuals, recutFactorByChannel]);
+
+  // Two-pass Year 2 forecast: extend history with Year 1 effective volumes, then run the
+  // same forecast model to produce 12 months of Year 2. Inactive when isTwoYear is false.
+  const forecastVolumesByChannelYear2 = useMemo<Record<ChannelKey, number[]>>(() => {
+    if (!isTwoYear) return { voice: [], email: [], chat: [], cases: [] };
+    const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
+    const result = {} as Record<ChannelKey, number[]>;
+    for (const ch of channels) {
+      const extendedHistory = [...effectiveFinalHistoricalDataByChannel[ch], ...year1EffectiveVolumesByChannel[ch]];
+      result[ch] = getCalculatedVolumes(extendedHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12);
+    }
+    return result;
+  }, [isTwoYear, effectiveFinalHistoricalDataByChannel, year1EffectiveVolumesByChannel, forecastMethod, assumptions, hwParams, arimaParams, decompParams]);
+
+  // Combined Year 1 + Year 2 forecast volumes (24 entries when isTwoYear, 12 otherwise).
+  const combinedForecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
+    if (!isTwoYear) return forecastVolumesByChannel;
+    return {
+      voice:  [...forecastVolumesByChannel.voice,  ...forecastVolumesByChannelYear2.voice],
+      email:  [...forecastVolumesByChannel.email,  ...forecastVolumesByChannelYear2.email],
+      chat:   [...forecastVolumesByChannel.chat,   ...forecastVolumesByChannelYear2.chat],
+      cases:  [...forecastVolumesByChannel.cases,  ...forecastVolumesByChannelYear2.cases],
+    };
+  }, [isTwoYear, forecastVolumesByChannel, forecastVolumesByChannelYear2]);
+
   const futureData = useMemo<FutureStaffingRow[]>(() => forecastData.filter((row) => row.isFuture).map((row, futureIdx) => {
     // For each channel: prefer published re-cut (for Intraday cross-device sync), then
     // live-compute from the re-cut factor so Demand Output stays in sync with the
     // Re-cut Forecast column as soon as actuals are entered (no Publish click required).
-    const isCompletedIdx = completedMonthIndices.includes(futureIdx);
+    // Year 2 months (futureIdx >= 12) never use the Year 1 re-cut factor — the two-pass
+    // computation already incorporates Year 1 actuals as input history.
+    const isYear2Month = isTwoYear && futureIdx >= 12;
+    const isCompletedIdx = !isYear2Month && completedMonthIndices.includes(futureIdx);
     const computeVol = (ch: ChannelKey, baseVol: number): number => {
       if (recutVolumesByChannel) return recutVolumesByChannel[ch][futureIdx] ?? baseVol;
-      // For completed months use the actual directly (same as published re-cut logic)
+      // For completed Year 1 months use the actual directly (same as published re-cut logic)
       if (isCompletedIdx) {
         const actual = demandActuals[getActualKey(futureIdx, ch)];
         if (actual != null && actual > 0) return actual;
       }
-      // Apply live re-cut factor to future months
-      const factor = recutFactorByChannel[ch];
-      return factor != null ? Math.round(baseVol * factor) : baseVol;
+      // Apply live re-cut factor to Year 1 future months only
+      if (!isYear2Month) {
+        const factor = recutFactorByChannel[ch];
+        return factor != null ? Math.round(baseVol * factor) : baseVol;
+      }
+      return baseVol;
     };
 
-    const voiceBaseVol = forecastVolumesByChannel.voice[futureIdx] ?? row.volume;
+    const voiceBaseVol = combinedForecastVolumesByChannel.voice[futureIdx] ?? row.volume;
     const voiceVol = computeVol("voice", voiceBaseVol);
 
-    const emailBaseVol = forecastVolumesByChannel.email[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.email);
+    const emailBaseVol = combinedForecastVolumesByChannel.email[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.email);
     const emailVol = computeVol("email", emailBaseVol);
 
-    const chatBaseVol = forecastVolumesByChannel.chat[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.chat);
+    const chatBaseVol = combinedForecastVolumesByChannel.chat[futureIdx] ?? Math.round(voiceBaseVol * CHANNEL_VOLUME_FACTORS.chat);
     const chatVol = computeVol("chat", chatBaseVol);
 
-    const casesBaseVol = forecastVolumesByChannel.cases[futureIdx] ?? Math.round(emailBaseVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email);
+    const casesBaseVol = combinedForecastVolumesByChannel.cases[futureIdx] ?? Math.round(emailBaseVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email);
     const casesVol = computeVol("cases", casesBaseVol);
 
     const channelMetrics: Record<ChannelKey, ChannelStaffingMetrics> = {
@@ -1926,31 +1983,32 @@ export default function LongTermForecastingDemand() {
       pools,
       channelMetrics,
     };
-  }), [forecastData, forecastVolumesByChannel, selectedBlendConfig, assumptions, recutVolumesByChannel, recutFactorByChannel, completedMonthIndices, demandActuals]);
+  }), [forecastData, combinedForecastVolumesByChannel, isTwoYear, selectedBlendConfig, assumptions, recutVolumesByChannel, recutFactorByChannel, completedMonthIndices, demandActuals]);
 
   const activeRecutFactor = recutFactorByChannel[detailChannel];
 
-  // All 12 months (past + future) with per-channel volumes for the detail table
+  // All forecast months for the detail table — 12 (Year 1 only) or 24 (Year 1 + Year 2).
   const allForecastMonths = useMemo(() => {
     if (!assumptions.startDate) return [];
-    return Array.from({ length: 12 }, (_, i) => {
+    return Array.from({ length: effectivePlanningMonths }, (_, i) => {
       const d = new Date(assumptions.startDate);
       d.setMonth(d.getMonth() + i);
       const year = d.getFullYear();
       const month1 = d.getMonth() + 1; // 1-based
       const monthLabel = MONTH_NAMES[d.getMonth()];
-      const isCompleted = completedMonthIndices.includes(i);
-      const forecastVol = forecastVolumesByChannel[detailChannel][i] ?? 0;
-      const actualKey = `${year}-${month1}-${detailChannel}`;
-      const actualVol = demandActuals[actualKey] ?? null;
-      const variancePct = actualVol != null && forecastVol > 0
+      const isYear2 = isTwoYear && i >= 12;
+      const isCompleted = !isYear2 && completedMonthIndices.includes(i);
+      const forecastVol = combinedForecastVolumesByChannel[detailChannel][i] ?? 0;
+      const actualKey = isYear2 ? "" : `${year}-${month1}-${detailChannel}`;
+      const actualVol = isYear2 ? null : (demandActuals[actualKey] ?? null);
+      const variancePct = !isYear2 && actualVol != null && forecastVol > 0
         ? Number((((actualVol - forecastVol) / forecastVol) * 100).toFixed(1))
         : null;
-      const factor = recutFactorByChannel[detailChannel];
-      const recutVol = !isCompleted && factor != null ? Math.round(forecastVol * factor) : null;
-      return { index: i, year, month1, monthLabel, isCompleted, forecastVol, actualVol, variancePct, recutVol, actualKey };
+      const factor = isYear2 ? null : recutFactorByChannel[detailChannel];
+      const recutVol = !isCompleted && !isYear2 && factor != null ? Math.round(forecastVol * factor) : null;
+      return { index: i, year, month1, monthLabel, isCompleted, isYear2, forecastVol, actualVol, variancePct, recutVol, actualKey };
     });
-  }, [assumptions.startDate, completedMonthIndices, forecastVolumesByChannel, detailChannel, demandActuals, recutFactorByChannel]);
+  }, [assumptions.startDate, effectivePlanningMonths, isTwoYear, completedMonthIndices, combinedForecastVolumesByChannel, detailChannel, demandActuals, recutFactorByChannel]);
 
   const kpis = useMemo(() => futureData.length === 0 ? { avgVolume: 0, avgWorkloadHours: 0, avgRequiredFTE: 0 } : ({
     avgVolume: Math.round(futureData.reduce((sum, row) => sum + row.volume, 0) / futureData.length),
@@ -2905,7 +2963,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                 const hist1ByMonthIdx = new Map(hist1.map((r) => [MONTH_NAMES.indexOf(r.monthLabel.split(" ")[0]), r]));
                 const hist2ByMonthIdx = new Map(hist2.map((r) => [MONTH_NAMES.indexOf(r.monthLabel.split(" ")[0]), r]));
 
-                return (
+                return (<>
                   <Table className="table-fixed min-w-[820px]">
                     <colgroup>
                       <col style={{ width: "10%" }} />
@@ -3084,7 +3142,57 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                       })}
                     </TableBody>
                   </Table>
-                );
+                  {/* ── Year 2 two-pass section ── */}
+                  {isTwoYear && (() => {
+                    const yr2Hist = historicalRowsByYear.find((g) => g.year === String(forecastYear - 1))?.rows ?? [];
+                    const yr2HistByMonthIdx = new Map(yr2Hist.map((r) => [MONTH_NAMES.indexOf(r.monthLabel.split(" ")[0]), r]));
+                    return (
+                      <>
+                        <div className="flex items-center gap-3 px-4 py-2 bg-primary/5 border-t-2 border-primary/20">
+                          <span className="text-[11px] font-black uppercase tracking-widest text-primary">{forecastYear2} Two-Pass Forecast</span>
+                          <span className="text-[10px] text-muted-foreground">Anchored to {forecastYear} actuals &amp; re-cut as extended history</span>
+                        </div>
+                        <Table className="table-fixed min-w-[820px]">
+                          <colgroup>
+                            <col style={{ width: "10%" }} />
+                            <col style={{ width: "18%" }} />
+                            <col style={{ width: "18%" }} />
+                            <col style={{ width: "18%" }} />
+                          </colgroup>
+                          <TableHeader className="bg-muted/30">
+                            <TableRow className="hover:bg-transparent">
+                              <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">Month</TableHead>
+                              <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">{forecastYear - 1} History</TableHead>
+                              <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-foreground/70 whitespace-nowrap">{forecastYear} Plan</TableHead>
+                              <TableHead className="px-3 text-center text-[10px] font-black uppercase tracking-widest text-primary whitespace-nowrap">{forecastYear2} Forecast</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {MONTH_NAMES.map((monthName, monthIdx) => {
+                              const h2 = yr2HistByMonthIdx.get(monthIdx);
+                              const yr1Plan = year1EffectiveVolumesByChannel[detailChannel][monthIdx] ?? 0;
+                              const yr2Forecast = forecastVolumesByChannelYear2[detailChannel][monthIdx] ?? 0;
+                              return (
+                                <TableRow key={`yr2-${monthName}`} className="hover:bg-muted/30">
+                                  <TableCell className="px-3 py-2 text-center font-bold text-sm whitespace-nowrap align-middle">{monthName}</TableCell>
+                                  <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle text-muted-foreground">
+                                    {h2 ? h2.finalVolume.toLocaleString() : "—"}
+                                  </TableCell>
+                                  <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle text-foreground/80">
+                                    {yr1Plan > 0 ? yr1Plan.toLocaleString() : "—"}
+                                  </TableCell>
+                                  <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle font-bold text-primary">
+                                    {yr2Forecast > 0 ? yr2Forecast.toLocaleString() : "—"}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </>
+                    );
+                  })()}
+                </>);
               })()}
             </CardContent>
           </Card>
@@ -3197,25 +3305,37 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {futureData.map((row) => {
+                      {futureData.map((row, idx) => {
                         const isRecut = recutVolumesByChannel != null || Object.values(recutFactorByChannel).some(f => f !== null);
-                        const volClass = isRecut ? "text-foreground font-bold" : "text-primary font-bold";
+                        const isYear2Row = isTwoYear && idx >= 12;
+                        const volClass = isYear2Row
+                          ? "text-violet-700 dark:text-violet-300 font-bold"
+                          : isRecut ? "text-foreground font-bold" : "text-primary font-bold";
                         return (
-                          <TableRow key={`${row.year}-${row.month}`} className="hover:bg-muted/30">
-                            <TableCell className="pl-4 pr-3 font-bold text-sm whitespace-nowrap align-middle">{row.month} {row.year}</TableCell>
-                            <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.voice ? volClass : "text-muted-foreground"}`}>
-                              {selectedChannels.voice ? row.channelMetrics.voice.volume.toLocaleString() : "—"}
-                            </TableCell>
-                            <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.chat ? volClass : "text-muted-foreground"}`}>
-                              {selectedChannels.chat ? row.channelMetrics.chat.volume.toLocaleString() : "—"}
-                            </TableCell>
-                            <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.email ? volClass : "text-muted-foreground"}`}>
-                              {selectedChannels.email ? row.channelMetrics.email.volume.toLocaleString() : "—"}
-                            </TableCell>
-                            <TableCell className={`pr-4 px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.cases ? volClass : "text-muted-foreground"}`}>
-                              {selectedChannels.cases ? row.channelMetrics.cases.volume.toLocaleString() : "—"}
-                            </TableCell>
-                          </TableRow>
+                          <React.Fragment key={`${row.year}-${row.month}`}>
+                            {isTwoYear && idx === 12 && (
+                              <TableRow className="hover:bg-transparent bg-primary/5 border-t-2 border-primary/20">
+                                <TableCell colSpan={5} className="pl-4 py-1.5 text-[10px] font-black uppercase tracking-widest text-primary">
+                                  {forecastYear2} Two-Pass Forecast
+                                </TableCell>
+                              </TableRow>
+                            )}
+                            <TableRow className="hover:bg-muted/30">
+                              <TableCell className="pl-4 pr-3 font-bold text-sm whitespace-nowrap align-middle">{row.month} {row.year}</TableCell>
+                              <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.voice ? volClass : "text-muted-foreground"}`}>
+                                {selectedChannels.voice ? row.channelMetrics.voice.volume.toLocaleString() : "—"}
+                              </TableCell>
+                              <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.chat ? volClass : "text-muted-foreground"}`}>
+                                {selectedChannels.chat ? row.channelMetrics.chat.volume.toLocaleString() : "—"}
+                              </TableCell>
+                              <TableCell className={`px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.email ? volClass : "text-muted-foreground"}`}>
+                                {selectedChannels.email ? row.channelMetrics.email.volume.toLocaleString() : "—"}
+                              </TableCell>
+                              <TableCell className={`pr-4 px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.cases ? volClass : "text-muted-foreground"}`}>
+                                {selectedChannels.cases ? row.channelMetrics.cases.volume.toLocaleString() : "—"}
+                              </TableCell>
+                            </TableRow>
+                          </React.Fragment>
                         );
                       })}
                     </TableBody>
@@ -3245,21 +3365,30 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                   {/* ── Section: Planning Horizon ── */}
                   <div className="px-4 py-3 space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="planningMonths" className="text-xs font-medium uppercase text-[#4d4d4d]">Planning Horizon (months)</Label>
+                      <Label className="text-xs font-medium uppercase text-[#4d4d4d]">Forecast Horizon</Label>
                       <Calendar className="size-3.5 text-[#0a72ef]" />
                     </div>
-                    <Input
-                      id="planningMonths"
-                      type="number"
-                      min={1} max={36}
-                      value={assumptions.planningMonths ?? 12}
-                      onChange={(e) => {
-                        const v = Math.max(1, Math.min(36, Number(e.target.value)));
-                        if (Number.isFinite(v)) setAssumptions((prev) => ({ ...prev, planningMonths: v }));
-                      }}
-                      className="h-9 font-bold"
-                    />
-                    <p className="text-[11px] text-muted-foreground">Number of months to forecast (1–36). Start month is set in the toolbar above.</p>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant={!isTwoYear ? "default" : "outline"}
+                        className="flex-1 h-9 text-xs font-bold"
+                        onClick={() => setAssumptions((prev) => ({ ...prev, forecastHorizon: 1 }))}
+                      >
+                        1 Year ({forecastYear})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={isTwoYear ? "default" : "outline"}
+                        className="flex-1 h-9 text-xs font-bold"
+                        onClick={() => setAssumptions((prev) => ({ ...prev, forecastHorizon: 2 }))}
+                      >
+                        2 Years ({forecastYear}–{forecastYear2})
+                      </Button>
+                    </div>
+                    {isTwoYear && (
+                      <p className="text-[11px] text-muted-foreground">{forecastYear2} uses a two-pass model — {forecastYear} actuals &amp; re-cut feed into the {forecastYear2} forecast as extended history.</p>
+                    )}
                   </div>
 
                   {/* ── Group: Forecast Model ── */}
