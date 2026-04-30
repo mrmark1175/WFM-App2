@@ -1173,33 +1173,6 @@ export default function LongTermForecastingDemand() {
     });
   }, [assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, debouncedOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, dataSourceMode, selectedScenarioId]);
 
-  // Narrative persistence: restore saved narrative if fingerprint still matches,
-  // or wipe it as soon as any input that drives the narrative changes.
-  useEffect(() => {
-    if (!hasHydratedRef.current) return;
-    if (pendingNarrativeRef.current) {
-      const { text, fp } = pendingNarrativeRef.current;
-      pendingNarrativeRef.current = null;
-      if (fp === narrativeFingerprint && text) {
-        setAiNarrative(text);
-        setSavedNarrativeFingerprint(fp);
-        setIsInsightNarrativeOpen(true);
-      }
-      return;
-    }
-    if (savedNarrativeFingerprint && narrativeFingerprint !== savedNarrativeFingerprint) {
-      setAiNarrative("");
-      setSavedNarrativeFingerprint(null);
-      if (activeLob?.id) {
-        fetch(apiUrl(`/api/user-preferences?page_key=demand_narrative&lob_id=${activeLob.id}`), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ preferences: {} }),
-        }).catch(() => {});
-      }
-    }
-  }, [narrativeFingerprint, savedNarrativeFingerprint, activeLob?.id]);
-
   // Context → page: when top-bar what-if selector changes, switch to that what-if
   useEffect(() => {
     if (!hasHydratedRef.current) return;
@@ -2032,6 +2005,33 @@ export default function LongTermForecastingDemand() {
     for (let i = 0; i < key.length; i++) h = (((h << 5) + h) ^ key.charCodeAt(i)) >>> 0;
     return h.toString(16);
   }, [futureData, forecastMethod, forecastYear, assumptions, selectedChannels]);
+
+  // Narrative persistence: restore saved narrative if fingerprint still matches,
+  // or wipe it as soon as any input that drives the narrative changes.
+  useEffect(() => {
+    if (!hasHydratedRef.current) return;
+    if (pendingNarrativeRef.current) {
+      const { text, fp } = pendingNarrativeRef.current;
+      pendingNarrativeRef.current = null;
+      if (fp === narrativeFingerprint && text) {
+        setAiNarrative(text);
+        setSavedNarrativeFingerprint(fp);
+        setIsInsightNarrativeOpen(true);
+      }
+      return;
+    }
+    if (savedNarrativeFingerprint && narrativeFingerprint !== savedNarrativeFingerprint) {
+      setAiNarrative("");
+      setSavedNarrativeFingerprint(null);
+      if (activeLob?.id) {
+        fetch(apiUrl(`/api/user-preferences?page_key=demand_narrative&lob_id=${activeLob.id}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preferences: {} }),
+        }).catch(() => {});
+      }
+    }
+  }, [narrativeFingerprint, savedNarrativeFingerprint, activeLob?.id]);
 
   const seasonalityTrend = useMemo(() => {
     // row.volume is already the sum of all included channel volumes (set as includedVolume in futureData).
