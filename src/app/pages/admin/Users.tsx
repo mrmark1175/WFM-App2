@@ -17,7 +17,34 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "../../components/ui/select";
-import { UserPlus, Pencil, UserX } from "lucide-react";
+import { UserPlus, Pencil, UserX, ChevronDown, ChevronUp } from "lucide-react";
+
+const ROLE_DEFINITIONS: Record<UserRole, { label: string; description: string; can: string[]; cannot: string[] }> = {
+  super_admin: {
+    label: "Super Admin",
+    description: "Full platform access including user management.",
+    can: ["All WFM forecasting & planning pages", "Scheduling (view + edit)", "Configuration & LOB settings", "AI settings", "Create, edit, and deactivate users"],
+    cannot: [],
+  },
+  client_admin: {
+    label: "Admin",
+    description: "Full app access without the ability to manage users.",
+    can: ["All WFM forecasting & planning pages", "Scheduling (view + edit)", "Configuration & LOB settings", "AI settings"],
+    cannot: ["User Management (add, edit, deactivate users)"],
+  },
+  supervisor: {
+    label: "Supervisor",
+    description: "Standard WFM access for day-to-day operations.",
+    can: ["Demand Forecasting", "Capacity & Shrinkage Planning", "Intraday Forecast", "Scheduling (view + edit)", "Agent Roster & Shift Templates"],
+    cannot: ["Configuration", "AI Settings", "LOB Management", "User Management"],
+  },
+  read_only: {
+    label: "Read Only",
+    description: "View-only access — no edits or data changes allowed.",
+    can: ["View all WFM pages and schedules"],
+    cannot: ["Make any edits, save data, or run actions"],
+  },
+};
 
 interface UserRow {
   id: number;
@@ -50,6 +77,7 @@ export function UsersPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rolesOpen, setRolesOpen] = useState(false);
 
   // Add user dialog
   const [addOpen, setAddOpen] = useState(false);
@@ -217,6 +245,53 @@ export function UsersPage() {
           )}
         </div>
 
+        {/* Role Definitions */}
+        <div className="rounded-lg border">
+          <button
+            type="button"
+            onClick={() => setRolesOpen(v => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/30 transition-colors"
+          >
+            <span>Role Definitions</span>
+            {rolesOpen ? <ChevronUp className="size-4 text-muted-foreground" /> : <ChevronDown className="size-4 text-muted-foreground" />}
+          </button>
+          {rolesOpen && (
+            <div className="border-t grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x">
+              {(Object.keys(ROLE_DEFINITIONS) as UserRole[]).map(role => {
+                const def = ROLE_DEFINITIONS[role];
+                return (
+                  <div key={role} className="px-4 py-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <RoleBadge role={role} />
+                    </div>
+                    <p className="text-xs text-muted-foreground">{def.description}</p>
+                    {def.can.length > 0 && (
+                      <ul className="space-y-1">
+                        {def.can.map(item => (
+                          <li key={item} className="flex items-start gap-1.5 text-xs text-green-700 dark:text-green-400">
+                            <span className="mt-px shrink-0">✓</span>
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {def.cannot.length > 0 && (
+                      <ul className="space-y-1">
+                        {def.cannot.map(item => (
+                          <li key={item} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                            <span className="mt-px shrink-0">✕</span>
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {/* Add User Dialog */}
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
           <DialogContent>
@@ -244,6 +319,7 @@ export function UsersPage() {
                     {availableRoles.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">{ROLE_DEFINITIONS[addForm.role].description}</p>
               </div>
               {addError && <p className="text-sm text-destructive">{addError}</p>}
               <DialogFooter>
@@ -273,6 +349,7 @@ export function UsersPage() {
                     {availableRoles.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">{ROLE_DEFINITIONS[editForm.role].description}</p>
               </div>
               {editError && <p className="text-sm text-destructive">{editError}</p>}
               <DialogFooter>
