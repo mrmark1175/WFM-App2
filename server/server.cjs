@@ -13,6 +13,7 @@ const { buildScheduledIntervals, getScheduledActivityAt, loadPublishedAssignment
 const { calculateAdherence, deriveCurrentStatus } = require('./adherence/calculate.cjs');
 const { getValidPunchActions, validatePunchFlow } = require('./adherence/punchFlow.cjs');
 const { getLinkedAgentForUser, canViewAdherence, canCorrectPunch, canConfigureAdherence } = require('./adherence/permissions.cjs');
+const { encrypt: encryptApiKey, decrypt: decryptApiKey, isEncrypted: isApiKeyEncrypted } = require('./lib/keyEncryption.cjs');
 
 const app = express();
 const distPath = path.resolve(__dirname, '../dist');
@@ -766,6 +767,20 @@ async function ensureAppTables() {
       UNIQUE(organization_id)
     )
   `);
+
+  // One-shot scrub: any api_key not in the enc:v1: format is legacy plaintext.
+  // Per security policy we never use it silently — null it out so the user is
+  // forced to re-save through AI Settings (which encrypts at rest).
+  const scrub = await pool.query(
+    `UPDATE ai_settings SET api_key = NULL, updated_at = NOW()
+     WHERE api_key IS NOT NULL AND api_key NOT LIKE 'enc:v1:%'`
+  );
+  if (scrub.rowCount > 0) {
+    console.warn(
+      `[ai_settings] Cleared ${scrub.rowCount} unencrypted api_key row(s). ` +
+      `Re-enter the key in Configuration → AI Assistant — it will be encrypted at rest.`
+    );
+  }
 }
 
 // ── Auth endpoints ────────────────────────────────────────────────────────────
@@ -3559,17 +3574,33 @@ app.get('/api/ai-settings', async (req, res) => {
 app.put('/api/ai-settings', async (req, res) => {
   const { provider, model, api_key } = req.body;
   if (!provider || !model) return res.status(400).json({ error: 'provider and model are required' });
+
+  // Encrypt the key at the boundary so plaintext never reaches the DB.
+  let encryptedKey;
+  if (typeof api_key === 'string' && api_key.length > 0) {
+    try {
+      encryptedKey = encryptApiKey(api_key);
+    } catch (err) {
+      console.error('[ai-settings PUT] encrypt failed:', err.message);
+      return res.status(500).json({ error: 'Server is missing encryption configuration. Set KEY_ENCRYPTION_KEY.' });
+    }
+  }
+
   try {
     const existing = await pool.query('SELECT id FROM ai_settings WHERE organization_id = 1 LIMIT 1');
     if (existing.rows.length === 0) {
       await pool.query(
         'INSERT INTO ai_settings (organization_id, provider, model, api_key) VALUES (1, $1, $2, $3)',
-        [provider, model, api_key || null]
+        [provider, model, encryptedKey ?? null]
       );
     } else {
       const updates = ['provider = $1', 'model = $2', 'updated_at = NOW()'];
       const params = [provider, model];
-      if (api_key !== undefined) { updates.push(`api_key = $${params.length + 1}`); params.push(api_key); }
+      if (api_key !== undefined) {
+        updates.push(`api_key = $${params.length + 1}`);
+        // api_key === '' means "clear the saved key"; non-empty means "replace".
+        params.push(encryptedKey ?? null);
+      }
       await pool.query(`UPDATE ai_settings SET ${updates.join(', ')} WHERE organization_id = 1`, params);
     }
     res.json({ ok: true });
@@ -3663,7 +3694,20 @@ app.post('/api/ai/chat', async (req, res) => {
     return res.status(400).json({ error: 'AI assistant not configured. Please add your API key in Configuration → AI Assistant.' });
   }
 
-  const { provider, model, api_key } = settings;
+  // Reject any plaintext residue rather than silently leaking it through.
+  if (!isApiKeyEncrypted(settings.api_key)) {
+    console.warn('[ai/chat] Refusing to use unencrypted api_key for organization_id=1; please re-save in AI Settings.');
+    return res.status(400).json({ error: 'Saved AI key is not encrypted at rest. Open Configuration → AI Assistant and re-enter your key to upgrade it.' });
+  }
+
+  let api_key;
+  try {
+    api_key = decryptApiKey(settings.api_key);
+  } catch (err) {
+    console.error('[ai/chat] decrypt failed:', err.message);
+    return res.status(500).json({ error: 'Failed to decrypt saved AI key. Re-enter the key in Configuration → AI Assistant.' });
+  }
+  const { provider, model } = settings;
 
   let systemPrompt = WFM_SYSTEM_PROMPT;
   if (pageContext) {
