@@ -115,6 +115,27 @@ interface CapacityWhatIf {
   name: string;
   is_committed?: boolean;
   configSnapshot: PlanConfig;
+  fteModelSnapshot?: FteModelSnapshot;
+}
+
+interface FteModelSnapshot {
+  operatingHoursPerDay: number;
+  daysPerWeek: number;
+  fteHoursPerDay: number;
+  shrinkagePct: number;
+  voiceAht: number;
+  chatAht: number;
+  emailAht: number;
+  casesAht: number;
+  voiceSlaTarget: number;
+  voiceSlaSec: number;
+  chatSlaTarget: number;
+  chatSlaSec: number;
+  emailSlaTarget: number;
+  emailSlaSec: number;
+  emailOccupancy: number;
+  chatConcurrency: number;
+  taskSwitchMultiplier: number;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -242,6 +263,45 @@ function fmtSeconds(s: number): string {
   if (s >= 3600) return `${roundTo(s / 3600, 1)}h`;
   if (s >= 60) return `${Math.round(s / 60)}m`;
   return `${s}s`;
+}
+
+function normalizePlanConfig(raw: Partial<PlanConfig> | null | undefined): PlanConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    ...(raw ?? {}),
+    planStartDate: raw?.planStartDate ?? DEFAULT_CONFIG.planStartDate,
+    horizonWeeks: Number(raw?.horizonWeeks ?? DEFAULT_CONFIG.horizonWeeks),
+    attritionRateMonthly: Number(raw?.attritionRateMonthly ?? DEFAULT_CONFIG.attritionRateMonthly),
+    rampTrainingWeeks: Number(raw?.rampTrainingWeeks ?? DEFAULT_CONFIG.rampTrainingWeeks),
+    rampNestingWeeks: Number(raw?.rampNestingWeeks ?? DEFAULT_CONFIG.rampNestingWeeks),
+    rampNestingPct: Number(raw?.rampNestingPct ?? DEFAULT_CONFIG.rampNestingPct),
+    trainingGradRate: Number(raw?.trainingGradRate ?? DEFAULT_CONFIG.trainingGradRate),
+    startingHc: Number(raw?.startingHc ?? DEFAULT_CONFIG.startingHc),
+    billableFte: Number(raw?.billableFte ?? DEFAULT_CONFIG.billableFte),
+  };
+}
+
+function normalizeFteModelSnapshot(raw: Partial<FteModelSnapshot> | null | undefined): FteModelSnapshot | undefined {
+  if (!raw) return undefined;
+  return {
+    operatingHoursPerDay: Number(raw.operatingHoursPerDay ?? 8),
+    daysPerWeek: Number(raw.daysPerWeek ?? 5),
+    fteHoursPerDay: Number(raw.fteHoursPerDay ?? 7.5),
+    shrinkagePct: Number(raw.shrinkagePct ?? 20),
+    voiceAht: Number(raw.voiceAht ?? 300),
+    chatAht: Number(raw.chatAht ?? 450),
+    emailAht: Number(raw.emailAht ?? 600),
+    casesAht: Number(raw.casesAht ?? raw.emailAht ?? 600),
+    voiceSlaTarget: Number(raw.voiceSlaTarget ?? 80),
+    voiceSlaSec: Number(raw.voiceSlaSec ?? 20),
+    chatSlaTarget: Number(raw.chatSlaTarget ?? 80),
+    chatSlaSec: Number(raw.chatSlaSec ?? 30),
+    emailSlaTarget: Number(raw.emailSlaTarget ?? 90),
+    emailSlaSec: Number(raw.emailSlaSec ?? 14400),
+    emailOccupancy: Number(raw.emailOccupancy ?? 85),
+    chatConcurrency: Math.max(1, Number(raw.chatConcurrency ?? 2)),
+    taskSwitchMultiplier: Number(raw.taskSwitchMultiplier ?? 1.05),
+  };
 }
 
 function getMondayOf(date: Date): Date {
@@ -685,6 +745,7 @@ export function CapacityPlanning() {
   const [collapsed, setCollapsed] = useState({ demand: false, staffing: false, hcPlan: false });
   const [whatIfs, setWhatIfs] = useState<Record<string, CapacityWhatIf>>({});
   const [selectedWhatIfId, setSelectedWhatIfId] = useState<string>("base");
+  const [fteModelOverride, setFteModelOverride] = useState<FteModelSnapshot | null>(null);
   const [demandSourceName, setDemandSourceName] = useState<string | null>(null);
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const configTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -742,10 +803,12 @@ export function CapacityPlanning() {
       if (Array.isArray(wifData) && wifData.length > 0) {
         const wifMap: Record<string, CapacityWhatIf> = {};
         for (const r of wifData) {
+          const snapshot = r.config_snapshot ?? {};
           wifMap[r.whatif_id] = {
             id: r.whatif_id, name: r.whatif_name,
             is_committed: r.is_committed,
-            configSnapshot: r.config_snapshot ?? DEFAULT_CONFIG,
+            configSnapshot: normalizePlanConfig(snapshot),
+            fteModelSnapshot: normalizeFteModelSnapshot(snapshot.fteModelSnapshot),
           };
         }
         setWhatIfs(wifMap);
@@ -753,11 +816,13 @@ export function CapacityPlanning() {
         const validId = savedId && wifMap[savedId] ? savedId : Object.keys(wifMap)[0];
         setSelectedWhatIfId(validId);
         setConfig(wifMap[validId].configSnapshot);
+        setFteModelOverride(wifMap[validId].fteModelSnapshot ?? null);
       } else {
         const base: CapacityWhatIf = { id: "base", name: "Base", is_committed: false, configSnapshot: loadedConfig };
         setWhatIfs({ base });
         setSelectedWhatIfId("base");
         setConfig(loadedConfig);
+        setFteModelOverride(null);
       }
 
       if (Array.isArray(inputsData)) {
@@ -955,22 +1020,26 @@ export function CapacityPlanning() {
     setSelectedWhatIfId(id);
     localStorage.setItem(`capWhatIfId_${activeLob?.id}_${apiChannel}`, id);
     setConfig(wif.configSnapshot);
+    setFteModelOverride(wif.fteModelSnapshot ?? null);
     saveConfig(wif.configSnapshot);
   }
 
   async function handleSaveWhatIf(silent = false) {
     const id = selectedWhatIfId || "base";
     const existing = whatIfs[id];
+    const fteModelSnapshot = normalizeFteModelSnapshot(fteModel) ?? defaultFteModel;
+    const configSnapshot = { ...config, fteModelSnapshot };
     const updated: CapacityWhatIf = {
       id, name: existing?.name ?? "Base",
       is_committed: existing?.is_committed ?? false,
       configSnapshot: config,
+      fteModelSnapshot,
     };
     setWhatIfs(prev => ({ ...prev, [id]: updated }));
     try {
       await fetch(apiUrl(`/api/capacity-planner-whatifs/${id}`), {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ whatif_name: updated.name, config_snapshot: config,
+        body: JSON.stringify({ whatif_name: updated.name, config_snapshot: configSnapshot,
           is_committed: updated.is_committed, lob_id: activeLob?.id, channel: apiChannel }),
       });
       if (!silent) toast.success("What-if saved");
@@ -980,14 +1049,16 @@ export function CapacityPlanning() {
   async function handleNewWhatIf() {
     const id = `cap-${Date.now()}`;
     const name = `What-if ${Object.keys(whatIfs).length + 1}`;
-    const newWif: CapacityWhatIf = { id, name, is_committed: false, configSnapshot: config };
+    const fteModelSnapshot = normalizeFteModelSnapshot(fteModel) ?? defaultFteModel;
+    const newWif: CapacityWhatIf = { id, name, is_committed: false, configSnapshot: config, fteModelSnapshot };
     setWhatIfs(prev => ({ ...prev, [id]: newWif }));
     setSelectedWhatIfId(id);
+    setFteModelOverride(fteModelSnapshot);
     localStorage.setItem(`capWhatIfId_${activeLob?.id}_${apiChannel}`, id);
     try {
       await fetch(apiUrl(`/api/capacity-planner-whatifs/${id}`), {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ whatif_name: name, config_snapshot: config,
+        body: JSON.stringify({ whatif_name: name, config_snapshot: { ...config, fteModelSnapshot },
           is_committed: false, lob_id: activeLob?.id, channel: apiChannel }),
       });
       toast.success("New what-if created");
@@ -1018,7 +1089,7 @@ export function CapacityPlanning() {
     try {
       await fetch(apiUrl(`/api/capacity-planner-whatifs/${active.id}`), {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ whatif_name: renamed.name, config_snapshot: renamed.configSnapshot,
+        body: JSON.stringify({ whatif_name: renamed.name, config_snapshot: { ...renamed.configSnapshot, fteModelSnapshot: renamed.fteModelSnapshot },
           is_committed: renamed.is_committed, lob_id: activeLob?.id, channel: apiChannel }),
       });
       toast.success("What-if renamed");
@@ -1027,8 +1098,14 @@ export function CapacityPlanning() {
 
   async function handleCommitWhatIf() {
     await handleSaveWhatIf(true);
+    const fteModelSnapshot = normalizeFteModelSnapshot(fteModel) ?? defaultFteModel;
     const committed = Object.fromEntries(
-      Object.entries(whatIfs).map(([k, v]) => [k, { ...v, is_committed: k === selectedWhatIfId }])
+      Object.entries(whatIfs).map(([k, v]) => [k, {
+        ...v,
+        configSnapshot: k === selectedWhatIfId ? config : v.configSnapshot,
+        fteModelSnapshot: k === selectedWhatIfId ? fteModelSnapshot : v.fteModelSnapshot,
+        is_committed: k === selectedWhatIfId,
+      }])
     ) as Record<string, CapacityWhatIf>;
     setWhatIfs(committed);
     const name = whatIfs[selectedWhatIfId]?.name ?? "";
@@ -1137,18 +1214,18 @@ export function CapacityPlanning() {
   }, [demandAssumptions, weeks, forecastedMonthlyVols, plannerSnapshot, config.planStartDate]);
 
   // ── Auto AHTs (from lob_settings, fall back to demand assumptions)
-  const autoAhts = useMemo(() => ({
-    voice: lobSettings?.voice_aht ?? demandAssumptions?.aht ?? 300,
-    chat: lobSettings?.chat_aht ?? demandAssumptions?.chatAht ?? 450,
-    email: lobSettings?.email_aht ?? demandAssumptions?.emailAht ?? 600,
-    cases: lobSettings?.email_aht ?? demandAssumptions?.emailAht ?? 600,
+  const defaultAhts = useMemo(() => ({
+    voice: Number(lobSettings?.voice_aht ?? demandAssumptions?.aht ?? 300),
+    chat: Number(lobSettings?.chat_aht ?? demandAssumptions?.chatAht ?? 450),
+    email: Number(lobSettings?.email_aht ?? demandAssumptions?.emailAht ?? 600),
+    cases: Number(lobSettings?.email_aht ?? demandAssumptions?.emailAht ?? 600),
   }), [lobSettings, demandAssumptions]);
 
   // ── Staffing params
   // Priority: Shrinkage Planning page computed % → Demand Assumptions manual entry → 20% default.
   // computedShrinkagePct is derived from absence_items + activity_items in the shrinkage_plans table,
   // matching the totalExcl (holidays excluded) value displayed on the Shrinkage Planning page.
-  const shrinkagePct = computedShrinkagePct ?? (demandAssumptions?.shrinkage != null ? Number(demandAssumptions.shrinkage) : 20);
+  const defaultShrinkagePct = computedShrinkagePct ?? (demandAssumptions?.shrinkage != null ? Number(demandAssumptions.shrinkage) : 20);
 
   // Operating hours: LOB settings (hours_of_operation) is the source of truth.
   // Dedicated: active channel schedule. Blended: merged schedule across enabled channels.
@@ -1161,19 +1238,50 @@ export function CapacityPlanning() {
     return merged ? hoursFromSchedule(merged) : null;
   }, [lobSettings, isDedicated, activeChannel, enabledChannels]);
 
-  const daysPerWeek = lobOpHours?.daysPerWeek ?? demandAssumptions?.operatingDaysPerWeek ?? 5;
-  const operatingHoursPerDay = lobOpHours?.hoursPerDay ?? demandAssumptions?.operatingHoursPerDay ?? 8;
+  const defaultDaysPerWeek = lobOpHours?.daysPerWeek ?? demandAssumptions?.operatingDaysPerWeek ?? 5;
+  const defaultOperatingHoursPerDay = lobOpHours?.hoursPerDay ?? demandAssumptions?.operatingHoursPerDay ?? 8;
   // SLA params — LOB settings are authoritative; fall back to demand planner snapshot values
   const snap = plannerSnapshot?.assumptions;
-  const slaVoiceTarget = Number(lobSettings?.voice_sla_target ?? snap?.voiceSlaTarget ?? 80);
-  const slaVoiceSec    = Number(lobSettings?.voice_sla_seconds ?? snap?.voiceSlaAnswerSeconds ?? 20);
-  const slaChatTarget  = Number(lobSettings?.chat_sla_target ?? snap?.chatSlaTarget ?? 80);
-  const slaChatSec     = Number(lobSettings?.chat_sla_seconds ?? snap?.chatSlaAnswerSeconds ?? 30);
-  const slaEmailTarget = Number(lobSettings?.email_sla_target ?? snap?.emailSlaTarget ?? 90);
-  const slaEmailSec    = Number(lobSettings?.email_sla_seconds ?? snap?.emailSlaAnswerSeconds ?? 14400);
-  const emailOccupancy = Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85;
-  const chatConcurrency = Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2));
-  const taskSwitchMultiplier = Number(lobSettings?.task_switch_multiplier ?? snap?.taskSwitchMultiplier ?? 1.05) || 1.05;
+  const defaultFteModel = useMemo<FteModelSnapshot>(() => ({
+    operatingHoursPerDay: defaultOperatingHoursPerDay,
+    daysPerWeek: defaultDaysPerWeek,
+    fteHoursPerDay: hoursPerDay,
+    shrinkagePct: defaultShrinkagePct,
+    voiceAht: defaultAhts.voice,
+    chatAht: defaultAhts.chat,
+    emailAht: defaultAhts.email,
+    casesAht: defaultAhts.cases,
+    voiceSlaTarget: Number(lobSettings?.voice_sla_target ?? snap?.voiceSlaTarget ?? 80),
+    voiceSlaSec: Number(lobSettings?.voice_sla_seconds ?? snap?.voiceSlaAnswerSeconds ?? 20),
+    chatSlaTarget: Number(lobSettings?.chat_sla_target ?? snap?.chatSlaTarget ?? 80),
+    chatSlaSec: Number(lobSettings?.chat_sla_seconds ?? snap?.chatSlaAnswerSeconds ?? 30),
+    emailSlaTarget: Number(lobSettings?.email_sla_target ?? snap?.emailSlaTarget ?? 90),
+    emailSlaSec: Number(lobSettings?.email_sla_seconds ?? snap?.emailSlaAnswerSeconds ?? 14400),
+    emailOccupancy: Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85,
+    chatConcurrency: Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2)),
+    taskSwitchMultiplier: Number(lobSettings?.task_switch_multiplier ?? snap?.taskSwitchMultiplier ?? 1.05) || 1.05,
+  }), [defaultOperatingHoursPerDay, defaultDaysPerWeek, hoursPerDay, defaultShrinkagePct, defaultAhts, lobSettings, snap]);
+
+  const fteModel = fteModelOverride ?? defaultFteModel;
+  const autoAhts = useMemo(() => ({
+    voice: fteModel.voiceAht,
+    chat: fteModel.chatAht,
+    email: fteModel.emailAht,
+    cases: fteModel.casesAht,
+  }), [fteModel]);
+  const shrinkagePct = fteModel.shrinkagePct;
+  const daysPerWeek = fteModel.daysPerWeek;
+  const operatingHoursPerDay = fteModel.operatingHoursPerDay;
+  const effectiveFteHoursPerDay = fteModel.fteHoursPerDay;
+  const slaVoiceTarget = fteModel.voiceSlaTarget;
+  const slaVoiceSec = fteModel.voiceSlaSec;
+  const slaChatTarget = fteModel.chatSlaTarget;
+  const slaChatSec = fteModel.chatSlaSec;
+  const slaEmailTarget = fteModel.emailSlaTarget;
+  const slaEmailSec = fteModel.emailSlaSec;
+  const emailOccupancy = fteModel.emailOccupancy || 85;
+  const chatConcurrency = Math.max(1, fteModel.chatConcurrency);
+  const taskSwitchMultiplier = fteModel.taskSwitchMultiplier || 1.05;
   // ── Full computed calculations per week
   const weekCalcs = useMemo<WeekCalc[]>(() => {
     let projHC = config.startingHc;
@@ -1210,7 +1318,7 @@ export function CapacityPlanning() {
         const conc   = activeChannel === "chat" ? chatConcurrency : 1;
         // cases uses the email (backlog/deferred) model
         const modelChannel: "voice" | "chat" | "email" = activeChannel === "voice" ? "voice" : activeChannel === "chat" ? "chat" : "email";
-        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, hoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy);
+        const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, effectiveFteHoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy);
         requiredFTE = r.fte;
         erlangOccupancy = r.occupancy;
         reqRawAgents = r.rawAgents;
@@ -1230,7 +1338,7 @@ export function CapacityPlanning() {
           enabledChannels.includes("voice") ? effVolVoice : 0, effAhtVoice,
           enabledChannels.includes("chat") ? effVolChat : 0, effAhtChat,
           blendedEmailVol, blendedEmailAht,
-          daysPerWeek, operatingHoursPerDay, hoursPerDay,
+          daysPerWeek, operatingHoursPerDay, effectiveFteHoursPerDay,
           slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, emailOccupancy, shrinkagePct, chatConcurrency, taskSwitchMultiplier,
         );
         requiredFTE = r.fte;
@@ -1281,13 +1389,13 @@ export function CapacityPlanning() {
           const aht = activeChannel === "voice" ? effAhtVoice : effAhtChat;
           const sec = activeChannel === "voice" ? slaVoiceSec : slaChatSec;
           const conc = activeChannel === "chat" ? chatConcurrency : 1;
-          return computeAchievedSLFromFTE(vol, aht, hc, daysPerWeek, operatingHoursPerDay, hoursPerDay, sec, shrinkagePct, activeChannel, conc, 0);
+          return computeAchievedSLFromFTE(vol, aht, hc, daysPerWeek, operatingHoursPerDay, effectiveFteHoursPerDay, sec, shrinkagePct, activeChannel, conc, 0);
         } else {
           // Blended: reserve enough real-time capacity for the other live channel
           // before measuring each channel's SLA. This avoids the invalid shortcut
           // of giving both voice and chat the full blended pool simultaneously.
           const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
-          const coverageRatio = hoursPerDay > 0 ? operatingHoursPerDay / hoursPerDay : 1;
+          const coverageRatio = effectiveFteHoursPerDay > 0 ? operatingHoursPerDay / effectiveFteHoursPerDay : 1;
           const floorAgents = (hc / coverageRatio) * shrinkFactor;
           const intervalCount = operatingHoursPerDay * 2;
           const voiceCPI = intervalCount > 0 ? (effVolVoice / daysPerWeek) / intervalCount : 0;
@@ -1303,13 +1411,13 @@ export function CapacityPlanning() {
           if (enabledChannels.includes("voice") && effVolVoice > 0) {
             const voiceAvailableAgents = Math.max(0, floorAgents - chatRaw);
             const voiceEquivalentFTE = (voiceAvailableAgents / shrinkFactor) * coverageRatio;
-            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, voiceEquivalentFTE, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaVoiceSec, shrinkagePct, "voice", 1, 0);
+            const sl = computeAchievedSLFromFTE(effVolVoice, effAhtVoice, voiceEquivalentFTE, daysPerWeek, operatingHoursPerDay, effectiveFteHoursPerDay, slaVoiceSec, shrinkagePct, "voice", 1, 0);
             if (sl != null) { weightedSL += sl * effVolVoice; totalVol += effVolVoice; }
           }
           if (enabledChannels.includes("chat") && effVolChat > 0) {
             const chatAvailableAgents = Math.max(0, floorAgents - voiceRaw);
             const chatEquivalentFTE = (chatAvailableAgents / shrinkFactor) * coverageRatio;
-            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, chatEquivalentFTE, daysPerWeek, operatingHoursPerDay, hoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency, 0);
+            const sl = computeAchievedSLFromFTE(effVolChat, effAhtChat, chatEquivalentFTE, daysPerWeek, operatingHoursPerDay, effectiveFteHoursPerDay, slaChatSec, shrinkagePct, "chat", chatConcurrency, 0);
             if (sl != null) { weightedSL += sl * effVolChat; totalVol += effVolChat; }
           }
           return totalVol > 0 ? +(weightedSL / totalVol).toFixed(1) : null;
@@ -1335,7 +1443,7 @@ export function CapacityPlanning() {
         gapSurplus, actualGapSurplus, billableGapSurplus, achievedSLAProj, achievedSLAActual,
       };
     });
-  }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, hoursPerDay,
+  }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, effectiveFteHoursPerDay,
       shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
       emailOccupancy, chatConcurrency, taskSwitchMultiplier]);
@@ -1538,7 +1646,7 @@ export function CapacityPlanning() {
       planStartDate: config.planStartDate,
       horizonWeeks: config.horizonWeeks,
       shrinkagePct,
-      hoursPerDay,
+      hoursPerDay: effectiveFteHoursPerDay,
       assumptions: demandAssumptions ? {
         aht: demandAssumptions.aht,
         chatAht: demandAssumptions.chatAht,
@@ -1562,7 +1670,7 @@ export function CapacityPlanning() {
       })),
     });
     return () => setPageData(null);
-  }, [activeChannel, config, shrinkagePct, hoursPerDay, demandAssumptions, hiringNeed, attritionSummary, weekCalcs, setPageData]);
+  }, [activeChannel, config, shrinkagePct, effectiveFteHoursPerDay, demandAssumptions, hiringNeed, attritionSummary, weekCalcs, setPageData]);
 
   const showFteBreakdown = true;
   const TOP_WEEK_HDR  = 0;
@@ -1571,6 +1679,15 @@ export function CapacityPlanning() {
   const TOP_BILLABLE  = showFteBreakdown ? 106 : 73;
   const TOP_GAP_REQ   = showFteBreakdown ? (billableActive ? 139 : 106) : (billableActive ? 106 : 73);
   const TOP_GAP_BILL  = showFteBreakdown ? 172 : 139;
+
+  function updateFteModelField(field: keyof FteModelSnapshot, value: number) {
+    const next = { ...fteModel, [field]: Number.isFinite(value) ? value : 0 };
+    setFteModelOverride(next);
+  }
+
+  function resetFteModelDefaults() {
+    setFteModelOverride(null);
+  }
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1701,13 +1818,68 @@ export function CapacityPlanning() {
             <div className="mt-4 pt-3 border-t border-border">
               <p className="text-xs font-semibold text-black mb-2">
                 FTE Model Parameters
-                <span className="font-normal text-black"> — read-only, edit in LOB Settings &amp; Shrinkage Planning</span>
+                <span className="font-normal text-black"> - editable for this what-if only</span>
               </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <p className="text-xs text-black">
+                  Scenario-only overrides. Defaults still come from LOB Settings and Shrinkage Planning.
+                </p>
+                <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={resetFteModelDefaults}>
+                  <RotateCcw className="size-3" />Reset defaults
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 mb-2.5">
+                {([
+                  ["Op. Hrs/Day", "operatingHoursPerDay", 0.5],
+                  ["Days/Week", "daysPerWeek", 1],
+                  ["FTE Hrs/Day", "fteHoursPerDay", 0.25],
+                  ["Shrinkage %", "shrinkagePct", 0.1],
+                  ["Voice AHT", "voiceAht", 1],
+                  ["Chat AHT", "chatAht", 1],
+                  ["Email AHT", "emailAht", 1],
+                  ["Cases AHT", "casesAht", 1],
+                ] as const).map(([label, field, step]) => (
+                  <div key={field} className="space-y-1">
+                    <Label className="text-[10px] text-black">{label}</Label>
+                    <Input
+                      type="number"
+                      step={step}
+                      value={fteModel[field]}
+                      onChange={e => updateFteModelField(field, parseFloat(e.target.value))}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 mb-2.5">
+                {([
+                  ["Voice SLA %", "voiceSlaTarget", 1],
+                  ["Voice SLA Sec", "voiceSlaSec", 1],
+                  ["Chat SLA %", "chatSlaTarget", 1],
+                  ["Chat SLA Sec", "chatSlaSec", 1],
+                  ["Email SLA %", "emailSlaTarget", 1],
+                  ["Email SLA Sec", "emailSlaSec", 60],
+                  ["Email Occ. %", "emailOccupancy", 1],
+                  ["Chat Conc.", "chatConcurrency", 1],
+                  ["Switch Penalty", "taskSwitchMultiplier", 0.01],
+                ] as const).map(([label, field, step]) => (
+                  <div key={field} className="space-y-1">
+                    <Label className="text-[10px] text-black">{label}</Label>
+                    <Input
+                      type="number"
+                      step={step}
+                      value={fteModel[field]}
+                      onChange={e => updateFteModelField(field, parseFloat(e.target.value))}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
               <div className="flex flex-wrap gap-x-5 gap-y-1.5 mb-2.5">
                 {[
                   { label: "Op. Hrs/Day", value: `${operatingHoursPerDay}h` },
                   { label: "Days/Week", value: `${daysPerWeek}d` },
-                  { label: "FTE Hrs/Day", value: `${hoursPerDay}h` },
+                  { label: "FTE Hrs/Day", value: `${effectiveFteHoursPerDay}h` },
                   { label: "Shrinkage", value: `${shrinkagePct}%` },
                 ].map(p => (
                   <div key={p.label} className="flex items-center gap-1 text-xs">

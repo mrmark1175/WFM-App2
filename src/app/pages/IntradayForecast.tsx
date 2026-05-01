@@ -43,6 +43,26 @@ interface PlannerSnapshot {
   recutVolumesByChannel?: Record<ChannelKey, number[]> | null;
 }
 
+interface CapacityFteModelSnapshot {
+  operatingHoursPerDay?: number;
+  daysPerWeek?: number;
+  fteHoursPerDay?: number;
+  shrinkagePct?: number;
+  voiceAht?: number;
+  chatAht?: number;
+  emailAht?: number;
+  casesAht?: number;
+  voiceSlaTarget?: number;
+  voiceSlaSec?: number;
+  chatSlaTarget?: number;
+  chatSlaSec?: number;
+  emailSlaTarget?: number;
+  emailSlaSec?: number;
+  emailOccupancy?: number;
+  chatConcurrency?: number;
+  taskSwitchMultiplier?: number;
+}
+
 interface DistributionProfile {
   id: number;
   profile_name: string;
@@ -158,6 +178,8 @@ export const IntradayForecast = () => {
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [plannerSnapshot, setPlannerSnapshot] = useState<PlannerSnapshot | null>(null);
+  const [committedCapacityFteModel, setCommittedCapacityFteModel] = useState<CapacityFteModelSnapshot | null>(null);
+  const [committedCapacityWhatIfName, setCommittedCapacityWhatIfName] = useState<string | null>(null);
   // apiRawData: loaded from API (not persisted). manualRawData in prefs: user-pasted (persisted).
   const [apiRawData, setApiRawData] = useState<GridData>({});
   const rawData: GridData = dataSource === "api" ? apiRawData : (manualRawData ?? {});
@@ -219,7 +241,9 @@ export const IntradayForecast = () => {
     Promise.all([
       fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
       fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
-    ]).then(([activeState, lobSettings]) => {
+      fetch(apiUrl(`/api/capacity-planner-whatifs?lob_id=${activeLob.id}&channel=${selectedChannel}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
+      fetch(apiUrl(`/api/capacity-planner-whatifs?lob_id=${activeLob.id}&channel=blended`)).then((r) => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([activeState, lobSettings, capacityChannelWhatIfs, capacityBlendedWhatIfs]) => {
       const apiSnapshot = activeState?.plannerSnapshot as PlannerSnapshot | undefined;
       const localSnapshot = readPersistedDemandPlannerSnapshot();
       const snapshot = localSnapshot?.recutVolumesByChannel
@@ -227,6 +251,13 @@ export const IntradayForecast = () => {
         : apiSnapshot?.recutVolumesByChannel
           ? apiSnapshot
           : localSnapshot ?? apiSnapshot;
+
+      const committedCapacity = [
+        ...(Array.isArray(capacityChannelWhatIfs) ? capacityChannelWhatIfs : []),
+        ...(Array.isArray(capacityBlendedWhatIfs) ? capacityBlendedWhatIfs : []),
+      ].find((w) => w?.is_committed && w?.config_snapshot?.fteModelSnapshot);
+      setCommittedCapacityFteModel((committedCapacity?.config_snapshot?.fteModelSnapshot ?? null) as CapacityFteModelSnapshot | null);
+      setCommittedCapacityWhatIfName(committedCapacity?.whatif_name ?? null);
 
       if (lobSettings?.hours_of_operation) {
         setLobHoursOfOperation(lobSettings.hours_of_operation as Record<string, Record<string, { enabled: boolean; open: string; close: string }>>);
@@ -296,7 +327,7 @@ export const IntradayForecast = () => {
         setPlannerSnapshot(null);
       }
     }).finally(() => setIsLoadingForecast(false));
-  }, [activeLob?.id]);
+  }, [activeLob?.id, selectedChannel]);
 
   // ── Load baseline interaction data ─────────────────────────────────────────
   useEffect(() => {
@@ -744,22 +775,33 @@ export const IntradayForecast = () => {
   const fteParams = useMemo(() => {
     const a = plannerSnapshot?.assumptions;
     if (!a) return null;
+    const c = committedCapacityFteModel;
     const ch = selectedChannel;
     return {
-      ahtSec:       ch === "voice" ? a.aht    : ch === "chat" ? a.chatAht  : a.emailAht,
-      slaTarget:    ch === "voice" ? a.voiceSlaTarget : ch === "chat" ? a.chatSlaTarget : a.emailSlaTarget,
-      slaSec:       ch === "voice" ? a.voiceSlaAnswerSeconds : ch === "chat" ? a.chatSlaAnswerSeconds : a.emailSlaAnswerSeconds,
+      ahtSec:       ch === "voice" ? (c?.voiceAht ?? a.aht)
+                  : ch === "chat" ? (c?.chatAht ?? a.chatAht)
+                  : ch === "cases" ? (c?.casesAht ?? c?.emailAht ?? a.emailAht)
+                  : (c?.emailAht ?? a.emailAht),
+      slaTarget:    ch === "voice" ? (c?.voiceSlaTarget ?? a.voiceSlaTarget)
+                  : ch === "chat" ? (c?.chatSlaTarget ?? a.chatSlaTarget)
+                  : (c?.emailSlaTarget ?? a.emailSlaTarget),
+      slaSec:       ch === "voice" ? (c?.voiceSlaSec ?? a.voiceSlaAnswerSeconds)
+                  : ch === "chat" ? (c?.chatSlaSec ?? a.chatSlaAnswerSeconds)
+                  : (c?.emailSlaSec ?? a.emailSlaAnswerSeconds),
       // occupancy is NOT a staffing input for voice/chat Erlang A/C — it is an output.
       // We pass it only for the email-style workload model which needs a utilisation target.
-      emailOccupancy: a.occupancy,
-      shrinkage:    a.shrinkage,
-      concurrency:  ch === "chat" ? Math.max(1, a.chatConcurrency ?? 2) : 1,
+      emailOccupancy: c?.emailOccupancy ?? a.occupancy,
+      shrinkage:    c?.shrinkagePct ?? a.shrinkage,
+      concurrency:  ch === "chat" ? Math.max(1, c?.chatConcurrency ?? a.chatConcurrency ?? 2) : 1,
       // Erlang A: mean patience in seconds; 0 = fall back to pure Erlang C
       avgPatienceSeconds: ch === "voice" ? (a.voiceAvgPatienceSeconds ?? 120)
                         : ch === "chat"  ? (a.chatAvgPatienceSeconds  ?? 60)
                         : 0,
+      source: c ? "capacity" : "demand",
     };
-  }, [plannerSnapshot, selectedChannel]);
+  }, [plannerSnapshot, selectedChannel, committedCapacityFteModel]);
+
+  const effectiveFteHoursPerDay = committedCapacityFteModel?.fteHoursPerDay ?? shrinkageHoursPerDay;
 
   const erlangModel = (selectedChannel === "email" || selectedChannel === "cases")
     ? "Erlang C"
@@ -2412,7 +2454,12 @@ export const IntradayForecast = () => {
                   {(selectedChannel === "voice" || selectedChannel === "chat") && fteParams.avgPatienceSeconds > 0 && (
                     <span title="Erlang A: average seconds before a customer abandons the queue"><span className="font-semibold text-foreground">Patience</span> {fteParams.avgPatienceSeconds}s</span>
                   )}
-                  <span><span className="font-semibold text-foreground">FTE hrs/day</span> {shrinkageHoursPerDay}h</span>
+                  <span><span className="font-semibold text-foreground">FTE hrs/day</span> {effectiveFteHoursPerDay}h</span>
+                  {fteParams.source === "capacity" && (
+                    <Badge variant="outline" className="h-5 text-[10px]">
+                      Capacity what-if: {committedCapacityWhatIfName ?? "Committed"}
+                    </Badge>
+                  )}
                   <span className="text-[10px] italic">
                     {selectedChannel === "email"
                       ? "Email: workload ÷ available agent-seconds per interval"
@@ -2552,7 +2599,7 @@ export const IntradayForecast = () => {
                     <TableRow className="bg-orange-50 dark:bg-orange-950/20 border-t-2">
                       <TableCell
                         className="text-xs font-bold py-2 sticky left-0 bg-orange-50 dark:bg-orange-950/20 text-orange-700 whitespace-nowrap"
-                        title={`Sum of all interval FTE × ${(grain / 60).toFixed(2)}h ÷ ${shrinkageHoursPerDay}h/day`}
+                        title={`Sum of all interval FTE × ${(grain / 60).toFixed(2)}h ÷ ${effectiveFteHoursPerDay}h/day`}
                       >
                         Daily FTE
                       </TableCell>
@@ -2560,12 +2607,12 @@ export const IntradayForecast = () => {
                         const grainHours = grain / 60;
                         const sumFTE = intervals.reduce((sum, _, idx) =>
                           sum + (smoothedFteTable[d]?.[idx]?.fte ?? 0), 0);
-                        const dailyFTE = sumFTE * grainHours / shrinkageHoursPerDay;
+                        const dailyFTE = sumFTE * grainHours / effectiveFteHoursPerDay;
                         return (
                           <TableCell
                             key={d}
                             className="text-xs text-right py-2 font-mono font-bold text-orange-700"
-                            title={`${sumFTE.toFixed(1)} interval-FTE × ${grainHours}h ÷ ${shrinkageHoursPerDay}h`}
+                            title={`${sumFTE.toFixed(1)} interval-FTE × ${grainHours}h ÷ ${effectiveFteHoursPerDay}h`}
                           >
                             {dailyFTE > 0 ? dailyFTE.toFixed(2) : "—"}
                           </TableCell>
