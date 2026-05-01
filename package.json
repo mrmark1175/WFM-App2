@@ -9,7 +9,8 @@
     "dev": "vite",
     "preview": "vite preview",
     "start": "node server/server.cjs",
-    "migrate:supabase": "node server/migrate_to_supabase.cjs"
+    "migrate:supabase": "node server/migrate_to_supabase.cjs",
+    "seed:manual-adherence": "node scripts/seed_manual_adherence_demo.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.0",

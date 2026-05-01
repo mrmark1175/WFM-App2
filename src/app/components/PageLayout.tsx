@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock, Building2, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart3, Shield } from "lucide-react";
+import { Home, ChevronRight, User, Settings, TrendingUp, Calendar, Users, Clock, Building2, LineChart, Layers, CalendarDays, UserCheck, Scale, BarChart3, Shield, ClipboardCheck } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { useAuth, type UserRole } from "@/context/AuthContext";
 import { Toaster } from "./ui/sonner";
@@ -14,28 +14,32 @@ interface PageLayoutProps {
   title?: string; // now optional — pages own their own headers
 }
 
+const WFM_ROLES: UserRole[] = ["super_admin", "client_admin", "rta", "supervisor", "read_only"];
+const ADMIN_ROLES: UserRole[] = ["super_admin", "client_admin"];
+
 const NAV: { group: string; items: { to: string; label: string; icon: React.ElementType; badge?: string; roles?: UserRole[] }[] }[] = [
   { group: "Forecasting", items: [
-    { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting", icon: LineChart },
-    { to: "/wfm/shrinkage",                    label: "Shrinkage Planning", icon: Layers },
-    { to: "/wfm/intraday",                     label: "Intraday Forecast",  icon: TrendingUp },
+    { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting", icon: LineChart, roles: WFM_ROLES },
+    { to: "/wfm/shrinkage",                    label: "Shrinkage Planning", icon: Layers, roles: WFM_ROLES },
+    { to: "/wfm/intraday",                     label: "Intraday Forecast",  icon: TrendingUp, roles: WFM_ROLES },
   ]},
   { group: "Capacity Management", items: [
-    { to: "/wfm/capacity",                     label: "Workforce Planning", icon: Users },
+    { to: "/wfm/capacity",                     label: "Workforce Planning", icon: Users, roles: WFM_ROLES },
   ]},
   { group: "Scheduling", items: [
-    { to: "/scheduling",                       label: "Scheduling Hub",     icon: CalendarDays },
-    { to: "/scheduling/schedule",              label: "Schedule Editor",    icon: Calendar },
-    { to: "/scheduling/agents",                label: "Agent Roster",       icon: UserCheck },
-    { to: "/scheduling/shifts",                label: "Shift Templates",    icon: Clock },
-    { to: "/scheduling/labor-laws",            label: "Labor Law Rules",    icon: Scale },
+    { to: "/scheduling",                       label: "Scheduling Hub",     icon: CalendarDays, roles: WFM_ROLES },
+    { to: "/scheduling/schedule",              label: "Schedule Editor",    icon: Calendar, roles: WFM_ROLES },
+    { to: "/scheduling/agents",                label: "Agent Roster",       icon: UserCheck, roles: WFM_ROLES },
+    { to: "/scheduling/shifts",                label: "Shift Templates",    icon: Clock, roles: WFM_ROLES },
+    { to: "/scheduling/labor-laws",            label: "Labor Law Rules",    icon: Scale, roles: WFM_ROLES },
   ]},
   { group: "RTA & Traffic", items: [
-    { to: "/wfm/real-time-management",      label: "Real Time Management", icon: BarChart3 },
+    { to: "/agent/today",                  label: "My Schedule",          icon: ClipboardCheck, roles: ["agent"] },
+    { to: "/wfm/real-time-management",      label: "Real Time Management", icon: BarChart3, roles: ["super_admin", "client_admin", "rta", "supervisor"] },
   ]},
   { group: "Settings", items: [
-    { to: "/configuration",                    label: "Configuration",      icon: Settings },
-    { to: "/configuration/lob-management",     label: "LOB Management",     icon: Building2 },
+    { to: "/configuration",                    label: "Configuration",      icon: Settings, roles: ADMIN_ROLES },
+    { to: "/configuration/lob-management",     label: "LOB Management",     icon: Building2, roles: ADMIN_ROLES },
     { to: "/admin/users",                      label: "User Management",    icon: Shield, roles: ["super_admin"] },
     { to: "/my-account",                       label: "My Account",         icon: User },
   ]},
@@ -48,6 +52,8 @@ const CRUMB_NAMES: Record<string, string> = {
   intraday: "Intraday Forecast",
   shrinkage: "Shrinkage Planning",
   "real-time-management": "Real Time Management",
+  agent: "Agent",
+  today: "My Schedule",
   "my-account": "My Account",
   configuration: "Configuration",
   "lob-management": "LOB Management",

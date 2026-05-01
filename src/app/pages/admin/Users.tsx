@@ -38,6 +38,18 @@ const ROLE_DEFINITIONS: Record<UserRole, { label: string; description: string; c
     can: ["Demand Forecasting", "Capacity & Shrinkage Planning", "Intraday Forecast", "Scheduling (view + edit)", "Agent Roster & Shift Templates"],
     cannot: ["Configuration", "AI Settings", "LOB Management", "User Management"],
   },
+  rta: {
+    label: "RTA",
+    description: "Real-time analyst access for adherence and live traffic monitoring.",
+    can: ["Real Time Management", "Manual adherence dashboard", "Punch corrections"],
+    cannot: ["User Management", "Core configuration"],
+  },
+  agent: {
+    label: "Agent",
+    description: "Self-service access for schedule and manual attendance punches.",
+    can: ["View own schedule", "Punch own manual status"],
+    cannot: ["View other agents", "Edit schedules", "Correct punches"],
+  },
   read_only: {
     label: "Read Only",
     description: "View-only access — no edits or data changes allowed.",
@@ -58,7 +70,9 @@ interface UserRow {
 }
 
 const ASSIGNABLE_ROLES: { value: UserRole; label: string }[] = [
+  { value: "rta", label: "RTA" },
   { value: "supervisor", label: "Supervisor" },
+  { value: "agent", label: "Agent" },
   { value: "read_only", label: "Read Only" },
 ];
 const ADMIN_ROLES: { value: UserRole; label: string }[] = [

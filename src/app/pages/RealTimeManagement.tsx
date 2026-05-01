@@ -62,11 +62,50 @@ interface RtmDashboard {
   actions: RtmAction[];
 }
 
+interface AdherenceAgent {
+  agent_id: number;
+  agent_name: string;
+  team_name: string | null;
+  supervisor: string | null;
+  channel: string;
+  scheduled_activity_label: string | null;
+  actual_activity_label: string | null;
+  adherence_state: string;
+  adherence_state_label: string;
+  variance_minutes: number | null;
+  last_punch_timestamp: string | null;
+}
+
+interface AdherenceDashboard {
+  date: string;
+  grace_period_minutes: number;
+  summary: {
+    total_agents: number;
+    in_adherence: number;
+    out_of_adherence: number;
+    missing_punch: number;
+  };
+  agents: AdherenceAgent[];
+}
+
 const riskStyles: Record<Risk, string> = {
   normal: "bg-emerald-50 text-emerald-800 border-emerald-200",
   watch: "bg-amber-50 text-amber-800 border-amber-200",
   alert: "bg-orange-50 text-orange-800 border-orange-200",
   critical: "bg-red-50 text-red-800 border-red-200",
+};
+
+const adherenceStyles: Record<string, string> = {
+  in_adherence: "bg-emerald-50 text-emerald-800 border-emerald-200",
+  late_login: "bg-red-50 text-red-800 border-red-200",
+  early_logout: "bg-red-50 text-red-800 border-red-200",
+  missing_punch: "bg-red-50 text-red-800 border-red-200",
+  early_break: "bg-amber-50 text-amber-800 border-amber-200",
+  late_break: "bg-amber-50 text-amber-800 border-amber-200",
+  overbreak: "bg-orange-50 text-orange-800 border-orange-200",
+  long_lunch: "bg-orange-50 text-orange-800 border-orange-200",
+  unscheduled_activity: "bg-violet-50 text-violet-800 border-violet-200",
+  out_of_adherence: "bg-red-50 text-red-800 border-red-200",
 };
 
 function todayStr() {
@@ -111,6 +150,10 @@ export function RealTimeManagement() {
   const [note, setNote] = useState("");
   const [actionType, setActionType] = useState("staffing_action");
   const [savingAction, setSavingAction] = useState(false);
+  const [adherence, setAdherence] = useState<AdherenceDashboard | null>(null);
+  const [adherenceLoading, setAdherenceLoading] = useState(false);
+  const [adherenceStateFilter, setAdherenceStateFilter] = useState("all");
+  const [activityFilter, setActivityFilter] = useState("all");
 
   useEffect(() => {
     setChannel(activeChannel);
@@ -147,10 +190,40 @@ export function RealTimeManagement() {
     }
   }
 
+  async function loadAdherence() {
+    if (!activeLob) return;
+    setAdherenceLoading(true);
+    try {
+      const params = new URLSearchParams({
+        lob_id: String(activeLob.id),
+        date,
+        channel,
+        adherence_state: adherenceStateFilter,
+        activity_type: activityFilter,
+      });
+      const res = await fetch(apiUrl(`/api/rtm/adherence-dashboard?${params.toString()}`), {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setAdherence(await res.json());
+    } catch {
+      toast.error("Failed to load adherence dashboard.");
+    } finally {
+      setAdherenceLoading(false);
+    }
+  }
+
   useEffect(() => {
     loadDashboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLob?.id, date, channel]);
+
+  useEffect(() => {
+    loadAdherence();
+    const timer = window.setInterval(loadAdherence, 15000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLob?.id, date, channel, adherenceStateFilter, activityFilter]);
 
   async function saveAction() {
     if (!activeLob || !dashboard || !note.trim()) return;
@@ -246,6 +319,111 @@ export function RealTimeManagement() {
               <KpiCard icon={AlertTriangle} label="Staffing gap" value={fmtNum(dashboard.summary.current_staffing_gap, 1)} subtext={`${dashboard.summary.open_gap_intervals} intervals below plan`} />
               <KpiCard icon={FileText} label="Actual volume" value={fmtNum(dashboard.summary.total_actual_volume)} subtext={modeLabel(dashboard.data_mode)} />
             </div>
+
+            <Card className="rounded-lg">
+              <CardHeader className="px-4 pt-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <CardTitle className="text-base text-black">Manual adherence monitor</CardTitle>
+                  <div className="flex flex-wrap gap-2">
+                    <Select value={adherenceStateFilter} onValueChange={setAdherenceStateFilter}>
+                      <SelectTrigger className="h-9 w-[170px] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All states</SelectItem>
+                        <SelectItem value="in_adherence">In adherence</SelectItem>
+                        <SelectItem value="late_login">Late login</SelectItem>
+                        <SelectItem value="early_logout">Early logout</SelectItem>
+                        <SelectItem value="missing_punch">Missing punch</SelectItem>
+                        <SelectItem value="early_break">Early break</SelectItem>
+                        <SelectItem value="late_break">Late break</SelectItem>
+                        <SelectItem value="overbreak">Overbreak</SelectItem>
+                        <SelectItem value="long_lunch">Long lunch</SelectItem>
+                        <SelectItem value="unscheduled_activity">Unscheduled activity</SelectItem>
+                        <SelectItem value="out_of_adherence">Out of adherence</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select value={activityFilter} onValueChange={setActivityFilter}>
+                      <SelectTrigger className="h-9 w-[150px] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All activities</SelectItem>
+                        <SelectItem value="on_queue">On Queue</SelectItem>
+                        <SelectItem value="break">Break</SelectItem>
+                        <SelectItem value="meal">Lunch</SelectItem>
+                        <SelectItem value="coaching">Coaching</SelectItem>
+                        <SelectItem value="training">Training</SelectItem>
+                        <SelectItem value="meeting">Meeting</SelectItem>
+                        <SelectItem value="offline_work">Offline Work</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button variant="outline" size="sm" className="h-9 gap-1.5 text-xs" onClick={loadAdherence} disabled={adherenceLoading}>
+                      {adherenceLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                      Refresh
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                {adherence ? (
+                  <>
+                    <div className="mb-3 grid gap-3 md:grid-cols-4">
+                      {[
+                        ["Agents", fmtNum(adherence.summary.total_agents), "Published shifts"],
+                        ["In adherence", fmtNum(adherence.summary.in_adherence), `Grace ${adherence.grace_period_minutes}m`],
+                        ["Exceptions", fmtNum(adherence.summary.out_of_adherence), "Needs review"],
+                        ["Missing punch", fmtNum(adherence.summary.missing_punch), "Manual status absent"],
+                      ].map(([label, value, subtext]) => (
+                        <div key={label} className="rounded-md border bg-white px-3 py-2">
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+                          <p className="mt-1 text-xl font-semibold text-black">{value}</p>
+                          <p className="text-xs text-slate-500">{subtext}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <Table containerClassName="max-h-[420px] overflow-auto rounded-md border">
+                      <TableHeader className="sticky top-0 z-10 bg-white">
+                        <TableRow>
+                          <TableHead className="text-xs">Agent</TableHead>
+                          <TableHead className="text-xs">Team</TableHead>
+                          <TableHead className="text-xs">Scheduled</TableHead>
+                          <TableHead className="text-xs">Actual</TableHead>
+                          <TableHead className="text-xs">State</TableHead>
+                          <TableHead className="text-right text-xs">Variance</TableHead>
+                          <TableHead className="text-xs">Last punch</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {adherence.agents.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={7} className="h-20 text-center text-sm text-slate-500">No agents match the current adherence filters.</TableCell>
+                          </TableRow>
+                        ) : adherence.agents.map(agent => (
+                          <TableRow key={`${agent.agent_id}-${agent.channel}`}>
+                            <TableCell className="font-medium text-sm">{agent.agent_name}</TableCell>
+                            <TableCell className="text-xs text-slate-600">{agent.team_name || "-"}</TableCell>
+                            <TableCell className="text-xs">{agent.scheduled_activity_label || "-"}</TableCell>
+                            <TableCell className="text-xs">{agent.actual_activity_label || "-"}</TableCell>
+                            <TableCell>
+                              <Badge variant="outline" className={`text-xs ${adherenceStyles[agent.adherence_state] || "bg-slate-50 text-slate-700 border-slate-200"}`}>
+                                {agent.adherence_state_label}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right text-xs font-mono">{agent.variance_minutes == null ? "-" : `${agent.variance_minutes}m`}</TableCell>
+                            <TableCell className="text-xs">{agent.last_punch_timestamp ? new Date(agent.last_punch_timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                ) : (
+                  <div className="rounded-md border border-dashed p-6 text-center text-sm text-slate-500">
+                    {adherenceLoading ? "Loading adherence..." : "No adherence data loaded."}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
             <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
               <Card className="rounded-lg">

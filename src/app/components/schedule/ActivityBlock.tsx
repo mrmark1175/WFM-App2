@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Input } from "../ui/input";
 import { Trash2 } from "lucide-react";
 
-export type ActivityType = "break" | "meal" | "coaching" | "training" | "meeting" | "late" | "absent";
+export type ActivityType = "break" | "meal" | "coaching" | "training" | "meeting" | "offline_work" | "late" | "absent";
 
 export interface Activity {
   id: number;
@@ -26,6 +26,7 @@ export const ACTIVITY_CONFIG: Record<ActivityType, { label: string; color: strin
   coaching: { label: "Coaching", color: "#8b5cf6", textColor: "#fff" },
   training: { label: "Training", color: "#14b8a6", textColor: "#fff" },
   meeting:  { label: "Meeting",  color: "#64748b", textColor: "#fff" },
+  offline_work: { label: "Offline Work", color: "#0f766e", textColor: "#fff" },
   late:     { label: "Late",     color: "#dc2626", textColor: "#fff" },
   absent:   { label: "Absent",   color: "#374151", textColor: "#fff" },
 };

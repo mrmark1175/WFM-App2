@@ -4,7 +4,9 @@ import { type UserRole } from "@/context/AuthContext";
 const ROLE_CONFIG: Record<UserRole, { label: string; className: string }> = {
   super_admin: { label: "Super Admin", className: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300" },
   client_admin: { label: "Admin", className: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300" },
+  rta: { label: "RTA", className: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300" },
   supervisor: { label: "Supervisor", className: "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300" },
+  agent: { label: "Agent", className: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300" },
   read_only: { label: "Read Only", className: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400" },
 };
 

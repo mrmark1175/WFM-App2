@@ -8,6 +8,11 @@ const { pool } = require('./db.cjs');
 const { generate: generateSchedule } = require('./scheduling/generator.cjs');
 const { authenticateToken, signToken, verifyToken, parseCookies, setAuthCookie } = require('./middleware/auth.cjs');
 const { requireRole } = require('./middleware/rbac.cjs');
+const { ACTUAL_SOURCE_MANUAL, ACTIVITY, PUNCH_ACTION, normalizeActivityType } = require('./adherence/types.cjs');
+const { buildScheduledIntervals, getScheduledActivityAt, loadPublishedAssignment, loadPublishedAssignments } = require('./adherence/schedule.cjs');
+const { calculateAdherence, deriveCurrentStatus } = require('./adherence/calculate.cjs');
+const { getValidPunchActions, validatePunchFlow } = require('./adherence/punchFlow.cjs');
+const { getLinkedAgentForUser, canViewAdherence, canCorrectPunch, canConfigureAdherence } = require('./adherence/permissions.cjs');
 
 const app = express();
 const distPath = path.resolve(__dirname, '../dist');
@@ -649,6 +654,8 @@ async function ensureAppTables() {
     EXCEPTION WHEN duplicate_object THEN NULL;
     END; $$
   `);
+  await pool.query(`ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'agent'`);
+  await pool.query(`ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'rta'`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id              SERIAL PRIMARY KEY,
@@ -667,6 +674,73 @@ async function ensureAppTables() {
   `);
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false
+  `);
+
+  await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS user_id INTEGER`);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE scheduling_agents
+      ADD CONSTRAINT scheduling_agents_user_id_fkey
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+    EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+    END; $$
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS scheduling_agents_org_user_unique
+    ON scheduling_agents (organization_id, user_id)
+    WHERE user_id IS NOT NULL
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS manual_adherence_settings (
+      id                    SERIAL PRIMARY KEY,
+      organization_id         INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      lob_id                  INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      grace_period_minutes    INTEGER NOT NULL DEFAULT 5,
+      manual_mode_enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+      enabled_activities      JSONB NOT NULL DEFAULT '["break","meal","coaching","training","meeting","offline_work"]',
+      source_priority         JSONB NOT NULL DEFAULT '["telephony","manual_agent_punch"]',
+      updated_by_user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_status_punches (
+      id                    SERIAL PRIMARY KEY,
+      organization_id         INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      lob_id                  INTEGER REFERENCES lobs(id) ON DELETE SET NULL,
+      agent_id                INTEGER NOT NULL REFERENCES scheduling_agents(id) ON DELETE CASCADE,
+      assignment_id           INTEGER REFERENCES schedule_assignments(id) ON DELETE SET NULL,
+      shift_activity_id       INTEGER REFERENCES shift_activities(id) ON DELETE SET NULL,
+      activity_type           TEXT NOT NULL,
+      punch_action            TEXT NOT NULL,
+      punched_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      timezone                TEXT NOT NULL DEFAULT 'UTC',
+      notes                   TEXT,
+      source                  TEXT NOT NULL DEFAULT 'manual_agent_punch',
+      created_by_user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      voided_at               TIMESTAMPTZ,
+      voided_by_user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      void_reason             TEXT
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS agent_status_punches_agent_time_idx ON agent_status_punches (organization_id, agent_id, punched_at DESC) WHERE voided_at IS NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS agent_status_punches_assignment_idx ON agent_status_punches (assignment_id) WHERE voided_at IS NULL`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_status_corrections (
+      id                    SERIAL PRIMARY KEY,
+      organization_id         INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      punch_id                INTEGER NOT NULL REFERENCES agent_status_punches(id) ON DELETE CASCADE,
+      correction_type         TEXT NOT NULL,
+      before_values           JSONB NOT NULL DEFAULT '{}',
+      after_values            JSONB NOT NULL DEFAULT '{}',
+      reason                  TEXT NOT NULL,
+      corrected_by_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      corrected_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
   `);
 
   // ── Sessions (for future token revocation) ────────────────────────────────────
@@ -804,7 +878,7 @@ app.post('/api/users', requireRole('super_admin', 'client_admin'), async (req, r
   const { email, password, full_name, role } = req.body || {};
   if (!email || !password || !role) return res.status(400).json({ error: 'Email, password, and role are required' });
   if (req.user.role === 'client_admin' && ['super_admin', 'client_admin'].includes(role)) {
-    return res.status(403).json({ error: 'Client admins can only create supervisor or read_only users' });
+    return res.status(403).json({ error: 'Client admins can only create RTA, supervisor, agent, or read-only users' });
   }
   const orgId = (req.user.role === 'super_admin' && req.body.organization_id)
     ? parseInt(req.body.organization_id)
@@ -2077,14 +2151,14 @@ app.get('/api/scheduling/agents', async (req, res) => {
 });
 
 app.post('/api/scheduling/agents', async (req, res) => {
-  const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name } = req.body;
+  const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id } = req.body;
   const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
   try {
     const { rows } = await pool.query(
       `INSERT INTO scheduling_agents
-         (organization_id, employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name)
-       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
-      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null]
+         (organization_id, employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id)
+       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, user_id || null]
     );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2131,7 +2205,7 @@ app.post('/api/scheduling/agents/bulk', async (req, res) => {
 });
 
 app.put('/api/scheduling/agents/:id', async (req, res) => {
-  const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name } = req.body;
+  const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id } = req.body;
   const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
   try {
     const { rows } = await pool.query(
@@ -2139,9 +2213,9 @@ app.put('/api/scheduling/agents/:id', async (req, res) => {
          employee_id=$1, first_name=$2, last_name=$3, full_name=$4, email=$5, contract_type=$6,
          skill_voice=$7, skill_chat=$8, skill_email=$9,
          lob_assignments=$10, accommodation_flags=$11, availability=$12,
-         status=$13, shift_length_hours=$14, team_name=$15, team_lead_id=$16, team_leader_name=$17, updated_at=NOW()
-       WHERE id=$18 AND organization_id=1 RETURNING *`,
-      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, req.params.id]
+         status=$13, shift_length_hours=$14, team_name=$15, team_lead_id=$16, team_leader_name=$17, user_id=$18, updated_at=NOW()
+       WHERE id=$19 AND organization_id=1 RETURNING *`,
+      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, user_id || null, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Agent not found' });
     res.json(rows[0]);
@@ -2687,6 +2761,352 @@ app.post('/api/scheduling/publish', async (req, res) => {
 
 // ── Auto-Scheduler: Generation runs ─────────────────────────────────────────
 // --- Real Time Management: hybrid traffic dashboard ---
+async function getManualAdherenceSettings(organizationId, lobId) {
+  const result = await pool.query(
+    `INSERT INTO manual_adherence_settings (organization_id, lob_id)
+     VALUES ($1, $2)
+     ON CONFLICT (organization_id, lob_id) DO UPDATE SET updated_at = manual_adherence_settings.updated_at
+     RETURNING *`,
+    [organizationId, lobId]
+  );
+  return result.rows[0];
+}
+
+async function loadAgentPunches({ organizationId, agentId, assignmentId = null, date = null }) {
+  const params = [organizationId, agentId];
+  let sql = `
+    SELECT id, organization_id, lob_id, agent_id, assignment_id, shift_activity_id,
+           activity_type, punch_action, punched_at, timezone, notes, source,
+           created_by_user_id, created_at, voided_at, void_reason
+    FROM agent_status_punches
+    WHERE organization_id=$1 AND agent_id=$2 AND voided_at IS NULL
+  `;
+  if (assignmentId) {
+    params.push(assignmentId);
+    sql += ` AND assignment_id=$${params.length}`;
+  } else if (date) {
+    params.push(date);
+    sql += ` AND punched_at >= $${params.length}::date AND punched_at < ($${params.length}::date + interval '1 day')`;
+  }
+  sql += ' ORDER BY punched_at ASC, id ASC';
+  const { rows } = await pool.query(sql, params);
+  return rows;
+}
+
+function todayDateStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function serializeScheduleInterval(interval) {
+  return {
+    schedule_activity_id: interval.schedule_activity_id,
+    activity_type: interval.activity_type,
+    label: interval.label,
+    start: interval.start.toISOString(),
+    end: interval.end.toISOString(),
+    scheduled_start: interval.scheduled_start.toISOString(),
+    scheduled_end: interval.scheduled_end.toISOString(),
+    is_paid: interval.is_paid ?? null,
+    notes: interval.notes ?? null,
+  };
+}
+
+function stateLabel(value) {
+  return String(value || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function passesAdherenceFilters(row, query) {
+  if (query.adherence_state && query.adherence_state !== 'all' && row.adherence_state !== query.adherence_state) return false;
+  if (query.activity_type && query.activity_type !== 'all' && row.scheduled_activity !== query.activity_type && row.actual_activity !== query.activity_type) return false;
+  return true;
+}
+
+// --- Agent self-service and manual adherence fallback ---
+app.get('/api/agent/self-service/today', async (req, res) => {
+  const user = getCurrentUser(req);
+  const date = req.query.date || todayDateStr();
+  try {
+    const agent = await getLinkedAgentForUser(pool, user);
+    if (!agent) return res.status(404).json({ error: 'No scheduling agent is linked to this user.' });
+    const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : (agent.lob_assignments?.[0] || await getDefaultLobId(user.organization_id));
+    const assignment = await loadPublishedAssignment(pool, {
+      organizationId: user.organization_id,
+      agentId: agent.id,
+      date,
+      lobId,
+    });
+    const settings = lobId ? await getManualAdherenceSettings(user.organization_id, lobId) : { grace_period_minutes: 5 };
+    const punches = await loadAgentPunches({
+      organizationId: user.organization_id,
+      agentId: agent.id,
+      assignmentId: assignment?.id || null,
+      date,
+    });
+    const intervals = buildScheduledIntervals(assignment);
+    const now = new Date();
+    const adherence = calculateAdherence({
+      assignment,
+      punches,
+      at: now,
+      graceMinutes: settings.grace_period_minutes || 5,
+    });
+    const valid = getValidPunchActions({ assignment, punches, scheduledIntervals: intervals });
+    const scheduledNow = getScheduledActivityAt(assignment, now);
+    res.json({
+      date,
+      agent,
+      assignment,
+      schedule: intervals.map(serializeScheduleInterval),
+      current_scheduled_activity: scheduledNow ? serializeScheduleInterval(scheduledNow) : null,
+      current_status: valid.current,
+      adherence,
+      valid_actions: valid.actions,
+      punches,
+      settings: { grace_period_minutes: settings.grace_period_minutes || 5, manual_mode_enabled: settings.manual_mode_enabled !== false },
+    });
+  } catch (err) {
+    console.error('Agent self-service error:', err.message);
+    res.status(500).json({ error: 'Failed to load agent self-service data' });
+  }
+});
+
+app.post('/api/agent/self-service/punch', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { activity_type, punch_action, shift_activity_id, punched_at, timezone, notes, date } = req.body || {};
+  try {
+    const agent = await getLinkedAgentForUser(pool, user);
+    if (!agent) return res.status(404).json({ error: 'No scheduling agent is linked to this user.' });
+    const punchDate = date || todayDateStr();
+    const lobId = req.body.lob_id ? parseInt(req.body.lob_id) : (agent.lob_assignments?.[0] || await getDefaultLobId(user.organization_id));
+    const assignment = await loadPublishedAssignment(pool, {
+      organizationId: user.organization_id,
+      agentId: agent.id,
+      date: punchDate,
+      lobId,
+    });
+    const settings = lobId ? await getManualAdherenceSettings(user.organization_id, lobId) : null;
+    if (settings && settings.manual_mode_enabled === false) return res.status(403).json({ error: 'Manual adherence mode is disabled for this LOB.' });
+    const punches = await loadAgentPunches({
+      organizationId: user.organization_id,
+      agentId: agent.id,
+      assignmentId: assignment?.id || null,
+      date: punchDate,
+    });
+    const normalizedActivity = normalizeActivityType(activity_type);
+    const validation = validatePunchFlow({
+      assignment,
+      punches,
+      activityType: normalizedActivity,
+      punchAction: punch_action,
+      shiftActivityId: shift_activity_id || null,
+    });
+    if (!validation.ok) return res.status(400).json({ error: validation.error });
+    const result = await pool.query(
+      `INSERT INTO agent_status_punches
+        (organization_id, lob_id, agent_id, assignment_id, shift_activity_id, activity_type, punch_action,
+         punched_at, timezone, notes, source, created_by_user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8::timestamptz, NOW()),$9,$10,$11,$12)
+       RETURNING *`,
+      [
+        user.organization_id,
+        lobId || assignment?.lob_id || null,
+        agent.id,
+        assignment?.id || null,
+        shift_activity_id || null,
+        normalizedActivity,
+        punch_action,
+        punched_at || null,
+        timezone || 'UTC',
+        notes || null,
+        ACTUAL_SOURCE_MANUAL,
+        user.id,
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('Agent punch error:', err.message);
+    res.status(500).json({ error: 'Failed to save punch' });
+  }
+});
+
+app.get('/api/rtm/adherence-settings', async (req, res) => {
+  const user = getCurrentUser(req);
+  if (!canViewAdherence(user)) return res.status(403).json({ error: 'Forbidden' });
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  if (!lobId) return res.status(400).json({ error: 'lob_id is required' });
+  try {
+    res.json(await getManualAdherenceSettings(user.organization_id, lobId));
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load adherence settings' });
+  }
+});
+
+app.put('/api/rtm/adherence-settings', async (req, res) => {
+  const user = getCurrentUser(req);
+  if (!canConfigureAdherence(user)) return res.status(403).json({ error: 'Forbidden' });
+  const lobId = req.body.lob_id ? parseInt(req.body.lob_id) : await getDefaultLobId(user.organization_id);
+  if (!lobId) return res.status(400).json({ error: 'lob_id is required' });
+  const grace = Math.max(0, Math.min(60, parseInt(req.body.grace_period_minutes ?? 5)));
+  try {
+    const result = await pool.query(
+      `INSERT INTO manual_adherence_settings
+        (organization_id, lob_id, grace_period_minutes, manual_mode_enabled, updated_by_user_id, updated_at)
+       VALUES ($1,$2,$3,$4,$5,NOW())
+       ON CONFLICT (organization_id, lob_id) DO UPDATE SET
+         grace_period_minutes=EXCLUDED.grace_period_minutes,
+         manual_mode_enabled=EXCLUDED.manual_mode_enabled,
+         updated_by_user_id=EXCLUDED.updated_by_user_id,
+         updated_at=NOW()
+       RETURNING *`,
+      [user.organization_id, lobId, grace, req.body.manual_mode_enabled !== false, user.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save adherence settings' });
+  }
+});
+
+app.get('/api/rtm/adherence-dashboard', async (req, res) => {
+  const user = getCurrentUser(req);
+  if (!canViewAdherence(user)) return res.status(403).json({ error: 'Forbidden' });
+  const date = req.query.date || todayDateStr();
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+  if (!lobId) return res.status(400).json({ error: 'lob_id is required' });
+  try {
+    const settings = await getManualAdherenceSettings(user.organization_id, lobId);
+    const assignments = await loadPublishedAssignments(pool, {
+      organizationId: user.organization_id,
+      date,
+      lobId,
+      channel: req.query.channel,
+      team: req.query.team,
+      supervisor: req.query.supervisor,
+    });
+    const rows = [];
+    for (const assignment of assignments) {
+      const punches = await loadAgentPunches({
+        organizationId: user.organization_id,
+        agentId: assignment.agent_id,
+        assignmentId: assignment.id,
+        date,
+      });
+      const adherence = calculateAdherence({
+        assignment,
+        punches,
+        at: new Date(),
+        graceMinutes: settings.grace_period_minutes || 5,
+      });
+      const row = {
+        agent_id: assignment.agent_id,
+        agent_name: assignment.agent_name,
+        team_name: assignment.team_name,
+        supervisor: assignment.team_leader_name,
+        site: null,
+        lob_id: assignment.lob_id,
+        channel: assignment.channel,
+        assignment_id: assignment.id,
+        scheduled_activity: adherence.scheduled_activity,
+        scheduled_activity_label: adherence.scheduled_activity_label,
+        actual_activity: adherence.current_status,
+        actual_activity_label: adherence.current_status_label,
+        current_status: adherence.current_status,
+        adherence_state: adherence.adherence_state,
+        adherence_state_label: stateLabel(adherence.adherence_state),
+        variance_minutes: adherence.variance_minutes,
+        last_punch_timestamp: adherence.last_punch?.punched_at || null,
+        last_punch_id: adherence.last_punch?.id || null,
+      };
+      if (passesAdherenceFilters(row, req.query)) rows.push(row);
+    }
+    res.json({
+      date,
+      lob_id: lobId,
+      grace_period_minutes: settings.grace_period_minutes || 5,
+      data_mode: 'manual_agent_punch',
+      summary: {
+        total_agents: rows.length,
+        in_adherence: rows.filter(r => r.adherence_state === 'in_adherence').length,
+        out_of_adherence: rows.filter(r => !['in_adherence', 'not_scheduled', 'logged_out'].includes(r.adherence_state)).length,
+        missing_punch: rows.filter(r => r.adherence_state === 'missing_punch').length,
+      },
+      agents: rows,
+    });
+  } catch (err) {
+    console.error('RTM adherence dashboard error:', err.message);
+    res.status(500).json({ error: 'Failed to load adherence dashboard' });
+  }
+});
+
+app.post('/api/rtm/punches/:id/correct', async (req, res) => {
+  const user = getCurrentUser(req);
+  if (!canCorrectPunch(user)) return res.status(403).json({ error: 'Forbidden' });
+  const punchId = parseInt(req.params.id);
+  const reason = String(req.body.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Correction reason is required' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query(
+      'SELECT * FROM agent_status_punches WHERE id=$1 AND organization_id=$2',
+      [punchId, user.organization_id]
+    );
+    const punch = existing.rows[0];
+    if (!punch) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Punch not found' });
+    }
+    let updated;
+    if (req.body.void === true) {
+      updated = await client.query(
+        `UPDATE agent_status_punches
+         SET voided_at=NOW(), voided_by_user_id=$1, void_reason=$2, updated_at=NOW()
+         WHERE id=$3 RETURNING *`,
+        [user.id, reason, punchId]
+      );
+    } else {
+      updated = await client.query(
+        `UPDATE agent_status_punches
+         SET activity_type=COALESCE($1, activity_type),
+             punch_action=COALESCE($2, punch_action),
+             punched_at=COALESCE($3::timestamptz, punched_at),
+             notes=COALESCE($4, notes),
+             updated_at=NOW()
+         WHERE id=$5 RETURNING *`,
+        [
+          req.body.activity_type ? normalizeActivityType(req.body.activity_type) : null,
+          req.body.punch_action || null,
+          req.body.punched_at || null,
+          req.body.notes ?? null,
+          punchId,
+        ]
+      );
+    }
+    await client.query(
+      `INSERT INTO agent_status_corrections
+        (organization_id, punch_id, correction_type, before_values, after_values, reason, corrected_by_user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        user.organization_id,
+        punchId,
+        req.body.void === true ? 'void' : 'edit',
+        JSON.stringify(punch),
+        JSON.stringify(updated.rows[0]),
+        reason,
+        user.id,
+      ]
+    );
+    await client.query('COMMIT');
+    res.json(updated.rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Punch correction error:', err.message);
+    res.status(500).json({ error: 'Failed to correct punch' });
+  } finally {
+    client.release();
+  }
+});
+
 app.get('/api/rtm/dashboard', async (req, res) => {
   const user = getCurrentUser(req);
   const targetChannel = req.query.channel || 'voice';

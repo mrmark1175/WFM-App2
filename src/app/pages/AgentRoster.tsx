@@ -31,6 +31,7 @@ interface Agent {
   accommodation_flags: string[];
   availability: Record<string, { available?: boolean; start?: string; end?: string }> & { fixed_rest_days?: string[] };
   status: string;
+  user_id?: number | null;
   shift_length_hours?: number;
   team_name?: string | null;
   team_lead_id?: number | null;
@@ -75,6 +76,7 @@ const EMPTY_FORM: Omit<Agent, "id"> = {
   lob_assignments: [], accommodation_flags: [],
   availability: DEFAULT_AVAILABILITY,
   status: "active",
+  user_id: null,
   shift_length_hours: 9,
   team_name: "",
   team_lead_id: null,
@@ -209,6 +211,7 @@ export function AgentRoster() {
       last_name: a.last_name ?? "",
       email: a.email ?? "",
       availability: { ...DEFAULT_AVAILABILITY, ...a.availability },
+      user_id: a.user_id ?? null,
       shift_length_hours: a.shift_length_hours ?? 9,
       team_name: a.team_name ?? "",
       team_lead_id: a.team_lead_id ?? null,
@@ -494,6 +497,16 @@ export function AgentRoster() {
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">Email</Label>
                   <Input type="email" value={form.email ?? ""} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} placeholder="maria@company.com" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">Linked User ID</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={form.user_id ?? ""}
+                    onChange={(e) => setForm((p) => ({ ...p, user_id: e.target.value ? Number(e.target.value) : null }))}
+                    placeholder="Optional app user ID"
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">Team Leader</Label>

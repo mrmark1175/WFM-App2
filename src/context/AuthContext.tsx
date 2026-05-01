@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { apiUrl } from "@/app/lib/api";
 
-export type UserRole = "super_admin" | "client_admin" | "supervisor" | "read_only";
+export type UserRole = "super_admin" | "client_admin" | "rta" | "supervisor" | "agent" | "read_only";
 
 export interface AuthUser {
   id: number;

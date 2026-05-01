@@ -32,6 +32,10 @@ export const router = createBrowserRouter([
     lazy: () => lazyLoad(async () => { const { MyAccount } = await import("./pages/MyAccount"); return { Component: MyAccount }; }),
   },
   {
+    path: "/agent/today",
+    lazy: () => lazyLoad(async () => { const { AgentSelfService } = await import("./pages/AgentSelfService"); return { Component: AgentSelfService }; }),
+  },
+  {
     path: "/wfm",
     lazy: () => lazyLoad(async () => { const { WFM } = await import("./pages/WFM"); return { Component: WFM }; }),
   },
