@@ -967,22 +967,25 @@ function getMondayBasedWeekday(dateStr) {
   return (date.getDay() + 6) % 7;
 }
 
-function isAssignmentActiveAt(assignment, dateStr, intervalStartMins, intervalEndMins) {
-  const workDate = assignment.work_date instanceof Date
-    ? assignment.work_date.toISOString().slice(0, 10)
-    : String(assignment.work_date).slice(0, 10);
-  let start = parseTimeToMinutes(assignment.start_time);
-  let end = parseTimeToMinutes(assignment.end_time);
-  if (assignment.is_overnight || end <= start) end += 1440;
+function isAssignmentScheduledAtSlot(assignment, slotMins) {
+  const startMins = parseTimeToMinutes(assignment.start_time);
+  let endMins = parseTimeToMinutes(assignment.end_time);
+  if (endMins === 0) endMins = 24 * 60;
+  if (assignment.is_overnight && endMins <= startMins) endMins += 24 * 60;
+  if (slotMins < startMins || slotMins >= endMins) return false;
 
-  let probeStart = intervalStartMins;
-  let probeEnd = intervalEndMins;
-  if (workDate < dateStr) {
-    probeStart += 1440;
-    probeEnd += 1440;
-  }
+  const activities = Array.isArray(assignment.activities) ? assignment.activities : [];
+  const onActivity = activities.some(act => {
+    let activityStart = parseTimeToMinutes(act.start_time);
+    let activityEnd = parseTimeToMinutes(act.end_time);
+    if (assignment.is_overnight && activityStart < startMins) {
+      activityStart += 24 * 60;
+      activityEnd += 24 * 60;
+    }
+    return slotMins >= activityStart && slotMins < activityEnd;
+  });
 
-  return start < probeEnd && end > probeStart;
+  return !onActivity;
 }
 
 function getRtmRisk(interval, hasQueueActuals) {
@@ -2694,9 +2697,6 @@ app.get('/api/rtm/dashboard', async (req, res) => {
   if (!lobId) return res.status(400).json({ error: 'lob_id is required' });
 
   try {
-    const prev = new Date(`${dateStr}T00:00:00`);
-    prev.setDate(prev.getDate() - 1);
-    const prevDateStr = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}-${String(prev.getDate()).padStart(2, '0')}`;
     const weekday = getMondayBasedWeekday(dateStr);
 
     const [snapshotRes, actualsRes, assignmentsRes, actionsRes] = await Promise.all([
@@ -2716,13 +2716,26 @@ app.get('/api/rtm/dashboard', async (req, res) => {
         [user.organization_id, lobId, targetChannel, dateStr]
       ),
       pool.query(
-        `SELECT id, agent_id, work_date, start_time::text, end_time::text, is_overnight, channel, status
-         FROM schedule_assignments
-         WHERE organization_id=$1 AND lob_id=$2 AND status='published'
-           AND work_date BETWEEN $3 AND $4
-           AND ($5 = 'blended' OR channel = $5 OR channel = 'blended')
-         ORDER BY work_date, start_time`,
-        [user.organization_id, lobId, prevDateStr, dateStr, targetChannel]
+        `SELECT sa.id, sa.agent_id, sa.work_date, sa.start_time::text, sa.end_time::text, sa.is_overnight, sa.channel, sa.status,
+                COALESCE(
+                  json_agg(
+                    json_build_object(
+                      'id', act.id,
+                      'activity_type', act.activity_type,
+                      'start_time', act.start_time::text,
+                      'end_time', act.end_time::text
+                    ) ORDER BY act.start_time
+                  ) FILTER (WHERE act.id IS NOT NULL),
+                  '[]'::json
+                ) AS activities
+         FROM schedule_assignments sa
+         LEFT JOIN shift_activities act ON act.assignment_id = sa.id
+         WHERE sa.organization_id=$1 AND sa.lob_id=$2 AND sa.status='published'
+           AND sa.work_date=$3
+           AND ($4 = 'blended' OR sa.channel = $4 OR sa.channel = 'blended')
+         GROUP BY sa.id
+         ORDER BY sa.work_date, sa.start_time`,
+        [user.organization_id, lobId, dateStr, targetChannel]
       ),
       pool.query(
         `SELECT id, channel, interval_date, interval_index, action_type, note, created_by, created_at
@@ -2772,10 +2785,9 @@ app.get('/api/rtm/dashboard', async (req, res) => {
 
     for (let i = 0; i < slotCount; i++) {
       const startMins = i * intervalMinutes;
-      const endMins = startMins + intervalMinutes;
       const actual = actualByIndex.get(i);
       const required = requiredByIndex.get(i) || 0;
-      const scheduled = assignments.filter(a => isAssignmentActiveAt(a, dateStr, startMins, endMins)).length;
+      const scheduled = assignments.filter(a => isAssignmentScheduledAtSlot(a, startMins)).length;
       const actualVolume = actual ? actual.volume : null;
       const actualAht = actual && actual.volume > 0 ? Math.round(actual.handleSeconds / actual.volume) : null;
       const interval = {
