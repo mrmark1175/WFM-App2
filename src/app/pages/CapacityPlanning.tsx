@@ -520,6 +520,13 @@ function fmtPct(n: number | string | null | undefined, dp = 1): string {
   return `${num.toFixed(dp)}%`;
 }
 
+function clampNumericInput(value: number, min?: number, max?: number): number {
+  let next = value;
+  if (min != null) next = Math.max(min, next);
+  if (max != null) next = Math.min(max, next);
+  return next;
+}
+
 // Heatmap tint for the Gap/Surplus row. inset box-shadow overlays a translucent
 // colour over the cell's own opaque background — required because the cell is
 // sticky-bottom and must fully hide scrolled rows beneath it.
@@ -688,6 +695,76 @@ function InputCell({ value, onChange, onReset, placeholder = "", color = "defaul
         className={`w-full text-right text-xs border rounded px-1 py-0.5 outline-none focus:ring-1 focus:ring-blue-400 ${colorClass}`}
       />
     </td>
+  );
+}
+
+function CommitNumberInput({
+  value,
+  onCommit,
+  min,
+  max,
+  step,
+  integer = false,
+  emptyValue,
+  placeholder,
+  className = "h-8 text-xs",
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  integer?: boolean;
+  emptyValue?: number;
+  placeholder?: string;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    if (trimmed === "" && emptyValue != null) {
+      onCommit(emptyValue);
+      setDraft(String(emptyValue));
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const normalized = integer ? Math.round(parsed) : parsed;
+    const clamped = clampNumericInput(normalized, min, max);
+    onCommit(clamped);
+    setDraft(String(clamped));
+  }
+
+  return (
+    <Input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      placeholder={placeholder}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === "Enter") {
+          commit();
+          (e.target as HTMLInputElement).blur();
+        }
+        if (e.key === "Escape") {
+          setDraft(String(value));
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      className={className}
+    />
   );
 }
 
@@ -1681,12 +1758,35 @@ export function CapacityPlanning() {
   const TOP_GAP_BILL  = showFteBreakdown ? 172 : 139;
 
   function updateFteModelField(field: keyof FteModelSnapshot, value: number) {
-    const next = { ...fteModel, [field]: Number.isFinite(value) ? value : 0 };
+    if (!Number.isFinite(value)) return;
+    const next = { ...fteModel, [field]: value };
     setFteModelOverride(next);
   }
 
   function resetFteModelDefaults() {
     setFteModelOverride(null);
+  }
+
+  function fteModelMin(field: keyof FteModelSnapshot): number {
+    if (field === "shrinkagePct") return 0;
+    if (field.endsWith("SlaTarget")) return 0;
+    if (field === "emailOccupancy") return 1;
+    if (field === "taskSwitchMultiplier") return 1;
+    if (field === "operatingHoursPerDay" || field === "fteHoursPerDay") return 0.25;
+    return 1;
+  }
+
+  function fteModelMax(field: keyof FteModelSnapshot): number | undefined {
+    if (field === "operatingHoursPerDay" || field === "fteHoursPerDay") return 24;
+    if (field === "daysPerWeek") return 7;
+    if (field === "shrinkagePct") return 99;
+    if (field.endsWith("SlaTarget") || field === "emailOccupancy") return 100;
+    if (field === "taskSwitchMultiplier") return 5;
+    return undefined;
+  }
+
+  function fteModelInteger(field: keyof FteModelSnapshot): boolean {
+    return field === "daysPerWeek" || field.endsWith("Aht") || field.endsWith("SlaSec") || field === "chatConcurrency";
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -1761,31 +1861,31 @@ export function CapacityPlanning() {
               </div>
               <div className="space-y-1">
                 <Label className="text-xs text-black">Horizon (weeks)</Label>
-                <Input type="number" min={4} max={104} value={config.horizonWeeks} onChange={e => updateConfig({ horizonWeeks: parseInt(e.target.value) || 26 })} className="h-8 text-xs" />
+                <CommitNumberInput value={config.horizonWeeks} min={4} max={104} step={1} integer onCommit={horizonWeeks => updateConfig({ horizonWeeks })} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs text-black">Starting HC</Label>
-                <Input type="number" min={0} value={config.startingHc} onChange={e => updateConfig({ startingHc: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
+                <CommitNumberInput value={config.startingHc} min={0} step={1} onCommit={startingHc => updateConfig({ startingHc })} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs text-black">Attrition Rate (%/mo)</Label>
-                <Input type="number" min={0} max={50} step={0.1} value={config.attritionRateMonthly} onChange={e => updateConfig({ attritionRateMonthly: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
+                <CommitNumberInput value={config.attritionRateMonthly} min={0} max={50} step={0.1} onCommit={attritionRateMonthly => updateConfig({ attritionRateMonthly })} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs text-black">Training Weeks (0%)</Label>
-                <Input type="number" min={0} max={26} value={config.rampTrainingWeeks} onChange={e => updateConfig({ rampTrainingWeeks: parseInt(e.target.value) || 0 })} className="h-8 text-xs" />
+                <CommitNumberInput value={config.rampTrainingWeeks} min={0} max={26} step={1} integer onCommit={rampTrainingWeeks => updateConfig({ rampTrainingWeeks })} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs text-black">Nesting Weeks</Label>
-                <Input type="number" min={0} max={26} value={config.rampNestingWeeks} onChange={e => updateConfig({ rampNestingWeeks: parseInt(e.target.value) || 0 })} className="h-8 text-xs" />
+                <CommitNumberInput value={config.rampNestingWeeks} min={0} max={26} step={1} integer onCommit={rampNestingWeeks => updateConfig({ rampNestingWeeks })} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs text-black">Nesting Productivity (%)</Label>
-                <Input type="number" min={0} max={100} value={config.rampNestingPct} onChange={e => updateConfig({ rampNestingPct: parseFloat(e.target.value) || 0 })} className="h-8 text-xs" />
+                <CommitNumberInput value={config.rampNestingPct} min={0} max={100} step={1} onCommit={rampNestingPct => updateConfig({ rampNestingPct })} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs text-black">Training Graduation (%)</Label>
-                <Input type="number" min={1} max={100} step={1} value={config.trainingGradRate} onChange={e => updateConfig({ trainingGradRate: parseFloat(e.target.value) || 100 })} className="h-8 text-xs" />
+                <CommitNumberInput value={config.trainingGradRate} min={1} max={100} step={1} onCommit={trainingGradRate => updateConfig({ trainingGradRate })} />
               </div>
             </div>
             <p className="text-xs text-black mt-3">
@@ -1798,11 +1898,13 @@ export function CapacityPlanning() {
               <div className="flex items-end gap-4">
                 <div className="space-y-1">
                   <Label className="text-xs text-black">Billable FTE (Contract Max)</Label>
-                  <Input
-                    type="number" min={0} step={1}
-                    value={config.billableFte || ""}
+                  <CommitNumberInput
+                    min={0}
+                    step={1}
+                    emptyValue={0}
+                    value={config.billableFte}
                     placeholder="0 — not set"
-                    onChange={e => updateConfig({ billableFte: parseFloat(e.target.value) || 0 })}
+                    onCommit={billableFte => updateConfig({ billableFte })}
                     className="h-8 text-xs w-44"
                   />
                 </div>
@@ -1841,12 +1943,13 @@ export function CapacityPlanning() {
                 ] as const).map(([label, field, step]) => (
                   <div key={field} className="space-y-1.5">
                     <Label className="block text-[11px] font-medium leading-none text-black">{label}</Label>
-                    <Input
-                      type="number"
-                      step={step}
+                    <CommitNumberInput
                       value={fteModel[field]}
-                      onChange={e => updateFteModelField(field, parseFloat(e.target.value))}
-                      className="h-8 text-xs"
+                      min={fteModelMin(field)}
+                      max={fteModelMax(field)}
+                      step={step}
+                      integer={fteModelInteger(field)}
+                      onCommit={value => updateFteModelField(field, value)}
                     />
                   </div>
                 ))}
@@ -1865,12 +1968,13 @@ export function CapacityPlanning() {
                 ] as const).map(([label, field, step]) => (
                   <div key={field} className="space-y-1.5">
                     <Label className="block text-[11px] font-medium leading-none text-black">{label}</Label>
-                    <Input
-                      type="number"
-                      step={step}
+                    <CommitNumberInput
                       value={fteModel[field]}
-                      onChange={e => updateFteModelField(field, parseFloat(e.target.value))}
-                      className="h-8 text-xs"
+                      min={fteModelMin(field)}
+                      max={fteModelMax(field)}
+                      step={step}
+                      integer={fteModelInteger(field)}
+                      onCommit={value => updateFteModelField(field, value)}
                     />
                   </div>
                 ))}
