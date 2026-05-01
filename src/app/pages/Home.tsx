@@ -1,10 +1,23 @@
 import React from "react";
-import { Link } from "react-router-dom";
-import { User, Users, Settings, ChevronRight } from "lucide-react";
+import { Link, Navigate } from "react-router-dom";
+import { ClipboardCheck, User, Users, Settings, ChevronRight } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 import logo from "../../assets/logo-new.jpg";
 
 export function Home() {
+  const { user, status } = useAuth();
+  if (status === "authenticated" && user?.role === "agent") {
+    return <Navigate to="/agent/today" replace />;
+  }
+
   const navigationCards = [
+    {
+      title: "My Schedule",
+      description: "View your published shift and manage punch status",
+      icon: ClipboardCheck,
+      path: "/agent/today",
+      roles: ["agent"],
+    },
     {
       title: "My Account",
       description: "Manage your profile, preferences, and account settings",
@@ -16,14 +29,17 @@ export function Home() {
       description: "Forecasting, capacity planning, scheduling, and analytics tools",
       icon: Users,
       path: "/wfm",
+      roles: ["super_admin", "client_admin", "rta", "supervisor", "read_only"],
     },
     {
       title: "Configuration",
       description: "System configuration, integrations, and admin settings",
       icon: Settings,
       path: "/configuration",
+      roles: ["super_admin", "client_admin"],
     },
   ];
+  const visibleCards = navigationCards.filter(card => !card.roles || (user && card.roles.includes(user.role)));
 
   return (
     <div className="min-h-screen bg-background relative">
@@ -40,7 +56,7 @@ export function Home() {
 
         {/* Navigation Cards */}
         <div className="grid md:grid-cols-3 gap-6 max-w-4xl mx-auto">
-          {navigationCards.map((card) => (
+          {visibleCards.map((card) => (
             <Link
               key={card.path}
               to={card.path}
