@@ -1,12 +1,25 @@
 const crypto = require('crypto');
 
-const SESSION_SECRET = process.env.SESSION_SECRET || (() => {
-  const s = crypto.randomBytes(32).toString('hex');
-  console.warn('[auth] SESSION_SECRET not set — sessions will reset on every restart. Add SESSION_SECRET to .env for persistence.');
-  return s;
-})();
-const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const IS_PROD = process.env.NODE_ENV === 'production';
+
+const SESSION_SECRET = (() => {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  if (IS_PROD) {
+    console.error(
+      '[auth] FATAL: SESSION_SECRET is required in production.\n' +
+      '       Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
+    );
+    process.exit(1);
+  }
+  const ephemeral = crypto.randomBytes(32).toString('hex');
+  console.warn(
+    '[auth] SESSION_SECRET not set — using an ephemeral secret. ' +
+    'All sessions will be invalidated on restart. Set SESSION_SECRET in .env for persistence.'
+  );
+  return ephemeral;
+})();
+
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 
 function signToken(payload) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');

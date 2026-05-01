@@ -1,13 +1,5 @@
 
-const { Pool } = require('pg');
-
-const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'exordium_db',
-  password: '837177',
-  port: 5432,
-});
+const { pool } = require('./db.cjs');
 
 async function reproduceInsertError() {
   const year_label = '2027-Chat-Test';

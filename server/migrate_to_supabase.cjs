@@ -9,11 +9,19 @@ function parseBoolean(value, fallback = false) {
 }
 
 function getSourceConfig() {
+  const required = ['SOURCE_PGHOST', 'SOURCE_PGUSER', 'SOURCE_PGPASSWORD', 'SOURCE_PGDATABASE'];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing source database env var(s): ${missing.join(', ')}. ` +
+      `Set all of SOURCE_PGHOST/SOURCE_PGUSER/SOURCE_PGPASSWORD/SOURCE_PGDATABASE (and optionally SOURCE_PGPORT, SOURCE_PGSSL).`
+    );
+  }
   return {
-    user: process.env.SOURCE_PGUSER || 'postgres',
-    host: process.env.SOURCE_PGHOST || 'localhost',
-    database: process.env.SOURCE_PGDATABASE || 'exordium_db',
-    password: process.env.SOURCE_PGPASSWORD || '837177',
+    user: process.env.SOURCE_PGUSER,
+    host: process.env.SOURCE_PGHOST,
+    database: process.env.SOURCE_PGDATABASE,
+    password: process.env.SOURCE_PGPASSWORD,
     port: Number(process.env.SOURCE_PGPORT) || 5432,
     ssl: parseBoolean(process.env.SOURCE_PGSSL, false)
       ? { rejectUnauthorized: false }

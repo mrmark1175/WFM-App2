@@ -3,7 +3,14 @@ try { require('dotenv').config({ path: require('path').join(__dirname, '../.env'
 const bcrypt = require('bcryptjs');
 const { pool } = require('../server/db.cjs');
 
-const PASSWORD = process.env.DEMO_USER_PASSWORD || 'Password123!';
+const PASSWORD = process.env.DEMO_USER_PASSWORD;
+if (!PASSWORD) {
+  console.error(
+    '[seed_manual_adherence_demo] FATAL: DEMO_USER_PASSWORD env var is required.\n' +
+    '       Example: DEMO_USER_PASSWORD=Some-Secure-Pw node scripts/seed_manual_adherence_demo.cjs'
+  );
+  process.exit(1);
+}
 
 function todayStr() {
   const d = new Date();

@@ -33,11 +33,20 @@ const { Pool } = require('pg');
 function getPoolConfig() {
   const cs = process.env.DATABASE_URL;
   if (cs) return { connectionString: cs, ssl: { rejectUnauthorized: false } };
+  const required = ['PGHOST', 'PGUSER', 'PGPASSWORD', 'PGDATABASE'];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    console.error(
+      `[seed_lob_mock_data] FATAL: missing env var(s): ${missing.join(', ')}.\n` +
+      `      Set DATABASE_URL or all of PGHOST/PGUSER/PGPASSWORD/PGDATABASE.`
+    );
+    process.exit(1);
+  }
   return {
-    user: process.env.PGUSER || 'postgres',
-    host: process.env.PGHOST || 'localhost',
-    database: process.env.PGDATABASE || 'exordium_db',
-    password: process.env.PGPASSWORD || '837177',
+    user: process.env.PGUSER,
+    host: process.env.PGHOST,
+    database: process.env.PGDATABASE,
+    password: process.env.PGPASSWORD,
     port: Number(process.env.PGPORT) || 5432,
     ssl: false,
   };
