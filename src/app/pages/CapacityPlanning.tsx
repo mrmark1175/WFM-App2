@@ -1820,15 +1820,15 @@ export function CapacityPlanning() {
                 FTE Model Parameters
                 <span className="font-normal text-black"> - editable for this what-if only</span>
               </p>
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
                 <p className="text-xs text-black">
                   Scenario-only overrides. Defaults still come from LOB Settings and Shrinkage Planning.
                 </p>
-                <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={resetFteModelDefaults}>
-                  <RotateCcw className="size-3" />Reset defaults
+                <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5 text-xs" onClick={resetFteModelDefaults}>
+                  <RotateCcw className="size-3.5" />Reset defaults
                 </Button>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 mb-2.5">
+              <div className="grid grid-cols-2 gap-x-3 gap-y-3 md:grid-cols-4 xl:grid-cols-8 mb-3 rounded-md border border-slate-200 bg-slate-50/60 p-3">
                 {([
                   ["Op. Hrs/Day", "operatingHoursPerDay", 0.5],
                   ["Days/Week", "daysPerWeek", 1],
@@ -1839,19 +1839,19 @@ export function CapacityPlanning() {
                   ["Email AHT", "emailAht", 1],
                   ["Cases AHT", "casesAht", 1],
                 ] as const).map(([label, field, step]) => (
-                  <div key={field} className="space-y-1">
-                    <Label className="text-[10px] text-black">{label}</Label>
+                  <div key={field} className="space-y-1.5">
+                    <Label className="block text-[11px] font-medium leading-none text-black">{label}</Label>
                     <Input
                       type="number"
                       step={step}
                       value={fteModel[field]}
                       onChange={e => updateFteModelField(field, parseFloat(e.target.value))}
-                      className="h-7 text-xs"
+                      className="h-8 text-xs"
                     />
                   </div>
                 ))}
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 mb-2.5">
+              <div className="grid grid-cols-2 gap-x-3 gap-y-3 md:grid-cols-4 xl:grid-cols-8 mb-3 rounded-md border border-slate-200 bg-slate-50/60 p-3">
                 {([
                   ["Voice SLA %", "voiceSlaTarget", 1],
                   ["Voice SLA Sec", "voiceSlaSec", 1],
@@ -1863,19 +1863,19 @@ export function CapacityPlanning() {
                   ["Chat Conc.", "chatConcurrency", 1],
                   ["Switch Penalty", "taskSwitchMultiplier", 0.01],
                 ] as const).map(([label, field, step]) => (
-                  <div key={field} className="space-y-1">
-                    <Label className="text-[10px] text-black">{label}</Label>
+                  <div key={field} className="space-y-1.5">
+                    <Label className="block text-[11px] font-medium leading-none text-black">{label}</Label>
                     <Input
                       type="number"
                       step={step}
                       value={fteModel[field]}
                       onChange={e => updateFteModelField(field, parseFloat(e.target.value))}
-                      className="h-7 text-xs"
+                      className="h-8 text-xs"
                     />
                   </div>
                 ))}
               </div>
-              <div className="flex flex-wrap gap-x-5 gap-y-1.5 mb-2.5">
+              <div className="flex flex-wrap gap-x-5 gap-y-1.5 mb-2 rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2">
                 {[
                   { label: "Op. Hrs/Day", value: `${operatingHoursPerDay}h` },
                   { label: "Days/Week", value: `${daysPerWeek}d` },
@@ -1884,7 +1884,7 @@ export function CapacityPlanning() {
                 ].map(p => (
                   <div key={p.label} className="flex items-center gap-1 text-xs">
                     <span className="text-black">{p.label}:</span>
-                    <span className="font-medium">{p.value}</span>
+                    <span className="font-medium text-black">{p.value}</span>
                   </div>
                 ))}
               </div>
@@ -1893,7 +1893,7 @@ export function CapacityPlanning() {
                   const slaTarget = ch === "voice" ? slaVoiceTarget : ch === "chat" ? slaChatTarget : slaEmailTarget;
                   const slaSec   = ch === "voice" ? slaVoiceSec    : ch === "chat" ? slaChatSec    : slaEmailSec;
                   return (
-                    <div key={ch} className="flex items-center gap-2 bg-muted/40 rounded-md px-2.5 py-1 text-xs">
+                    <div key={ch} className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs">
                       <span className="font-semibold text-black">{CHANNEL_LABELS[ch]}</span>
                       <span className="text-black">SLA {slaTarget}% in {fmtSeconds(slaSec)}</span>
                       {ch === "chat" && (
