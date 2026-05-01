@@ -38,6 +38,14 @@ interface Agent {
   team_leader_name?: string | null;
 }
 
+interface AppUser {
+  id: number;
+  email: string;
+  full_name: string | null;
+  role: string;
+  is_active: boolean;
+}
+
 const CONTRACT_TYPES = [
   { value: "full_time", label: "Full-Time" },
   { value: "part_time", label: "Part-Time" },
@@ -143,7 +151,9 @@ function defaultColMapping(colCount: number): string[] {
 export function AgentRoster() {
   const { lobs, activeLob } = useLOB();
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [usersLoading, setUsersLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterSkill, setFilterSkill] = useState("all");
   const [filterContract, setFilterContract] = useState("all");
@@ -178,7 +188,29 @@ export function AgentRoster() {
       .finally(() => setLoading(false));
   };
 
+  const loadUsers = () => {
+    setUsersLoading(true);
+    fetch(apiUrl("/api/users"), { credentials: "include" })
+      .then((r) => {
+        if (!r.ok) throw new Error("Failed to load app users");
+        return r.json();
+      })
+      .then((rows) => { if (Array.isArray(rows)) setUsers(rows); })
+      .catch(() => {
+        setUsers([]);
+        toast.error("Failed to load app users for roster linking");
+      })
+      .finally(() => setUsersLoading(false));
+  };
+
   useEffect(() => { load(); }, [activeLob?.id]);
+  useEffect(() => { loadUsers(); }, []);
+
+  const linkedUserById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
+  const linkableUsers = useMemo(() => {
+    const currentUserId = form.user_id ?? null;
+    return users.filter((u) => u.id === currentUserId || (u.role === "agent" && u.is_active));
+  }, [users, form.user_id]);
 
   const filtered = useMemo(() => agents.filter((a) => {
     if (search) {
@@ -397,6 +429,7 @@ export function AgentRoster() {
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Last Name</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">LOB</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Team Leader</TableHead>
+                  <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Linked Login</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Contract</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Skills</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Accommodations</TableHead>
@@ -407,9 +440,9 @@ export function AgentRoster() {
               </TableHeader>
               <TableBody>
                 {loading ? (
-                  <TableRow><TableCell colSpan={10} className="text-center py-12"><Loader2 className="size-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
+                  <TableRow><TableCell colSpan={11} className="text-center py-12"><Loader2 className="size-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
                 ) : filtered.length === 0 ? (
-                  <TableRow><TableCell colSpan={10} className="text-center py-12">
+                  <TableRow><TableCell colSpan={11} className="text-center py-12">
                     <div className="flex flex-col items-center gap-2">
                       <Users className="size-10 text-muted-foreground/30" />
                       <p className="text-sm text-muted-foreground">{agents.length === 0 ? "No agents yet. Click Add Agent to get started." : "No agents match the current filters."}</p>
@@ -443,6 +476,18 @@ export function AgentRoster() {
                         {a.team_leader_name
                           ? <span className="text-sm">{a.team_leader_name}</span>
                           : <span className="text-xs text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell>
+                        {a.user_id && linkedUserById.get(a.user_id)
+                          ? (
+                            <div>
+                              <p className="text-sm font-medium">{linkedUserById.get(a.user_id)?.full_name || linkedUserById.get(a.user_id)?.email}</p>
+                              <p className="text-xs text-muted-foreground">{linkedUserById.get(a.user_id)?.email}</p>
+                            </div>
+                          )
+                          : a.user_id
+                            ? <span className="text-xs text-amber-700">User ID {a.user_id}</span>
+                            : <span className="text-xs text-muted-foreground">Not linked</span>}
                       </TableCell>
                       <TableCell><Badge variant="outline" className="text-xs">{contractLabel(a.contract_type)}</Badge></TableCell>
                       <TableCell>
@@ -499,14 +544,27 @@ export function AgentRoster() {
                   <Input type="email" value={form.email ?? ""} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} placeholder="maria@company.com" />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold">Linked User ID</Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    value={form.user_id ?? ""}
-                    onChange={(e) => setForm((p) => ({ ...p, user_id: e.target.value ? Number(e.target.value) : null }))}
-                    placeholder="Optional app user ID"
-                  />
+                  <Label className="text-xs font-semibold">Linked App User</Label>
+                  <Select
+                    value={form.user_id ? String(form.user_id) : "none"}
+                    onValueChange={(value) => setForm((p) => ({ ...p, user_id: value === "none" ? null : Number(value) }))}
+                    disabled={usersLoading}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={usersLoading ? "Loading users..." : "Select app login"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No linked login</SelectItem>
+                      {linkableUsers.map((u) => (
+                        <SelectItem key={u.id} value={String(u.id)}>
+                          {u.full_name || u.email} - {u.email}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Create agent logins in User Management, then select the matching user here.
+                  </p>
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">Team Leader</Label>
