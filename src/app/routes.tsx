@@ -52,6 +52,10 @@ export const router = createBrowserRouter([
     lazy: () => lazyLoad(async () => { const { IntradayForecast } = await import("./pages/IntradayForecast"); return { Component: IntradayForecast }; }),
   },
   {
+    path: "/wfm/real-time-management",
+    lazy: () => lazyLoad(async () => { const { RealTimeManagement } = await import("./pages/RealTimeManagement"); return { Component: RealTimeManagement }; }),
+  },
+  {
     path: "/configuration",
     lazy: () => lazyLoad(async () => { const { Configuration } = await import("./pages/Configuration"); return { Component: Configuration }; }),
   },

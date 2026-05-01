@@ -31,7 +31,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: React.Elem
     { to: "/scheduling/labor-laws",            label: "Labor Law Rules",    icon: Scale },
   ]},
   { group: "RTA & Traffic", items: [
-    { to: "/wfm", label: "Coming Soon", icon: BarChart3, badge: "Soon" },
+    { to: "/wfm/real-time-management",      label: "Real Time Management", icon: BarChart3 },
   ]},
   { group: "Settings", items: [
     { to: "/configuration",                    label: "Configuration",      icon: Settings },
@@ -47,6 +47,7 @@ const CRUMB_NAMES: Record<string, string> = {
   capacity: "Workforce Planning",
   intraday: "Intraday Forecast",
   shrinkage: "Shrinkage Planning",
+  "real-time-management": "Real Time Management",
   "my-account": "My Account",
   configuration: "Configuration",
   "lob-management": "LOB Management",

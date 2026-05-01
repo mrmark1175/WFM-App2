@@ -68,8 +68,9 @@ const CYCLE_STEPS: CycleStep[] = [
     description:
       "Monitor real-time queue activity, agent adherence, and live SLA performance — and intervene when volumes or staffing deviate from plan.",
     icon: Monitor,
-    placeholder: true,
-    tools: [],
+    tools: [
+      { label: "Real Time Management", path: "/wfm/real-time-management", icon: Monitor },
+    ],
   },
   {
     step: "05",

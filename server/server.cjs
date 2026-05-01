@@ -613,6 +613,23 @@ async function ensureAppTables() {
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS generation_run_id INTEGER REFERENCES schedule_generation_runs(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE schedule_assignments ADD COLUMN IF NOT EXISTS absence_type VARCHAR(100) NULL`);
 
+  // Real Time Management action log. Dashboard metrics are computed from
+  // schedules, demand snapshots, and interval actuals; supervisor actions persist here.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS rtm_action_logs (
+      id                SERIAL PRIMARY KEY,
+      organization_id   INTEGER NOT NULL DEFAULT 1,
+      lob_id            INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel           TEXT NOT NULL DEFAULT 'voice',
+      interval_date     DATE NOT NULL,
+      interval_index    INTEGER,
+      action_type       TEXT NOT NULL DEFAULT 'note',
+      note              TEXT NOT NULL,
+      created_by        TEXT,
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // ── Organizations ─────────────────────────────────────────────────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS organizations (
@@ -930,6 +947,51 @@ async function getDefaultLobId(organizationId) {
     [organizationId]
   );
   return res.rows[0]?.id || null;
+}
+
+function parseTimeToMinutes(value) {
+  if (!value) return 0;
+  const [h, m] = String(value).split(':').map(Number);
+  return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
+}
+
+function formatIntervalTime(index, intervalMinutes = 15) {
+  const mins = index * intervalMinutes;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function getMondayBasedWeekday(dateStr) {
+  const date = new Date(`${dateStr}T00:00:00`);
+  return (date.getDay() + 6) % 7;
+}
+
+function isAssignmentActiveAt(assignment, dateStr, intervalStartMins, intervalEndMins) {
+  const workDate = assignment.work_date instanceof Date
+    ? assignment.work_date.toISOString().slice(0, 10)
+    : String(assignment.work_date).slice(0, 10);
+  let start = parseTimeToMinutes(assignment.start_time);
+  let end = parseTimeToMinutes(assignment.end_time);
+  if (assignment.is_overnight || end <= start) end += 1440;
+
+  let probeStart = intervalStartMins;
+  let probeEnd = intervalEndMins;
+  if (workDate < dateStr) {
+    probeStart += 1440;
+    probeEnd += 1440;
+  }
+
+  return start < probeEnd && end > probeStart;
+}
+
+function getRtmRisk(interval, hasQueueActuals) {
+  const gap = interval.staffing_gap;
+  const variancePct = interval.forecast_variance_pct;
+  if (gap <= -3 || (hasQueueActuals && variancePct !== null && variancePct >= 35)) return 'critical';
+  if (gap <= -1 || (hasQueueActuals && variancePct !== null && variancePct >= 20)) return 'alert';
+  if (gap < 0 || (hasQueueActuals && variancePct !== null && variancePct >= 10)) return 'watch';
+  return 'normal';
 }
 
 // --- CALL VOLUME SIMULATION ENGINE ---
@@ -2621,6 +2683,189 @@ app.post('/api/scheduling/publish', async (req, res) => {
 });
 
 // ── Auto-Scheduler: Generation runs ─────────────────────────────────────────
+// --- Real Time Management: hybrid traffic dashboard ---
+app.get('/api/rtm/dashboard', async (req, res) => {
+  const user = getCurrentUser(req);
+  const targetChannel = req.query.channel || 'voice';
+  const nowForDefault = new Date();
+  const dateStr = req.query.date || `${nowForDefault.getFullYear()}-${String(nowForDefault.getMonth() + 1).padStart(2, '0')}-${String(nowForDefault.getDate()).padStart(2, '0')}`;
+  const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
+
+  if (!lobId) return res.status(400).json({ error: 'lob_id is required' });
+
+  try {
+    const prev = new Date(`${dateStr}T00:00:00`);
+    prev.setDate(prev.getDate() - 1);
+    const prevDateStr = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}-${String(prev.getDate()).padStart(2, '0')}`;
+    const weekday = getMondayBasedWeekday(dateStr);
+
+    const [snapshotRes, actualsRes, assignmentsRes, actionsRes] = await Promise.all([
+      pool.query(
+        `SELECT id, snapshot_label, interval_minutes
+         FROM scheduling_demand_snapshots
+         WHERE organization_id=$1 AND lob_id=$2
+         ORDER BY approved_at DESC, id DESC
+         LIMIT 1`,
+        [user.organization_id, lobId]
+      ),
+      pool.query(
+        `SELECT interval_index, volume, aht
+         FROM interaction_arrival
+         WHERE organization_id=$1 AND lob_id=$2 AND channel=$3 AND interval_date=$4
+         ORDER BY interval_index`,
+        [user.organization_id, lobId, targetChannel, dateStr]
+      ),
+      pool.query(
+        `SELECT id, agent_id, work_date, start_time::text, end_time::text, is_overnight, channel, status
+         FROM schedule_assignments
+         WHERE organization_id=$1 AND lob_id=$2 AND status='published'
+           AND work_date BETWEEN $3 AND $4
+           AND ($5 = 'blended' OR channel = $5 OR channel = 'blended')
+         ORDER BY work_date, start_time`,
+        [user.organization_id, lobId, prevDateStr, dateStr, targetChannel]
+      ),
+      pool.query(
+        `SELECT id, channel, interval_date, interval_index, action_type, note, created_by, created_at
+         FROM rtm_action_logs
+         WHERE organization_id=$1 AND lob_id=$2 AND interval_date=$3 AND ($4 = 'blended' OR channel=$4)
+         ORDER BY created_at DESC
+         LIMIT 25`,
+        [user.organization_id, lobId, dateStr, targetChannel]
+      ),
+    ]);
+
+    const snapshot = snapshotRes.rows[0] || null;
+    const intervalMinutes = snapshot?.interval_minutes || 15;
+    const slotCount = Math.ceil(1440 / intervalMinutes);
+    const requiredByIndex = new Map();
+
+    if (snapshot) {
+      const rowsRes = await pool.query(
+        `SELECT channel, interval_start::text AS interval_start, required_fte
+         FROM scheduling_demand_snapshot_rows
+         WHERE snapshot_id=$1 AND weekday=$2 AND channel IN ($3, 'blended')
+         ORDER BY interval_start`,
+        [snapshot.id, weekday, targetChannel]
+      );
+      const hasTargetRows = rowsRes.rows.some(r => r.channel === targetChannel);
+      for (const row of rowsRes.rows) {
+        if (hasTargetRows && row.channel !== targetChannel) continue;
+        if (!hasTargetRows && row.channel !== 'blended') continue;
+        const idx = Math.floor(parseTimeToMinutes(row.interval_start) / intervalMinutes);
+        requiredByIndex.set(idx, Number(row.required_fte) || 0);
+      }
+    }
+
+    const actualByIndex = new Map();
+    for (const row of actualsRes.rows) {
+      const idx = Math.floor(((Number(row.interval_index) || 0) * 15) / intervalMinutes);
+      const current = actualByIndex.get(idx) || { volume: 0, handleSeconds: 0 };
+      const volume = Number(row.volume) || 0;
+      current.volume += volume;
+      current.handleSeconds += volume * (Number(row.aht) || 0);
+      actualByIndex.set(idx, current);
+    }
+
+    const intervals = [];
+    const assignments = assignmentsRes.rows;
+    const hasQueueActuals = actualsRes.rows.length > 0;
+
+    for (let i = 0; i < slotCount; i++) {
+      const startMins = i * intervalMinutes;
+      const endMins = startMins + intervalMinutes;
+      const actual = actualByIndex.get(i);
+      const required = requiredByIndex.get(i) || 0;
+      const scheduled = assignments.filter(a => isAssignmentActiveAt(a, dateStr, startMins, endMins)).length;
+      const actualVolume = actual ? actual.volume : null;
+      const actualAht = actual && actual.volume > 0 ? Math.round(actual.handleSeconds / actual.volume) : null;
+      const interval = {
+        interval_index: i,
+        interval_start: formatIntervalTime(i, intervalMinutes),
+        required_fte: Number(required.toFixed(2)),
+        scheduled_fte: scheduled,
+        staffing_gap: Number((scheduled - required).toFixed(2)),
+        actual_volume: actualVolume,
+        actual_aht: actualAht,
+        forecast_volume: null,
+        forecast_variance_pct: null,
+        risk: 'normal',
+      };
+      interval.risk = getRtmRisk(interval, hasQueueActuals);
+      intervals.push(interval);
+    }
+
+    const now = new Date();
+    const serverToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const currentIntervalIndex = dateStr === serverToday
+      ? Math.min(slotCount - 1, Math.max(0, Math.floor((now.getHours() * 60 + now.getMinutes()) / intervalMinutes)))
+      : 0;
+    const current = intervals[currentIntervalIndex] || intervals[0];
+
+    res.json({
+      date: dateStr,
+      channel: targetChannel,
+      lob_id: lobId,
+      data_mode: hasQueueActuals ? 'traffic_only' : 'not_configured',
+      interval_minutes: intervalMinutes,
+      current_interval_index: currentIntervalIndex,
+      integration: {
+        agent_status_available: false,
+        queue_actuals_available: hasQueueActuals,
+      },
+      snapshot: snapshot ? { id: snapshot.id, label: snapshot.snapshot_label } : null,
+      summary: {
+        current_risk: current?.risk || 'normal',
+        current_required_fte: current?.required_fte || 0,
+        current_scheduled_fte: current?.scheduled_fte || 0,
+        current_staffing_gap: current?.staffing_gap || 0,
+        open_gap_intervals: intervals.filter(i => i.staffing_gap < 0).length,
+        critical_intervals: intervals.filter(i => i.risk === 'critical').length,
+        total_actual_volume: intervals.reduce((sum, i) => sum + (i.actual_volume || 0), 0),
+        action_count: actionsRes.rows.length,
+      },
+      intervals,
+      actions: actionsRes.rows,
+    });
+  } catch (err) {
+    console.error('RTM dashboard error:', err.message);
+    res.status(500).json({ error: 'Failed to load RTM dashboard' });
+  }
+});
+
+app.post('/api/rtm/action-logs', async (req, res) => {
+  const user = getCurrentUser(req);
+  const { lob_id, channel, interval_date, interval_index, action_type, note } = req.body;
+  const lobId = lob_id || await getDefaultLobId(user.organization_id);
+
+  if (!lobId || !interval_date || !note || !String(note).trim()) {
+    return res.status(400).json({ error: 'lob_id, interval_date, and note are required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO rtm_action_logs
+        (organization_id, lob_id, channel, interval_date, interval_index, action_type, note, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, channel, interval_date, interval_index, action_type, note, created_by, created_at`,
+      [
+        user.organization_id,
+        lobId,
+        channel || 'voice',
+        interval_date,
+        interval_index ?? null,
+        action_type || 'note',
+        String(note).trim(),
+        user.email || user.full_name || 'User',
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('RTM action log error:', err.message);
+    res.status(500).json({ error: 'Failed to save RTM action log' });
+  }
+});
+
+// Auto-Scheduler: generation runs
 app.get('/api/scheduling/generation-runs', async (req, res) => {
   const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
   if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
