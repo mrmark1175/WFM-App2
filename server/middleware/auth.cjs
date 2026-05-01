@@ -57,11 +57,14 @@ function setAuthCookie(res, token) {
   );
 }
 
-// Verifies wfm_token cookie, attaches req.user. Rejects old tokens without userId.
+// Verifies wfm_token cookie, attaches req.user. Rejects tokens missing
+// userId or organizationId — every authenticated request must carry a
+// tenant boundary so downstream queries can scope by organization_id
+// without falling back to a hardcoded default.
 function authenticateToken(req, res, next) {
   const token = parseCookies(req.headers.cookie).wfm_token;
   const payload = verifyToken(token);
-  if (!payload || !payload.userId) {
+  if (!payload || !payload.userId || !payload.organizationId) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   req.user = {
