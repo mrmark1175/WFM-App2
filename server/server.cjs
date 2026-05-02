@@ -1289,7 +1289,8 @@ app.delete('/api/lobs/:id', async (req, res) => {
     if (parseInt(countRes.rows[0].count) <= 1) {
       return res.status(400).json({ error: 'Cannot delete the last LOB' });
     }
-    await pool.query('DELETE FROM lobs WHERE id = $1 AND organization_id = $2', [id, user.organization_id]);
+    const { rowCount } = await pool.query('DELETE FROM lobs WHERE id = $1 AND organization_id = $2', [id, user.organization_id]);
+    if (!rowCount) return res.status(404).json({ error: 'LOB not found' });
     res.json({ success: true });
   } catch (err) {
     console.error('LOB Delete Error:', err.message);
@@ -1590,7 +1591,8 @@ app.delete('/api/capacity-scenarios/:id', async (req, res) => {
   const { id } = req.params;
   const user = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM capacity_scenarios WHERE id=$1 AND organization_id=$2', [id, user.organization_id]);
+    const { rowCount } = await pool.query('DELETE FROM capacity_scenarios WHERE id=$1 AND organization_id=$2', [id, user.organization_id]);
+    if (!rowCount) return res.status(404).json({ error: 'Scenario not found' });
     res.json({ success: true });
   } catch (err) {
     console.error("Scenario Delete Error:", err.message);
@@ -1633,10 +1635,11 @@ app.delete('/api/forecasts/:year', async (req, res) => {
   const lobId = req.query.lob_id ? parseInt(req.query.lob_id) : await getDefaultLobId(user.organization_id);
 
   try {
-    await pool.query(
+    const { rowCount } = await pool.query(
       'DELETE FROM forecasts WHERE year_label = $1 AND organization_id = $2 AND channel = $3 AND lob_id = $4',
       [year, user.organization_id, channel, lobId]
     );
+    if (!rowCount) return res.status(404).json({ error: 'Forecast not found' });
     res.json({ success: true });
   } catch (err) {
     console.error("Delete Error:", err.message);
@@ -1894,10 +1897,11 @@ app.delete('/api/demand-planner-scenarios/:id', async (req, res) => {
   const { id } = req.params;
 
   try {
-    await pool.query(
+    const { rowCount } = await pool.query(
       'DELETE FROM demand_planner_scenarios WHERE scenario_id = $1 AND organization_id = $2',
       [id, user.organization_id]
     );
+    if (!rowCount) return res.status(404).json({ error: 'Demand planner scenario not found' });
     res.json({ success: true });
   } catch (err) {
     console.error('Demand Planner Scenario Delete Error:', err.message);
@@ -2082,10 +2086,11 @@ app.put('/api/distribution-profiles/:id', async (req, res) => {
 app.delete('/api/distribution-profiles/:id', async (req, res) => {
   try {
     const user = getCurrentUser(req);
-    await pool.query(
+    const { rowCount } = await pool.query(
       'DELETE FROM distribution_profiles WHERE id = $1 AND organization_id = $2',
       [parseInt(req.params.id), user.organization_id]
     );
+    if (!rowCount) return res.status(404).json({ error: 'Distribution profile not found' });
     res.json({ success: true });
   } catch (err) {
     console.error('Distribution Profiles DELETE Error:', err.message);
@@ -2295,7 +2300,8 @@ app.put('/api/scheduling/agents/:id', async (req, res) => {
 app.delete('/api/scheduling/agents/:id', async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM scheduling_agents WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
+    const { rowCount } = await pool.query('DELETE FROM scheduling_agents WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
+    if (!rowCount) return res.status(404).json({ error: 'Agent not found' });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2345,7 +2351,8 @@ app.put('/api/scheduling/shift-templates/:id', async (req, res) => {
 app.delete('/api/scheduling/shift-templates/:id', async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM scheduling_shift_templates WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
+    const { rowCount } = await pool.query('DELETE FROM scheduling_shift_templates WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
+    if (!rowCount) return res.status(404).json({ error: 'Shift template not found' });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2499,7 +2506,8 @@ app.put('/api/scheduling/assignments/:id', async (req, res) => {
 app.delete('/api/scheduling/assignments/:id', async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM schedule_assignments WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
+    const { rowCount } = await pool.query('DELETE FROM schedule_assignments WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
+    if (!rowCount) return res.status(404).json({ error: 'Assignment not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2552,7 +2560,8 @@ app.put('/api/scheduling/activities/:id', async (req, res) => {
 
 app.delete('/api/scheduling/activities/:id', async (req, res) => {
   try {
-    await pool.query('DELETE FROM shift_activities WHERE id=$1', [req.params.id]);
+    const { rowCount } = await pool.query('DELETE FROM shift_activities WHERE id=$1', [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: 'Activity not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2708,7 +2717,8 @@ app.post('/api/scheduling/demand-snapshots', async (req, res) => {
 app.delete('/api/scheduling/demand-snapshots/:id', async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM scheduling_demand_snapshots WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
+    const { rowCount } = await pool.query('DELETE FROM scheduling_demand_snapshots WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
+    if (!rowCount) return res.status(404).json({ error: 'Demand snapshot not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3574,10 +3584,11 @@ app.delete('/api/capacity-planner-whatifs/:id', async (req, res) => {
   const user = getCurrentUser(req);
   const { id } = req.params;
   try {
-    await pool.query(
+    const { rowCount } = await pool.query(
       'DELETE FROM capacity_planner_whatifs WHERE whatif_id = $1 AND organization_id = $2',
       [id, user.organization_id]
     );
+    if (!rowCount) return res.status(404).json({ error: 'Capacity what-if not found' });
     res.json({ success: true });
   } catch (err) {
     console.error('Capacity What-if Delete Error:', err.message);
