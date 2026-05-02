@@ -12,9 +12,11 @@ import { Switch } from "../components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "../components/ui/alert-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { Plus, Pencil, Trash2, Users, Phone, MessageSquare, Mail, Search, Loader2, ClipboardPaste } from "lucide-react";
+import { Plus, Pencil, Trash2, Users, Phone, MessageSquare, Mail, Search, Loader2, ClipboardPaste, Copy, Check } from "lucide-react";
 import { toast } from "sonner";
 import { useLOB } from "../lib/lobContext";
+import { useAuth } from "@/context/AuthContext";
+import { ProtectedRoute } from "../components/ProtectedRoute";
 
 interface Agent {
   id: number;
@@ -44,6 +46,11 @@ interface AppUser {
   full_name: string | null;
   role: string;
   is_active: boolean;
+}
+
+interface CreatedLoginInfo {
+  email: string;
+  password: string;
 }
 
 const CONTRACT_TYPES = [
@@ -109,6 +116,13 @@ function statusColor(s: string) {
   return "bg-muted text-muted-foreground";
 }
 
+function generateTemporaryPassword() {
+  const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
+  const array = new Uint8Array(14);
+  crypto.getRandomValues(array);
+  return Array.from(array, b => charset[b % charset.length]).join("");
+}
+
 // ── Paste-from-spreadsheet helpers ───────────────────────────────────────────
 
 const PASTE_FIELD_OPTIONS = [
@@ -150,6 +164,7 @@ function defaultColMapping(colCount: number): string[] {
 
 export function AgentRoster() {
   const { lobs, activeLob } = useLOB();
+  const { user: currentUser } = useAuth();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -163,6 +178,9 @@ export function AgentRoster() {
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [form, setForm] = useState<Omit<Agent, "id">>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  const [creatingLogin, setCreatingLogin] = useState(false);
+  const [createdLogin, setCreatedLogin] = useState<CreatedLoginInfo | null>(null);
+  const [copiedPassword, setCopiedPassword] = useState(false);
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletingAgent, setDeletingAgent] = useState<Agent | null>(null);
@@ -175,6 +193,7 @@ export function AgentRoster() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ success: number; errors: string[] } | null>(null);
   const pasteAreaRef = useRef<HTMLTextAreaElement>(null);
+  const canManageLogins = currentUser?.role === "super_admin" || currentUser?.role === "client_admin";
 
   const load = () => {
     setLoading(true);
@@ -189,6 +208,11 @@ export function AgentRoster() {
   };
 
   const loadUsers = () => {
+    if (!canManageLogins) {
+      setUsers([]);
+      setUsersLoading(false);
+      return;
+    }
     setUsersLoading(true);
     fetch(apiUrl("/api/users"), { credentials: "include" })
       .then((r) => {
@@ -204,13 +228,20 @@ export function AgentRoster() {
   };
 
   useEffect(() => { load(); }, [activeLob?.id]);
-  useEffect(() => { loadUsers(); }, []);
+  useEffect(() => { loadUsers(); }, [canManageLogins]);
 
   const linkedUserById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
+  const usersByEmail = useMemo(() => new Map(users.map((u) => [u.email.toLowerCase(), u])), [users]);
   const linkableUsers = useMemo(() => {
     const currentUserId = form.user_id ?? null;
     return users.filter((u) => u.id === currentUserId || (u.role === "agent" && u.is_active));
   }, [users, form.user_id]);
+  const formEmail = (form.email || "").trim().toLowerCase();
+  const userWithFormEmail = formEmail ? usersByEmail.get(formEmail) : null;
+  const activeAgentUserWithFormEmail = userWithFormEmail?.role === "agent" && userWithFormEmail.is_active ? userWithFormEmail : null;
+  const emailUsedByNonAgent = !!userWithFormEmail && userWithFormEmail.role !== "agent";
+  const emailUsedByInactiveAgent = !!userWithFormEmail && userWithFormEmail.role === "agent" && !userWithFormEmail.is_active;
+  const canCreateAgentLogin = canManageLogins && !!editingAgent && !form.user_id && !!formEmail && !userWithFormEmail;
 
   const filtered = useMemo(() => agents.filter((a) => {
     if (search) {
@@ -232,6 +263,8 @@ export function AgentRoster() {
   const openAdd = () => {
     setEditingAgent(null);
     setForm({ ...EMPTY_FORM, lob_assignments: activeLob ? [activeLob.id] : [] });
+    setCreatedLogin(null);
+    setCopiedPassword(false);
     setDialogOpen(true);
   };
   const openEdit = (a: Agent) => {
@@ -249,13 +282,23 @@ export function AgentRoster() {
       team_lead_id: a.team_lead_id ?? null,
       team_leader_name: a.team_leader_name ?? "",
     });
+    setCreatedLogin(null);
+    setCopiedPassword(false);
     setDialogOpen(true);
+  };
+
+  const buildAgentPayload = (overrides: Partial<Omit<Agent, "id">> = {}) => {
+    const next = { ...form, ...overrides };
+    return {
+      ...next,
+      full_name: `${next.first_name?.trim() ?? ""} ${next.last_name?.trim() ?? ""}`.trim(),
+    };
   };
 
   const handleSave = async () => {
     if (!form.first_name?.trim()) { toast.error("First name is required"); return; }
     if (!form.last_name?.trim()) { toast.error("Last name is required"); return; }
-    const payload = { ...form, full_name: `${form.first_name?.trim()} ${form.last_name?.trim()}` };
+    const payload = buildAgentPayload();
     setSaving(true);
     try {
       const url = editingAgent ? apiUrl(`/api/scheduling/agents/${editingAgent.id}`) : apiUrl("/api/scheduling/agents");
@@ -268,6 +311,84 @@ export function AgentRoster() {
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Save failed");
     } finally { setSaving(false); }
+  };
+
+  const linkUserToEditingAgent = async (userId: number) => {
+    if (!editingAgent) throw new Error("Save the roster agent before linking a login.");
+    const payload = buildAgentPayload({ user_id: userId });
+    const res = await fetch(apiUrl(`/api/scheduling/agents/${editingAgent.id}`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || "Failed to link agent login");
+    setForm((prev) => ({ ...prev, user_id: userId }));
+    await load();
+    return body;
+  };
+
+  const handleUseExistingLogin = async () => {
+    if (!activeAgentUserWithFormEmail) return;
+    setCreatingLogin(true);
+    try {
+      await linkUserToEditingAgent(activeAgentUserWithFormEmail.id);
+      toast.success("Existing agent login linked.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to link existing login");
+    } finally {
+      setCreatingLogin(false);
+    }
+  };
+
+  const handleCreateAgentLogin = async () => {
+    if (!editingAgent) { toast.error("Save the roster agent before creating a login."); return; }
+    if (!formEmail) { toast.error("Agent email is required before creating a login."); return; }
+    if (userWithFormEmail) {
+      toast.error(userWithFormEmail.role === "agent"
+        ? "An agent login already uses this email. Link that user instead."
+        : "This email is already used by a non-agent user. Update that user or use a different email.");
+      return;
+    }
+    const password = generateTemporaryPassword();
+    setCreatingLogin(true);
+    setCreatedLogin(null);
+    setCopiedPassword(false);
+    try {
+      const res = await fetch(apiUrl("/api/users"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          email: formEmail,
+          full_name: buildAgentPayload().full_name,
+          password,
+          role: "agent",
+        }),
+      });
+      const created = await res.json();
+      if (!res.ok) throw new Error(created.error || "Failed to create agent login");
+      setCreatedLogin({ email: created.email || formEmail, password });
+      await loadUsers();
+      try {
+        await linkUserToEditingAgent(created.id);
+        toast.success("Agent login created and linked.");
+      } catch (linkErr) {
+        toast.error(`Login was created but linking failed. Link ${created.email || formEmail} manually from Agent Login Access.`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create agent login");
+    } finally {
+      setCreatingLogin(false);
+    }
+  };
+
+  const copyCreatedPassword = () => {
+    if (!createdLogin) return;
+    navigator.clipboard.writeText(createdLogin.password).then(() => {
+      setCopiedPassword(true);
+      setTimeout(() => setCopiedPassword(false), 2000);
+    });
   };
 
   const handleDelete = async () => {
@@ -360,6 +481,7 @@ export function AgentRoster() {
   }), [agents]);
 
   return (
+    <ProtectedRoute roles={["super_admin", "client_admin", "rta", "supervisor", "read_only"]}>
     <PageLayout title="Agent Roster">
       <div className="flex flex-col gap-6 pb-12">
         {/* Stats */}
@@ -429,7 +551,7 @@ export function AgentRoster() {
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Last Name</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">LOB</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Team Leader</TableHead>
-                  <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Linked Login</TableHead>
+                  <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Login Access</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Contract</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Skills</TableHead>
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-foreground/70">Accommodations</TableHead>
@@ -478,16 +600,26 @@ export function AgentRoster() {
                           : <span className="text-xs text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell>
-                        {a.user_id && linkedUserById.get(a.user_id)
-                          ? (
+                        {a.user_id && linkedUserById.get(a.user_id) ? (
                             <div>
+                              <Badge className="mb-1 bg-emerald-600 text-white text-[10px]">Linked</Badge>
                               <p className="text-sm font-medium">{linkedUserById.get(a.user_id)?.full_name || linkedUserById.get(a.user_id)?.email}</p>
                               <p className="text-xs text-muted-foreground">{linkedUserById.get(a.user_id)?.email}</p>
                             </div>
                           )
                           : a.user_id
-                            ? <span className="text-xs text-amber-700">User ID {a.user_id}</span>
-                            : <span className="text-xs text-muted-foreground">Not linked</span>}
+                            ? (
+                              <div>
+                                <Badge variant="outline" className="mb-1 border-amber-300 text-amber-700 text-[10px]">Linked user unavailable</Badge>
+                                <p className="text-xs text-amber-700">User ID {a.user_id}</p>
+                              </div>
+                            )
+                            : (
+                              <div>
+                                <Badge variant="outline" className="mb-1 text-[10px]">Not linked</Badge>
+                                <p className="text-xs text-muted-foreground">No app login</p>
+                              </div>
+                            )}
                       </TableCell>
                       <TableCell><Badge variant="outline" className="text-xs">{contractLabel(a.contract_type)}</Badge></TableCell>
                       <TableCell>
@@ -544,11 +676,11 @@ export function AgentRoster() {
                   <Input type="email" value={form.email ?? ""} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} placeholder="maria@company.com" />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold">Linked App User</Label>
+                  <Label className="text-xs font-semibold">Agent Login Access</Label>
                   <Select
                     value={form.user_id ? String(form.user_id) : "none"}
                     onValueChange={(value) => setForm((p) => ({ ...p, user_id: value === "none" ? null : Number(value) }))}
-                    disabled={usersLoading}
+                    disabled={usersLoading || !canManageLogins}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder={usersLoading ? "Loading users..." : "Select app login"} />
@@ -563,8 +695,55 @@ export function AgentRoster() {
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Create agent logins in User Management, then select the matching user here.
+                    Only active users with role Agent can be linked.
                   </p>
+                  {!canManageLogins && (
+                    <p className="text-xs text-amber-700">Only admins can create or link agent logins.</p>
+                  )}
+                  {canManageLogins && !editingAgent && (
+                    <p className="text-xs text-muted-foreground">Save this roster agent before creating a login.</p>
+                  )}
+                  {canManageLogins && editingAgent && !form.user_id && !formEmail && (
+                    <p className="text-xs text-muted-foreground">Add the agent email to create or match a login.</p>
+                  )}
+                  {canManageLogins && editingAgent && !form.user_id && activeAgentUserWithFormEmail && (
+                    <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800">
+                      <p className="font-semibold">An active agent login already uses this email.</p>
+                      <Button type="button" variant="outline" size="sm" className="mt-2 h-8" onClick={handleUseExistingLogin} disabled={creatingLogin}>
+                        {creatingLogin && <Loader2 className="mr-2 size-3.5 animate-spin" />}
+                        Link Existing Login
+                      </Button>
+                    </div>
+                  )}
+                  {canManageLogins && editingAgent && !form.user_id && emailUsedByNonAgent && (
+                    <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                      This email is already used by a non-agent user. Change that user to role Agent or use a different email before linking.
+                    </p>
+                  )}
+                  {canManageLogins && editingAgent && !form.user_id && emailUsedByInactiveAgent && (
+                    <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                      This email belongs to an inactive agent user. Reactivate the user before linking.
+                    </p>
+                  )}
+                  {canCreateAgentLogin && (
+                    <Button type="button" variant="outline" size="sm" className="h-8" onClick={handleCreateAgentLogin} disabled={creatingLogin}>
+                      {creatingLogin && <Loader2 className="mr-2 size-3.5 animate-spin" />}
+                      Create Agent Login
+                    </Button>
+                  )}
+                  {createdLogin && (
+                    <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+                      <p className="font-semibold">Temporary password created for {createdLogin.email}</p>
+                      <div className="mt-2 flex items-center gap-2">
+                        <code className="rounded border bg-white px-2 py-1 font-mono text-[11px] text-black">{createdLogin.password}</code>
+                        <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5" onClick={copyCreatedPassword}>
+                          {copiedPassword ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
+                          Copy
+                        </Button>
+                      </div>
+                      <p className="mt-2 text-blue-800">The agent must set a new password on first login.</p>
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">Team Leader</Label>
@@ -926,5 +1105,6 @@ export function AgentRoster() {
         </Dialog>
       </div>
     </PageLayout>
+    </ProtectedRoute>
   );
 }

@@ -2204,8 +2204,47 @@ app.put('/api/lob-settings', async (req, res) => {
   }
 });
 
+const ROSTER_VIEW_ROLES = ['super_admin', 'client_admin', 'rta', 'supervisor', 'read_only'];
+const ROSTER_MANAGE_ROLES = ['super_admin', 'client_admin', 'rta', 'supervisor'];
+
+async function validateAgentLoginUser(userId, organizationId) {
+  if (userId === undefined || userId === null || userId === '' || userId === 'none') return null;
+  const parsedUserId = parseInt(userId, 10);
+  if (!Number.isInteger(parsedUserId) || parsedUserId <= 0) {
+    const err = new Error('Linked login must be a valid user.');
+    err.status = 400;
+    throw err;
+  }
+  const { rows } = await pool.query(
+    'SELECT id, organization_id, role, is_active FROM users WHERE id = $1',
+    [parsedUserId]
+  );
+  const user = rows[0];
+  if (!user) {
+    const err = new Error('Linked login user was not found.');
+    err.status = 400;
+    throw err;
+  }
+  if (user.organization_id !== organizationId) {
+    const err = new Error('Linked login must belong to the same organization as the agent.');
+    err.status = 403;
+    throw err;
+  }
+  if (user.role !== 'agent') {
+    const err = new Error('Linked login must have the Agent role.');
+    err.status = 400;
+    throw err;
+  }
+  if (!user.is_active) {
+    const err = new Error('Linked login must be an active user.');
+    err.status = 400;
+    throw err;
+  }
+  return parsedUserId;
+}
+
 // ── Scheduling: Agents ───────────────────────────────────────────────────────
-app.get('/api/scheduling/agents', async (req, res) => {
+app.get('/api/scheduling/agents', requireRole(...ROSTER_VIEW_ROLES), async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   try {
     const lobId = req.query.lob_id ? parseInt(req.query.lob_id, 10) : null;
@@ -2222,22 +2261,23 @@ app.get('/api/scheduling/agents', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/scheduling/agents', async (req, res) => {
+app.post('/api/scheduling/agents', requireRole(...ROSTER_MANAGE_ROLES), async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id } = req.body;
   const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
   try {
+    const linkedUserId = await validateAgentLoginUser(user_id, organization_id);
     const { rows } = await pool.query(
       `INSERT INTO scheduling_agents
          (organization_id, employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
-      [organization_id, employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, user_id || null]
+      [organization_id, employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, linkedUserId]
     );
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.post('/api/scheduling/agents/bulk', async (req, res) => {
+app.post('/api/scheduling/agents/bulk', requireRole(...ROSTER_MANAGE_ROLES), async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   const { agents } = req.body;
   if (!Array.isArray(agents) || agents.length === 0) {
@@ -2278,11 +2318,12 @@ app.post('/api/scheduling/agents/bulk', async (req, res) => {
   res.json({ imported: imported.length, errors, results: imported });
 });
 
-app.put('/api/scheduling/agents/:id', async (req, res) => {
+app.put('/api/scheduling/agents/:id', requireRole(...ROSTER_MANAGE_ROLES), async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id } = req.body;
   const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
   try {
+    const linkedUserId = await validateAgentLoginUser(user_id, organization_id);
     const { rows } = await pool.query(
       `UPDATE scheduling_agents SET
          employee_id=$1, first_name=$2, last_name=$3, full_name=$4, email=$5, contract_type=$6,
@@ -2290,14 +2331,14 @@ app.put('/api/scheduling/agents/:id', async (req, res) => {
          lob_assignments=$10, accommodation_flags=$11, availability=$12,
          status=$13, shift_length_hours=$14, team_name=$15, team_lead_id=$16, team_leader_name=$17, user_id=$18, updated_at=NOW()
        WHERE id=$19 AND organization_id=$20 RETURNING *`,
-      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, user_id || null, req.params.id, organization_id]
+      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, linkedUserId, req.params.id, organization_id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Agent not found' });
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-app.delete('/api/scheduling/agents/:id', async (req, res) => {
+app.delete('/api/scheduling/agents/:id', requireRole(...ROSTER_MANAGE_ROLES), async (req, res) => {
   const { organization_id } = getCurrentUser(req);
   try {
     const { rowCount } = await pool.query('DELETE FROM scheduling_agents WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
