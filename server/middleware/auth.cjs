@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { pool } = require('../db.cjs');
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 
@@ -61,17 +62,41 @@ function setAuthCookie(res, token) {
 // userId or organizationId — every authenticated request must carry a
 // tenant boundary so downstream queries can scope by organization_id
 // without falling back to a hardcoded default.
-function authenticateToken(req, res, next) {
+//
+// Also re-checks the user against the DB on every request:
+//   - User row must still exist (account not deleted).
+//   - is_active must still be true (account not deactivated).
+// Without this, a previously issued JWT remained valid for its full
+// 12h TTL even after an admin clicked "Deactivate user" — the smoke
+// test for PR #3c surfaced the gap. The DB-resolved values for role
+// and organization_id are also what land on req.user, so a role demote
+// or org move takes effect on the next request rather than on next
+// login.
+async function authenticateToken(req, res, next) {
   const token = parseCookies(req.headers.cookie).wfm_token;
   const payload = verifyToken(token);
   if (!payload || !payload.userId || !payload.organizationId) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  let row;
+  try {
+    const result = await pool.query(
+      'SELECT id, email, role, organization_id, is_active FROM users WHERE id = $1',
+      [payload.userId]
+    );
+    row = result.rows[0];
+  } catch (err) {
+    console.error('[auth] DB lookup failed:', err.message);
+    return res.status(500).json({ error: 'Auth check failed' });
+  }
+  if (!row || !row.is_active) {
+    return res.status(401).json({ error: 'User not found or inactive' });
+  }
   req.user = {
-    id: payload.userId,
-    email: payload.email,
-    role: payload.role,
-    organization_id: payload.organizationId,
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    organization_id: row.organization_id,
   };
   next();
 }
