@@ -638,7 +638,10 @@ function computeCoverage(agents, restMap, startMap, demandCurves, intervalMinute
 }
 
 // ── Main entry ───────────────────────────────────────────────────────────────
-async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by, rules, template_id }) {
+async function generate({ pool, organization_id, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by, rules, template_id }) {
+  if (!organization_id) {
+    throw new Error('generate(): organization_id is required to scope all writes to a tenant');
+  }
   rules = { ...DEFAULT_RULES, ...rules };
 
   let templateBreakRules = null;
@@ -685,8 +688,8 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
 
   const agRes = await pool.query(
     `SELECT id, full_name, skill_voice, skill_chat, skill_email, accommodation_flags, availability, shift_length_hours, lob_assignments
-     FROM scheduling_agents WHERE organization_id=1 AND status='active' AND $1 = ANY(lob_assignments)`,
-    [lob_id]
+     FROM scheduling_agents WHERE organization_id=$1 AND status='active' AND $2 = ANY(lob_assignments)`,
+    [organization_id, lob_id]
   );
   const allAgents = agRes.rows.map((a) => ({
     ...a,
@@ -700,16 +703,16 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
   }
 
   const runIns = await pool.query(
-    `INSERT INTO schedule_generation_runs (lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [lob_id, snapshot_id, horizon_start, horizon_end, !!fairness_enabled, created_by || null]
+    `INSERT INTO schedule_generation_runs (organization_id, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+    [organization_id, lob_id, snapshot_id, horizon_start, horizon_end, !!fairness_enabled, created_by || null]
   );
   const run_id = runIns.rows[0].id;
 
   await pool.query(
     `DELETE FROM schedule_assignments
-     WHERE lob_id=$1 AND work_date BETWEEN $2 AND $3 AND status='draft'`,
-    [lob_id, horizon_start, horizon_end]
+     WHERE organization_id=$1 AND lob_id=$2 AND work_date BETWEEN $3 AND $4 AND status='draft'`,
+    [organization_id, lob_id, horizon_start, horizon_end]
   );
 
   let draftCount = 0;
@@ -819,8 +822,8 @@ async function generate({ pool, lob_id, snapshot_id, horizon_start, horizon_end,
             `INSERT INTO schedule_assignments
                (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time,
                 is_overnight, channel, notes, status, generation_run_id)
-             VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10) RETURNING id`,
-            [lob_id, agent.id, templateId, workDate, startTime, endTime, isOvernight, channel, `Auto-generated run #${run_id}`, run_id]
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'draft',$11) RETURNING id`,
+            [organization_id, lob_id, agent.id, templateId, workDate, startTime, endTime, isOvernight, channel, `Auto-generated run #${run_id}`, run_id]
           );
           const assignmentId = asn.rows[0].id;
           draftCount++;

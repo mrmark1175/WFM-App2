@@ -2150,15 +2150,16 @@ app.put('/api/lob-settings', async (req, res) => {
 
 // ── Scheduling: Agents ───────────────────────────────────────────────────────
 app.get('/api/scheduling/agents', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
     const lobId = req.query.lob_id ? parseInt(req.query.lob_id, 10) : null;
     let query, params;
     if (lobId) {
-      query = 'SELECT * FROM scheduling_agents WHERE organization_id = 1 AND $1 = ANY(lob_assignments) ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST, full_name ASC';
-      params = [lobId];
+      query = 'SELECT * FROM scheduling_agents WHERE organization_id = $1 AND $2 = ANY(lob_assignments) ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST, full_name ASC';
+      params = [organization_id, lobId];
     } else {
-      query = 'SELECT * FROM scheduling_agents WHERE organization_id = 1 ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST, full_name ASC';
-      params = [];
+      query = 'SELECT * FROM scheduling_agents WHERE organization_id = $1 ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST, full_name ASC';
+      params = [organization_id];
     }
     const { rows } = await pool.query(query, params);
     res.json(rows);
@@ -2166,20 +2167,22 @@ app.get('/api/scheduling/agents', async (req, res) => {
 });
 
 app.post('/api/scheduling/agents', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id } = req.body;
   const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
   try {
     const { rows } = await pool.query(
       `INSERT INTO scheduling_agents
          (organization_id, employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id)
-       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
-      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, user_id || null]
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
+      [organization_id, employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type||'full_time', skill_voice??true, skill_chat??false, skill_email??false, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status||'active', shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, user_id || null]
     );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/scheduling/agents/bulk', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { agents } = req.body;
   if (!Array.isArray(agents) || agents.length === 0) {
     return res.status(400).json({ error: 'agents array is required' });
@@ -2206,8 +2209,8 @@ app.post('/api/scheduling/agents/bulk', async (req, res) => {
            (organization_id, employee_id, first_name, last_name, full_name, email, contract_type,
             skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability,
             status, shift_length_hours, team_name, team_leader_name)
-         VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id, full_name`,
-        [a.employee_id||null, firstName||null, lastName||null, fullName, a.email||null,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id, full_name`,
+        [organization_id, a.employee_id||null, firstName||null, lastName||null, fullName, a.email||null,
          a.contract_type||'full_time', true, false, false, a.lob_id ? [a.lob_id] : [], [], defaultAvail,
          a.status||'active', 9, a.team_name||null, a.team_leader_name||null]
       );
@@ -2220,6 +2223,7 @@ app.post('/api/scheduling/agents/bulk', async (req, res) => {
 });
 
 app.put('/api/scheduling/agents/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { employee_id, first_name, last_name, full_name, email, contract_type, skill_voice, skill_chat, skill_email, lob_assignments, accommodation_flags, availability, status, shift_length_hours, team_name, team_lead_id, team_leader_name, user_id } = req.body;
   const derivedFullName = (first_name && last_name) ? `${first_name} ${last_name}`.trim() : (full_name || '');
   try {
@@ -2229,8 +2233,8 @@ app.put('/api/scheduling/agents/:id', async (req, res) => {
          skill_voice=$7, skill_chat=$8, skill_email=$9,
          lob_assignments=$10, accommodation_flags=$11, availability=$12,
          status=$13, shift_length_hours=$14, team_name=$15, team_lead_id=$16, team_leader_name=$17, user_id=$18, updated_at=NOW()
-       WHERE id=$19 AND organization_id=1 RETURNING *`,
-      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, user_id || null, req.params.id]
+       WHERE id=$19 AND organization_id=$20 RETURNING *`,
+      [employee_id||null, first_name||null, last_name||null, derivedFullName, email||null, contract_type, skill_voice, skill_chat, skill_email, lob_assignments||[], accommodation_flags||[], JSON.stringify(availability||{}), status, shift_length_hours ?? 9, team_name || null, team_lead_id || null, team_leader_name || null, user_id || null, req.params.id, organization_id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Agent not found' });
     res.json(rows[0]);
@@ -2238,44 +2242,49 @@ app.put('/api/scheduling/agents/:id', async (req, res) => {
 });
 
 app.delete('/api/scheduling/agents/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM scheduling_agents WHERE id=$1 AND organization_id=1', [req.params.id]);
+    await pool.query('DELETE FROM scheduling_agents WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Scheduling: Shift Templates ───────────────────────────────────────────────
 app.get('/api/scheduling/shift-templates', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
     const { rows } = await pool.query(
-      'SELECT * FROM scheduling_shift_templates WHERE organization_id = 1 ORDER BY start_time ASC, name ASC'
+      'SELECT * FROM scheduling_shift_templates WHERE organization_id = $1 ORDER BY start_time ASC, name ASC',
+      [organization_id]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/scheduling/shift-templates', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { name, start_time, end_time, duration_hours, break_rules, channel_coverage, color, is_overnight } = req.body;
   try {
     const { rows } = await pool.query(
       `INSERT INTO scheduling_shift_templates
          (organization_id, name, start_time, end_time, duration_hours, break_rules, channel_coverage, color, is_overnight)
-       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [name, start_time, end_time, duration_hours||null, JSON.stringify(break_rules||[]), channel_coverage||[], color||'#6366f1', is_overnight??false]
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [organization_id, name, start_time, end_time, duration_hours||null, JSON.stringify(break_rules||[]), channel_coverage||[], color||'#6366f1', is_overnight??false]
     );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/scheduling/shift-templates/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { name, start_time, end_time, duration_hours, break_rules, channel_coverage, color, is_overnight } = req.body;
   try {
     const { rows } = await pool.query(
       `UPDATE scheduling_shift_templates SET
          name=$1, start_time=$2, end_time=$3, duration_hours=$4,
          break_rules=$5, channel_coverage=$6, color=$7, is_overnight=$8, updated_at=NOW()
-       WHERE id=$9 AND organization_id=1 RETURNING *`,
-      [name, start_time, end_time, duration_hours||null, JSON.stringify(break_rules||[]), channel_coverage||[], color||'#6366f1', is_overnight??false, req.params.id]
+       WHERE id=$9 AND organization_id=$10 RETURNING *`,
+      [name, start_time, end_time, duration_hours||null, JSON.stringify(break_rules||[]), channel_coverage||[], color||'#6366f1', is_overnight??false, req.params.id, organization_id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Shift template not found' });
     res.json(rows[0]);
@@ -2283,23 +2292,27 @@ app.put('/api/scheduling/shift-templates/:id', async (req, res) => {
 });
 
 app.delete('/api/scheduling/shift-templates/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM scheduling_shift_templates WHERE id=$1 AND organization_id=1', [req.params.id]);
+    await pool.query('DELETE FROM scheduling_shift_templates WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Scheduling: Labor Laws ────────────────────────────────────────────────────
 app.get('/api/scheduling/labor-laws', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
     const { rows } = await pool.query(
-      'SELECT * FROM scheduling_labor_laws WHERE organization_id = 1 ORDER BY is_preset DESC, jurisdiction_name ASC'
+      'SELECT * FROM scheduling_labor_laws WHERE organization_id = $1 ORDER BY is_preset DESC, jurisdiction_name ASC',
+      [organization_id]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/scheduling/labor-laws', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { jurisdiction_name, jurisdiction_code, max_hours_per_day, max_hours_per_week, max_consecutive_days, overtime_threshold_daily, overtime_threshold_weekly, rest_hours_between_shifts, rest_days_per_week, meal_break_minutes, meal_break_after_hours, short_breaks_count, short_break_minutes, night_differential_pct, overtime_rate_multiplier, custom_rules, notes } = req.body;
   try {
     const { rows } = await pool.query(
@@ -2311,14 +2324,15 @@ app.post('/api/scheduling/labor-laws', async (req, res) => {
           meal_break_minutes, meal_break_after_hours,
           short_breaks_count, short_break_minutes,
           night_differential_pct, overtime_rate_multiplier, custom_rules, notes)
-       VALUES (1,$1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
-      [jurisdiction_name, jurisdiction_code||null, max_hours_per_day||8, max_hours_per_week||40, max_consecutive_days||5, overtime_threshold_daily||null, overtime_threshold_weekly||40, rest_hours_between_shifts||8, rest_days_per_week||1, meal_break_minutes||60, meal_break_after_hours||5, short_breaks_count||2, short_break_minutes||15, night_differential_pct||0, overtime_rate_multiplier||1.25, JSON.stringify(custom_rules||{}), notes||null]
+       VALUES ($1,$2,$3,false,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+      [organization_id, jurisdiction_name, jurisdiction_code||null, max_hours_per_day||8, max_hours_per_week||40, max_consecutive_days||5, overtime_threshold_daily||null, overtime_threshold_weekly||40, rest_hours_between_shifts||8, rest_days_per_week||1, meal_break_minutes||60, meal_break_after_hours||5, short_breaks_count||2, short_break_minutes||15, night_differential_pct||0, overtime_rate_multiplier||1.25, JSON.stringify(custom_rules||{}), notes||null]
     );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/scheduling/labor-laws/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { jurisdiction_name, jurisdiction_code, max_hours_per_day, max_hours_per_week, max_consecutive_days, overtime_threshold_daily, overtime_threshold_weekly, rest_hours_between_shifts, rest_days_per_week, meal_break_minutes, meal_break_after_hours, short_breaks_count, short_break_minutes, night_differential_pct, overtime_rate_multiplier, custom_rules, notes } = req.body;
   try {
     const { rows } = await pool.query(
@@ -2331,8 +2345,8 @@ app.put('/api/scheduling/labor-laws/:id', async (req, res) => {
          short_breaks_count=$12, short_break_minutes=$13,
          night_differential_pct=$14, overtime_rate_multiplier=$15,
          custom_rules=$16, notes=$17, updated_at=NOW()
-       WHERE id=$18 AND organization_id=1 AND is_preset=false RETURNING *`,
-      [jurisdiction_name, jurisdiction_code||null, max_hours_per_day||8, max_hours_per_week||40, max_consecutive_days||5, overtime_threshold_daily||null, overtime_threshold_weekly||40, rest_hours_between_shifts||8, rest_days_per_week||1, meal_break_minutes||60, meal_break_after_hours||5, short_breaks_count||2, short_break_minutes||15, night_differential_pct||0, overtime_rate_multiplier||1.25, JSON.stringify(custom_rules||{}), notes||null, req.params.id]
+       WHERE id=$18 AND organization_id=$19 AND is_preset=false RETURNING *`,
+      [jurisdiction_name, jurisdiction_code||null, max_hours_per_day||8, max_hours_per_week||40, max_consecutive_days||5, overtime_threshold_daily||null, overtime_threshold_weekly||40, rest_hours_between_shifts||8, rest_days_per_week||1, meal_break_minutes||60, meal_break_after_hours||5, short_breaks_count||2, short_break_minutes||15, night_differential_pct||0, overtime_rate_multiplier||1.25, JSON.stringify(custom_rules||{}), notes||null, req.params.id, organization_id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Rule not found or preset rules cannot be edited' });
     res.json(rows[0]);
@@ -2340,10 +2354,11 @@ app.put('/api/scheduling/labor-laws/:id', async (req, res) => {
 });
 
 app.delete('/api/scheduling/labor-laws/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
     const { rowCount } = await pool.query(
-      'DELETE FROM scheduling_labor_laws WHERE id=$1 AND organization_id=1 AND is_preset=false',
-      [req.params.id]
+      'DELETE FROM scheduling_labor_laws WHERE id=$1 AND organization_id=$2 AND is_preset=false',
+      [req.params.id, organization_id]
     );
     if (!rowCount) return res.status(404).json({ error: 'Rule not found or preset rules cannot be deleted' });
     res.json({ success: true });
@@ -2352,11 +2367,12 @@ app.delete('/api/scheduling/labor-laws/:id', async (req, res) => {
 
 // ── Scheduling: Hub counts ────────────────────────────────────────────────────
 app.get('/api/scheduling/counts', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
     const [agents, shifts, laws] = await Promise.all([
-      pool.query('SELECT COUNT(*)::int AS n FROM scheduling_agents WHERE organization_id=1'),
-      pool.query('SELECT COUNT(*)::int AS n FROM scheduling_shift_templates WHERE organization_id=1'),
-      pool.query('SELECT COUNT(*)::int AS n, SUM(CASE WHEN is_preset THEN 1 ELSE 0 END)::int AS presets FROM scheduling_labor_laws WHERE organization_id=1'),
+      pool.query('SELECT COUNT(*)::int AS n FROM scheduling_agents WHERE organization_id=$1', [organization_id]),
+      pool.query('SELECT COUNT(*)::int AS n FROM scheduling_shift_templates WHERE organization_id=$1', [organization_id]),
+      pool.query('SELECT COUNT(*)::int AS n, SUM(CASE WHEN is_preset THEN 1 ELSE 0 END)::int AS presets FROM scheduling_labor_laws WHERE organization_id=$1', [organization_id]),
     ]);
     res.json({ agents: agents.rows[0].n, shifts: shifts.rows[0].n, laws: laws.rows[0].n, lawPresets: laws.rows[0].presets });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2364,9 +2380,10 @@ app.get('/api/scheduling/counts', async (req, res) => {
 
 // ── Scheduling: Assignments ───────────────────────────────────────────────────
 app.get('/api/scheduling/assignments', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { lob_id, date_start, date_end } = req.query;
   try {
-    const params = [1];
+    const params = [organization_id];
     let sql = `
       SELECT sa.*,
         json_agg(
@@ -2400,26 +2417,28 @@ app.get('/api/scheduling/assignments', async (req, res) => {
 });
 
 app.post('/api/scheduling/assignments', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { lob_id, agent_id, shift_template_id, work_date, start_time, end_time, is_overnight, channel, notes } = req.body;
   try {
     const { rows } = await pool.query(
       `INSERT INTO schedule_assignments (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time, is_overnight, channel, notes)
-       VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [lob_id || null, agent_id, shift_template_id || null, work_date, start_time, end_time, is_overnight || false, channel || 'voice', notes || null]
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [organization_id, lob_id || null, agent_id, shift_template_id || null, work_date, start_time, end_time, is_overnight || false, channel || 'voice', notes || null]
     );
     res.json({ ...rows[0], activities: [] });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/scheduling/assignments/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { start_time, end_time, is_overnight, channel, notes, shift_template_id, agent_id } = req.body;
   try {
     const { rows } = await pool.query(
       `UPDATE schedule_assignments
        SET start_time=$1, end_time=$2, is_overnight=$3, channel=$4, notes=$5, shift_template_id=$6,
            agent_id=COALESCE($8, agent_id), updated_at=NOW()
-       WHERE id=$7 AND organization_id=1 RETURNING *`,
-      [start_time, end_time, is_overnight ?? false, channel || 'voice', notes ?? null, shift_template_id ?? null, req.params.id, agent_id ?? null]
+       WHERE id=$7 AND organization_id=$9 RETURNING *`,
+      [start_time, end_time, is_overnight ?? false, channel || 'voice', notes ?? null, shift_template_id ?? null, req.params.id, agent_id ?? null, organization_id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);
@@ -2427,14 +2446,16 @@ app.put('/api/scheduling/assignments/:id', async (req, res) => {
 });
 
 app.delete('/api/scheduling/assignments/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM schedule_assignments WHERE id=$1 AND organization_id=1', [req.params.id]);
+    await pool.query('DELETE FROM schedule_assignments WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Bulk delete assignments in a date range for a LOB. Accepts status="draft"|"published"|"all" (default "draft").
 app.post('/api/scheduling/assignments/bulk-delete', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { lob_id, date_start, date_end, status } = req.body;
   if (!lob_id || !date_start || !date_end) {
     return res.status(400).json({ error: 'lob_id, date_start, date_end required' });
@@ -2445,8 +2466,8 @@ app.post('/api/scheduling/assignments/bulk-delete', async (req, res) => {
   try {
     const result = await pool.query(
       `DELETE FROM schedule_assignments
-       WHERE organization_id=1 AND lob_id=$1 AND work_date BETWEEN $2 AND $3 ${filter}`,
-      [lob_id, date_start, date_end]
+       WHERE organization_id=$1 AND lob_id=$2 AND work_date BETWEEN $3 AND $4 ${filter}`,
+      [organization_id, lob_id, date_start, date_end]
     );
     res.json({ ok: true, deleted: result.rowCount });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2487,6 +2508,7 @@ app.delete('/api/scheduling/activities/:id', async (req, res) => {
 
 // ── Scheduling: Bulk publish (local-first → DB) ─────────────────────────────
 app.put('/api/scheduling/assignments-publish', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { lob_id, date_start, date_end, assignments } = req.body;
   if (!lob_id || !date_start || !date_end || !Array.isArray(assignments)) {
     return res.status(400).json({ error: 'lob_id, date_start, date_end, and assignments[] are required' });
@@ -2497,8 +2519,8 @@ app.put('/api/scheduling/assignments-publish', async (req, res) => {
 
     // Find existing assignment IDs in this date range
     const existing = await client.query(
-      `SELECT id FROM schedule_assignments WHERE organization_id=1 AND lob_id=$1 AND work_date >= $2 AND work_date <= $3`,
-      [lob_id, date_start, date_end]
+      `SELECT id FROM schedule_assignments WHERE organization_id=$1 AND lob_id=$2 AND work_date >= $3 AND work_date <= $4`,
+      [organization_id, lob_id, date_start, date_end]
     );
     const existingIds = existing.rows.map(r => r.id);
 
@@ -2512,8 +2534,8 @@ app.put('/api/scheduling/assignments-publish', async (req, res) => {
     for (const a of assignments) {
       const { rows } = await client.query(
         `INSERT INTO schedule_assignments (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time, is_overnight, channel, notes, absence_type)
-         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-        [lob_id, a.agent_id, a.shift_template_id || null, a.work_date, a.start_time, a.end_time, a.is_overnight || false, a.channel || 'voice', a.notes || null, a.absence_type || null]
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+        [organization_id, lob_id, a.agent_id, a.shift_template_id || null, a.work_date, a.start_time, a.end_time, a.is_overnight || false, a.channel || 'voice', a.notes || null, a.absence_type || null]
       );
       const newId = rows[0].id;
 
@@ -2548,10 +2570,10 @@ app.put('/api/scheduling/assignments-publish', async (req, res) => {
       LEFT JOIN shift_activities act ON act.assignment_id = sa.id
       LEFT JOIN scheduling_agents ag ON ag.id = sa.agent_id
       LEFT JOIN scheduling_shift_templates st ON st.id = sa.shift_template_id
-      WHERE sa.organization_id = 1 AND sa.lob_id = $1 AND sa.work_date >= $2 AND sa.work_date <= $3
+      WHERE sa.organization_id = $1 AND sa.lob_id = $2 AND sa.work_date >= $3 AND sa.work_date <= $4
       GROUP BY sa.id, ag.full_name, ag.skill_voice, ag.skill_chat, ag.skill_email, st.name, st.color
       ORDER BY sa.work_date, sa.start_time`;
-    const { rows: refreshed } = await client.query(refreshSql, [lob_id, date_start, date_end]);
+    const { rows: refreshed } = await client.query(refreshSql, [organization_id, lob_id, date_start, date_end]);
     const result = refreshed.map(r => ({ ...r, activities: r.activities || [] }));
     res.json(result);
   } catch (err) {
@@ -2564,15 +2586,16 @@ app.put('/api/scheduling/assignments-publish', async (req, res) => {
 
 // ── Auto-Scheduler: Demand Snapshots ────────────────────────────────────────
 app.get('/api/scheduling/demand-snapshots', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
   if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
   try {
     const snapshots = await pool.query(
       `SELECT id, snapshot_label, interval_minutes, approved_at, approved_by, notes
        FROM scheduling_demand_snapshots
-       WHERE organization_id=1 AND lob_id=$1
+       WHERE organization_id=$1 AND lob_id=$2
        ORDER BY approved_at DESC`,
-      [lob_id]
+      [organization_id, lob_id]
     );
     res.json(snapshots.rows);
   } catch (err) {
@@ -2581,10 +2604,11 @@ app.get('/api/scheduling/demand-snapshots', async (req, res) => {
 });
 
 app.get('/api/scheduling/demand-snapshots/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
     const snap = await pool.query(
-      'SELECT * FROM scheduling_demand_snapshots WHERE id=$1',
-      [req.params.id]
+      'SELECT * FROM scheduling_demand_snapshots WHERE id=$1 AND organization_id=$2',
+      [req.params.id, organization_id]
     );
     if (snap.rows.length === 0) return res.status(404).json({ error: 'not found' });
     const rows = await pool.query(
@@ -2598,6 +2622,7 @@ app.get('/api/scheduling/demand-snapshots/:id', async (req, res) => {
 });
 
 app.post('/api/scheduling/demand-snapshots', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { lob_id, snapshot_label, interval_minutes, approved_by, notes, rows } = req.body;
   if (!lob_id || !Array.isArray(rows) || rows.length === 0) {
     return res.status(400).json({ error: 'lob_id and rows[] required' });
@@ -2606,9 +2631,9 @@ app.post('/api/scheduling/demand-snapshots', async (req, res) => {
   try {
     await client.query('BEGIN');
     const snap = await client.query(
-      `INSERT INTO scheduling_demand_snapshots (lob_id, snapshot_label, interval_minutes, approved_by, notes)
-       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-      [lob_id, snapshot_label || null, interval_minutes || 30, approved_by || null, notes || null]
+      `INSERT INTO scheduling_demand_snapshots (organization_id, lob_id, snapshot_label, interval_minutes, approved_by, notes)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [organization_id, lob_id, snapshot_label || null, interval_minutes || 30, approved_by || null, notes || null]
     );
     const snapshot_id = snap.rows[0].id;
     for (const r of rows) {
@@ -2630,14 +2655,16 @@ app.post('/api/scheduling/demand-snapshots', async (req, res) => {
 });
 
 app.delete('/api/scheduling/demand-snapshots/:id', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
-    await pool.query('DELETE FROM scheduling_demand_snapshots WHERE id=$1', [req.params.id]);
+    await pool.query('DELETE FROM scheduling_demand_snapshots WHERE id=$1 AND organization_id=$2', [req.params.id, organization_id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Auto-Scheduler: Generate ────────────────────────────────────────────────
 app.post('/api/scheduling/auto-generate', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, clear_published, created_by, template_id } = req.body;
   if (!lob_id || !snapshot_id || !horizon_start || !horizon_end) {
     return res.status(400).json({ error: 'lob_id, snapshot_id, horizon_start, horizon_end required' });
@@ -2646,17 +2673,17 @@ app.post('/api/scheduling/auto-generate', async (req, res) => {
     if (clear_published) {
       await pool.query(
         `DELETE FROM schedule_assignments
-         WHERE organization_id=1 AND lob_id=$1 AND work_date BETWEEN $2 AND $3 AND status='published'`,
-        [lob_id, horizon_start, horizon_end]
+         WHERE organization_id=$1 AND lob_id=$2 AND work_date BETWEEN $3 AND $4 AND status='published'`,
+        [organization_id, lob_id, horizon_start, horizon_end]
       );
     }
     const rulesRes = await pool.query(
-      'SELECT * FROM scheduler_rules WHERE organization_id=1 AND lob_id=$1',
-      [lob_id]
+      'SELECT * FROM scheduler_rules WHERE organization_id=$1 AND lob_id=$2',
+      [organization_id, lob_id]
     );
     const rules = rulesRes.rows[0] || SCHEDULER_RULES_DEFAULTS;
     const result = await generateSchedule({
-      pool, lob_id, snapshot_id, horizon_start, horizon_end,
+      pool, organization_id, lob_id, snapshot_id, horizon_start, horizon_end,
       fairness_enabled: !!fairness_enabled, created_by: created_by || null,
       rules, template_id: template_id || null,
     });
@@ -2681,12 +2708,13 @@ const SCHEDULER_RULES_DEFAULTS = {
 };
 
 app.get('/api/scheduling/rules', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
   if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
   try {
     const result = await pool.query(
-      'SELECT * FROM scheduler_rules WHERE organization_id=1 AND lob_id=$1',
-      [lob_id]
+      'SELECT * FROM scheduler_rules WHERE organization_id=$1 AND lob_id=$2',
+      [organization_id, lob_id]
     );
     res.json(result.rows[0] || { ...SCHEDULER_RULES_DEFAULTS, lob_id });
   } catch (err) {
@@ -2695,6 +2723,7 @@ app.get('/api/scheduling/rules', async (req, res) => {
 });
 
 app.put('/api/scheduling/rules', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
   if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
   const {
@@ -2708,7 +2737,7 @@ app.put('/api/scheduling/rules', async (req, res) => {
          (organization_id, lob_id, default_shift_hours, shift_start_granularity_mins, days_per_week,
           require_consecutive_rest, break_duration_mins, lunch_duration_mins,
           break_1_after_hours, lunch_after_hours, break_2_after_hours, updated_at)
-       VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
        ON CONFLICT (organization_id, lob_id) DO UPDATE SET
          default_shift_hours          = EXCLUDED.default_shift_hours,
          shift_start_granularity_mins = EXCLUDED.shift_start_granularity_mins,
@@ -2721,7 +2750,7 @@ app.put('/api/scheduling/rules', async (req, res) => {
          break_2_after_hours          = EXCLUDED.break_2_after_hours,
          updated_at                   = NOW()
        RETURNING *`,
-      [lob_id,
+      [organization_id, lob_id,
        default_shift_hours ?? 9,
        shift_start_granularity_mins ?? 30,
        days_per_week ?? 5,
@@ -2740,6 +2769,7 @@ app.put('/api/scheduling/rules', async (req, res) => {
 
 // ── Auto-Scheduler: Publish with scope ──────────────────────────────────────
 app.post('/api/scheduling/publish', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { lob_id, date_start, date_end, scope, agent_ids, team_name } = req.body;
   if (!lob_id || !date_start || !date_end || !scope) {
     return res.status(400).json({ error: 'lob_id, date_start, date_end, scope required' });
@@ -2751,19 +2781,19 @@ app.post('/api/scheduling/publish', async (req, res) => {
         return res.status(400).json({ error: 'agent_ids[] required for scope=agent' });
       }
       q = `UPDATE schedule_assignments SET status='published', updated_at=NOW()
-           WHERE organization_id=1 AND lob_id=$1 AND work_date BETWEEN $2 AND $3 AND status='draft' AND agent_id = ANY($4)`;
-      params = [lob_id, date_start, date_end, agent_ids];
+           WHERE organization_id=$1 AND lob_id=$2 AND work_date BETWEEN $3 AND $4 AND status='draft' AND agent_id = ANY($5)`;
+      params = [organization_id, lob_id, date_start, date_end, agent_ids];
     } else if (scope === 'team') {
       if (!team_name) return res.status(400).json({ error: 'team_name required for scope=team' });
       q = `UPDATE schedule_assignments sa SET status='published', updated_at=NOW()
            FROM scheduling_agents ag
-           WHERE sa.agent_id = ag.id AND ag.team_name = $4
-             AND sa.organization_id=1 AND sa.lob_id=$1 AND sa.work_date BETWEEN $2 AND $3 AND sa.status='draft'`;
-      params = [lob_id, date_start, date_end, team_name];
+           WHERE sa.agent_id = ag.id AND ag.team_name = $5
+             AND sa.organization_id=$1 AND sa.lob_id=$2 AND sa.work_date BETWEEN $3 AND $4 AND sa.status='draft'`;
+      params = [organization_id, lob_id, date_start, date_end, team_name];
     } else if (scope === 'site') {
       q = `UPDATE schedule_assignments SET status='published', updated_at=NOW()
-           WHERE organization_id=1 AND lob_id=$1 AND work_date BETWEEN $2 AND $3 AND status='draft'`;
-      params = [lob_id, date_start, date_end];
+           WHERE organization_id=$1 AND lob_id=$2 AND work_date BETWEEN $3 AND $4 AND status='draft'`;
+      params = [organization_id, lob_id, date_start, date_end];
     } else {
       return res.status(400).json({ error: 'scope must be agent|team|site' });
     }
@@ -3314,6 +3344,7 @@ app.post('/api/rtm/action-logs', async (req, res) => {
 
 // Auto-Scheduler: generation runs
 app.get('/api/scheduling/generation-runs', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const lob_id = req.query.lob_id ? parseInt(req.query.lob_id) : null;
   if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
   try {
@@ -3321,9 +3352,9 @@ app.get('/api/scheduling/generation-runs', async (req, res) => {
       `SELECT id, snapshot_id, horizon_start, horizon_end, fairness_enabled,
               coverage_report, notes, created_at, created_by
        FROM schedule_generation_runs
-       WHERE organization_id=1 AND lob_id=$1
+       WHERE organization_id=$1 AND lob_id=$2
        ORDER BY created_at DESC LIMIT 20`,
-      [lob_id]
+      [organization_id, lob_id]
     );
     res.json(runs.rows);
   } catch (err) {
@@ -3559,9 +3590,11 @@ app.post('/api/ai/normalize-week', (req, res) => {
 // ── AI Settings ──────────────────────────────────────────────────────────────
 
 app.get('/api/ai-settings', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   try {
     const { rows } = await pool.query(
-      'SELECT provider, model, CASE WHEN api_key IS NOT NULL THEN true ELSE false END AS has_key FROM ai_settings WHERE organization_id = 1 LIMIT 1'
+      'SELECT provider, model, CASE WHEN api_key IS NOT NULL THEN true ELSE false END AS has_key FROM ai_settings WHERE organization_id = $1 LIMIT 1',
+      [organization_id]
     );
     if (rows.length === 0) return res.json({ provider: 'anthropic', model: 'claude-haiku-4-5-20251001', has_key: false });
     res.json(rows[0]);
@@ -3572,6 +3605,7 @@ app.get('/api/ai-settings', async (req, res) => {
 });
 
 app.put('/api/ai-settings', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { provider, model, api_key } = req.body;
   if (!provider || !model) return res.status(400).json({ error: 'provider and model are required' });
 
@@ -3587,11 +3621,11 @@ app.put('/api/ai-settings', async (req, res) => {
   }
 
   try {
-    const existing = await pool.query('SELECT id FROM ai_settings WHERE organization_id = 1 LIMIT 1');
+    const existing = await pool.query('SELECT id FROM ai_settings WHERE organization_id = $1 LIMIT 1', [organization_id]);
     if (existing.rows.length === 0) {
       await pool.query(
-        'INSERT INTO ai_settings (organization_id, provider, model, api_key) VALUES (1, $1, $2, $3)',
-        [provider, model, encryptedKey ?? null]
+        'INSERT INTO ai_settings (organization_id, provider, model, api_key) VALUES ($1, $2, $3, $4)',
+        [organization_id, provider, model, encryptedKey ?? null]
       );
     } else {
       const updates = ['provider = $1', 'model = $2', 'updated_at = NOW()'];
@@ -3601,7 +3635,8 @@ app.put('/api/ai-settings', async (req, res) => {
         // api_key === '' means "clear the saved key"; non-empty means "replace".
         params.push(encryptedKey ?? null);
       }
-      await pool.query(`UPDATE ai_settings SET ${updates.join(', ')} WHERE organization_id = 1`, params);
+      params.push(organization_id);
+      await pool.query(`UPDATE ai_settings SET ${updates.join(', ')} WHERE organization_id = $${params.length}`, params);
     }
     res.json({ ok: true });
   } catch (err) {
@@ -3679,12 +3714,13 @@ Rules:
 - If you don't know something specific to their instance, say so and offer the general principle.`;
 
 app.post('/api/ai/chat', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
   const { messages, pageContext } = req.body;
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
 
   let settings;
   try {
-    const { rows } = await pool.query('SELECT provider, model, api_key FROM ai_settings WHERE organization_id = 1 LIMIT 1');
+    const { rows } = await pool.query('SELECT provider, model, api_key FROM ai_settings WHERE organization_id = $1 LIMIT 1', [organization_id]);
     settings = rows[0];
   } catch (err) {
     return res.status(500).json({ error: 'Failed to load AI settings' });
@@ -3696,7 +3732,7 @@ app.post('/api/ai/chat', async (req, res) => {
 
   // Reject any plaintext residue rather than silently leaking it through.
   if (!isApiKeyEncrypted(settings.api_key)) {
-    console.warn('[ai/chat] Refusing to use unencrypted api_key for organization_id=1; please re-save in AI Settings.');
+    console.warn(`[ai/chat] Refusing to use unencrypted api_key for organization_id=${organization_id}; please re-save in AI Settings.`);
     return res.status(400).json({ error: 'Saved AI key is not encrypted at rest. Open Configuration → AI Assistant and re-enter your key to upgrade it.' });
   }
 
