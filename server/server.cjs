@@ -677,6 +677,57 @@ async function ensureAppTables() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false
   `);
 
+  // ── Accounts: BPO client-program layer between organization and LOB ──────────
+  // Hierarchy: Organization → Account → LOB. PR3b is schema-only and additive:
+  // the table is created, a default-per-org row is seeded, lobs.account_id is
+  // added and backfilled. No existing route, query, or RBAC check is changed.
+  // organization_id remains the canonical tenant scope until a later PR
+  // explicitly migrates routes onto account-level scoping.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      id              SERIAL PRIMARY KEY,
+      organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      name            VARCHAR(255) NOT NULL,
+      code            VARCHAR(100),
+      status          VARCHAR(20) NOT NULL DEFAULT 'active',
+      timezone        VARCHAR(64),
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, code)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_accounts_organization_id ON accounts (organization_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts (status)`);
+
+  // Seed one default account per existing organization. Idempotent: the
+  // UNIQUE(organization_id, code) constraint plus ON CONFLICT DO NOTHING means
+  // re-running this is a no-op once each org has its default row.
+  await pool.query(`
+    INSERT INTO accounts (organization_id, name, code)
+    SELECT id, 'Default Account', 'default' FROM organizations
+    ON CONFLICT (organization_id, code) DO NOTHING
+  `);
+
+  // Additive lobs.account_id — nullable, FK to accounts, ON DELETE SET NULL so
+  // a future account delete never cascades into LOB removal. organization_id
+  // stays in place; nothing reads from account_id yet.
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE lobs ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL;
+    EXCEPTION WHEN undefined_table THEN NULL; END; $$
+  `);
+  await pool.query(`
+    DO $$ BEGIN
+      UPDATE lobs SET account_id = (
+        SELECT id FROM accounts
+         WHERE accounts.organization_id = lobs.organization_id
+           AND accounts.code = 'default'
+         LIMIT 1
+      ) WHERE account_id IS NULL;
+    EXCEPTION WHEN undefined_table THEN NULL; END; $$
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_lobs_account_id ON lobs (account_id)`);
+
   await pool.query(`ALTER TABLE scheduling_agents ADD COLUMN IF NOT EXISTS user_id INTEGER`);
   await pool.query(`
     DO $$ BEGIN
