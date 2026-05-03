@@ -295,6 +295,7 @@ const BLEND_PRESETS: BlendPreset[] = [
   { id: "dedicated", label: "Dedicated per channel", description: "No channel blending across staffing pools", pools: [["voice"], ["email"], ["chat"], ["cases"]] },
 ];
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
+const CHANNEL_KEYS: ChannelKey[] = ["voice", "email", "chat", "cases"];
 const EMAIL_AHT_SECONDS = 600;
 const CHAT_AHT_SECONDS = 450;
 const CHAT_CONCURRENCY = 2;
@@ -309,6 +310,9 @@ const CHANNEL_ASSUMPTION_META: Record<ChannelKey, { label: string; colorClass: s
 };
 const USER_INPUTS_STORAGE_KEY = "lt_forecast_demand_user_inputs";
 const SCENARIOS_STORAGE_KEY = "lt_forecast_demand_scenarios";
+const normalizeChannelKey = (value: unknown): ChannelKey => (
+  typeof value === "string" && CHANNEL_KEYS.includes(value as ChannelKey) ? value as ChannelKey : "voice"
+);
 
 const validateInput = (value: number, min = 0, max = Infinity) => Math.max(min, Math.min(max, value));
 const trimTrailingZeros = (data: number[]): number[] => {
@@ -821,6 +825,22 @@ function createScenario(id: string, name: string, snapshot: PlannerSnapshot, is_
     selectedHistoricalChannel: snapshot.selectedHistoricalChannel,
   },
 }); }
+function fillEmptyChannelOverridesFromFallback(activeSnapshot: PlannerSnapshot, fallbackSnapshot: PlannerSnapshot): PlannerSnapshot {
+  const channelHistoricalOverrides = CHANNEL_KEYS.reduce<Record<ChannelKey, Record<number, string>>>((acc, channel) => {
+    const activeOverrides = activeSnapshot.channelHistoricalOverrides?.[channel] || {};
+    const fallbackOverrides = fallbackSnapshot.channelHistoricalOverrides?.[channel] || {};
+    acc[channel] = Object.keys(activeOverrides).length === 0 && Object.keys(fallbackOverrides).length > 0
+      ? { ...fallbackOverrides }
+      : { ...activeOverrides };
+    return acc;
+  }, {} as Record<ChannelKey, Record<number, string>>);
+
+  return {
+    ...activeSnapshot,
+    historicalOverrides: channelHistoricalOverrides.voice,
+    channelHistoricalOverrides,
+  };
+}
 function normalizeScenario(value: unknown, fallbackId: string): Scenario | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<Scenario> & { snapshot?: Partial<PlannerSnapshot> };
@@ -1014,6 +1034,10 @@ export default function LongTermForecastingDemand() {
   const visibleHistoricalApiData = historicalApiDataByChannel[historicalChannelView];
   const visibleHistoricalOverrides = historicalOverridesByChannel[historicalChannelView];
   const getCurrentPlannerSnapshot = () => buildPlannerSnapshot(assumptions, forecastMethod, hwParams, arimaParams, decompParams, historicalApiDataByChannel, historicalOverridesByChannel, selectedChannels, poolingMode, isHistoricalSourceOpen, isBlendedStaffingOpen, historicalChannelView, recutVolumesByChannel, dataSourceMode);
+  const setHistoricalDetailChannel = (channel: ChannelKey) => {
+    setHistoricalChannelView(channel);
+    setDetailChannel(channel);
+  };
   const normalizePersistedScenarios = (records: DemandPlannerScenarioRecord[]) => records.reduce<Record<string, Scenario>>((acc, record) => {
     const nextScenario = normalizeScenario({
       id: record.scenario_id,
@@ -1050,7 +1074,7 @@ export default function LongTermForecastingDemand() {
     setSelectedChannels(normalizeSelectedChannels(snapshot.selectedChannels));
     setPoolingMode(snapshot.poolingMode === "dedicated" ? "dedicated" : "blended");
     setIsHistoricalSourceOpen(snapshot.isHistoricalSourceOpen);
-    setHistoricalChannelView(snapshot.selectedHistoricalChannel || "voice");
+    setHistoricalDetailChannel(normalizeChannelKey(snapshot.selectedHistoricalChannel));
     setRecutVolumesByChannel(snapshot.recutVolumesByChannel ?? null);
   };
 
@@ -1157,7 +1181,8 @@ export default function LongTermForecastingDemand() {
           setSelectedScenarioId(nextSelectedScenarioId);
           const fallbackSnapshot = nextScenarios[nextSelectedScenarioId]?.snapshot;
           if (savedInputs.plannerSnapshot) {
-            applyPlannerSnapshot(normalizeScenario({ id: nextSelectedScenarioId, name: nextScenarios[nextSelectedScenarioId]?.name || "Scenario", assumptions: fallbackSnapshot?.assumptions || DEFAULT_ASSUMPTIONS, snapshot: savedInputs.plannerSnapshot }, nextSelectedScenarioId)?.snapshot || fallbackSnapshot || getCurrentPlannerSnapshot());
+            const activeSnapshot = normalizeScenario({ id: nextSelectedScenarioId, name: nextScenarios[nextSelectedScenarioId]?.name || "Scenario", assumptions: fallbackSnapshot?.assumptions || DEFAULT_ASSUMPTIONS, snapshot: savedInputs.plannerSnapshot }, nextSelectedScenarioId)?.snapshot;
+            applyPlannerSnapshot(activeSnapshot && fallbackSnapshot ? fillEmptyChannelOverridesFromFallback(activeSnapshot, fallbackSnapshot) : activeSnapshot || fallbackSnapshot || getCurrentPlannerSnapshot());
           } else if (fallbackSnapshot) {
             applyPlannerSnapshot(fallbackSnapshot);
           }
@@ -2781,11 +2806,11 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                   </div>
                   {/* Channel tabs */}
                   <div className="flex gap-1 rounded-lg border border-border p-1 bg-muted/40">
-                    {(["voice", "email", "chat", "cases"] as ChannelKey[]).map((ch) => (
+                    {CHANNEL_KEYS.map((ch) => (
                       <button
                         key={ch}
                         type="button"
-                        onClick={() => { setHistoricalChannelView(ch); setDetailChannel(ch); }}
+                        onClick={() => setHistoricalDetailChannel(ch)}
                         className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${detailChannel === ch ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                       >
                         {CHANNEL_ASSUMPTION_META[ch].label}
