@@ -1820,6 +1820,7 @@ export default function LongTermForecastingDemand() {
   const forecastData = useMemo(() => buildDemandForecastData(effectiveFinalHistoricalDataByChannel.voice, { ...assumptions, planningMonths: effectivePlanningMonths }, forecastMethod, hwParams, arimaParams, decompParams), [effectiveFinalHistoricalDataByChannel, assumptions, effectivePlanningMonths, forecastMethod, hwParams, arimaParams, decompParams]);
   const selectedBlendConfig = useMemo(() => buildBlendConfiguration(selectedChannels, poolingMode), [selectedChannels, poolingMode]);
   const includedChannels = useMemo(() => selectedBlendConfig.includedChannels, [selectedBlendConfig]);
+  const showTotalVolume = poolingMode === "blended";
 
   // ── Re-cut helpers ────────────────────────────────────────────────────────────
   // Which forecast month-indices (0-based) are fully in the past?
@@ -3356,6 +3357,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                         <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-violet-600 whitespace-nowrap" title="Total inbound chat sessions forecast for the month">Chat Vol.</TableHead>
                         <TableHead className="text-right text-[11px] font-semibold uppercase tracking-wide text-rose-600 whitespace-nowrap" title="Total inbound email contacts forecast for the month">Email Vol.</TableHead>
                         <TableHead className="pr-4 text-right text-[11px] font-semibold uppercase tracking-wide text-amber-600 whitespace-nowrap" title="Total case/ticket volume forecast for the month">Cases Vol.</TableHead>
+                        {showTotalVolume && <TableHead className="pr-4 text-right text-[11px] font-semibold uppercase tracking-wide text-foreground/70 whitespace-nowrap" title="Total forecast volume for enabled channels">Total Volume</TableHead>}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -3369,7 +3371,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                           <React.Fragment key={`${row.year}-${row.month}`}>
                             {isTwoYear && idx === 12 && (
                               <TableRow className="hover:bg-transparent bg-primary/5 border-t-2 border-primary/20">
-                                <TableCell colSpan={5} className="pl-4 py-1.5 text-[10px] font-black uppercase tracking-widest text-primary">
+                                <TableCell colSpan={showTotalVolume ? 6 : 5} className="pl-4 py-1.5 text-[10px] font-black uppercase tracking-widest text-primary">
                                   {forecastYear2} Two-Pass Forecast
                                 </TableCell>
                               </TableRow>
@@ -3388,6 +3390,11 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                               <TableCell className={`pr-4 px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${selectedChannels.cases ? volClass : "text-muted-foreground"}`}>
                                 {selectedChannels.cases ? row.channelMetrics.cases.volume.toLocaleString() : "—"}
                               </TableCell>
+                              {showTotalVolume && (
+                                <TableCell className={`pr-4 px-3 text-right font-mono text-sm tabular-nums whitespace-nowrap align-middle ${volClass}`}>
+                                  {row.volume.toLocaleString()}
+                                </TableCell>
+                              )}
                             </TableRow>
                           </React.Fragment>
                         );
