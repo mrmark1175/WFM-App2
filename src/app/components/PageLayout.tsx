@@ -74,6 +74,7 @@ export function PageLayout({ children, title }: PageLayoutProps) {
   const { registerOpenAssistant } = useWFMPageData();
   useEffect(() => { registerOpenAssistant(() => setAssistantOpen(true)); }, []);
   const pathnames = location.pathname.split("/").filter(Boolean);
+  const showWfmSelectors = user?.role !== "agent";
 
   return (
     <div className="min-h-screen bg-canvas text-ink">
@@ -106,8 +107,12 @@ export function PageLayout({ children, title }: PageLayoutProps) {
         </nav>
 
         <div className="ml-auto flex items-center gap-2">
-          <LOBSelector />
-          <WhatIfSelector />
+          {showWfmSelectors && (
+            <>
+              <LOBSelector />
+              <WhatIfSelector />
+            </>
+          )}
         </div>
       </header>
 

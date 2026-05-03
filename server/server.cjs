@@ -27,6 +27,49 @@ app.use('/api', (req, res, next) => {
   authenticateToken(req, res, next);
 });
 
+function denyAgentManagementApi(req, res, next) {
+  if (req.user?.role === 'agent') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+}
+
+app.use([
+  '/api/lobs',
+  '/api/lob-settings',
+  '/api/shrinkage-plan',
+  '/api/agents',
+  '/api/forecasts',
+  '/api/capacity-scenarios',
+  '/api/interaction-arrival',
+  '/api/long-term-actuals',
+  '/api/demand-planner-scenarios',
+  '/api/demand-planner-active-state',
+  '/api/demand-actuals',
+  '/api/distribution-profiles',
+  '/api/capacity-plan-config',
+  '/api/capacity-plan-inputs',
+  '/api/capacity-planner-whatifs',
+  '/api/scheduling/shift-templates',
+  '/api/scheduling/labor-laws',
+  '/api/scheduling/assignments',
+  '/api/scheduling/activities',
+  '/api/scheduling/assignments-publish',
+  '/api/scheduling/publish',
+  '/api/scheduling/auto-generate',
+  '/api/scheduling/rules',
+  '/api/scheduling/demand-snapshots',
+  '/api/scheduling/counts',
+  '/api/scheduling/generation-runs',
+  '/api/rtm/dashboard',
+  '/api/rtm/action-logs',
+  '/api/ai-settings',
+  '/api/ai/chat',
+  '/api/ai/normalize-week',
+  '/api/telephony/pull',
+  '/api/genesys/sync',
+], denyAgentManagementApi);
+
 async function ensureAppTables() {
   // ── Existing app tables ──────────────────────────────────────────────────────
   await pool.query(`

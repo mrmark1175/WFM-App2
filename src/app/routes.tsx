@@ -1,5 +1,23 @@
 import { createBrowserRouter } from "react-router-dom";
+import React from "react";
+import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Home } from "./pages/Home";
+import type { UserRole } from "@/context/AuthContext";
+
+const WFM_ROLES: UserRole[] = ["super_admin", "client_admin", "rta", "supervisor", "read_only"];
+const ADMIN_ROLES: UserRole[] = ["super_admin", "client_admin"];
+const RTM_ROLES: UserRole[] = ["super_admin", "client_admin", "rta", "supervisor"];
+const AGENT_ROLES: UserRole[] = ["agent"];
+
+function withRoles(Component: React.ComponentType, roles: UserRole[]) {
+  return function GuardedRoute() {
+    return (
+      <ProtectedRoute roles={roles}>
+        <Component />
+      </ProtectedRoute>
+    );
+  };
+}
 
 /**
  * Wraps a lazy import so that a stale-chunk 404 (caused by a new deployment
@@ -33,78 +51,78 @@ export const router = createBrowserRouter([
   },
   {
     path: "/agent/today",
-    lazy: () => lazyLoad(async () => { const { AgentSelfService } = await import("./pages/AgentSelfService"); return { Component: AgentSelfService }; }),
+    lazy: () => lazyLoad(async () => { const { AgentSelfService } = await import("./pages/AgentSelfService"); return { Component: withRoles(AgentSelfService, AGENT_ROLES) }; }),
   },
   {
     path: "/wfm",
-    lazy: () => lazyLoad(async () => { const { WFM } = await import("./pages/WFM"); return { Component: WFM }; }),
+    lazy: () => lazyLoad(async () => { const { WFM } = await import("./pages/WFM"); return { Component: withRoles(WFM, WFM_ROLES) }; }),
   },
   {
     path: "/wfm/long-term-forecasting-demand",
-    lazy: () => lazyLoad(async () => { const mod = await import("./pages/LongTermForecasting_Demand"); return { Component: mod.default }; }),
+    lazy: () => lazyLoad(async () => { const mod = await import("./pages/LongTermForecasting_Demand"); return { Component: withRoles(mod.default, WFM_ROLES) }; }),
   },
   {
     path: "/wfm/capacity",
-    lazy: () => lazyLoad(async () => { const { CapacityPlanning } = await import("./pages/CapacityPlanning"); return { Component: CapacityPlanning }; }),
+    lazy: () => lazyLoad(async () => { const { CapacityPlanning } = await import("./pages/CapacityPlanning"); return { Component: withRoles(CapacityPlanning, WFM_ROLES) }; }),
   },
   {
     path: "/wfm/shrinkage",
-    lazy: () => lazyLoad(async () => { const { ShrinkagePlanning } = await import("./pages/ShrinkagePlanning"); return { Component: ShrinkagePlanning }; }),
+    lazy: () => lazyLoad(async () => { const { ShrinkagePlanning } = await import("./pages/ShrinkagePlanning"); return { Component: withRoles(ShrinkagePlanning, WFM_ROLES) }; }),
   },
   {
     path: "/wfm/intraday",
-    lazy: () => lazyLoad(async () => { const { IntradayForecast } = await import("./pages/IntradayForecast"); return { Component: IntradayForecast }; }),
+    lazy: () => lazyLoad(async () => { const { IntradayForecast } = await import("./pages/IntradayForecast"); return { Component: withRoles(IntradayForecast, WFM_ROLES) }; }),
   },
   {
     path: "/wfm/real-time-management",
-    lazy: () => lazyLoad(async () => { const { RealTimeManagement } = await import("./pages/RealTimeManagement"); return { Component: RealTimeManagement }; }),
+    lazy: () => lazyLoad(async () => { const { RealTimeManagement } = await import("./pages/RealTimeManagement"); return { Component: withRoles(RealTimeManagement, RTM_ROLES) }; }),
   },
   {
     path: "/configuration",
-    lazy: () => lazyLoad(async () => { const { Configuration } = await import("./pages/Configuration"); return { Component: Configuration }; }),
+    lazy: () => lazyLoad(async () => { const { Configuration } = await import("./pages/Configuration"); return { Component: withRoles(Configuration, ADMIN_ROLES) }; }),
   },
   {
     path: "/configuration/lob-management",
-    lazy: () => lazyLoad(async () => { const { LOBManagement } = await import("./pages/LOBManagement"); return { Component: LOBManagement }; }),
+    lazy: () => lazyLoad(async () => { const { LOBManagement } = await import("./pages/LOBManagement"); return { Component: withRoles(LOBManagement, ADMIN_ROLES) }; }),
   },
   {
     path: "/configuration/lob-settings",
-    lazy: () => lazyLoad(async () => { const { LOBSettings } = await import("./pages/LOBSettings"); return { Component: LOBSettings }; }),
+    lazy: () => lazyLoad(async () => { const { LOBSettings } = await import("./pages/LOBSettings"); return { Component: withRoles(LOBSettings, ADMIN_ROLES) }; }),
   },
   {
     path: "/configuration/ai-settings",
-    lazy: () => lazyLoad(async () => { const { AISettings } = await import("./pages/AISettings"); return { Component: AISettings }; }),
+    lazy: () => lazyLoad(async () => { const { AISettings } = await import("./pages/AISettings"); return { Component: withRoles(AISettings, ADMIN_ROLES) }; }),
   },
   {
     path: "/scheduling",
-    lazy: () => lazyLoad(async () => { const { SchedulingHub } = await import("./pages/SchedulingHub"); return { Component: SchedulingHub }; }),
+    lazy: () => lazyLoad(async () => { const { SchedulingHub } = await import("./pages/SchedulingHub"); return { Component: withRoles(SchedulingHub, WFM_ROLES) }; }),
   },
   {
     path: "/scheduling/agents",
-    lazy: () => lazyLoad(async () => { const { AgentRoster } = await import("./pages/AgentRoster"); return { Component: AgentRoster }; }),
+    lazy: () => lazyLoad(async () => { const { AgentRoster } = await import("./pages/AgentRoster"); return { Component: withRoles(AgentRoster, WFM_ROLES) }; }),
   },
   {
     path: "/scheduling/shifts",
-    lazy: () => lazyLoad(async () => { const { ShiftTemplates } = await import("./pages/ShiftTemplates"); return { Component: ShiftTemplates }; }),
+    lazy: () => lazyLoad(async () => { const { ShiftTemplates } = await import("./pages/ShiftTemplates"); return { Component: withRoles(ShiftTemplates, WFM_ROLES) }; }),
   },
   {
     path: "/scheduling/labor-laws",
-    lazy: () => lazyLoad(async () => { const { LaborLawRules } = await import("./pages/LaborLawRules"); return { Component: LaborLawRules }; }),
+    lazy: () => lazyLoad(async () => { const { LaborLawRules } = await import("./pages/LaborLawRules"); return { Component: withRoles(LaborLawRules, WFM_ROLES) }; }),
   },
   {
     path: "/scheduling/schedule",
-    lazy: () => lazyLoad(async () => { const { ScheduleEditor } = await import("./pages/ScheduleEditor"); return { Component: ScheduleEditor }; }),
+    lazy: () => lazyLoad(async () => { const { ScheduleEditor } = await import("./pages/ScheduleEditor"); return { Component: withRoles(ScheduleEditor, WFM_ROLES) }; }),
   },
   {
     path: "/scheduling/scheduler-rules",
-    lazy: () => lazyLoad(async () => { const { SchedulerRules } = await import("./pages/SchedulerRules"); return { Component: SchedulerRules }; }),
+    lazy: () => lazyLoad(async () => { const { SchedulerRules } = await import("./pages/SchedulerRules"); return { Component: withRoles(SchedulerRules, WFM_ROLES) }; }),
   },
   {
     path: "/help/auto-scheduler",
-    lazy: () => lazyLoad(async () => { const { HelpAutoScheduler } = await import("./pages/HelpAutoScheduler"); return { Component: HelpAutoScheduler }; }),
+    lazy: () => lazyLoad(async () => { const { HelpAutoScheduler } = await import("./pages/HelpAutoScheduler"); return { Component: withRoles(HelpAutoScheduler, WFM_ROLES) }; }),
   },
   {
     path: "/admin/users",
-    lazy: () => lazyLoad(async () => { const { UsersPage } = await import("./pages/admin/Users"); return { Component: UsersPage }; }),
+    lazy: () => lazyLoad(async () => { const { UsersPage } = await import("./pages/admin/Users"); return { Component: withRoles(UsersPage, ADMIN_ROLES) }; }),
   },
 ]);

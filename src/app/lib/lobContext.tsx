@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { apiUrl } from "@/app/lib/api";
+import { useAuth } from "@/context/AuthContext";
 
 export interface LOB {
   id: number;
@@ -32,6 +33,7 @@ interface LOBContextValue {
 const LOBContext = createContext<LOBContextValue | null>(null);
 
 export function LOBProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
   const [lobs, setLobs] = useState<LOB[]>([]);
   const [activeLob, setActiveLobState] = useState<LOB | null>(null);
   const [activeChannel, setActiveChannelState] = useState<ChannelKey>(() => {
@@ -41,6 +43,13 @@ export function LOBProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    if (user?.role === "agent") {
+      setLobs([]);
+      setActiveLobState(null);
+      setIsLoading(false);
+      return;
+    }
+
     fetch(apiUrl("/api/lobs"))
       .then((r) => r.json())
       .then((data: LOB[]) => {
@@ -53,7 +62,7 @@ export function LOBProvider({ children }: { children: React.ReactNode }) {
         // Backend not reachable yet — leave isLoading true, will retry on navigate
       })
       .finally(() => setIsLoading(false));
-  }, []);
+  }, [user?.role]);
 
   const setActiveLob = (lob: LOB) => {
     setActiveLobState(lob);
