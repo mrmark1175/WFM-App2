@@ -3140,8 +3140,107 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
 
               {/* ── Demand charts ───────────────────────────────── */}
               <div id="section-charts" className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
+                <Card className="border border-border/50 bg-white shadow-md">
+                  <CardHeader className="border-b border-border/50 bg-muted/20">
+                    <CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle>
+                    <p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p>
+                  </CardHeader>
+                  <CardContent className="bg-white px-5 py-5 h-[320px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={volumeTrendComparison.chartData} margin={{ top: 8, right: 18, left: 4, bottom: 12 }}>
+                        <CartesianGrid horizontal vertical stroke="#e5e7eb" strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="month"
+                          tickLine={false}
+                          axisLine={{ stroke: "#d1d5db" }}
+                          interval={0}
+                          tick={{ fill: "#374151", fontSize: 12, fontWeight: 600 }}
+                          tickMargin={10}
+                        />
+                        <YAxis
+                          tickLine={false}
+                          axisLine={{ stroke: "#d1d5db" }}
+                          tick={{ fill: "#374151", fontSize: 12 }}
+                          tickMargin={8}
+                          width={58}
+                          tickFormatter={(value) => Number(value).toLocaleString()}
+                        />
+                        <Tooltip
+                          cursor={{ stroke: "#94a3b8", strokeWidth: 1, strokeDasharray: "4 4" }}
+                          formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]}
+                          contentStyle={{ backgroundColor: "#ffffff", border: "1px solid #d1d5db", borderRadius: 8, boxShadow: "0 10px 24px rgba(15, 23, 42, 0.12)", padding: "10px 12px" }}
+                          labelStyle={{ color: "#111827", fontSize: 12, fontWeight: 700, marginBottom: 6 }}
+                          itemStyle={{ color: "#374151", fontSize: 12, fontWeight: 600, paddingTop: 2 }}
+                          separator=": "
+                        />
+                        <Legend
+                          verticalAlign="bottom"
+                          height={28}
+                          iconType="line"
+                          wrapperStyle={{ color: "#374151", fontSize: 12, fontWeight: 600, paddingTop: 8 }}
+                        />
+                        {volumeTrendComparison.series.map((series) => (
+                          <Line
+                            key={series.key}
+                            type="linear"
+                            dataKey={series.key}
+                            name={series.label}
+                            stroke={series.stroke}
+                            strokeOpacity={series.isForecast ? 1 : 0.82}
+                            strokeWidth={series.isForecast ? 3 : 2.25}
+                            strokeDasharray={series.isForecast ? "7 5" : undefined}
+                            dot={series.isForecast ? false : { r: 2.25, fill: "#ffffff", stroke: series.stroke, strokeWidth: 1.75 }}
+                            activeDot={{ r: 5, fill: "#ffffff", stroke: series.stroke, strokeWidth: 2.25 }}
+                            connectNulls={false}
+                            isAnimationActive={false}
+                          />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+                <Card className="border border-border/50 bg-white shadow-md">
+                  <CardHeader className="border-b border-border/50 bg-muted/20">
+                    <CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle>
+                  </CardHeader>
+                  <CardContent className="bg-white px-5 py-5 h-[320px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={seasonalityTrend} margin={{ top: 8, right: 18, left: 4, bottom: 12 }}>
+                        <CartesianGrid horizontal vertical stroke="#e5e7eb" strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="label"
+                          tickLine={false}
+                          axisLine={{ stroke: "#d1d5db" }}
+                          tick={{ fill: "#374151", fontSize: 12, fontWeight: 600 }}
+                          tickMargin={10}
+                        />
+                        <YAxis
+                          tickLine={false}
+                          axisLine={{ stroke: "#d1d5db" }}
+                          tick={{ fill: "#374151", fontSize: 12 }}
+                          tickMargin={8}
+                          width={48}
+                          tickFormatter={(value) => `${Number(value).toFixed(0)}%`}
+                        />
+                        <Tooltip
+                          cursor={{ fill: "rgba(15, 118, 110, 0.08)" }}
+                          formatter={(value, name) => [`${Number(value).toFixed(1)}%`, name]}
+                          contentStyle={{ backgroundColor: "#ffffff", border: "1px solid #d1d5db", borderRadius: 8, boxShadow: "0 10px 24px rgba(15, 23, 42, 0.12)", padding: "10px 12px" }}
+                          labelStyle={{ color: "#111827", fontSize: 12, fontWeight: 700, marginBottom: 6 }}
+                          itemStyle={{ color: "#374151", fontSize: 12, fontWeight: 600, paddingTop: 2 }}
+                          separator=": "
+                        />
+                        <Legend
+                          verticalAlign="bottom"
+                          height={28}
+                          iconType="rect"
+                          wrapperStyle={{ color: "#374151", fontSize: 12, fontWeight: 600, paddingTop: 8 }}
+                        />
+                        <Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[5, 5, 0, 0]} maxBarSize={42} isAnimationActive={false} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
               </div>
               {/* ── Demand output — future months ──────────────────────────── */}
               <Card id="section-demand-output" className="border border-border/50 shadow-lg bg-card">
