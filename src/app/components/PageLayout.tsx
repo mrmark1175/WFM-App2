@@ -119,10 +119,13 @@ export function PageLayout({ children, title }: PageLayoutProps) {
       <div className="grid min-h-[calc(100vh-44px)] transition-[grid-template-columns]"
         style={{ gridTemplateColumns: `${collapsed ? "56px" : "220px"} 1fr${assistantOpen ? " 320px" : ""}` }}>
         <aside className="sticky top-11 h-[calc(100vh-44px)] bg-[#0072B1] text-white border-r border-[#005a8c] py-3 px-2 overflow-y-auto self-start">
-          {NAV.map(g => (
+          {NAV.map(g => {
+            const visibleItems = g.items.filter(it => !it.roles || (user && it.roles.includes(user.role)));
+            if (visibleItems.length === 0) return null;
+            return (
             <div key={g.group} className="mt-3 first:mt-0">
               <div className={`font-mono text-[10px] text-white/70 uppercase tracking-[.14em] px-2.5 pb-1.5 ${collapsed ? "invisible h-0 p-0" : ""}`}>{g.group}</div>
-              {g.items.filter(it => !it.roles || (user && it.roles.includes(user.role))).map(it => {
+              {visibleItems.map(it => {
                 const Icon = it.icon;
                 const active = location.pathname === it.to;
                 return (
@@ -139,7 +142,8 @@ export function PageLayout({ children, title }: PageLayoutProps) {
                 );
               })}
             </div>
-          ))}
+            );
+          })}
           <button onClick={() => setCollapsed(!collapsed)}
             className="mt-2 w-full h-[22px] flex items-center justify-center text-white/80 font-mono text-[10px] border border-dashed border-white/40 rounded hover:text-white tracking-wider">
             {collapsed ? "»" : "« collapse"}
