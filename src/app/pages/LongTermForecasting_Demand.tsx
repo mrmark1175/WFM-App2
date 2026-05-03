@@ -292,7 +292,7 @@ const BLEND_PRESETS: BlendPreset[] = [
   { id: "voice-chat", label: "Voice + Chat", description: "Blend voice and chat; exclude email", pools: [["voice", "chat"]] },
   { id: "email-chat", label: "Email + Chat", description: "Blend email and chat; exclude voice", pools: [["email", "chat"]] },
   { id: "all-blended", label: "Voice + Email + Chat + Cases", description: "All selected channels share one agent pool", pools: [["voice", "email", "chat", "cases"]] },
-  { id: "dedicated", label: "Dedicated per channel", description: "No channel blending across staffing pools", pools: [["voice"], ["email"], ["chat"], ["cases"]] },
+  { id: "dedicated", label: "Dedicated per channel", description: "No channel blending", pools: [["voice"], ["email"], ["chat"], ["cases"]] },
 ];
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
 const CHANNEL_KEYS: ChannelKey[] = ["voice", "email", "chat", "cases"];
@@ -388,7 +388,7 @@ function buildBlendConfiguration(selectedChannels: Record<ChannelKey, boolean>, 
   if (poolingMode === "dedicated") {
     return {
       label: includedChannels.length === 3 ? "Dedicated per channel" : `${channelLabel} dedicated`,
-      description: "Selected channels stay in separate staffing pools",
+      description: "Selected channels stay separate",
       pools: includedChannels.map((channel) => [channel]),
       includedChannels,
       poolingMode,
@@ -2065,10 +2065,8 @@ export default function LongTermForecastingDemand() {
     });
   }, [assumptions.startDate, effectivePlanningMonths, isTwoYear, completedMonthIndices, combinedForecastVolumesByChannel, detailChannel, demandActuals, recutFactorByChannel]);
 
-  const kpis = useMemo(() => futureData.length === 0 ? { avgVolume: 0, avgWorkloadHours: 0, avgRequiredFTE: 0 } : ({
+  const kpis = useMemo(() => futureData.length === 0 ? { avgVolume: 0 } : ({
     avgVolume: Math.round(futureData.reduce((sum, row) => sum + row.volume, 0) / futureData.length),
-    avgWorkloadHours: Number((futureData.reduce((sum, row) => sum + row.pools.reduce((poolSum, pool) => poolSum + pool.workloadHours, 0), 0) / futureData.length).toFixed(1)),
-    avgRequiredFTE: Number((futureData.reduce((sum, row) => sum + row.totalRequiredFTE, 0) / futureData.length).toFixed(2)),
   }), [futureData]);
 
   const kpiTrends = useMemo(() => {
@@ -2078,33 +2076,11 @@ export default function LongTermForecastingDemand() {
     const pct = (a: number, b: number) => b > 0 ? Math.round((a - b) / b * 100) : 0;
     const histAvgVol = hist.reduce((s, r) => s + r.historicalVolume, 0) / hist.length;
     const futAvgVol  = future.reduce((s, r) => s + r.volume, 0) / future.length;
-    const histAvgWkl = hist.reduce((s, r) => s + r.workloadHours, 0) / hist.length;
-    const futAvgWkl  = future.reduce((s, r) => s + r.workloadHours, 0) / future.length;
-    const histAvgFTE = hist.reduce((s, r) => s + r.requiredFTE, 0) / hist.length;
-    const futAvgFTE  = future.reduce((s, r) => s + r.requiredFTE, 0) / future.length;
     return {
       volume:  pct(futAvgVol,  histAvgVol),
-      workload: pct(futAvgWkl, histAvgWkl),
-      fte:     pct(futAvgFTE,  histAvgFTE),
     };
   }, [forecastData]);
 
-  const requiredStaffingTrendData = useMemo(() => futureData.map((row) => ({
-    label: `${row.month} '${row.year.slice(2)}`,
-    totalRequiredFTE: row.totalRequiredFTE,
-    sharedPoolFTE: row.sharedPoolFTE,
-    standalonePoolFTE: row.standalonePoolFTE,
-  })), [futureData]);
-  const pooledWorkloadChartData = useMemo(() => futureData.map((row) => {
-    const point: Record<string, string | number> = {
-      label: `${row.month} '${row.year.slice(2)}`,
-      totalWorkloadHours: Number(row.pools.reduce((sum, pool) => sum + pool.workloadHours, 0).toFixed(1)),
-    };
-    row.pools.forEach((pool, index) => {
-      point[`pool${index + 1}`] = pool.workloadHours;
-    });
-    return point;
-  }), [futureData]);
   const narrativeFingerprint = useMemo(() => {
     if (futureData.length === 0) return "";
     const key = JSON.stringify({
@@ -2158,10 +2134,10 @@ export default function LongTermForecastingDemand() {
       seasonalityIndex: average === 0 ? 0 : Number((((includedForecastSeries[index] ?? 0) / average) * 100).toFixed(1)),
     }));
   }, [futureData]);
-  const scenarioComparisonData = useMemo(() => {
+  const scenarioDemandSummary = useMemo(() => {
     const scenarioEntries = Object.values(scenarios);
     if (scenarioEntries.length === 0 || finalHistoricalData.length === 0) return [];
-    const scenarioForecasts = scenarioEntries.map((scenario) => {
+    return scenarioEntries.map((scenario) => {
       const snap = scenario.snapshot;
       const activeAssumptions = scenario.id === selectedScenarioId ? assumptions : scenario.assumptions;
       const activeForecastMethod = scenario.id === selectedScenarioId ? forecastMethod : snap.forecastMethod;
@@ -2170,7 +2146,6 @@ export default function LongTermForecastingDemand() {
       const activeDecompParams = scenario.id === selectedScenarioId ? decompParams : snap.decompParams;
       const snapLegacyBlendState = getBlendStateFromLegacyPreset(normalizeBlendPreset(snap.activeBlendPreset));
       const activeSelectedChannels = scenario.id === selectedScenarioId ? selectedChannels : normalizeSelectedChannels(snap.selectedChannels || snapLegacyBlendState.selectedChannels);
-      const activePoolingMode = scenario.id === selectedScenarioId ? poolingMode : (snap.poolingMode === "dedicated" ? "dedicated" : snapLegacyBlendState.poolingMode);
       const activeOverrides = scenario.id === selectedScenarioId ? debouncedOverridesByChannel : snap.channelHistoricalOverrides;
       // Apply each scenario's own overrides to the current API data per channel
       const buildSnapHistory = (channel: ChannelKey) =>
@@ -2196,150 +2171,30 @@ export default function LongTermForecastingDemand() {
       const casesForecast = snapCasesHistory.length > 0
         ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
         : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
-      const snapBlendConfig = buildBlendConfiguration(activeSelectedChannels, activePoolingMode);
-      const snapEmailAht = activeAssumptions.emailAht ?? EMAIL_AHT_SECONDS;
-      const snapChatAht = activeAssumptions.chatAht ?? CHAT_AHT_SECONDS;
-      const forecast = buildDemandForecastData(snapVoiceHistory, activeAssumptions, activeForecastMethod, activeHwParams, activeArimaParams, activeDecompParams)
-        .filter((row) => row.isFuture)
-        .map((row, fi) => {
-          const emailVol = emailForecast[fi] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.email);
-          const chatVol = chatForecast[fi] ?? Math.round(row.volume * CHANNEL_VOLUME_FACTORS.chat);
-          const channelMetrics: Record<ChannelKey, ChannelStaffingMetrics> = {
-            voice: getChannelStaffingMetrics("voice", row.volume, activeAssumptions),
-            email: getChannelStaffingMetrics("email", emailVol, activeAssumptions),
-            chat: getChannelStaffingMetrics("chat", chatVol, activeAssumptions),
-            cases: getChannelStaffingMetrics("cases", casesForecast[fi] ?? Math.round(emailVol * CHANNEL_VOLUME_FACTORS.cases / CHANNEL_VOLUME_FACTORS.email), activeAssumptions),
-          };
-          const totalRequiredFTE = snapBlendConfig.pools.reduce((sum, channels) => {
-            const workloadHours = channels.reduce((poolSum, ch) => poolSum + channelMetrics[ch].workloadHours, 0);
-            const referenceVolume = channels.reduce((poolSum, ch) => poolSum + channelMetrics[ch].volume, 0);
-            const channelMix = channels.map((ch) => ({
-              channel: ch,
-              volume: channelMetrics[ch].volume,
-              workloadHours: channelMetrics[ch].workloadHours,
-              ahtSeconds: getChannelEffectiveAhtSeconds(activeAssumptions, ch),
-            }));
-            return sum + calculatePooledFTE(workloadHours, referenceVolume, activeAssumptions, channelMix);
-          }, 0);
-          return { ...row, totalRequiredFTE: Number(totalRequiredFTE.toFixed(1)) };
-        });
-      return { scenario, forecast };
+      const activeChannels = (Object.keys(activeSelectedChannels) as ChannelKey[]).filter((channel) => activeSelectedChannels[channel]);
+      const months = Array.from({ length: Math.min(12, snapPm) }, (_, index) => {
+        const date = new Date(activeAssumptions.startDate || assumptions.startDate);
+        date.setMonth(date.getMonth() + index);
+        const channelVolumes: Record<ChannelKey, number> = {
+          voice: voiceForecast[index] ?? 0,
+          email: emailForecast[index] ?? Math.round((voiceForecast[index] ?? 0) * CHANNEL_VOLUME_FACTORS.email),
+          chat: chatForecast[index] ?? Math.round((voiceForecast[index] ?? 0) * CHANNEL_VOLUME_FACTORS.chat),
+          cases: casesForecast[index] ?? Math.round((emailForecast[index] ?? 0) * CHANNEL_VOLUME_FACTORS.cases),
+        };
+        const totalVolume = activeChannels.reduce((sum, channel) => sum + channelVolumes[channel], 0);
+        return {
+          month: `${MONTH_NAMES[date.getMonth()]} ${date.getFullYear()}`,
+          totalVolume,
+          channelVolumes,
+        };
+      });
+      const volumes = months.map((month) => month.totalVolume);
+      const peakVolume = volumes.length > 0 ? Math.max(...volumes) : 0;
+      const peakMonth = months.find((month) => month.totalVolume === peakVolume)?.month ?? null;
+      const avgVolume = volumes.length > 0 ? Math.round(volumes.reduce((sum, value) => sum + value, 0) / volumes.length) : 0;
+      return { id: scenario.id, name: scenario.name, peakVolume, peakMonth, avgVolume, months };
     });
-    return Array.from({ length: 12 }, (_, index) => {
-      const point: Record<string, string | number> = { month: scenarioForecasts[0]?.forecast[index] ? `${scenarioForecasts[0].forecast[index].month} '${scenarioForecasts[0].forecast[index].year.slice(2)}` : `M${index + 1}` };
-      scenarioForecasts.forEach(({ scenario, forecast }) => { point[scenario.id] = forecast[index]?.totalRequiredFTE ?? 0; });
-      return point;
-    });
-  }, [scenarios, selectedScenarioId, assumptions, forecastMethod, hwParams, arimaParams, decompParams, selectedChannels, poolingMode, debouncedOverridesByChannel, historicalApiDataByChannel, finalHistoricalData]);
-  const scenarioColors = ["#2563eb", "#f59e0b", "#10b981", "#7c3aed", "#ef4444", "#0f766e"];
-  const poolExplainability = useMemo(() => selectedBlendConfig.pools.map((channels, index) => ({
-    poolName: `Pool ${String.fromCharCode(65 + index)}`,
-    channels,
-    averageWorkload: futureData.length > 0 ? Number((futureData.reduce((sum, row) => sum + (row.pools[index]?.workloadHours ?? 0), 0) / futureData.length).toFixed(1)) : 0,
-    averageFTE: futureData.length > 0 ? Number((futureData.reduce((sum, row) => sum + (row.pools[index]?.fte ?? 0), 0) / futureData.length).toFixed(1)) : 0,
-    isShared: channels.length > 1,
-  })), [futureData, selectedBlendConfig]);
-  const averageChannelMetrics = useMemo<Record<ChannelKey, { model: string; averageFTE: number; averageOccupancy: number }>>(() => ({
-    voice: {
-      model: getChannelModelLabel("voice"),
-      averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.voice.requiredFTE, 0) / futureData.length, 1) : 0,
-      averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.voice.requiredOccupancy, 0) / futureData.length, 1) : 0,
-    },
-    email: {
-      model: getChannelModelLabel("email"),
-      averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.email.requiredFTE, 0) / futureData.length, 1) : 0,
-      averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.email.requiredOccupancy, 0) / futureData.length, 1) : 0,
-    },
-    chat: {
-      model: getChannelModelLabel("chat"),
-      averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.chat.requiredFTE, 0) / futureData.length, 1) : 0,
-      averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.chat.requiredOccupancy, 0) / futureData.length, 1) : 0,
-    },
-    cases: {
-      model: getChannelModelLabel("cases"),
-      averageFTE: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.cases.requiredFTE, 0) / futureData.length, 1) : 0,
-      averageOccupancy: futureData.length > 0 ? roundTo(futureData.reduce((sum, row) => sum + row.channelMetrics.cases.requiredOccupancy, 0) / futureData.length, 1) : 0,
-    },
-  }), [futureData]);
-  const isChannelIncludedInBlend = (channel: ChannelKey) => includedChannels.includes(channel);
-  const channelAssumptionSummary = useMemo(() => [
-    {
-      key: "voice" as const,
-      label: CHANNEL_ASSUMPTION_META.voice.label,
-      isIncluded: isChannelIncludedInBlend("voice"),
-      modelRule: averageChannelMetrics.voice.model,
-      volumeRule: "Uses the voice historical series and active forecast method.",
-      ahtRule: `${assumptions.aht}s AHT`,
-      serviceRule: `Staffing uses SLA ${assumptions.voiceSlaTarget}% in ${assumptions.voiceSlaAnswerSeconds}s. ASA ${assumptions.voiceAsaTargetSeconds}s is stored on the page but not applied in this calculation.`,
-      workloadRule: "Volume x AHT / 3600",
-      staffingRule: isChannelIncludedInBlend("voice")
-        ? "Voice sets the base staffed seats. In shared pools, any idle voice capacity can absorb chat first and then email."
-        : "Erlang C finds the minimum staffed seats that satisfy the voice SLA target.",
-      occupancyRule: isChannelIncludedInBlend("voice")
-        ? `${averageChannelMetrics.voice.averageOccupancy}% required occupancy in the active plan`
-        : `${averageChannelMetrics.voice.averageOccupancy}% standalone required occupancy`,
-      fteRule: isChannelIncludedInBlend("voice")
-        ? `${averageChannelMetrics.voice.averageFTE} average FTE contribution in the active plan`
-        : `${averageChannelMetrics.voice.averageFTE} average standalone FTE`,
-    },
-    {
-      key: "email" as const,
-      label: CHANNEL_ASSUMPTION_META.email.label,
-      isIncluded: isChannelIncludedInBlend("email"),
-      modelRule: averageChannelMetrics.email.model,
-      volumeRule: hasExplicitHistoryByChannel.email ? "Uses channel historical series and forecast method" : "20% of voice forecast volume fallback",
-      ahtRule: `${assumptions.emailAht}s AHT`,
-      serviceRule: `Staffing uses a backlog window of ${assumptions.emailSlaTarget}% within ${assumptions.emailSlaAnswerSeconds}s. ASA ${assumptions.emailAsaTargetSeconds}s is stored on the page but not applied in this calculation.`,
-      workloadRule: "Base load = Volume x AHT / open hours; backlog load = daily workload x SLA% / response window",
-      staffingRule: isChannelIncludedInBlend("email")
-        ? "In shared pools, email only adds staff after remaining voice idle time and chat absorption are exhausted."
-        : "Agents = max(base workload seats, SLA backlog seats) before shrinkage and safety margin.",
-      occupancyRule: isChannelIncludedInBlend("email")
-        ? `${averageChannelMetrics.email.averageOccupancy}% required occupancy when email workload needs dedicated coverage`
-        : `${averageChannelMetrics.email.averageOccupancy}% standalone required occupancy`,
-      fteRule: isChannelIncludedInBlend("email")
-        ? `${averageChannelMetrics.email.averageFTE} average FTE equivalent before shared-pool offsets`
-        : `${averageChannelMetrics.email.averageFTE} average standalone FTE`,
-    },
-    {
-      key: "cases" as const,
-      label: CHANNEL_ASSUMPTION_META.cases.label,
-      isIncluded: isChannelIncludedInBlend("cases"),
-      modelRule: averageChannelMetrics.cases.model,
-      volumeRule: hasExplicitHistoryByChannel.cases ? "Uses channel historical series and forecast method" : "Email-style fallback volume",
-      ahtRule: `${assumptions.emailAht}s AHT`,
-      serviceRule: `Staffing uses the same backlog window as Email: ${assumptions.emailSlaTarget}% within ${assumptions.emailSlaAnswerSeconds}s. ASA ${assumptions.emailAsaTargetSeconds}s is stored on the page but not applied in this calculation.`,
-      workloadRule: "Shares the async backlog pool with Email and only uses remaining idle capacity after Voice and Chat",
-      staffingRule: isChannelIncludedInBlend("cases")
-        ? "Cases competes with Email for the remaining idle capacity after Voice and Chat."
-        : "Agents = max(base workload seats, SLA backlog seats) before shrinkage and safety margin.",
-      occupancyRule: isChannelIncludedInBlend("cases")
-        ? `${averageChannelMetrics.cases.averageOccupancy}% required occupancy when Cases needs dedicated coverage`
-        : `${averageChannelMetrics.cases.averageOccupancy}% standalone required occupancy`,
-      fteRule: isChannelIncludedInBlend("cases")
-        ? `${averageChannelMetrics.cases.averageFTE} average FTE equivalent before shared-pool offsets`
-        : `${averageChannelMetrics.cases.averageFTE} average standalone FTE`,
-    },
-    {
-      key: "chat" as const,
-      label: CHANNEL_ASSUMPTION_META.chat.label,
-      isIncluded: isChannelIncludedInBlend("chat"),
-      modelRule: averageChannelMetrics.chat.model,
-      volumeRule: hasExplicitHistoryByChannel.chat ? "Uses channel historical series and forecast method" : "30% of voice forecast volume fallback",
-      ahtRule: `${assumptions.chatAht}s AHT`,
-      serviceRule: `Staffing uses SLA ${assumptions.chatSlaTarget}% in ${assumptions.chatSlaAnswerSeconds}s with ${assumptions.chatConcurrency} concurrent chats. ASA ${assumptions.chatAsaTargetSeconds}s is stored on the page but not applied in this calculation.`,
-      workloadRule: `Volume x AHT / 3600 / ${assumptions.chatConcurrency} concurrency`,
-      staffingRule: isChannelIncludedInBlend("chat")
-        ? "In shared pools, chat workload is reduced by concurrency and then offset by available voice idle capacity before extra staff is added."
-        : `Modified Erlang C uses effective AHT = AHT / ${assumptions.chatConcurrency} concurrent chats.`,
-      occupancyRule: isChannelIncludedInBlend("chat")
-        ? `${averageChannelMetrics.chat.averageOccupancy}% required occupancy when chat still needs staffed coverage`
-        : `${averageChannelMetrics.chat.averageOccupancy}% standalone required occupancy`,
-      fteRule: isChannelIncludedInBlend("chat")
-        ? `${averageChannelMetrics.chat.averageFTE} average FTE equivalent before shared-pool offsets`
-        : `${averageChannelMetrics.chat.averageFTE} average standalone FTE`,
-    },
-  ], [assumptions.aht, assumptions.emailAht, assumptions.chatAht, assumptions.voiceSlaTarget, assumptions.voiceSlaAnswerSeconds, assumptions.voiceAsaTargetSeconds, assumptions.emailSlaTarget, assumptions.emailSlaAnswerSeconds, assumptions.emailAsaTargetSeconds, assumptions.chatSlaTarget, assumptions.chatSlaAnswerSeconds, assumptions.chatAsaTargetSeconds, hasExplicitHistoryByChannel, averageChannelMetrics, includedChannels]);
+  }, [scenarios, selectedScenarioId, assumptions, forecastMethod, hwParams, arimaParams, decompParams, selectedChannels, debouncedOverridesByChannel, historicalApiDataByChannel, finalHistoricalData]);
   const openHoursPerMonth = useMemo(() => Number(getOpenHoursPerMonth(assumptions).toFixed(1)), [assumptions]);
 
   // Helper component: display shrinkage sourced from Shrinkage Planner
@@ -2463,7 +2318,7 @@ export default function LongTermForecastingDemand() {
 
     const prompt =
 `You are a senior WFM demand planning advisor for a BPO contact center.
-Below is live demand forecast data. Write a concise executive-level insight narrative about DEMAND VOLUME ONLY — do not mention staffing, FTE, agents, or headcount anywhere in your response.
+Below is live demand forecast data. Write a concise executive-level insight narrative about DEMAND VOLUME ONLY. Keep the response strictly about volume, actuals, variance, re-cut forecast, trend, and seasonality.
 
 Format:
 - First line: the single most important headline takeaway for a VP or operations director (plain text, no markdown symbols)
@@ -2482,7 +2337,7 @@ Detected outliers: ${outlierStr}
 Scenarios: ${scenarioStr}
 Monthly volumes: ${monthlyVolumeList}
 
-Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/headcount language.`;
+Rules: cite specific months and numbers; no filler phrases; avoid capacity or headcount language.`;
 
     try {
       const resp = await fetch(apiUrl("/api/ai/chat"), {
@@ -2555,13 +2410,6 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
       "DVP": getCalculatedVolumesBase(voiceHistory, "arima", assumptions, hwParams, arimaParams, decompParams, pm),
       "CBE": getCalculatedVolumesBase(voiceHistory, "decomposition", assumptions, hwParams, arimaParams, decompParams, pm),
     } : null;
-    // Scenario comparison — peak and average FTE per scenario
-    const scenarioSummary = Object.values(scenarios).map((sc) => {
-      const scFuture = scenarioComparisonData.map((pt) => (pt[sc.id] as number) ?? 0);
-      const peak = Math.max(...scFuture);
-      const avg = scFuture.length > 0 ? Number((scFuture.reduce((s, v) => s + v, 0) / scFuture.length).toFixed(1)) : 0;
-      return { id: sc.id, name: sc.name, peakFTE: Number(peak.toFixed(1)), avgFTE: avg };
-    });
     setPageData({
       scenario: activeScenario?.name,
       forecastYear,
@@ -2578,7 +2426,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
         recutForecast: m.recutVol,
       })),
       allModelForecasts,
-      scenarioSummary,
+      scenarioSummary: scenarioDemandSummary,
       kpis,
       assumptions: {
         aht: assumptions.aht,
@@ -2602,7 +2450,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
       },
     });
     return () => setPageData(null);
-  }, [forecastYear, forecastMethod, detailChannel, activeScenario, historicalRowsByYear, allForecastMonths, kpis, assumptions, setPageData, effectiveFinalHistoricalDataByChannel, hwParams, arimaParams, decompParams, scenarios, scenarioComparisonData]);
+  }, [forecastYear, forecastMethod, detailChannel, activeScenario, historicalRowsByYear, allForecastMonths, kpis, assumptions, setPageData, effectiveFinalHistoricalDataByChannel, hwParams, arimaParams, decompParams, scenarioDemandSummary]);
 
   if (loading) return <PageLayout title="Long Term Forecasting  Demand"><div className="h-[60vh] flex flex-col items-center justify-center gap-4"><Loader2 className="size-12 text-primary animate-spin" /><p className="text-muted-foreground font-medium">Loading demand forecast data...</p></div></PageLayout>;
 
@@ -2616,7 +2464,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
               { label: "Historical Data",  id: "section-historical" },
               { label: "Assumptions",      id: "section-assumptions" },
               { label: "Forecast",         id: "section-charts" },
-              { label: "Demand Output",    id: "section-staffing-detail" },
+              { label: "Demand Output",    id: "section-demand-output" },
             ] as const).map((step, i, arr) => (
               <React.Fragment key={step.id}>
                 <button
@@ -3260,7 +3108,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                   {
                     label: "Explain This Forecast",
                     icon: <Sparkles className="h-3 w-3" />,
-                    prompt: `Analyze my demand forecast and tell me:\n1. Looking at the historical volumes and the projected months — does the forecast look reasonable, or are there months that appear over- or under-estimated?\n2. What does the shape of the forecast (trend direction, seasonality, peak and trough timing) tell me about what to expect operationally?\n3. What is the single biggest uncertainty I should flag to leadership?\nBe specific — use the actual months and FTE numbers from my plan.`,
+                    prompt: `Analyze my demand forecast and tell me:\n1. Looking at historical demand, actual volume, variance, re-cut forecast, and projected future volume — does the forecast look reasonable, or are there months that appear over- or under-estimated?\n2. What does the shape of the demand forecast (trend direction, seasonality, peak and trough timing) suggest about future volume?\n3. What is the single biggest volume uncertainty I should flag to leadership?\nBe specific — use the actual months and volume numbers from my plan.`,
                   },
                   {
                     label: "Audit My Assumptions",
@@ -3270,7 +3118,7 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                   {
                     label: "Compare My Scenarios",
                     icon: <LineChartIcon className="h-3 w-3" />,
-                    prompt: `Using my scenario data, answer:\n1. What is the FTE delta between the lowest and highest scenario at their peak month — name the specific month and number.\n2. Which assumption is driving the most variance between scenarios?\n3. If you had to bet on one scenario being closest to reality 12 months from now, which one and why?\nDon't be vague — use the actual scenario names and FTE numbers from my plan.`,
+                    prompt: `Using my demand scenario data, answer:\n1. What is the total volume delta between the lowest and highest scenario at their peak month — name the specific month and number.\n2. Which demand assumption or historical input appears to drive the most variance between scenarios?\n3. If you had to bet on one scenario being closest to actual demand 12 months from now, which one and why?\nDon't be vague — use the actual scenario names, months, and volume numbers from my plan.`,
                   },
                 ] as { label: string; icon: React.ReactNode; prompt: string }[]).map(({ label, icon, prompt }) => (
                   <Button
@@ -3289,54 +3137,13 @@ Rules: cite specific months and numbers; no filler phrases; no FTE/staffing/head
                 ))}
               </div>
 
-              {/* ── Four charts in 2×2 grid ───────────────────────────────── */}
+              {/* ── Demand charts ───────────────────────────────── */}
               <div id="section-charts" className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Monthly Volume Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Month-by-month YoY view comparing actual years against the forecast year.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={volumeTrendComparison.chartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tickLine={false} axisLine={false} interval={0} /><YAxis tickLine={false} axisLine={false} /><Tooltip formatter={(value, name) => [value == null ? "-" : Number(value).toLocaleString(), name]} /><Legend />{volumeTrendComparison.series.map((series) => <Line key={series.key} type="linear" dataKey={series.key} name={series.label} stroke={series.stroke} strokeOpacity={series.isForecast ? 0.98 : 0.72} strokeWidth={series.isForecast ? 3.5 : 2.25} strokeDasharray={series.isForecast ? "8 5" : undefined} dot={series.isForecast ? false : { r: 1.75, fill: series.stroke, fillOpacity: 0.75, stroke: "#ffffff", strokeWidth: 1 }} activeDot={{ r: 5, fill: series.stroke, stroke: "#ffffff", strokeWidth: 2 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Workload Trend</CardTitle><p className="text-xs text-foreground/60 mt-1">Pool workloads update with the current channel selection and pooling mode.</p></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><LineChart data={pooledWorkloadChartData}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend />{selectedBlendConfig.pools.map((_, index) => <Line key={`pool${index + 1}`} type="monotone" dataKey={`pool${index + 1}`} name={`Pool ${String.fromCharCode(65 + index)} Workload`} stroke={["#4f46e5", "#0f766e", "#dc2626"][index % 3]} strokeWidth={3} />)}<Line type="monotone" dataKey="totalWorkloadHours" name="Total Workload" stroke="#94a3b8" strokeDasharray="6 4" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></CardContent></Card>
                 <Card className="border border-border/50 shadow-md"><CardHeader className="border-b border-border/50 bg-muted/30"><CardTitle className="text-sm font-bold">Seasonality Trend</CardTitle></CardHeader><CardContent className="p-6 h-[300px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={seasonalityTrend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="label" tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Legend /><Bar dataKey="seasonalityIndex" name="Seasonality Index" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></CardContent></Card>
-                <Card className="border border-border/50 shadow-md">
-                  <CardHeader className="border-b border-border/50 bg-muted/30">
-                    <CardTitle className="text-sm font-bold">What-if Comparison</CardTitle>
-                    <p className="text-xs text-foreground/60 mt-1">Required FTE across all saved scenarios. Save a scenario to compare it here.</p>
-                  </CardHeader>
-                  <CardContent className="p-6 h-[300px]">
-                    {Object.keys(scenarios).length < 2 ? (
-                      <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
-                        <LineChartIcon className="size-8 text-muted-foreground/40" />
-                        <div>
-                          <p className="text-sm font-semibold text-muted-foreground">No what-ifs to compare yet</p>
-                          <p className="text-xs text-muted-foreground/70 mt-1">Save your current working state, then create a second scenario with different assumptions to see them side-by-side.</p>
-                        </div>
-                      </div>
-                    ) : (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={scenarioComparisonData}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                          <XAxis dataKey="month" tickLine={false} axisLine={false} />
-                          <YAxis tickLine={false} axisLine={false} tickFormatter={(v) => String(Math.round(v))} />
-                          <Tooltip formatter={(value, name) => [value == null ? "—" : Number(value).toFixed(1) + " FTE", name]} />
-                          <Legend />
-                          {Object.values(scenarios).map((sc, index) => (
-                            <Line
-                              key={sc.id}
-                              type="monotone"
-                              dataKey={sc.id}
-                              name={sc.name}
-                              stroke={scenarioColors[index % scenarioColors.length]}
-                              strokeWidth={sc.id === selectedScenarioId ? 3.5 : 2}
-                              strokeDasharray={sc.id === selectedScenarioId ? undefined : "5 3"}
-                              dot={false}
-                              isAnimationActive={false}
-                            />
-                          ))}
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
-                  </CardContent>
-                </Card>
               </div>
-              {/* ── Staffing detail — future months ──────────────────────────── */}
-              <Card id="section-staffing-detail" className="border border-border/50 shadow-lg bg-card">
+              {/* ── Demand output — future months ──────────────────────────── */}
+              <Card id="section-demand-output" className="border border-border/50 shadow-lg bg-card">
                 <CardHeader className="border-b border-border/50 bg-muted/50">
                   <div className="flex items-start justify-between gap-4 flex-wrap">
                     <div>
