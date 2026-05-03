@@ -950,10 +950,21 @@ app.post('/api/users', requireRole('super_admin', 'client_admin'), async (req, r
     ? parseInt(req.body.organization_id)
     : req.user.organization_id;
   try {
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const duplicate = await pool.query(
+      'SELECT id, email, full_name FROM users WHERE organization_id = $1 AND LOWER(email) = LOWER($2) LIMIT 1',
+      [orgId, normalizedEmail]
+    );
+    if (duplicate.rows[0]) {
+      const existing = duplicate.rows[0];
+      return res.status(409).json({
+        error: `A user already exists for ${existing.email}${existing.full_name ? ` (${existing.full_name})` : ''}`,
+      });
+    }
     const hash = await bcrypt.hash(password, 12);
     const result = await pool.query(
       'INSERT INTO users (organization_id, email, password_hash, full_name, role, must_change_password) VALUES ($1, $2, $3, $4, $5, true) RETURNING id, organization_id, email, full_name, role, is_active, created_at',
-      [orgId, email.toLowerCase().trim(), hash, full_name || null, role]
+      [orgId, normalizedEmail, hash, full_name || null, role]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -967,13 +978,29 @@ app.put('/api/users/:id', requireRole('super_admin', 'client_admin'), async (req
   const userId = parseInt(req.params.id);
   const { full_name, role, is_active } = req.body || {};
   try {
-    const existing = await pool.query('SELECT organization_id, role FROM users WHERE id = $1', [userId]);
+    const existing = await pool.query('SELECT organization_id, role, is_active FROM users WHERE id = $1', [userId]);
     if (!existing.rows[0]) return res.status(404).json({ error: 'User not found' });
     if (req.user.role !== 'super_admin' && existing.rows[0].organization_id !== req.user.organization_id) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     if (req.user.role === 'client_admin' && role && ['super_admin', 'client_admin'].includes(role)) {
       return res.status(403).json({ error: 'Client admins cannot assign super_admin or client_admin roles' });
+    }
+    if (userId === req.user.id && role && role !== 'super_admin') {
+      return res.status(400).json({ error: 'You cannot remove Super Admin from your own account' });
+    }
+    const removesActiveSuperAdmin =
+      existing.rows[0].role === 'super_admin' &&
+      existing.rows[0].is_active &&
+      ((role && role !== 'super_admin') || is_active === false);
+    if (removesActiveSuperAdmin) {
+      const count = await pool.query(
+        'SELECT COUNT(*)::int AS count FROM users WHERE organization_id = $1 AND role = $2 AND is_active = true',
+        [existing.rows[0].organization_id, 'super_admin']
+      );
+      if ((count.rows[0]?.count ?? 0) <= 1) {
+        return res.status(400).json({ error: 'At least one active Super Admin must remain' });
+      }
     }
     const updates = [];
     const values = [];
@@ -995,14 +1022,50 @@ app.put('/api/users/:id', requireRole('super_admin', 'client_admin'), async (req
   }
 });
 
+app.post('/api/users/:id/reset-password', requireRole('super_admin'), async (req, res) => {
+  const userId = parseInt(req.params.id);
+  const { password } = req.body || {};
+  if (!password || String(password).length < 8) {
+    return res.status(400).json({ error: 'Temporary password must be at least 8 characters' });
+  }
+  if (userId === req.user.id) {
+    return res.status(400).json({ error: 'Use My Account to change your own password' });
+  }
+  try {
+    const existing = await pool.query('SELECT id FROM users WHERE id = $1', [userId]);
+    if (!existing.rows[0]) return res.status(404).json({ error: 'User not found' });
+    const hash = await bcrypt.hash(String(password), 12);
+    const result = await pool.query(
+      `UPDATE users
+       SET password_hash = $1, must_change_password = true, updated_at = NOW()
+       WHERE id = $2
+       RETURNING id, organization_id, email, full_name, role, is_active, last_login_at, created_at`,
+      [hash, userId]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Reset user password error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.delete('/api/users/:id', requireRole('super_admin', 'client_admin'), async (req, res) => {
   const userId = parseInt(req.params.id);
   if (userId === req.user.id) return res.status(400).json({ error: 'Cannot deactivate your own account' });
   try {
-    const existing = await pool.query('SELECT organization_id FROM users WHERE id = $1', [userId]);
+    const existing = await pool.query('SELECT organization_id, role, is_active FROM users WHERE id = $1', [userId]);
     if (!existing.rows[0]) return res.status(404).json({ error: 'User not found' });
     if (req.user.role !== 'super_admin' && existing.rows[0].organization_id !== req.user.organization_id) {
       return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (existing.rows[0].role === 'super_admin' && existing.rows[0].is_active) {
+      const count = await pool.query(
+        'SELECT COUNT(*)::int AS count FROM users WHERE organization_id = $1 AND role = $2 AND is_active = true',
+        [existing.rows[0].organization_id, 'super_admin']
+      );
+      if ((count.rows[0]?.count ?? 0) <= 1) {
+        return res.status(400).json({ error: 'At least one active Super Admin must remain' });
+      }
     }
     await pool.query('UPDATE users SET is_active = false, updated_at = NOW() WHERE id = $1', [userId]);
     res.json({ ok: true });

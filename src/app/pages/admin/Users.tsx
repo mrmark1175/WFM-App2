@@ -17,7 +17,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "../../components/ui/select";
-import { UserPlus, Pencil, UserX, ChevronDown, ChevronUp, RefreshCw, Copy, Check } from "lucide-react";
+import { UserPlus, Pencil, UserX, ChevronDown, ChevronUp, RefreshCw, Copy, Check, KeyRound } from "lucide-react";
 
 const ROLE_DEFINITIONS: Record<UserRole, { label: string; description: string; can: string[]; cannot: string[] }> = {
   super_admin: {
@@ -69,6 +69,15 @@ interface UserRow {
   created_at: string;
 }
 
+interface AgentRow {
+  id: number;
+  email: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  full_name: string | null;
+  user_id: number | null;
+}
+
 const ASSIGNABLE_ROLES: { value: UserRole; label: string }[] = [
   { value: "rta", label: "RTA" },
   { value: "supervisor", label: "Supervisor" },
@@ -89,6 +98,7 @@ function formatDate(iso: string | null) {
 export function UsersPage() {
   const { user: me, hasRole } = useAuth();
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [agents, setAgents] = useState<AgentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [rolesOpen, setRolesOpen] = useState(false);
@@ -100,6 +110,15 @@ export function UsersPage() {
   const [addLoading, setAddLoading] = useState(false);
   const [showAddPassword, setShowAddPassword] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [addNameTouched, setAddNameTouched] = useState(false);
+
+  // Reset password dialog
+  const [resetUser, setResetUser] = useState<UserRow | null>(null);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetError, setResetError] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(true);
+  const [resetCopied, setResetCopied] = useState(false);
 
   // Edit user dialog
   const [editUser, setEditUser] = useState<UserRow | null>(null);
@@ -125,13 +144,67 @@ export function UsersPage() {
     }
   }
 
-  useEffect(() => { fetchUsers(); }, []);
+  async function fetchAgents() {
+    try {
+      const res = await fetch(apiUrl("/api/scheduling/agents"), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load agents");
+      const data = await res.json();
+      setAgents(Array.isArray(data) ? data : []);
+    } catch {
+      setAgents([]);
+    }
+  }
 
-  function generatePassword() {
+  useEffect(() => {
+    fetchUsers();
+    fetchAgents();
+  }, []);
+
+  const normalizedAddEmail = addForm.email.trim().toLowerCase();
+  const normalizedAddName = addForm.full_name.trim().toLowerCase();
+  const existingUserWithEmail = normalizedAddEmail
+    ? users.find(u => u.email.trim().toLowerCase() === normalizedAddEmail)
+    : undefined;
+  const existingUsersWithName = normalizedAddName
+    ? users.filter(u => (u.full_name || "").trim().toLowerCase() === normalizedAddName)
+    : [];
+  const matchingRosterAgent = normalizedAddEmail
+    ? agents.find(a => (a.email || "").trim().toLowerCase() === normalizedAddEmail)
+    : undefined;
+  const matchingRosterName = matchingRosterAgent
+    ? (matchingRosterAgent.full_name || [matchingRosterAgent.first_name, matchingRosterAgent.last_name].filter(Boolean).join(" ")).trim()
+    : "";
+
+  function handleAddEmailChange(email: string) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const matchedAgent = agents.find(a => (a.email || "").trim().toLowerCase() === normalizedEmail);
+    const matchedName = matchedAgent
+      ? (matchedAgent.full_name || [matchedAgent.first_name, matchedAgent.last_name].filter(Boolean).join(" ")).trim()
+      : "";
+    setAddForm(f => ({
+      ...f,
+      email,
+      full_name: matchedName && !addNameTouched ? matchedName : f.full_name,
+    }));
+  }
+
+  function resetAddUserDialog() {
+    setAddForm({ email: "", full_name: "", password: "", role: "read_only" });
+    setShowAddPassword(false);
+    setCopied(false);
+    setAddError("");
+    setAddNameTouched(false);
+  }
+
+  function makeTemporaryPassword() {
     const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%";
     const array = new Uint8Array(14);
     crypto.getRandomValues(array);
-    const pw = Array.from(array, b => charset[b % charset.length]).join("");
+    return Array.from(array, b => charset[b % charset.length]).join("");
+  }
+
+  function generatePassword() {
+    const pw = makeTemporaryPassword();
     setAddForm(f => ({ ...f, password: pw }));
     setShowAddPassword(true);
     setCopied(false);
@@ -144,9 +217,60 @@ export function UsersPage() {
     });
   }
 
+  function openResetPassword(user: UserRow) {
+    setResetUser(user);
+    setResetPassword(makeTemporaryPassword());
+    setResetError("");
+    setResetLoading(false);
+    setShowResetPassword(true);
+    setResetCopied(false);
+  }
+
+  function generateResetPassword() {
+    setResetPassword(makeTemporaryPassword());
+    setShowResetPassword(true);
+    setResetCopied(false);
+  }
+
+  function copyResetPassword() {
+    navigator.clipboard.writeText(resetPassword).then(() => {
+      setResetCopied(true);
+      setTimeout(() => setResetCopied(false), 2000);
+    });
+  }
+
+  async function handleResetPassword(e: React.FormEvent) {
+    e.preventDefault();
+    if (!resetUser) return;
+    setResetError("");
+    setResetLoading(true);
+    try {
+      const res = await fetch(apiUrl(`/api/users/${resetUser.id}/reset-password`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ password: resetPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setResetError(data.error || "Failed to reset password"); return; }
+      setResetUser(null);
+      setResetPassword("");
+      setResetCopied(false);
+      await fetchUsers();
+    } catch {
+      setResetError("Network error");
+    } finally {
+      setResetLoading(false);
+    }
+  }
+
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setAddError("");
+    if (existingUserWithEmail) {
+      setAddError(`A user already exists for ${existingUserWithEmail.email}${existingUserWithEmail.full_name ? ` (${existingUserWithEmail.full_name})` : ""}.`);
+      return;
+    }
     setAddLoading(true);
     try {
       const res = await fetch(apiUrl("/api/users"), {
@@ -158,9 +282,7 @@ export function UsersPage() {
       const data = await res.json();
       if (!res.ok) { setAddError(data.error || "Failed to create user"); return; }
       setAddOpen(false);
-      setAddForm({ email: "", full_name: "", password: "", role: "read_only" });
-      setShowAddPassword(false);
-      setCopied(false);
+      resetAddUserDialog();
       await fetchUsers();
     } catch {
       setAddError("Network error");
@@ -204,6 +326,25 @@ export function UsersPage() {
       await fetchUsers();
     } finally {
       setDeactivateLoading(false);
+    }
+  }
+
+  async function handleActivate(user: UserRow) {
+    try {
+      const res = await fetch(apiUrl(`/api/users/${user.id}`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ is_active: true }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error || "Failed to activate user");
+        return;
+      }
+      await fetchUsers();
+    } catch {
+      setError("Network error");
     }
   }
 
@@ -255,16 +396,42 @@ export function UsersPage() {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{formatDate(u.last_login_at)}</td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex flex-wrap items-center justify-end gap-1.5">
                           <Button
                             variant="ghost" size="icon"
                             onClick={() => { setEditUser(u); setEditForm({ full_name: u.full_name || "", role: u.role }); }}
+                            title="Edit user"
                           >
                             <Pencil className="size-3.5" />
                           </Button>
-                          {u.id !== me?.id && u.is_active && (
-                            <Button variant="ghost" size="icon" onClick={() => setDeactivateUser(u)}>
-                              <UserX className="size-3.5 text-destructive" />
+                          {hasRole("super_admin") && u.id !== me?.id && (
+                            <Button variant="ghost" size="icon" onClick={() => openResetPassword(u)} title="Reset password">
+                              <KeyRound className="size-3.5" />
+                            </Button>
+                          )}
+                          {u.id === me?.id ? (
+                            <Button variant="outline" size="sm" className="h-8 text-xs" disabled>
+                              Current user
+                            </Button>
+                          ) : u.is_active ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8 gap-1.5 border-destructive/30 text-destructive hover:bg-destructive/10"
+                              onClick={() => setDeactivateUser(u)}
+                            >
+                              <UserX className="size-3.5" />
+                              Deactivate
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8 gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                              onClick={() => handleActivate(u)}
+                            >
+                              <Check className="size-3.5" />
+                              Activate
                             </Button>
                           )}
                         </div>
@@ -328,7 +495,7 @@ export function UsersPage() {
         </div>
 
         {/* Add User Dialog */}
-        <Dialog open={addOpen} onOpenChange={v => { setAddOpen(v); if (!v) { setAddForm({ email: "", full_name: "", password: "", role: "read_only" }); setShowAddPassword(false); setCopied(false); setAddError(""); } }}>
+        <Dialog open={addOpen} onOpenChange={v => { setAddOpen(v); if (!v) resetAddUserDialog(); }}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Add User</DialogTitle>
@@ -336,11 +503,33 @@ export function UsersPage() {
             <form onSubmit={handleAdd} className="space-y-4">
               <div className="space-y-1.5">
                 <Label>Full Name</Label>
-                <Input value={addForm.full_name} onChange={e => setAddForm(f => ({ ...f, full_name: e.target.value }))} placeholder="Jane Cruz" />
+                <Input
+                  value={addForm.full_name}
+                  onChange={e => { setAddNameTouched(true); setAddForm(f => ({ ...f, full_name: e.target.value })); }}
+                  placeholder="Jane Cruz"
+                />
+                {matchingRosterName && (
+                  <p className="text-xs text-emerald-700">Matched roster agent: {matchingRosterName}</p>
+                )}
+                {existingUsersWithName.length > 0 && !existingUserWithEmail && (
+                  <p className="text-xs text-amber-700">
+                    A user with this name already exists. Confirm the email before creating another login.
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label>Email *</Label>
-                <Input type="email" required value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))} placeholder="jane@company.com" />
+                <Input type="email" required value={addForm.email} onChange={e => handleAddEmailChange(e.target.value)} placeholder="jane@company.com" />
+                {existingUserWithEmail && (
+                  <p className="text-xs text-destructive">
+                    This email already belongs to {existingUserWithEmail.full_name || existingUserWithEmail.email}.
+                  </p>
+                )}
+                {matchingRosterAgent?.user_id && !existingUserWithEmail && (
+                  <p className="text-xs text-amber-700">
+                    This roster agent is already linked to a user login. Check Agent Roster before creating another account.
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label>Temporary Password *</Label>
@@ -389,7 +578,7 @@ export function UsersPage() {
               {addError && <p className="text-sm text-destructive">{addError}</p>}
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-                <Button type="submit" disabled={addLoading}>{addLoading ? "Creating…" : "Create User"}</Button>
+                <Button type="submit" disabled={addLoading || !!existingUserWithEmail}>{addLoading ? "Creating..." : "Create User"}</Button>
               </DialogFooter>
             </form>
           </DialogContent>
@@ -408,18 +597,74 @@ export function UsersPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>Role</Label>
-                <Select value={editForm.role} onValueChange={v => setEditForm(f => ({ ...f, role: v as UserRole }))}>
+                <Select
+                  value={editForm.role}
+                  onValueChange={v => setEditForm(f => ({ ...f, role: v as UserRole }))}
+                  disabled={editUser?.id === me?.id && editUser?.role === "super_admin"}
+                >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {availableRoles.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">{ROLE_DEFINITIONS[editForm.role].description}</p>
+                {editUser?.id === me?.id && editUser?.role === "super_admin" && (
+                  <p className="text-xs text-amber-700">Your own Super Admin role cannot be removed.</p>
+                )}
               </div>
               {editError && <p className="text-sm text-destructive">{editError}</p>}
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setEditUser(null)}>Cancel</Button>
                 <Button type="submit" disabled={editLoading}>{editLoading ? "Saving…" : "Save Changes"}</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Reset Password Dialog */}
+        <Dialog open={!!resetUser} onOpenChange={v => { if (!v) setResetUser(null); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Reset Password - {resetUser?.email}</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleResetPassword} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label>Temporary Password *</Label>
+                <div className="flex gap-1.5">
+                  <div className="relative flex-1">
+                    <Input
+                      type={showResetPassword ? "text" : "password"}
+                      required
+                      minLength={8}
+                      value={resetPassword}
+                      onChange={e => { setResetPassword(e.target.value); setResetCopied(false); }}
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowResetPassword(v => !v)}
+                      className="absolute inset-y-0 right-2.5 flex items-center text-muted-foreground hover:text-foreground"
+                      tabIndex={-1}
+                    >
+                      {showResetPassword
+                        ? <svg xmlns="http://www.w3.org/2000/svg" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                        : <svg xmlns="http://www.w3.org/2000/svg" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      }
+                    </button>
+                  </div>
+                  <Button type="button" variant="outline" size="icon" onClick={generateResetPassword} title="Generate password">
+                    <RefreshCw className="size-3.5" />
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={copyResetPassword} disabled={!resetPassword} title="Copy password">
+                    {resetCopied ? <Check className="size-3.5 text-green-600" /> : <Copy className="size-3.5" />}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">The user must set a new password on next login.</p>
+              </div>
+              {resetError && <p className="text-sm text-destructive">{resetError}</p>}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setResetUser(null)}>Cancel</Button>
+                <Button type="submit" disabled={resetLoading}>{resetLoading ? "Resetting..." : "Reset Password"}</Button>
               </DialogFooter>
             </form>
           </DialogContent>
