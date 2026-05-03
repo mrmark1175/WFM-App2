@@ -2632,8 +2632,9 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
             </CardContent>
           </Card>
 
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_304px] gap-6 items-start">
           {/* ── Unified Historical + Forecast Detail Table ───────────────── */}
-          <Card id="section-historical" className="border border-primary/15 shadow-md overflow-hidden">
+          <Card id="section-historical" className="order-1 min-w-0 border border-primary/15 shadow-md overflow-hidden">
             <CardHeader className="bg-muted/40 border-b border-border/50">
               <div className="space-y-4">
                 {/* Title row */}
@@ -3099,8 +3100,8 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
               })()}
             </CardContent>
           </Card>
-          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_304px] gap-6 items-start">
-            <div className="space-y-6">
+          <div className="contents">
+            <div className="order-3 xl:order-2 xl:col-span-2 min-w-0 space-y-6">
               {/* ── Ask Mark AI actions ──────────────────────────────────── */}
               <div className="flex items-center gap-2 flex-wrap px-1">
                 <span className="text-[11px] font-black uppercase tracking-widest text-muted-foreground mr-1">Ask Mark</span>
@@ -3211,7 +3212,7 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
                 </CardContent>
               </Card>
             </div>
-            <div id="section-assumptions" className="xl:sticky xl:top-[180px]">
+            <div id="section-assumptions" className="order-2 xl:order-1 xl:col-start-2 xl:row-start-1 xl:sticky xl:top-[180px]">
               <Card className="border border-border/80 shadow-xl overflow-hidden">
                 <CardHeader className="border-b border-border/50 bg-[#171717] text-white py-4">
                   <div className="flex items-center justify-between">
@@ -3336,6 +3337,7 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
                 </div>
               </div>
             </div>
+          </div>
           </div>
         </div>
       </PageLayout>
