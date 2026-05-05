@@ -76,6 +76,9 @@ interface WeekCalc extends WeekMeta {
   reqRawAgents: number | null;      // per-interval physical agents before shrinkage/coverage
   reqAfterShrinkFte: number | null; // per-interval schedulable FTE after shrinkage
   reqCoverageRatio: number | null;  // opHoursPerDay / fteHoursPerDay
+  flatRequiredFTE: number;
+  distributionSource: DistributionSource;
+  requiredStaffedHours: number;
 }
 
 interface DaySchedule { enabled: boolean; open: string; close: string; }
@@ -150,8 +153,30 @@ interface RequiredFteChannelSummary {
   daysPerWeek: number;
   operatingHoursPerDay: number;
   fteHoursPerDay: number;
+  fteWorkdaysPerWeek: number;
   shrinkagePct: number;
+  distributionSource: DistributionSource;
+  currentFlatFte: number;
+  currentStaffedHours: number;
 }
+
+interface DistributionProfile {
+  id: number;
+  channel: string;
+  profile_name: string;
+  interval_weights: number[][];
+  day_weights: number[];
+}
+
+interface InteractionArrivalRecord {
+  interval_date: string;
+  interval_index: number;
+  volume: number;
+  aht?: number;
+  channel: string;
+}
+
+type DistributionSource = "intraday-based" | "saved-profile-fallback" | "default-fallback-distribution" | "configuration-needed";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -169,6 +194,11 @@ const DEFAULT_CONFIG: PlanConfig = {
 };
 
 const CHANNEL_LABELS: Record<ChannelKey, string> = { voice: "Voice", chat: "Chat", email: "Email", cases: "Cases" };
+const CHANNELS: ChannelKey[] = ["voice", "chat", "email", "cases"];
+const DOW_KEYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const CAPACITY_INTERVAL_MINUTES = 30;
+const CAPACITY_INTERVALS_PER_DAY = 48;
+const DEFAULT_DOW_WEIGHTS = [1, 1, 1, 1, 0.9, 0.55, 0.45];
 const FIELD_MAP: Record<string, string> = {
   volVoice: "vol_override_voice", volChat: "vol_override_chat", volEmail: "vol_override_email", volCases: "vol_override_cases",
   ahtVoice: "aht_override_voice", ahtChat: "aht_override_chat", ahtEmail: "aht_override_email", ahtCases: "aht_override_cases",
@@ -181,6 +211,182 @@ const FIELD_MAP: Record<string, string> = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtDate(d: Date): string { return `${MONTHS[d.getMonth()]} ${d.getDate()}`; }
+function fmtISODate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function addDays(date: Date, days: number): Date {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function getWeekStartDate(planStartDate: string, weekOffset: number): Date {
+  const monday = getMondayOf(new Date(planStartDate + "T00:00:00"));
+  return addDays(monday, weekOffset * 7);
+}
+
+function emptyIntervalGrid(): number[][] {
+  return Array.from({ length: 7 }, () => new Array(CAPACITY_INTERVALS_PER_DAY).fill(0));
+}
+
+function parseTimeMinutes(t: string | undefined): number {
+  const [h, m] = String(t || "00:00").split(":").map(Number);
+  return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
+}
+
+function isIntervalOpen(schedule: Record<string, DaySchedule> | undefined, dayIndex: number, intervalIndex: number): boolean {
+  const day = schedule?.[DOW_KEYS[dayIndex]];
+  if (!day?.enabled) return false;
+  const open = parseTimeMinutes(day.open);
+  const close = parseTimeMinutes(day.close);
+  const start = intervalIndex * CAPACITY_INTERVAL_MINUTES;
+  if (open === close) return true;
+  if (close > open) return start >= open && start < close;
+  return start >= open || start < close;
+}
+
+function buildOperatingMask(schedule: Record<string, DaySchedule> | undefined): boolean[][] {
+  return Array.from({ length: 7 }, (_, d) =>
+    Array.from({ length: CAPACITY_INTERVALS_PER_DAY }, (_, i) => isIntervalOpen(schedule, d, i))
+  );
+}
+
+function maskWeightGrid(weights: number[][], schedule: Record<string, DaySchedule> | undefined): number[][] {
+  const mask = buildOperatingMask(schedule);
+  return mask.map((dayMask, d) => dayMask.map((open, i) => open ? Number(weights[d]?.[i] ?? 0) : 0));
+}
+
+function normalizeVolumeGrid(weeklyVolume: number, weights: number[][]): number[][] {
+  const total = weights.reduce((sum, row) => sum + row.reduce((s, v) => s + Math.max(0, Number(v) || 0), 0), 0);
+  const grid = emptyIntervalGrid();
+  if (weeklyVolume <= 0 || total <= 0) return grid;
+
+  let largest = { d: 0, i: 0, value: -1 };
+  let distributed = 0;
+  for (let d = 0; d < 7; d++) {
+    for (let i = 0; i < CAPACITY_INTERVALS_PER_DAY; i++) {
+      const weight = Math.max(0, Number(weights[d]?.[i] ?? 0) || 0);
+      const value = weeklyVolume * weight / total;
+      grid[d][i] = value;
+      distributed += value;
+      if (value > largest.value) largest = { d, i, value };
+    }
+  }
+  grid[largest.d][largest.i] += weeklyVolume - distributed;
+  return grid;
+}
+
+function recordsToWeightGrid(records: InteractionArrivalRecord[], weekStart: Date, schedule: Record<string, DaySchedule> | undefined): number[][] | null {
+  const dateToDay = new Map<string, number>();
+  for (let d = 0; d < 7; d++) dateToDay.set(fmtISODate(addDays(weekStart, d)), d);
+  const weights = emptyIntervalGrid();
+  for (const r of records) {
+    const dateStr = String(r.interval_date || "").split("T")[0];
+    const dayIndex = dateToDay.get(dateStr);
+    if (dayIndex == null) continue;
+    const rawIndex = Number(r.interval_index);
+    if (!Number.isFinite(rawIndex) || rawIndex < 0) continue;
+    const intervalIndex = rawIndex >= CAPACITY_INTERVALS_PER_DAY ? Math.floor(rawIndex / 2) : Math.floor(rawIndex);
+    if (intervalIndex < 0 || intervalIndex >= CAPACITY_INTERVALS_PER_DAY) continue;
+    weights[dayIndex][intervalIndex] += Math.max(0, Number(r.volume) || 0);
+  }
+  const masked = maskWeightGrid(weights, schedule);
+  const total = masked.reduce((sum, row) => sum + row.reduce((s, v) => s + v, 0), 0);
+  return total > 0 ? masked : null;
+}
+
+function profileToWeightGrid(profile: DistributionProfile | undefined, schedule: Record<string, DaySchedule> | undefined): number[][] | null {
+  if (!profile?.day_weights?.length || !profile.interval_weights?.length) return null;
+  const weights = emptyIntervalGrid();
+  for (let d = 0; d < 7; d++) {
+    const dayWeight = Math.max(0, Number(profile.day_weights[d] ?? 0) || 0);
+    const intervals = profile.interval_weights[d] ?? [];
+    for (let i = 0; i < CAPACITY_INTERVALS_PER_DAY; i++) {
+      if (intervals.length >= 96) {
+        weights[d][i] = dayWeight * (Math.max(0, Number(intervals[i * 2] ?? 0) || 0) + Math.max(0, Number(intervals[i * 2 + 1] ?? 0) || 0));
+      } else {
+        weights[d][i] = dayWeight * Math.max(0, Number(intervals[i] ?? 0) || 0);
+      }
+    }
+  }
+  const masked = maskWeightGrid(weights, schedule);
+  const total = masked.reduce((sum, row) => sum + row.reduce((s, v) => s + v, 0), 0);
+  return total > 0 ? masked : null;
+}
+
+function defaultFallbackWeightGrid(schedule: Record<string, DaySchedule> | undefined): number[][] {
+  const mask = buildOperatingMask(schedule);
+  const weights = emptyIntervalGrid();
+  for (let d = 0; d < 7; d++) {
+    const openSlots = mask[d].map((open, i) => open ? i : -1).filter(i => i >= 0);
+    if (!openSlots.length) continue;
+    const center = openSlots.reduce((sum, i) => sum + i, 0) / openSlots.length;
+    const sigma = Math.max(1.5, openSlots.length / 4);
+    for (const i of openSlots) {
+      const z = (i - center) / sigma;
+      weights[d][i] = DEFAULT_DOW_WEIGHTS[d] * Math.exp(-0.5 * z * z);
+    }
+  }
+  return weights;
+}
+
+function uniformOperatingWeightGrid(schedule: Record<string, DaySchedule> | undefined): number[][] {
+  const mask = buildOperatingMask(schedule);
+  return mask.map(day => day.map(open => open ? 1 : 0));
+}
+
+function buildAverageSchedule(daysPerWeek: number, hoursPerDay: number): Record<string, DaySchedule> {
+  const days = Math.max(0, Math.min(7, Math.round(daysPerWeek)));
+  const hours = Math.max(0.5, Math.min(24, hoursPerDay));
+  const open = 8 * 60;
+  const close = hours >= 24 ? open : (open + Math.round(hours * 60)) % (24 * 60);
+  const closeText = hours >= 24
+    ? "08:00"
+    : `${String(Math.floor(close / 60)).padStart(2, "0")}:${String(close % 60).padStart(2, "0")}`;
+  return Object.fromEntries(DOW_KEYS.map((day, i) => [
+    day,
+    { enabled: i < days, open: "08:00", close: closeText },
+  ])) as Record<string, DaySchedule>;
+}
+
+function buildDistributedVolumeGrid(
+  weeklyVolume: number,
+  weekStart: Date,
+  schedule: Record<string, DaySchedule> | undefined,
+  records: InteractionArrivalRecord[] | undefined,
+  profile: DistributionProfile | undefined,
+): { grid: number[][]; source: DistributionSource } {
+  const intradayWeights = recordsToWeightGrid(records ?? [], weekStart, schedule);
+  if (intradayWeights) return { grid: normalizeVolumeGrid(weeklyVolume, intradayWeights), source: "intraday-based" };
+
+  const profileWeights = profileToWeightGrid(profile, schedule);
+  if (profileWeights) return { grid: normalizeVolumeGrid(weeklyVolume, profileWeights), source: "saved-profile-fallback" };
+
+  const fallbackWeights = defaultFallbackWeightGrid(schedule);
+  const fallbackTotal = fallbackWeights.reduce((sum, row) => sum + row.reduce((s, v) => s + v, 0), 0);
+  if (fallbackTotal > 0 || weeklyVolume <= 0) {
+    return { grid: normalizeVolumeGrid(weeklyVolume, fallbackWeights), source: "default-fallback-distribution" };
+  }
+
+  const uniformWeights = uniformOperatingWeightGrid(schedule);
+  const uniformTotal = uniformWeights.reduce((sum, row) => sum + row.reduce((s, v) => s + v, 0), 0);
+  if (uniformTotal > 0) {
+    return { grid: normalizeVolumeGrid(weeklyVolume, uniformWeights), source: "default-fallback-distribution" };
+  }
+
+  return { grid: emptyIntervalGrid(), source: "configuration-needed" };
+}
+
+function bestDistributionSource(sources: DistributionSource[]): DistributionSource {
+  if (sources.includes("intraday-based")) return "intraday-based";
+  if (sources.includes("saved-profile-fallback")) return "saved-profile-fallback";
+  if (sources.includes("configuration-needed")) return "configuration-needed";
+  return "default-fallback-distribution";
+}
 
 // Derive operating days/hours from a channel's hours-of-operation schedule.
 // Returns null when no schedule is configured so callers can fall back.
@@ -278,6 +484,13 @@ function fmtSeconds(s: number): string {
   if (s >= 3600) return `${roundTo(s / 3600, 1)}h`;
   if (s >= 60) return `${Math.round(s / 60)}m`;
   return `${s}s`;
+}
+
+function distributionSourceLabel(source: DistributionSource): string {
+  if (source === "intraday-based") return "Intraday arrival pattern";
+  if (source === "saved-profile-fallback") return "Saved profile fallback";
+  if (source === "configuration-needed") return "Operating hours need configuration";
+  return "Default fallback distribution";
 }
 
 function normalizePlanConfig(raw: Partial<PlanConfig> | null | undefined): PlanConfig {
@@ -539,6 +752,171 @@ function calcWeeklyBlendedFTE(
   }
 
   return empty;
+}
+
+function convertStaffedHoursToFte(staffedHours: number, fteHoursPerDay: number, fteWorkdaysPerWeek: number, shrinkagePct: number): number {
+  const weeklyProductiveHours = Math.max(0.01, fteHoursPerDay * fteWorkdaysPerWeek);
+  const shrinkFactor = Math.max(0.01, 1 - shrinkagePct / 100);
+  return staffedHours / weeklyProductiveHours / shrinkFactor;
+}
+
+function calcIntervalizedDedicatedFTE(
+  volumeGrid: number[][],
+  ahtSeconds: number,
+  fteHoursPerDay: number,
+  fteWorkdaysPerWeek: number,
+  shrinkagePct: number,
+  channel: "voice" | "chat" | "email",
+  slaTarget: number,
+  slaAnswerSeconds: number,
+  concurrency = 1,
+  emailOccupancyPct = 85,
+): { fte: number; fteRaw: number; staffedHours: number; occupancy: number; rawAgentsAvg: number } {
+  let staffedHours = 0;
+  let weightedOccupancy = 0;
+  let totalVolume = 0;
+  let rawAgentSum = 0;
+  let intervalCount = 0;
+  for (const day of volumeGrid) {
+    for (const calls of day) {
+      if (calls <= 0 || ahtSeconds <= 0) continue;
+      const result = computeIntervalFTE(
+        calls, CAPACITY_INTERVAL_MINUTES, ahtSeconds,
+        slaTarget, slaAnswerSeconds, emailOccupancyPct,
+        0, channel, concurrency, 0,
+      );
+      staffedHours += result.rawAgents * (CAPACITY_INTERVAL_MINUTES / 60);
+      rawAgentSum += result.rawAgents;
+      intervalCount += 1;
+      weightedOccupancy += result.occupancy * calls;
+      totalVolume += calls;
+    }
+  }
+  const fteRaw = convertStaffedHoursToFte(staffedHours, fteHoursPerDay, fteWorkdaysPerWeek, shrinkagePct);
+  return {
+    fte: ceilTo(fteRaw),
+    fteRaw,
+    staffedHours,
+    occupancy: totalVolume > 0 ? weightedOccupancy / totalVolume : 0,
+    rawAgentsAvg: intervalCount > 0 ? rawAgentSum / intervalCount : 0,
+  };
+}
+
+function calcBlendedIntervalRawAgents(
+  voiceCPI: number, voiceAht: number,
+  chatCPI: number, chatAht: number,
+  emailCPI: number, emailAht: number,
+  slaVoiceTarget: number,
+  slaVoiceSec: number,
+  slaChatTarget: number,
+  slaChatSec: number,
+  emailOccupancyPct: number,
+  chatConcurrency: number,
+  taskSwitchMultiplier = 1.05,
+): { rawAgents: number; occupancy: number; voiceRawAgents: number; chatRawAgents: number } {
+  const safeConcurrency = Math.max(1, chatConcurrency);
+  const rhoMax = Math.max(0.01, Math.min(1, emailOccupancyPct / 100));
+  const intervalHours = CAPACITY_INTERVAL_MINUTES / 60;
+  const effectiveEmailAht = emailAht * taskSwitchMultiplier;
+
+  if (voiceCPI > 0 && voiceAht > 0) {
+    const vr = computeIntervalFTE(voiceCPI, CAPACITY_INTERVAL_MINUTES, voiceAht, slaVoiceTarget, slaVoiceSec, 85, 0, "voice", 1, 0);
+    const voiceRawAgents = vr.rawAgents;
+    const voiceWorkloadHours = voiceCPI * voiceAht / 3600;
+    const voiceOccupancy = voiceRawAgents > 0 ? voiceWorkloadHours / (voiceRawAgents * intervalHours) : 0;
+    const voiceUsableIdleHours = Math.max(0, voiceRawAgents * intervalHours * (rhoMax - voiceOccupancy));
+
+    let chatExtraAgents = 0;
+    if (chatCPI > 0 && chatAht > 0) {
+      const cr = computeIntervalFTE(chatCPI, CAPACITY_INTERVAL_MINUTES, chatAht, slaChatTarget, slaChatSec, 85, 0, "chat", safeConcurrency, 0);
+      chatExtraAgents = cr.rawAgents;
+    }
+
+    const emailWorkloadHours = emailCPI * effectiveEmailAht / 3600;
+    const netEmailWorkload = Math.max(0, emailWorkloadHours - voiceUsableIdleHours);
+    const emailExtraAgents = rhoMax > 0 ? netEmailWorkload / (rhoMax * intervalHours) : 0;
+    return {
+      rawAgents: voiceRawAgents + chatExtraAgents + emailExtraAgents,
+      occupancy: vr.occupancy,
+      voiceRawAgents,
+      chatRawAgents: chatExtraAgents,
+    };
+  }
+
+  if (chatCPI > 0 && chatAht > 0) {
+    const cr = computeIntervalFTE(chatCPI, CAPACITY_INTERVAL_MINUTES, chatAht, slaChatTarget, slaChatSec, 85, 0, "chat", safeConcurrency, 0);
+    const chatRawAgents = cr.rawAgents;
+    const chatPhysicalWorkloadHours = chatCPI * chatAht / (3600 * safeConcurrency);
+    const chatOccupancy = chatRawAgents > 0 ? chatPhysicalWorkloadHours / (chatRawAgents * intervalHours) : 0;
+    const chatUsableIdleHours = Math.max(0, chatRawAgents * intervalHours * (rhoMax - chatOccupancy));
+    const emailWorkloadHours = emailCPI * effectiveEmailAht / 3600;
+    const netEmailWorkload = Math.max(0, emailWorkloadHours - chatUsableIdleHours);
+    const emailExtraAgents = rhoMax > 0 ? netEmailWorkload / (rhoMax * intervalHours) : 0;
+    return {
+      rawAgents: chatRawAgents + emailExtraAgents,
+      occupancy: cr.occupancy,
+      voiceRawAgents: 0,
+      chatRawAgents,
+    };
+  }
+
+  if (emailCPI > 0 && emailAht > 0) {
+    const er = computeIntervalFTE(emailCPI, CAPACITY_INTERVAL_MINUTES, emailAht, 0, 0, emailOccupancyPct, 0, "email");
+    return { rawAgents: er.rawAgents, occupancy: er.occupancy, voiceRawAgents: 0, chatRawAgents: 0 };
+  }
+
+  return { rawAgents: 0, occupancy: 0, voiceRawAgents: 0, chatRawAgents: 0 };
+}
+
+function calcIntervalizedBlendedFTE(
+  voiceGrid: number[][], voiceAht: number,
+  chatGrid: number[][], chatAht: number,
+  emailGrid: number[][], emailAht: number,
+  fteHoursPerDay: number,
+  fteWorkdaysPerWeek: number,
+  shrinkagePct: number,
+  slaVoiceTarget: number,
+  slaVoiceSec: number,
+  slaChatTarget: number,
+  slaChatSec: number,
+  emailOccupancyPct: number,
+  chatConcurrency: number,
+  taskSwitchMultiplier = 1.05,
+): { fte: number; fteRaw: number; staffedHours: number; occupancy: number; rawAgentsAvg: number } {
+  let staffedHours = 0;
+  let rawAgentSum = 0;
+  let intervalCount = 0;
+  let weightedOccupancy = 0;
+  let liveVolume = 0;
+  for (let d = 0; d < 7; d++) {
+    for (let i = 0; i < CAPACITY_INTERVALS_PER_DAY; i++) {
+      const voiceCPI = voiceGrid[d]?.[i] ?? 0;
+      const chatCPI = chatGrid[d]?.[i] ?? 0;
+      const emailCPI = emailGrid[d]?.[i] ?? 0;
+      if (voiceCPI <= 0 && chatCPI <= 0 && emailCPI <= 0) continue;
+      const result = calcBlendedIntervalRawAgents(
+        voiceCPI, voiceAht,
+        chatCPI, chatAht,
+        emailCPI, emailAht,
+        slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec,
+        emailOccupancyPct, chatConcurrency, taskSwitchMultiplier,
+      );
+      staffedHours += result.rawAgents * (CAPACITY_INTERVAL_MINUTES / 60);
+      rawAgentSum += result.rawAgents;
+      intervalCount += 1;
+      const realTimeVolume = voiceCPI + chatCPI;
+      weightedOccupancy += result.occupancy * realTimeVolume;
+      liveVolume += realTimeVolume;
+    }
+  }
+  const fteRaw = convertStaffedHoursToFte(staffedHours, fteHoursPerDay, fteWorkdaysPerWeek, shrinkagePct);
+  return {
+    fte: ceilTo(fteRaw),
+    fteRaw,
+    staffedHours,
+    occupancy: liveVolume > 0 ? weightedOccupancy / liveVolume : 0,
+    rawAgentsAvg: intervalCount > 0 ? rawAgentSum / intervalCount : 0,
+  };
 }
 
 function calcRampPct(ageWeeks: number, trainWks: number, nestWks: number, nestPct: number): number {
@@ -856,7 +1234,10 @@ export function CapacityPlanning() {
   const [plannerSnapshot, setPlannerSnapshot] = useState<CapacityPlannerSnapshot | null>(null);
   const [lobSettings, setLobSettings] = useState<LobSettings | null>(null);
   const [hoursPerDay, setHoursPerDay] = useState(7.5);
+  const [fteWorkdaysPerWeek, setFteWorkdaysPerWeek] = useState(5);
   const [computedShrinkagePct, setComputedShrinkagePct] = useState<number | null>(null);
+  const [intradayRecordsByChannel, setIntradayRecordsByChannel] = useState<Partial<Record<ChannelKey, InteractionArrivalRecord[]>>>({});
+  const [profilesByChannel, setProfilesByChannel] = useState<Partial<Record<ChannelKey, DistributionProfile>>>({});
   const [activeChannel, setActiveChannel] = useState<ChannelKey>("voice");
   const [assumptionsOpen, setAssumptionsOpen] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -873,7 +1254,7 @@ export function CapacityPlanning() {
   const isDedicated = lobSettings?.pooling_mode === "dedicated";
   const enabledChannels = useMemo<ChannelKey[]>(() => {
     if (!lobSettings?.channels_enabled) return ["voice"];
-    return (["voice", "chat", "email", "cases"] as ChannelKey[]).filter(c => lobSettings.channels_enabled[c]);
+    return CHANNELS.filter(c => lobSettings.channels_enabled[c]);
   }, [lobSettings]);
   const apiChannel = isDedicated ? activeChannel : "blended";
 
@@ -994,6 +1375,8 @@ export function CapacityPlanning() {
 
       if (shrData?.hours_per_day) setHoursPerDay(parseFloat(shrData.hours_per_day));
       else setHoursPerDay(7.5);
+      if (shrData?.days_per_week) setFteWorkdaysPerWeek(parseFloat(shrData.days_per_week));
+      else setFteWorkdaysPerWeek(5);
 
       // Compute shrinkage % from the itemized shrinkage plan — same formula as
       // ShrinkagePlanning.tsx. Uses totalExcl (holidays excluded) to match what
@@ -1247,6 +1630,47 @@ export function CapacityPlanning() {
   // ── Computed weeks
   const weeks = useMemo(() => buildWeeks(config.planStartDate, config.horizonWeeks), [config.planStartDate, config.horizonWeeks]);
 
+  useEffect(() => {
+    if (!activeLob || weeks.length === 0 || enabledChannels.length === 0) {
+      setIntradayRecordsByChannel({});
+      setProfilesByChannel({});
+      return;
+    }
+
+    let cancelled = false;
+    const start = getWeekStartDate(config.planStartDate, 0);
+    const end = addDays(getWeekStartDate(config.planStartDate, Math.max(0, config.horizonWeeks - 1)), 6);
+    const startDate = fmtISODate(start);
+    const endDate = fmtISODate(end);
+
+    Promise.all(enabledChannels.map(async channel => {
+      const [arrivalRes, profileRes] = await Promise.all([
+        fetch(apiUrl(`/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}&channel=${channel}&lob_id=${activeLob.id}`))
+          .then(r => r.ok ? r.json() : [])
+          .catch(() => []),
+        fetch(apiUrl(`/api/distribution-profiles?lob_id=${activeLob.id}&channel=${channel}`))
+          .then(r => r.ok ? r.json() : [])
+          .catch(() => []),
+      ]);
+      return {
+        channel,
+        records: Array.isArray(arrivalRes) ? arrivalRes as InteractionArrivalRecord[] : [],
+        profile: Array.isArray(profileRes) && profileRes.length > 0 ? profileRes[0] as DistributionProfile : undefined,
+      };
+    })).then(entries => {
+      if (cancelled) return;
+      setIntradayRecordsByChannel(Object.fromEntries(entries.map(e => [e.channel, e.records])) as Partial<Record<ChannelKey, InteractionArrivalRecord[]>>);
+      setProfilesByChannel(Object.fromEntries(entries.filter(e => e.profile).map(e => [e.channel, e.profile])) as Partial<Record<ChannelKey, DistributionProfile>>);
+    }).catch(() => {
+      if (!cancelled) {
+        setIntradayRecordsByChannel({});
+        setProfilesByChannel({});
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [activeLob?.id, weeks.length, enabledChannels, config.planStartDate, config.horizonWeeks]);
+
   // ── Monthly forecast arrays from demand planner snapshot (captures seasonality)
   const forecastedMonthlyVols = useMemo<{ voice: number[]; chat: number[]; email: number[]; cases: number[] } | null>(() => {
     if (!plannerSnapshot) return null;
@@ -1370,7 +1794,7 @@ export function CapacityPlanning() {
   const snap = plannerSnapshot?.assumptions;
   const defaultFteModel = useMemo<FteModelSnapshot>(() => ({
     operatingHoursPerDay: defaultOperatingHoursPerDay,
-    daysPerWeek: defaultDaysPerWeek,
+    daysPerWeek: fteWorkdaysPerWeek,
     fteHoursPerDay: hoursPerDay,
     shrinkagePct: defaultShrinkagePct,
     voiceAht: defaultAhts.voice,
@@ -1386,7 +1810,7 @@ export function CapacityPlanning() {
     emailOccupancy: Number(lobSettings?.email_occupancy ?? snap?.occupancy ?? 85) || 85,
     chatConcurrency: Math.max(1, Number(lobSettings?.chat_concurrency ?? snap?.chatConcurrency ?? 2)),
     taskSwitchMultiplier: Number(lobSettings?.task_switch_multiplier ?? snap?.taskSwitchMultiplier ?? 1.05) || 1.05,
-  }), [defaultOperatingHoursPerDay, defaultDaysPerWeek, hoursPerDay, defaultShrinkagePct, defaultAhts, lobSettings, snap]);
+  }), [defaultOperatingHoursPerDay, fteWorkdaysPerWeek, hoursPerDay, defaultShrinkagePct, defaultAhts, lobSettings, snap]);
 
   const fteModel = fteModelOverride ?? defaultFteModel;
   const autoAhts = useMemo(() => ({
@@ -1396,7 +1820,8 @@ export function CapacityPlanning() {
     cases: fteModel.casesAht,
   }), [fteModel]);
   const shrinkagePct = fteModel.shrinkagePct;
-  const daysPerWeek = fteModel.daysPerWeek;
+  const daysPerWeek = defaultDaysPerWeek;
+  const effectiveFteWorkdaysPerWeek = fteModel.daysPerWeek;
   const operatingHoursPerDay = fteModel.operatingHoursPerDay;
   const effectiveFteHoursPerDay = fteModel.fteHoursPerDay;
   const slaVoiceTarget = fteModel.voiceSlaTarget;
@@ -1430,12 +1855,25 @@ export function CapacityPlanning() {
       const effAhtEmail = inp.ahtEmail != null ? inp.ahtEmail : autoAhts.email;
       const effAhtCases = inp.ahtCases != null ? inp.ahtCases : autoAhts.cases;
 
+      const weekStart = getWeekStartDate(config.planStartDate, w);
+      const fallbackSchedule = buildAverageSchedule(daysPerWeek, operatingHoursPerDay);
+      const channelSchedule = (channel: ChannelKey) => lobSettings?.hours_of_operation?.[channel] ?? fallbackSchedule;
+      const distributed = {
+        voice: buildDistributedVolumeGrid(effVolVoice, weekStart, channelSchedule("voice"), intradayRecordsByChannel.voice, profilesByChannel.voice),
+        chat: buildDistributedVolumeGrid(effVolChat, weekStart, channelSchedule("chat"), intradayRecordsByChannel.chat, profilesByChannel.chat),
+        email: buildDistributedVolumeGrid(effVolEmail, weekStart, channelSchedule("email"), intradayRecordsByChannel.email, profilesByChannel.email),
+        cases: buildDistributedVolumeGrid(effVolCases, weekStart, channelSchedule("cases"), intradayRecordsByChannel.cases, profilesByChannel.cases),
+      };
+
       // Required FTE via Erlang C — occupancy is an OUTPUT, SLA drives the agent count.
       let requiredFTE = 0;
+      let flatRequiredFTE = 0;
       let erlangOccupancy = 0;
       let reqRawAgents: number | null = null;
       let reqAfterShrinkFte: number | null = null;
       let reqCoverageRatio: number | null = null;
+      let distributionSource: DistributionSource = "default-fallback-distribution";
+      let requiredStaffedHours = 0;
       if (isDedicated) {
         const vol = activeChannel === "voice" ? effVolVoice : activeChannel === "chat" ? effVolChat : activeChannel === "cases" ? effVolCases : effVolEmail;
         const aht = activeChannel === "voice" ? effAhtVoice : activeChannel === "chat" ? effAhtChat : activeChannel === "cases" ? effAhtCases : effAhtEmail;
@@ -1445,11 +1883,19 @@ export function CapacityPlanning() {
         // cases uses the email (backlog/deferred) model
         const modelChannel: "voice" | "chat" | "email" = activeChannel === "voice" ? "voice" : activeChannel === "chat" ? "chat" : "email";
         const r = calcWeeklyErlangFTE(vol, aht, daysPerWeek, operatingHoursPerDay, effectiveFteHoursPerDay, target, sec, shrinkagePct, modelChannel, conc, emailOccupancy);
-        requiredFTE = r.fte;
-        erlangOccupancy = r.occupancy;
-        reqRawAgents = r.rawAgents;
-        reqAfterShrinkFte = r.afterShrinkFte;
+        const intervalized = calcIntervalizedDedicatedFTE(
+          distributed[activeChannel].grid, aht, effectiveFteHoursPerDay, effectiveFteWorkdaysPerWeek,
+          shrinkagePct, modelChannel, target, sec, conc, emailOccupancy,
+        );
+        flatRequiredFTE = r.fte;
+        requiredFTE = intervalized.fte;
+        if (distributed[activeChannel].source === "configuration-needed" && vol > 0) requiredFTE = r.fte;
+        erlangOccupancy = intervalized.occupancy || r.occupancy;
+        reqRawAgents = intervalized.rawAgentsAvg;
+        reqAfterShrinkFte = intervalized.fteRaw;
         reqCoverageRatio = r.coverageRatio;
+        distributionSource = distributed[activeChannel].source;
+        requiredStaffedHours = intervalized.staffedHours;
       } else {
         // Blended: dominant real-time channel sets the Erlang C base; idle capacity
         // absorbs the next channel, then email/cases async.
@@ -1467,11 +1913,31 @@ export function CapacityPlanning() {
           daysPerWeek, operatingHoursPerDay, effectiveFteHoursPerDay,
           slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, emailOccupancy, shrinkagePct, chatConcurrency, taskSwitchMultiplier,
         );
-        requiredFTE = r.fte;
-        erlangOccupancy = r.occupancy;
-        reqRawAgents = r.rawAgents;
-        reqAfterShrinkFte = r.afterShrinkFte;
+        const blendedEmailGrid = emptyIntervalGrid();
+        for (let d = 0; d < 7; d++) {
+          for (let i = 0; i < CAPACITY_INTERVALS_PER_DAY; i++) {
+            blendedEmailGrid[d][i] =
+              (enabledChannels.includes("email") ? distributed.email.grid[d]?.[i] ?? 0 : 0) +
+              (enabledChannels.includes("cases") ? distributed.cases.grid[d]?.[i] ?? 0 : 0);
+          }
+        }
+        const intervalized = calcIntervalizedBlendedFTE(
+          enabledChannels.includes("voice") ? distributed.voice.grid : emptyIntervalGrid(), effAhtVoice,
+          enabledChannels.includes("chat") ? distributed.chat.grid : emptyIntervalGrid(), effAhtChat,
+          blendedEmailGrid, blendedEmailAht,
+          effectiveFteHoursPerDay, effectiveFteWorkdaysPerWeek, shrinkagePct,
+          slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec,
+          emailOccupancy, chatConcurrency, taskSwitchMultiplier,
+        );
+        flatRequiredFTE = r.fte;
+        requiredFTE = intervalized.fte;
+        if (bestDistributionSource(enabledChannels.map(ch => distributed[ch].source)) === "configuration-needed" && blendedEmailVol + (enabledChannels.includes("voice") ? effVolVoice : 0) + (enabledChannels.includes("chat") ? effVolChat : 0) > 0) requiredFTE = r.fte;
+        erlangOccupancy = intervalized.occupancy || r.occupancy;
+        reqRawAgents = intervalized.rawAgentsAvg;
+        reqAfterShrinkFte = intervalized.fteRaw;
         reqCoverageRatio = r.coverageRatio;
+        distributionSource = bestDistributionSource(enabledChannels.map(ch => distributed[ch].source));
+        requiredStaffedHours = intervalized.staffedHours;
       }
 
       // Attrition decay
@@ -1563,16 +2029,16 @@ export function CapacityPlanning() {
         autoAhtVoice: autoAhts.voice, autoAhtChat: autoAhts.chat, autoAhtEmail: autoAhts.email, autoAhtCases: autoAhts.cases,
         effAhtVoice, effAhtChat, effAhtEmail, effAhtCases,
         projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
-        reqRawAgents, reqAfterShrinkFte, reqCoverageRatio,
+        reqRawAgents, reqAfterShrinkFte, reqCoverageRatio, flatRequiredFTE, distributionSource, requiredStaffedHours,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
         knownExits, transfersOut, promotionsOut, projectedHc: modelProjHC, actualHc, actualAttrition,
         gapSurplus, actualGapSurplus, billableGapSurplus, achievedSLAProj, achievedSLAActual,
       };
     });
   }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, effectiveFteHoursPerDay,
-      shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
+      effectiveFteWorkdaysPerWeek, shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
-      emailOccupancy, chatConcurrency, taskSwitchMultiplier]);
+      emailOccupancy, chatConcurrency, taskSwitchMultiplier, lobSettings, intradayRecordsByChannel, profilesByChannel]);
 
   // ── What-if comparison — re-project HC for each what-if using its configSnapshot
   const dedicatedRequiredFteSummary = useMemo<RequiredFteChannelSummary[]>(() => {
@@ -1601,22 +2067,33 @@ export function CapacityPlanning() {
         const channelHours = fteModelOverride ? null : hoursFromSchedule(lobSettings?.hours_of_operation?.[channel]);
         const channelDaysPerWeek = channelHours?.daysPerWeek ?? daysPerWeek;
         const channelOperatingHours = channelHours?.hoursPerDay ?? operatingHoursPerDay;
-        const required = calcWeeklyErlangFTE(
+        const flatRequired = calcWeeklyErlangFTE(
           volume, aht, channelDaysPerWeek, channelOperatingHours, effectiveFteHoursPerDay,
           target, sec, shrinkagePct, modelChannel, conc, emailOccupancy,
         );
+        const weekStart = getWeekStartDate(config.planStartDate, w);
+        const schedule = lobSettings?.hours_of_operation?.[channel] ?? buildAverageSchedule(channelDaysPerWeek, channelOperatingHours);
+        const distributed = buildDistributedVolumeGrid(volume, weekStart, schedule, intradayRecordsByChannel[channel], profilesByChannel[channel]);
+        const required = calcIntervalizedDedicatedFTE(
+          distributed.grid, aht, effectiveFteHoursPerDay, effectiveFteWorkdaysPerWeek,
+          shrinkagePct, modelChannel, target, sec, conc, emailOccupancy,
+        );
+        const fte = distributed.source === "configuration-needed" && volume > 0 ? flatRequired.fte : required.fte;
 
         return {
-          fte: required.fte,
+          fte,
           volume,
           aht,
-          occupancy: required.occupancy,
+          occupancy: required.occupancy || flatRequired.occupancy,
           daysPerWeek: channelDaysPerWeek,
           operatingHoursPerDay: channelOperatingHours,
+          distributionSource: distributed.source,
+          flatFte: flatRequired.fte,
+          staffedHours: required.staffedHours,
         };
       });
 
-      const current = channelWeeks[0] ?? { fte: 0, volume: 0, aht: autoAhts[channel], occupancy: 0, daysPerWeek, operatingHoursPerDay };
+      const current = channelWeeks[0] ?? { fte: 0, volume: 0, aht: autoAhts[channel], occupancy: 0, daysPerWeek, operatingHoursPerDay, distributionSource: "default-fallback-distribution" as DistributionSource, flatFte: 0, staffedHours: 0 };
       return {
         channel,
         currentFte: current.fte,
@@ -1629,13 +2106,18 @@ export function CapacityPlanning() {
         daysPerWeek: current.daysPerWeek,
         operatingHoursPerDay: current.operatingHoursPerDay,
         fteHoursPerDay: effectiveFteHoursPerDay,
+        fteWorkdaysPerWeek: effectiveFteWorkdaysPerWeek,
         shrinkagePct,
+        distributionSource: current.distributionSource,
+        currentFlatFte: current.flatFte,
+        currentStaffedHours: current.staffedHours,
       };
     });
   }, [isDedicated, enabledChannels, weeks, autoBaseVolumes, activeChannel, weeklyInputs, dedicatedInputsByChannel, autoAhts,
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
       chatConcurrency, fteModelOverride, lobSettings, daysPerWeek, operatingHoursPerDay,
-      effectiveFteHoursPerDay, shrinkagePct, emailOccupancy]);
+      effectiveFteHoursPerDay, effectiveFteWorkdaysPerWeek, shrinkagePct, emailOccupancy, config.planStartDate,
+      intradayRecordsByChannel, profilesByChannel]);
 
   const dedicatedRequiredFteTotal = useMemo(() => ({
     current: roundTo(dedicatedRequiredFteSummary.reduce((sum, item) => sum + item.currentFte, 0), 1),
@@ -1791,6 +2273,9 @@ export function CapacityPlanning() {
     // ── Staffing Requirements
     rows.push(["--- STAFFING REQUIREMENTS ---", ...weekCalcs.map(() => "")]);
     rows.push(row("Weekly Required FTE Estimate", weekCalcs.map(wk => roundTo(wk.requiredFTE, 1))));
+    rows.push(row("Previous Flat Estimate Comparison", weekCalcs.map(wk => roundTo(wk.flatRequiredFTE, 1))));
+    rows.push(row("Distribution Source", weekCalcs.map(wk => distributionSourceLabel(wk.distributionSource))));
+    rows.push(row("Required Staffed Hours", weekCalcs.map(wk => roundTo(wk.requiredStaffedHours, 1))));
     rows.push(row("Proj. Occupancy %", weekCalcs.map(wk => roundTo(wk.projOccupancyPct, 1))));
     rows.push(row("Proj. Shrinkage %", weekCalcs.map(wk => roundTo(wk.projShrinkagePct, 1))));
 
@@ -1840,6 +2325,7 @@ export function CapacityPlanning() {
       horizonWeeks: config.horizonWeeks,
       shrinkagePct,
       hoursPerDay: effectiveFteHoursPerDay,
+      fteWorkdaysPerWeek: effectiveFteWorkdaysPerWeek,
       assumptions: demandAssumptions ? {
         aht: demandAssumptions.aht,
         chatAht: demandAssumptions.chatAht,
@@ -1863,7 +2349,7 @@ export function CapacityPlanning() {
       })),
     });
     return () => setPageData(null);
-  }, [activeChannel, config, shrinkagePct, effectiveFteHoursPerDay, demandAssumptions, hiringNeed, attritionSummary, weekCalcs, setPageData]);
+  }, [activeChannel, config, shrinkagePct, effectiveFteHoursPerDay, effectiveFteWorkdaysPerWeek, demandAssumptions, hiringNeed, attritionSummary, weekCalcs, setPageData]);
 
   const TOP_WEEK_HDR  = 0;
   const TOP_REQ_FTE   = 40;
@@ -2047,7 +2533,7 @@ export function CapacityPlanning() {
               <div className="grid grid-cols-2 gap-x-3 gap-y-3 md:grid-cols-4 xl:grid-cols-8 mb-3 rounded-md border border-slate-200 bg-slate-50/60 p-3">
                 {([
                   ["Op. Hrs/Day", "operatingHoursPerDay", 0.5],
-                  ["Days/Week", "daysPerWeek", 1],
+                  ["FTE Workdays/Wk", "daysPerWeek", 1],
                   ["FTE Hrs/Day", "fteHoursPerDay", 0.25],
                   ["Shrinkage %", "shrinkagePct", 0.1],
                   ["Voice AHT", "voiceAht", 1],
@@ -2139,7 +2625,7 @@ export function CapacityPlanning() {
             <div>
               <CardTitle className="text-sm font-semibold">Weekly Required FTE Coverage Estimate</CardTitle>
               <p className="mt-1 text-xs text-black">
-                This is a weekly average-load planning estimate based on configured demand, AHT, operating hours, productive hours, and shrinkage. It is not interval-by-interval schedule validation.
+                This is an intervalized weekly planning estimate based on configured demand, AHT, operating windows, productive hours, FTE workdays, and shrinkage. It is not final schedule validation.
               </p>
             </div>
             <Badge variant="outline" className="border-slate-300 text-black">
@@ -2153,7 +2639,10 @@ export function CapacityPlanning() {
               Pooling: <span className="font-semibold">{isDedicated ? "Dedicated per enabled channel" : "Pooled across enabled channels"}</span>
             </span>
             <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
-              Days/week: <span className="font-semibold">{daysPerWeek}</span>
+              Operating days/week: <span className="font-semibold">{fmt1(daysPerWeek)}</span>
+            </span>
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              FTE workdays/week: <span className="font-semibold">{fmt1(effectiveFteWorkdaysPerWeek)}</span>
             </span>
             <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
               Op. hours/day: <span className="font-semibold">{fmt1(operatingHoursPerDay)}h</span>
@@ -2167,7 +2656,15 @@ export function CapacityPlanning() {
             <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
               Enabled: <span className="font-semibold">{enabledChannels.map(ch => CHANNEL_LABELS[ch]).join(", ") || "None"}</span>
             </span>
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              Distribution: <span className="font-semibold">{distributionSourceLabel(weekCalcs[0]?.distributionSource ?? "default-fallback-distribution")}</span>
+            </span>
           </div>
+          {weekCalcs[0]?.distributionSource === "configuration-needed" && (
+            <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Operating days or hours are not configured for this demand pattern. The page is showing the previous flat estimate until valid operating intervals are available.
+            </div>
+          )}
 
           {isDedicated ? (
             <>
@@ -2184,12 +2681,16 @@ export function CapacityPlanning() {
                     <div className="mt-1 text-[11px] text-black">
                       Weekly estimate for {weekCalcs[0] ? weekCalcs[0].label : "current week"} - peak {fmt1(item.peakFte)}
                     </div>
+                    <div className="mt-1 text-[10px] text-slate-500">
+                      Previous flat estimate comparison: {fmt1(item.currentFlatFte)}
+                    </div>
                     <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-black">
                       <span>Volume</span><span className="text-right font-medium">{Math.round(item.currentVolume).toLocaleString()}</span>
                       <span>AHT</span><span className="text-right font-medium">{fmt1(item.aht)}s</span>
                       <span>Service</span><span className="text-right font-medium">{item.slaTarget}% in {fmtSeconds(item.slaSec)}</span>
                       <span>Occupancy</span><span className="text-right font-medium">{fmtPct(item.occupancy)}</span>
                       <span>Ops</span><span className="text-right font-medium">{item.daysPerWeek}d - {fmt1(item.operatingHoursPerDay)}h</span>
+                      <span>Source</span><span className="text-right font-medium">{distributionSourceLabel(item.distributionSource)}</span>
                     </div>
                   </div>
                 ))}
@@ -2214,6 +2715,12 @@ export function CapacityPlanning() {
                   <div className="text-xs font-semibold text-black">Pooled Blended Weekly Required FTE Estimate</div>
                   <p className="mt-1 text-xs text-black">
                     One shared pool across enabled channels only. Disabled channels do not contribute to the pooled requirement.
+                  </p>
+                  <p className="mt-1 text-[11px] text-black">
+                    Source: {distributionSourceLabel(weekCalcs[0]?.distributionSource ?? "default-fallback-distribution")}
+                  </p>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Previous flat estimate comparison: {weekCalcs[0] ? fmt1(weekCalcs[0].flatRequiredFTE) : "-"} FTE
                   </p>
                 </div>
                 <div className="text-right">
