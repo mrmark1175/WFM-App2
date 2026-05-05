@@ -138,6 +138,21 @@ interface FteModelSnapshot {
   taskSwitchMultiplier: number;
 }
 
+interface RequiredFteChannelSummary {
+  channel: ChannelKey;
+  currentFte: number;
+  peakFte: number;
+  currentVolume: number;
+  aht: number;
+  slaTarget: number;
+  slaSec: number;
+  occupancy: number;
+  daysPerWeek: number;
+  operatingHoursPerDay: number;
+  fteHoursPerDay: number;
+  shrinkagePct: number;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -302,6 +317,31 @@ function normalizeFteModelSnapshot(raw: Partial<FteModelSnapshot> | null | undef
     chatConcurrency: Math.max(1, Number(raw.chatConcurrency ?? 2)),
     taskSwitchMultiplier: Number(raw.taskSwitchMultiplier ?? 1.05),
   };
+}
+
+function parseWeekInputsRows(rows: Array<Record<string, any>>): WeekInputMap {
+  const map: WeekInputMap = {};
+  for (const row of rows) {
+    map[row.week_offset] = {
+      plannedHires: row.planned_hires != null ? parseFloat(row.planned_hires) : undefined,
+      knownExits: row.known_exits != null ? parseFloat(row.known_exits) : undefined,
+      transfersOut: row.transfers_out != null ? parseFloat(row.transfers_out) : undefined,
+      transfersOutNote: row.transfers_out_note ?? undefined,
+      promotionsOut: row.promotions_out != null ? parseFloat(row.promotions_out) : undefined,
+      promotionsOutNote: row.promotions_out_note ?? undefined,
+      actualHc: row.actual_hc != null ? parseFloat(row.actual_hc) : null,
+      actualAttrition: row.actual_attrition != null ? parseFloat(row.actual_attrition) : null,
+      volVoice: row.vol_override_voice != null ? parseFloat(row.vol_override_voice) : null,
+      volChat: row.vol_override_chat != null ? parseFloat(row.vol_override_chat) : null,
+      volEmail: row.vol_override_email != null ? parseFloat(row.vol_override_email) : null,
+      volCases: row.vol_override_cases != null ? parseFloat(row.vol_override_cases) : null,
+      ahtVoice: row.aht_override_voice != null ? parseFloat(row.aht_override_voice) : null,
+      ahtChat: row.aht_override_chat != null ? parseFloat(row.aht_override_chat) : null,
+      ahtEmail: row.aht_override_email != null ? parseFloat(row.aht_override_email) : null,
+      ahtCases: row.aht_override_cases != null ? parseFloat(row.aht_override_cases) : null,
+    };
+  }
+  return map;
 }
 
 function getMondayOf(date: Date): Date {
@@ -811,6 +851,7 @@ export function CapacityPlanning() {
   // ── Local state
   const [config, setConfig] = useState<PlanConfig>(DEFAULT_CONFIG);
   const [weeklyInputs, setWeeklyInputs] = useState<WeekInputMap>({});
+  const [dedicatedInputsByChannel, setDedicatedInputsByChannel] = useState<Partial<Record<ChannelKey, WeekInputMap>>>({});
   const [demandAssumptions, setDemandAssumptions] = useState<DemandAssumptions | null>(null);
   const [plannerSnapshot, setPlannerSnapshot] = useState<CapacityPlannerSnapshot | null>(null);
   const [lobSettings, setLobSettings] = useState<LobSettings | null>(null);
@@ -836,6 +877,12 @@ export function CapacityPlanning() {
   }, [lobSettings]);
   const apiChannel = isDedicated ? activeChannel : "blended";
 
+  useEffect(() => {
+    if (!isDedicated || enabledChannels.length === 0 || enabledChannels.includes(activeChannel)) return;
+    dataLoadedFor.current = null;
+    setActiveChannel(enabledChannels[0]);
+  }, [isDedicated, enabledChannels, activeChannel]);
+
   // ── Load data when LOB or channel changes
   useEffect(() => {
     if (!activeLob) return;
@@ -844,6 +891,29 @@ export function CapacityPlanning() {
     dataLoadedFor.current = key;
     loadAllData(activeLob.id, apiChannel);
   }, [activeLob?.id, apiChannel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!activeLob || !isDedicated || enabledChannels.length === 0) {
+      setDedicatedInputsByChannel({});
+      return;
+    }
+
+    let cancelled = false;
+    Promise.all(enabledChannels.map(async channel => {
+      const res = await fetch(apiUrl(`/api/capacity-plan-inputs?lob_id=${activeLob.id}&channel=${channel}`));
+      const rows = await res.json();
+      return [channel, Array.isArray(rows) ? parseWeekInputsRows(rows) : {}] as const;
+    }))
+      .then(entries => {
+        if (cancelled) return;
+        setDedicatedInputsByChannel(Object.fromEntries(entries) as Partial<Record<ChannelKey, WeekInputMap>>);
+      })
+      .catch(() => {
+        if (!cancelled) setDedicatedInputsByChannel({});
+      });
+
+    return () => { cancelled = true; };
+  }, [activeLob?.id, isDedicated, enabledChannels]);
 
   async function loadAllData(lobId: number, channel: string) {
     setLoading(true);
@@ -903,28 +973,7 @@ export function CapacityPlanning() {
       }
 
       if (Array.isArray(inputsData)) {
-        const map: WeekInputMap = {};
-        for (const row of inputsData) {
-          map[row.week_offset] = {
-            plannedHires: row.planned_hires != null ? parseFloat(row.planned_hires) : undefined,
-            knownExits: row.known_exits != null ? parseFloat(row.known_exits) : undefined,
-            transfersOut: row.transfers_out != null ? parseFloat(row.transfers_out) : undefined,
-            transfersOutNote: row.transfers_out_note ?? undefined,
-            promotionsOut: row.promotions_out != null ? parseFloat(row.promotions_out) : undefined,
-            promotionsOutNote: row.promotions_out_note ?? undefined,
-            actualHc: row.actual_hc != null ? parseFloat(row.actual_hc) : null,
-            actualAttrition: row.actual_attrition != null ? parseFloat(row.actual_attrition) : null,
-            volVoice: row.vol_override_voice != null ? parseFloat(row.vol_override_voice) : null,
-            volChat: row.vol_override_chat != null ? parseFloat(row.vol_override_chat) : null,
-            volEmail: row.vol_override_email != null ? parseFloat(row.vol_override_email) : null,
-            volCases: row.vol_override_cases != null ? parseFloat(row.vol_override_cases) : null,
-            ahtVoice: row.aht_override_voice != null ? parseFloat(row.aht_override_voice) : null,
-            ahtChat: row.aht_override_chat != null ? parseFloat(row.aht_override_chat) : null,
-            ahtEmail: row.aht_override_email != null ? parseFloat(row.aht_override_email) : null,
-            ahtCases: row.aht_override_cases != null ? parseFloat(row.aht_override_cases) : null,
-          };
-        }
-        setWeeklyInputs(map);
+        setWeeklyInputs(parseWeekInputsRows(inputsData));
       }
 
       // Volume source: committed demand what-if takes priority over active state
@@ -1526,6 +1575,73 @@ export function CapacityPlanning() {
       emailOccupancy, chatConcurrency, taskSwitchMultiplier]);
 
   // ── What-if comparison — re-project HC for each what-if using its configSnapshot
+  const dedicatedRequiredFteSummary = useMemo<RequiredFteChannelSummary[]>(() => {
+    if (!isDedicated) return [];
+
+    return enabledChannels.map(channel => {
+      const channelWeeks = weeks.map((_, w) => {
+        const auto = autoBaseVolumes[w] ?? { voice: 0, chat: 0, email: 0, cases: 0 };
+        const channelInputs = channel === activeChannel
+          ? weeklyInputs
+          : (dedicatedInputsByChannel[channel] ?? {});
+        const inp = channelInputs[w] ?? {};
+
+        const volume = channel === "voice" ? (inp.volVoice ?? auto.voice)
+          : channel === "chat" ? (inp.volChat ?? auto.chat)
+          : channel === "cases" ? (inp.volCases ?? auto.cases)
+          : (inp.volEmail ?? auto.email);
+        const aht = channel === "voice" ? (inp.ahtVoice ?? autoAhts.voice)
+          : channel === "chat" ? (inp.ahtChat ?? autoAhts.chat)
+          : channel === "cases" ? (inp.ahtCases ?? autoAhts.cases)
+          : (inp.ahtEmail ?? autoAhts.email);
+        const target = channel === "voice" ? slaVoiceTarget : channel === "chat" ? slaChatTarget : slaEmailTarget;
+        const sec = channel === "voice" ? slaVoiceSec : channel === "chat" ? slaChatSec : slaEmailSec;
+        const conc = channel === "chat" ? chatConcurrency : 1;
+        const modelChannel: "voice" | "chat" | "email" = channel === "voice" ? "voice" : channel === "chat" ? "chat" : "email";
+        const channelHours = fteModelOverride ? null : hoursFromSchedule(lobSettings?.hours_of_operation?.[channel]);
+        const channelDaysPerWeek = channelHours?.daysPerWeek ?? daysPerWeek;
+        const channelOperatingHours = channelHours?.hoursPerDay ?? operatingHoursPerDay;
+        const required = calcWeeklyErlangFTE(
+          volume, aht, channelDaysPerWeek, channelOperatingHours, effectiveFteHoursPerDay,
+          target, sec, shrinkagePct, modelChannel, conc, emailOccupancy,
+        );
+
+        return {
+          fte: required.fte,
+          volume,
+          aht,
+          occupancy: required.occupancy,
+          daysPerWeek: channelDaysPerWeek,
+          operatingHoursPerDay: channelOperatingHours,
+        };
+      });
+
+      const current = channelWeeks[0] ?? { fte: 0, volume: 0, aht: autoAhts[channel], occupancy: 0, daysPerWeek, operatingHoursPerDay };
+      return {
+        channel,
+        currentFte: current.fte,
+        peakFte: Math.max(0, ...channelWeeks.map(w => w.fte)),
+        currentVolume: current.volume,
+        aht: current.aht,
+        slaTarget: channel === "voice" ? slaVoiceTarget : channel === "chat" ? slaChatTarget : slaEmailTarget,
+        slaSec: channel === "voice" ? slaVoiceSec : channel === "chat" ? slaChatSec : slaEmailSec,
+        occupancy: current.occupancy,
+        daysPerWeek: current.daysPerWeek,
+        operatingHoursPerDay: current.operatingHoursPerDay,
+        fteHoursPerDay: effectiveFteHoursPerDay,
+        shrinkagePct,
+      };
+    });
+  }, [isDedicated, enabledChannels, weeks, autoBaseVolumes, activeChannel, weeklyInputs, dedicatedInputsByChannel, autoAhts,
+      slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
+      chatConcurrency, fteModelOverride, lobSettings, daysPerWeek, operatingHoursPerDay,
+      effectiveFteHoursPerDay, shrinkagePct, emailOccupancy]);
+
+  const dedicatedRequiredFteTotal = useMemo(() => ({
+    current: roundTo(dedicatedRequiredFteSummary.reduce((sum, item) => sum + item.currentFte, 0), 1),
+    peak: roundTo(dedicatedRequiredFteSummary.reduce((sum, item) => sum + item.peakFte, 0), 1),
+  }), [dedicatedRequiredFteSummary]);
+
   const whatIfComparisons = useMemo(() => {
     if (Object.keys(whatIfs).length < 2) return null;
     return Object.values(whatIfs).map(wif => {
@@ -1674,7 +1790,7 @@ export function CapacityPlanning() {
 
     // ── Staffing Requirements
     rows.push(["--- STAFFING REQUIREMENTS ---", ...weekCalcs.map(() => "")]);
-    rows.push(row("Required FTE", weekCalcs.map(wk => roundTo(wk.requiredFTE, 1))));
+    rows.push(row("Weekly Required FTE Estimate", weekCalcs.map(wk => roundTo(wk.requiredFTE, 1))));
     rows.push(row("Proj. Occupancy %", weekCalcs.map(wk => roundTo(wk.projOccupancyPct, 1))));
     rows.push(row("Proj. Shrinkage %", weekCalcs.map(wk => roundTo(wk.projShrinkagePct, 1))));
 
@@ -1749,13 +1865,11 @@ export function CapacityPlanning() {
     return () => setPageData(null);
   }, [activeChannel, config, shrinkagePct, effectiveFteHoursPerDay, demandAssumptions, hiringNeed, attritionSummary, weekCalcs, setPageData]);
 
-  const showFteBreakdown = true;
   const TOP_WEEK_HDR  = 0;
   const TOP_REQ_FTE   = 40;
-  const TOP_REQ_BREAK = 73;
-  const TOP_BILLABLE  = showFteBreakdown ? 106 : 73;
-  const TOP_GAP_REQ   = showFteBreakdown ? (billableActive ? 139 : 106) : (billableActive ? 106 : 73);
-  const TOP_GAP_BILL  = showFteBreakdown ? 172 : 139;
+  const TOP_BILLABLE  = 73;
+  const TOP_GAP_REQ   = billableActive ? 106 : 73;
+  const TOP_GAP_BILL  = 139;
 
   function updateFteModelField(field: keyof FteModelSnapshot, value: number) {
     if (!Number.isFinite(value)) return;
@@ -2018,12 +2132,118 @@ export function CapacityPlanning() {
         )}
       </Card>
 
-      {/* ── Hero Strip — the bottom-line metrics, always the first thing a manager sees */}
+      {/* Required FTE summary */}
+      <Card className="mb-4 border border-border/70">
+        <CardHeader className="py-3 px-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-sm font-semibold">Weekly Required FTE Coverage Estimate</CardTitle>
+              <p className="mt-1 text-xs text-black">
+                This is a weekly average-load planning estimate based on configured demand, AHT, operating hours, productive hours, and shrinkage. It is not interval-by-interval schedule validation.
+              </p>
+            </div>
+            <Badge variant="outline" className="border-slate-300 text-black">
+              {isDedicated ? "Dedicated staffing" : "Blended staffing"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-0 px-4 pb-4">
+          <div className="mb-3 flex flex-wrap gap-2 text-xs">
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              Pooling: <span className="font-semibold">{isDedicated ? "Dedicated per enabled channel" : "Pooled across enabled channels"}</span>
+            </span>
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              Days/week: <span className="font-semibold">{daysPerWeek}</span>
+            </span>
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              Op. hours/day: <span className="font-semibold">{fmt1(operatingHoursPerDay)}h</span>
+            </span>
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              FTE productive/day: <span className="font-semibold">{fmt1(effectiveFteHoursPerDay)}h</span>
+            </span>
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              Shrinkage: <span className="font-semibold">{fmtPct(shrinkagePct)}</span>
+            </span>
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              Enabled: <span className="font-semibold">{enabledChannels.map(ch => CHANNEL_LABELS[ch]).join(", ") || "None"}</span>
+            </span>
+          </div>
+
+          {isDedicated ? (
+            <>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {dedicatedRequiredFteSummary.map(item => (
+                  <div key={item.channel} className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-semibold text-black">{CHANNEL_LABELS[item.channel]}</div>
+                      <Badge variant="outline" className="h-5 border-slate-300 px-1.5 text-[10px] text-black">
+                        {item.channel === activeChannel ? "selected" : "enabled"}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 text-2xl font-bold leading-none text-black">{fmt1(item.currentFte)}</div>
+                    <div className="mt-1 text-[11px] text-black">
+                      Weekly estimate for {weekCalcs[0] ? weekCalcs[0].label : "current week"} - peak {fmt1(item.peakFte)}
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-black">
+                      <span>Volume</span><span className="text-right font-medium">{Math.round(item.currentVolume).toLocaleString()}</span>
+                      <span>AHT</span><span className="text-right font-medium">{fmt1(item.aht)}s</span>
+                      <span>Service</span><span className="text-right font-medium">{item.slaTarget}% in {fmtSeconds(item.slaSec)}</span>
+                      <span>Occupancy</span><span className="text-right font-medium">{fmtPct(item.occupancy)}</span>
+                      <span>Ops</span><span className="text-right font-medium">{item.daysPerWeek}d - {fmt1(item.operatingHoursPerDay)}h</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 rounded-md border border-blue-200 bg-blue-50/60 px-3 py-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-black">Total Dedicated Weekly Required FTE Estimate</div>
+                    <div className="text-[11px] text-black">Sum of enabled channel requirements. Disabled channels are excluded.</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-2xl font-bold leading-none text-black">{fmt1(dedicatedRequiredFteTotal.current)}</div>
+                    <div className="text-[11px] text-black">peak {fmt1(dedicatedRequiredFteTotal.peak)}</div>
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-black">Pooled Blended Weekly Required FTE Estimate</div>
+                  <p className="mt-1 text-xs text-black">
+                    One shared pool across enabled channels only. Disabled channels do not contribute to the pooled requirement.
+                  </p>
+                </div>
+                <div className="text-right">
+                  <div className="text-2xl font-bold leading-none text-black">{weekCalcs[0] ? fmt1(weekCalcs[0].requiredFTE) : "-"}</div>
+                  <div className="text-[11px] text-black">peak {fmt1(hiringNeed.peakRequired)}</div>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-black">
+                {enabledChannels.map(ch => {
+                  const aht = ch === "voice" ? autoAhts.voice : ch === "chat" ? autoAhts.chat : ch === "cases" ? autoAhts.cases : autoAhts.email;
+                  const target = ch === "voice" ? slaVoiceTarget : ch === "chat" ? slaChatTarget : slaEmailTarget;
+                  const sec = ch === "voice" ? slaVoiceSec : ch === "chat" ? slaChatSec : slaEmailSec;
+                  return (
+                    <span key={ch} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+                      {CHANNEL_LABELS[ch]} - {fmt1(aht)}s AHT - {target}% in {fmtSeconds(sec)}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Hero Strip */}
       <div className={`grid gap-2.5 mb-4 ${billableActive ? "grid-cols-2 lg:grid-cols-5" : "grid-cols-2 lg:grid-cols-3"}`}>
-        {/* Peak Required FTE */}
+        {/* Peak Weekly FTE Estimate */}
         <div className="bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 border-l-blue-500">
           <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
-            <Users className="size-3" /> Peak Required FTE
+            <Users className="size-3" /> Peak Weekly FTE Estimate
           </div>
           <div className="text-2xl font-bold mt-1 text-black dark:text-black leading-none">
             {hiringNeed.peakRequired > 0 ? hiringNeed.peakRequired : "—"}
@@ -2033,12 +2253,12 @@ export function CapacityPlanning() {
           </div>
         </div>
 
-        {/* Current Gap — Required FTE */}
+        {/* Current Gap - Weekly Estimate */}
         <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${
           currentGap >= 0 ? "border-l-green-500" : "border-l-red-500"
         }`}>
           <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
-            <Target className="size-3" /> Current Gap — Required
+            <Target className="size-3" /> Current Gap - Estimate
           </div>
           <div className="text-2xl font-bold mt-1 leading-none text-black dark:text-black">
             {currentGap >= 0 ? `+${fmt1(currentGap)}` : fmt1(currentGap)}
@@ -2067,7 +2287,7 @@ export function CapacityPlanning() {
           </div>
         )}
 
-        {/* Next Hiring Action — Required FTE */}
+        {/* Next Hiring Action - Weekly Estimate */}
         {(() => {
           const { reqHiresNeeded, reqDeficitWeek, reqHireByWeek, reqHireByPassed } = hiringNeed;
           const hasDeficit = reqDeficitWeek != null;
@@ -2075,7 +2295,7 @@ export function CapacityPlanning() {
           return (
             <div className={`bg-card border border-border rounded-md px-3 py-2.5 shadow-sm border-l-4 ${accent}`}>
               <div className="flex items-center gap-1.5 text-[10px] font-semibold text-black uppercase tracking-wide">
-                <UserPlus className="size-3" /> Next Hiring Action — Required
+                <UserPlus className="size-3" /> Next Hiring Action - Estimate
               </div>
               {!hasDeficit ? (
                 <>
@@ -2178,7 +2398,7 @@ export function CapacityPlanning() {
                 Headcount Trajectory — {isDedicated ? CHANNEL_LABELS[activeChannel] : "All Channels"}
               </div>
               <div className="text-[10px] text-black">
-                Required vs. plan — gap is where the red line sits above the dashed blue
+                Weekly estimate vs. plan - gap is where the red line sits above the dashed blue
               </div>
             </div>
             <ResponsiveContainer width="100%" height={200}>
@@ -2192,7 +2412,7 @@ export function CapacityPlanning() {
                 />
                 <Legend wrapperStyle={{ fontSize: 11 }} iconType="line" />
                 <ReferenceLine y={config.startingHc} stroke="#9ca3af" strokeDasharray="2 2" label={{ value: "Start HC", fontSize: 9, position: "insideTopRight", fill: "#9ca3af" }} />
-                <Line type="monotone" dataKey="required" name="Required FTE" stroke="#dc2626" strokeWidth={2.5} dot={false} />
+                <Line type="monotone" dataKey="required" name="Weekly FTE Estimate" stroke="#dc2626" strokeWidth={2.5} dot={false} />
                 <Line type="monotone" dataKey="projected" name="Projected HC" stroke="#2563eb" strokeWidth={2} strokeDasharray="5 3" dot={false} />
                 {config.billableFte > 0 && (
                   <Line type="monotone" dataKey="billable" name="Billable FTE" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
@@ -2260,7 +2480,7 @@ export function CapacityPlanning() {
                 <YAxis tick={{ fontSize: 10 }} width={40} />
                 <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} labelStyle={{ fontWeight: 600 }} />
                 <Legend wrapperStyle={{ fontSize: 11 }} iconType="line" />
-                <Line type="monotone" dataKey="requiredFTE" name="Required FTE" stroke="#dc2626" strokeWidth={2} strokeDasharray="4 2" dot={false} />
+                <Line type="monotone" dataKey="requiredFTE" name="Weekly FTE Estimate" stroke="#dc2626" strokeWidth={2} strokeDasharray="4 2" dot={false} />
                 {whatIfComparisons.map((w, i) => (
                   <Line key={w.id} type="monotone" dataKey={w.id} name={w.name}
                     stroke={["#2563eb","#16a34a","#d97706","#7c3aed"][i % 4]}
@@ -2301,13 +2521,13 @@ export function CapacityPlanning() {
                 ))}
               </tr>
 
-              {/* Row 2 — Required FTE (Based on Demand) */}
+              {/* Row 2 - Weekly Required FTE Estimate */}
               <tr className="border-b border-border">
                 <td
                   className="bg-card border-r border-border border-t-2 border-t-primary px-3 py-2 text-xs font-bold whitespace-nowrap text-black"
                   style={{ position: "sticky", left: 0, top: TOP_REQ_FTE, zIndex: 30 }}
                 >
-                  Required FTE (Based on Demand)
+                  Weekly Required FTE Estimate
                 </td>
                 {weekCalcs.map(wk => (
                   <td
@@ -2319,28 +2539,6 @@ export function CapacityPlanning() {
                   </td>
                 ))}
               </tr>
-
-              {showFteBreakdown && (
-                <tr className="border-b border-border">
-                  <td
-                    className="bg-card border-r border-border px-3 py-1.5 text-[10px] font-semibold whitespace-nowrap text-black"
-                    style={{ position: "sticky", left: 0, top: TOP_REQ_BREAK, zIndex: 30 }}
-                  >
-                    Required FTE Math (Raw - Shrinkage - Coverage)
-                  </td>
-                  {weekCalcs.map(wk => (
-                    <td
-                      key={wk.weekOffset}
-                      className="bg-card px-2 py-1.5 text-right text-[10px] font-medium whitespace-nowrap text-black"
-                      style={{ position: "sticky", top: TOP_REQ_BREAK, zIndex: 20 }}
-                    >
-                      {wk.reqRawAgents != null && wk.reqAfterShrinkFte != null && wk.reqCoverageRatio != null
-                        ? `${fmt1(wk.reqRawAgents, "—")} → ${fmt1(wk.reqAfterShrinkFte, "—")} × ${roundTo(wk.reqCoverageRatio, 2)}`
-                        : "—"}
-                    </td>
-                  ))}
-                </tr>
-              )}
 
               {/* Row 3 — Billable FTE (conditional) */}
               {billableActive && (
