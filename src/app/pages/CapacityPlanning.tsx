@@ -23,6 +23,7 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type ChannelKey = "voice" | "chat" | "email" | "cases";
+type DemandSourceType = "committed" | "active" | "fallback";
 
 interface PlanConfig {
   planStartDate: string;
@@ -1246,6 +1247,8 @@ export function CapacityPlanning() {
   const [selectedWhatIfId, setSelectedWhatIfId] = useState<string>("base");
   const [fteModelOverride, setFteModelOverride] = useState<FteModelSnapshot | null>(null);
   const [demandSourceName, setDemandSourceName] = useState<string | null>(null);
+  const [demandSourceType, setDemandSourceType] = useState<DemandSourceType>("fallback");
+  const [demandSourceWarning, setDemandSourceWarning] = useState<string | null>(null);
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const configTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dataLoadedFor = useRef<string | null>(null);
@@ -1359,8 +1362,17 @@ export function CapacityPlanning() {
 
       // Volume source: committed demand what-if takes priority over active state
       const committedSnap = committedData?.planner_snapshot ?? null;
+      const activeSnap = activeStateData?.plannerSnapshot ?? null;
       const demandData = committedSnap ? { plannerSnapshot: committedSnap } : activeStateData;
-      setDemandSourceName(committedSnap ? (committedData?.scenario_name ?? null) : null);
+      setDemandSourceName(committedSnap ? (committedData?.scenario_name ?? null) : activeSnap ? "Active Demand Forecast" : null);
+      setDemandSourceType(committedSnap ? "committed" : activeSnap ? "active" : "fallback");
+      const committedHorizon = Number(committedSnap?.assumptions?.forecastHorizon);
+      const activeHorizon = Number(activeSnap?.assumptions?.forecastHorizon);
+      setDemandSourceWarning(
+        committedSnap && committedHorizon !== 2 && activeHorizon === 2
+          ? "Capacity is using the committed Demand Forecast scenario. A newer 2-year active Demand Forecast may exist. Commit or refresh the Demand scenario to use Year 2 volume."
+          : null
+      );
 
       const snap = demandData?.plannerSnapshot ?? null;
       if (snap?.assumptions) {
@@ -1369,6 +1381,7 @@ export function CapacityPlanning() {
       } else {
         setDemandAssumptions(null);
         setPlannerSnapshot(null);
+        setDemandSourceWarning(null);
       }
 
       if (lsData) setLobSettings(lsData as LobSettings);
@@ -1519,6 +1532,25 @@ export function CapacityPlanning() {
       }
     }
     setWeeklyInputs(updated);
+  }
+
+  function resetVolumeOverridesForCurrentHorizon() {
+    const volumeFields = ["volVoice","volChat","volEmail","volCases"] as (keyof WeekInput)[];
+    const updated = { ...weeklyInputs };
+    for (const wk of weeks) {
+      const existing = updated[wk.weekOffset];
+      if (!existing) continue;
+      const clean = { ...existing };
+      for (const field of volumeFields) {
+        if (clean[field] != null) {
+          clean[field] = null as never;
+          saveCell(wk.weekOffset, field, null);
+        }
+      }
+      updated[wk.weekOffset] = clean;
+    }
+    setWeeklyInputs(updated);
+    toast.success("Volume overrides reset for the current horizon");
   }
 
   // ── What-if handlers ──────────────────────────────────────────────────────────
@@ -1680,6 +1712,9 @@ export function CapacityPlanning() {
     const casesEnabled = !!sel.cases;
 
     const { forecastMethod, hwParams, arimaParams, decompParams, assumptions } = plannerSnapshot;
+    const isTwoYearForecast = Number(assumptions.forecastHorizon) === 2;
+    const planningMonths = isTwoYearForecast ? 24 : (assumptions.planningMonths ?? 12);
+    const year1Months = isTwoYearForecast ? 12 : planningMonths;
     const apiData = plannerSnapshot.channelHistoricalApiData ?? {};
     const overrides = plannerSnapshot.channelHistoricalOverrides ?? {};
     function applyOv(data: number[], ov: Record<number, string>): number[] {
@@ -1696,34 +1731,64 @@ export function CapacityPlanning() {
     const chatH = applyOv(apiData.chat ?? [], overrides.chat ?? {});
     const emailH = applyOv(apiData.email ?? [], overrides.email ?? {});
     const casesH = applyOv(apiData.cases ?? [], overrides.cases ?? {});
-    const voice = getCalculatedVolumes(voiceH, forecastMethod, assumptions, hwParams, arimaParams, decompParams);
-    const zeros = voice.map(() => 0);
-    const statChat = !chatEnabled ? zeros
+    const voiceYear1 = getCalculatedVolumes(voiceH, forecastMethod, assumptions, hwParams, arimaParams, decompParams, year1Months);
+    const zerosYear1 = voiceYear1.map(() => 0);
+    const chatYear1 = !chatEnabled ? zerosYear1
       : chatH.length > 0
-        ? getCalculatedVolumes(chatH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-        : voice.map(v => Math.round(v * 0.3));
-    const statEmail = !emailEnabled ? zeros
+        ? getCalculatedVolumes(chatH, forecastMethod, assumptions, hwParams, arimaParams, decompParams, year1Months)
+        : voiceYear1.map(v => Math.round(v * 0.3));
+    const emailYear1 = !emailEnabled ? zerosYear1
       : emailH.length > 0
-        ? getCalculatedVolumes(emailH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-        : voice.map(v => Math.round(v * 0.2));
-    const statCases = !casesEnabled ? zeros
+        ? getCalculatedVolumes(emailH, forecastMethod, assumptions, hwParams, arimaParams, decompParams, year1Months)
+        : voiceYear1.map(v => Math.round(v * 0.2));
+    const casesYear1 = !casesEnabled ? zerosYear1
       : casesH.length > 0
-        ? getCalculatedVolumes(casesH, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-        : voice.map(v => Math.round(v * 0.2));
+        ? getCalculatedVolumes(casesH, forecastMethod, assumptions, hwParams, arimaParams, decompParams, year1Months)
+        : voiceYear1.map(v => Math.round(v * 0.2));
 
     // Apply recut overrides where they exist; fall back to statistical forecast for
     // channels that have no recut — never zero them out silently.
     const recut = plannerSnapshot.recutVolumesByChannel;
-    if (recut?.voice?.length) {
-      return {
-        voice: recut.voice as number[],
-        chat: chatEnabled && recut.chat?.length ? recut.chat as number[] : statChat,
-        email: emailEnabled && recut.email?.length ? recut.email as number[] : statEmail,
-        cases: casesEnabled && recut.cases?.length ? recut.cases as number[] : statCases,
-      };
+    const applyRecutByIndex = (channel: ChannelKey, base: number[]): number[] => {
+      const recutValues = recut?.[channel];
+      return base.map((value, index) => {
+        const recutValue = Array.isArray(recutValues) ? Number(recutValues[index]) : NaN;
+        return Number.isFinite(recutValue) && recutValue >= 0 ? Math.round(recutValue) : value;
+      });
+    };
+
+    const year1Effective = {
+      voice: applyRecutByIndex("voice", voiceYear1),
+      chat: applyRecutByIndex("chat", chatYear1),
+      email: applyRecutByIndex("email", emailYear1),
+      cases: applyRecutByIndex("cases", casesYear1),
+    };
+
+    if (!isTwoYearForecast) {
+      return year1Effective;
     }
 
-    return { voice, chat: statChat, email: statEmail, cases: statCases };
+    const voiceYear2 = getCalculatedVolumes([...voiceH, ...year1Effective.voice], forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12);
+    const chatYear2 = !chatEnabled ? Array(12).fill(0)
+      : getCalculatedVolumes([...chatH, ...year1Effective.chat], forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12);
+    const emailYear2 = !emailEnabled ? Array(12).fill(0)
+      : getCalculatedVolumes([...emailH, ...year1Effective.email], forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12);
+    const casesYear2 = !casesEnabled ? Array(12).fill(0)
+      : getCalculatedVolumes([...casesH, ...year1Effective.cases], forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12);
+
+    const combinedForecast = {
+      voice: [...voiceYear1, ...voiceYear2],
+      chat: [...chatYear1, ...chatYear2],
+      email: [...emailYear1, ...emailYear2],
+      cases: [...casesYear1, ...casesYear2],
+    };
+
+    return {
+      voice: applyRecutByIndex("voice", combinedForecast.voice).slice(0, planningMonths),
+      chat: applyRecutByIndex("chat", combinedForecast.chat).slice(0, planningMonths),
+      email: applyRecutByIndex("email", combinedForecast.email).slice(0, planningMonths),
+      cases: applyRecutByIndex("cases", combinedForecast.cases).slice(0, planningMonths),
+    };
   }, [plannerSnapshot]);
 
   // ── Auto volumes from demand snapshot
@@ -2039,6 +2104,38 @@ export function CapacityPlanning() {
       effectiveFteWorkdaysPerWeek, shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
       emailOccupancy, chatConcurrency, taskSwitchMultiplier, lobSettings, intradayRecordsByChannel, profilesByChannel]);
+
+  const volumeOverrideMasking = useMemo(() => {
+    const fieldByChannel: Record<ChannelKey, keyof WeekInput> = {
+      voice: "volVoice",
+      chat: "volChat",
+      email: "volEmail",
+      cases: "volCases",
+    };
+    const autoByChannel: Record<ChannelKey, "voice" | "chat" | "email" | "cases"> = {
+      voice: "voice",
+      chat: "chat",
+      email: "email",
+      cases: "cases",
+    };
+    const channels = isDedicated ? [activeChannel] : enabledChannels;
+    let overrideCount = 0;
+    let zeroMaskCount = 0;
+    for (const wk of weeks) {
+      const input = weeklyInputs[wk.weekOffset];
+      const auto = autoBaseVolumes[wk.weekOffset];
+      if (!input || !auto) continue;
+      for (const channel of channels) {
+        const field = fieldByChannel[channel];
+        const value = input[field];
+        const autoValue = auto[autoByChannel[channel]];
+        if (value == null || autoValue <= 0 || value === autoValue) continue;
+        overrideCount += 1;
+        if (value === 0) zeroMaskCount += 1;
+      }
+    }
+    return { overrideCount, zeroMaskCount };
+  }, [weeklyInputs, autoBaseVolumes, weeks, isDedicated, activeChannel, enabledChannels]);
 
   // ── What-if comparison — re-project HC for each what-if using its configSnapshot
   const dedicatedRequiredFteSummary = useMemo<RequiredFteChannelSummary[]>(() => {
@@ -2442,18 +2539,44 @@ export function CapacityPlanning() {
             <div className="flex items-center gap-2 flex-wrap">
               <Settings2 className="size-4 text-black" />
               <CardTitle className="text-sm font-semibold">Plan Assumptions</CardTitle>
-              {demandSourceName && (
-                <Badge className="bg-emerald-50 text-emerald-800 border border-emerald-200 gap-1 text-[10px] font-normal">
-                  <CheckCircle2 className="size-3" />
-                  Volume locked to: "{demandSourceName}"
-                </Badge>
-              )}
+              <Badge className="bg-emerald-50 text-emerald-800 border border-emerald-200 gap-1 text-[10px] font-normal">
+                <CheckCircle2 className="size-3" />
+                {demandSourceType === "committed"
+                  ? `Demand source: committed scenario${demandSourceName ? ` "${demandSourceName}"` : ""}`
+                  : demandSourceType === "active"
+                    ? "Demand source: active Demand Forecast state"
+                    : "Demand source: fallback assumptions"}
+              </Badge>
             </div>
             {assumptionsOpen ? <ChevronDown className="size-4 text-black" /> : <ChevronRight className="size-4 text-black" />}
           </div>
         </CardHeader>
         {assumptionsOpen && (
           <CardContent className="pb-4 pt-0">
+            {(demandSourceWarning || volumeOverrideMasking.overrideCount > 0) && (
+              <div className="mb-4 space-y-2">
+                {demandSourceWarning && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                    <span>{demandSourceWarning}</span>
+                  </div>
+                )}
+                {volumeOverrideMasking.overrideCount > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                      <span>
+                        Saved weekly volume overrides are active and may be hiding updated forecast volume.
+                        {volumeOverrideMasking.zeroMaskCount > 0 ? ` ${volumeOverrideMasking.zeroMaskCount} override${volumeOverrideMasking.zeroMaskCount === 1 ? "" : "s"} set volume to 0 while auto forecast volume is available.` : ""}
+                      </span>
+                    </div>
+                    <Button variant="outline" size="sm" className="h-7 shrink-0 text-[11px]" onClick={resetVolumeOverridesForCurrentHorizon}>
+                      Reset volume overrides
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
               <div className="space-y-1">
                 <Label className="text-xs text-black">Plan Start Date</Label>
