@@ -4,9 +4,14 @@ import {
   calculateHoltWinters, 
   calculateDecomposition, 
   calculateARIMA,
+  buildEffectiveYearOnePlan,
+  buildTwoPassYear2Input,
   calculateYoY,
+  getCalculatedVolumes,
   generateInsights,
-  calculateHiringPlan
+  calculateHiringPlan,
+  normalizeMonthlyHistoryForExtendedForecast,
+  normalizeMonthlyForecast
 } from './forecasting-logic';
 
 describe('Statistical Forecasting Validation', () => {
@@ -192,5 +197,205 @@ describe('WFM Insights & Hiring Engine Validation', () => {
     const plan = calculateHiringPlan(sufficientData);
     expect(plan?.totalHires).toBe(0);
     expect(plan?.summary).toContain('Staffing levels are sufficient');
+  });
+});
+
+describe('Demand Forecast Month Normalization', () => {
+  const demandAssumptions: any = {
+    startDate: '2026-01-01',
+    aht: 300,
+    emailAht: 600,
+    chatAht: 450,
+    chatConcurrency: 2,
+    shrinkage: 25,
+    shrinkageSource: 'manual',
+    voiceSlaTarget: 80,
+    voiceSlaAnswerSeconds: 20,
+    voiceAsaTargetSeconds: 15,
+    emailSlaTarget: 90,
+    emailSlaAnswerSeconds: 14400,
+    emailAsaTargetSeconds: 3600,
+    chatSlaTarget: 80,
+    chatSlaAnswerSeconds: 30,
+    chatAsaTargetSeconds: 20,
+    occupancy: 85,
+    growthRate: 5,
+    safetyMargin: 5,
+    currency: 'USD',
+    annualSalary: 45000,
+    onboardingCost: 5000,
+    fteMonthlyHours: 166.67,
+    operatingHoursPerDay: 8,
+    operatingDaysPerWeek: 5,
+    useManualVolume: false,
+    manualHistoricalData: [],
+    planningMonths: 12,
+    forecastHorizon: 2
+  };
+  const hwParams = { alpha: 0.3, beta: 0.1, gamma: 0.3, seasonLength: 12 };
+  const arimaParams = { p: 1, d: 1, q: 1 };
+  const decompParams = { trendStrength: 1, seasonalityStrength: 1 };
+
+  it('keeps Email forecasts complete when one LOB has sparse imported history', () => {
+    const workingLobEmailHistory = [
+      1200, 1260, 1320, 1380, 1440, 1500, 1560, 1620, 1680, 1740, 1800, 1860,
+      1280, 1340, 1400, 1460, 1520, 1580, 1640, 1700, 1760, 1820, 1880, 1940
+    ];
+    const sparseLobEmailHistory = [
+      1200, 1260, 1320, 1380, 1440, 1500, 1560, 0, 0, 0, 0, 0
+    ];
+
+    const workingYear1 = getCalculatedVolumes(workingLobEmailHistory, 'holtwinters', demandAssumptions, hwParams, arimaParams, decompParams, 12);
+    const sparseYear1 = getCalculatedVolumes(sparseLobEmailHistory, 'holtwinters', demandAssumptions, hwParams, arimaParams, decompParams, 12);
+    const partialActualsFullYearPlan = sparseYear1.map((value, index) => index < 7 ? Math.round(value * 1.08) : value);
+    const sparseYear2 = getCalculatedVolumes([...sparseLobEmailHistory, ...partialActualsFullYearPlan], 'holtwinters', demandAssumptions, hwParams, arimaParams, decompParams, 12);
+
+    expect(workingYear1).toHaveLength(12);
+    expect(sparseYear1).toHaveLength(12);
+    expect(sparseYear2).toHaveLength(12);
+    expect(sparseYear2.every((value) => Number.isFinite(value) && value > 0)).toBe(true);
+  });
+
+  it('builds a full Email Year 1 effective plan from Jan-Jul actuals plus Aug-Dec plan', () => {
+    const raw2026Plan = [2100, 2140, 2180, 2220, 2260, 2300, 2340];
+    const actualsByMonth = [2200, 2250, 2290, 2330, 2380, 2420, 2470, null, null, null, null, null];
+    const effective2026 = buildEffectiveYearOnePlan({
+      basePlan: raw2026Plan,
+      actualsByMonth,
+      completedMonthIndices: [0, 1, 2, 3, 4, 5, 6],
+      recutFactor: 1.06,
+      sourceHistory: [1600, 1640, 1680, 1720, 1760, 1800, 1840, 1880, 1920, 1960, 2000, 2040],
+    });
+
+    expect(effective2026).toHaveLength(12);
+    expect(effective2026.slice(0, 7)).toEqual([2200, 2250, 2290, 2330, 2380, 2420, 2470]);
+    expect(effective2026.slice(7).every((value) => Number.isFinite(value) && value > 0)).toBe(true);
+  });
+
+  it('keeps Email future re-cut stable when completed actuals equal forecast', () => {
+    const emailForecast2026 = [1356, 1551, 1554, 1291, 1438, 1457, 1393, 1422, 1488, 1516, 1494, 1532];
+    const actualsByMonth = [1356, 1551, 1554, 1291, null, null, null, null, null, null, null, null];
+    const completed = [0, 1, 2, 3];
+    const actualToForecastFactor =
+      actualsByMonth.slice(0, 4).reduce((sum, value) => sum + (value ?? 0), 0) /
+      emailForecast2026.slice(0, 4).reduce((sum, value) => sum + value, 0);
+
+    const effective2026 = buildEffectiveYearOnePlan({
+      basePlan: emailForecast2026,
+      actualsByMonth,
+      completedMonthIndices: completed,
+      recutFactor: actualToForecastFactor,
+      sourceHistory: [1080, 1240, 1243, 1033, 1150, 1166, 1114, 1138, 1190, 1213, 1195, 1226],
+    });
+
+    expect(actualToForecastFactor).toBe(1);
+    expect(effective2026.slice(0, 4)).toEqual([1356, 1551, 1554, 1291]);
+    expect(effective2026.slice(4)).toEqual(emailForecast2026.slice(4));
+    expect(Math.min(...effective2026.slice(4))).toBeGreaterThan(1000);
+
+    const forecast2027 = getCalculatedVolumes(
+      [[1080, 1240, 1243, 1033, 1150, 1166, 1114, 1138, 1190, 1213, 1195, 1226], effective2026].flat(),
+      'holtwinters',
+      demandAssumptions,
+      hwParams,
+      arimaParams,
+      decompParams,
+      12
+    );
+
+    expect(forecast2027).toHaveLength(12);
+    expect(forecast2027.slice(7).every((value) => Number.isFinite(value) && value > 0)).toBe(true);
+  });
+
+  it('preserves the Jan-Dec grid for sparse Email history before the 2027 two-pass forecast', () => {
+    const sparseEmailHistory = [
+      980, 1120, 1135, 1004, 1088, 1110, 1055, 0, 0, 0, 0, 0
+    ];
+    const effective2026 = buildEffectiveYearOnePlan({
+      basePlan: [1356, 1551, 1554, 1291, 1438, 1457, 1393, 1422, 1488, 1516, 1494, 1532],
+      actualsByMonth: [1356, 1551, 1554, 1291],
+      completedMonthIndices: [0, 1, 2, 3],
+      recutFactor: 1,
+      sourceHistory: sparseEmailHistory,
+    });
+    const extendedHistory = [
+      ...normalizeMonthlyHistoryForExtendedForecast(sparseEmailHistory),
+      ...normalizeMonthlyForecast(effective2026, sparseEmailHistory, 12),
+    ];
+    const forecast2027 = getCalculatedVolumes(
+      extendedHistory,
+      'holtwinters',
+      demandAssumptions,
+      hwParams,
+      arimaParams,
+      decompParams,
+      12
+    );
+
+    expect(extendedHistory).toHaveLength(24);
+    expect(extendedHistory.slice(7, 12).every((value) => Number.isFinite(value) && value > 0)).toBe(true);
+    expect(forecast2027).toHaveLength(12);
+    expect(forecast2027.slice(7).every((value) => Number.isFinite(value) && value > 0)).toBe(true);
+  });
+
+  it('uses the re-cut Email baseline for 2027 after a large 2026 structural drop', () => {
+    const highEmailHistory = [
+      4293, 5376, 4033, 4327, 4507, 4561, 4357, 4438, 3312, 5056, 3763, 3606,
+      4508, 5645, 4235, 4543, 4733, 4789, 4575, 4660, 3478, 5309, 3951, 3786,
+    ];
+    const effective2026 = [
+      1356, 1551, 1554, 1291, 1437, 1456, 1393, 1422, 1063, 1626, 1213, 1165,
+    ];
+    const year2Input = buildTwoPassYear2Input(highEmailHistory, effective2026);
+    const forecast2027 = getCalculatedVolumes(
+      year2Input,
+      'holtwinters',
+      demandAssumptions,
+      hwParams,
+      arimaParams,
+      decompParams,
+      12
+    );
+
+    expect(year2Input).toEqual([...effective2026, ...effective2026]);
+    expect(forecast2027).toHaveLength(12);
+    expect(forecast2027.slice(7).every((value) => Number.isFinite(value) && value > 0)).toBe(true);
+    expect(Math.min(...forecast2027)).toBeGreaterThan(500);
+  });
+
+  it('does not let a short published re-cut shorten the Year 2 input base', () => {
+    const effective2026 = buildEffectiveYearOnePlan({
+      basePlan: [2100, 2140, 2180, 2220, 2260, 2300, 2340, 2380, 2420, 2460, 2500, 2540],
+      actualsByMonth: [2200, 2250, 2290, 2330, 2380, 2420, 2470],
+      completedMonthIndices: [0, 1, 2, 3, 4, 5, 6],
+      publishedRecut: [2200, 2250, 2290, 2330, 2380, 2420, 2470],
+      sourceHistory: [1600, 1640, 1680, 1720, 1760, 1800, 1840, 1880, 1920, 1960, 2000, 2040],
+    });
+
+    const forecast2027 = getCalculatedVolumes(
+      [[1600, 1640, 1680, 1720, 1760, 1800, 1840, 1880, 1920, 1960, 2000, 2040], effective2026].flat(),
+      'holtwinters',
+      demandAssumptions,
+      hwParams,
+      arimaParams,
+      decompParams,
+      12
+    );
+
+    expect(effective2026).toHaveLength(12);
+    expect(forecast2027).toHaveLength(12);
+    expect(forecast2027.slice(7).every((value) => Number.isFinite(value) && value > 0)).toBe(true);
+  });
+
+  it('normalizes short final forecast output to Jan-Dec numeric months', () => {
+    const normalized = normalizeMonthlyForecast(
+      [1100, 1120, 1140, 1160, 1180, 1200, 1220],
+      [900, 920, 940, 960, 980, 1000, 1020, 1040, 1060, 1080, 1100, 1120],
+      12
+    );
+
+    expect(normalized).toHaveLength(12);
+    expect(normalized.every((value) => Number.isFinite(value) && value >= 0)).toBe(true);
+    expect(normalized.slice(7).every((value) => value > 0)).toBe(true);
   });
 });

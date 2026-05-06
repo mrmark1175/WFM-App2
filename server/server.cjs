@@ -1916,10 +1916,11 @@ app.get('/api/long-term-actuals', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT year_index, month_index, volume, updated_at, channel
+      `SELECT DISTINCT ON (year_index, month_index)
+          year_index, month_index, volume, updated_at, channel, lob_id
        FROM long_term_actuals
        WHERE organization_id = $1 AND channel = $2 AND (lob_id = $3 OR lob_id IS NULL)
-       ORDER BY year_index ASC, month_index ASC`,
+       ORDER BY year_index ASC, month_index ASC, (lob_id = $3) DESC, updated_at DESC`,
       [user.organization_id, channel, lobId]
     );
     res.json(result.rows);

@@ -23,6 +23,124 @@ export const calculateMovingAverage = (historicalData: number[], periods: number
 };
 
 /**
+ * Removes trailing placeholder gaps from monthly history before it enters a
+ * forecast model. Historical imports can be sparse by channel/LOB; treating
+ * padded missing months as real zero-demand months corrupts the trend.
+ */
+export const normalizeForecastInput = (data: number[]): number[] => {
+  let end = data.length;
+  while (end > 0) {
+    const value = data[end - 1];
+    if (Number.isFinite(value) && value > 0) break;
+    end--;
+  }
+  return data
+    .slice(0, end)
+    .filter((value) => Number.isFinite(value) && value >= 0);
+};
+
+/**
+ * Guarantees a month-indexed forecast series with the requested number of
+ * periods. Missing/non-finite months are filled from the most recent seasonal
+ * source pattern when one exists, otherwise with 0.
+ */
+export const normalizeMonthlyForecast = (
+  forecast: number[],
+  sourceHistory: number[] = [],
+  periods: number = 12
+): number[] => {
+  const cleanedHistory = normalizeForecastInput(sourceHistory);
+  const seasonalSource = cleanedHistory.length > 0 ? cleanedHistory.slice(-Math.min(12, cleanedHistory.length)) : [];
+  return Array.from({ length: periods }, (_, index) => {
+    const value = forecast[index];
+    if (Number.isFinite(value) && value >= 0) return Math.round(value);
+    const fallback = seasonalSource.length > 0 ? seasonalSource[index % seasonalSource.length] : 0;
+    return Math.max(0, Math.round(fallback));
+  });
+};
+
+/**
+ * Keeps monthly history on its calendar grid for two-pass forecasting. Unlike
+ * normalizeForecastInput, this does not shorten a partial final year; padded
+ * trailing placeholders are filled so the next appended year still starts at
+ * January instead of immediately after the latest non-zero month.
+ */
+export const normalizeMonthlyHistoryForExtendedForecast = (
+  history: number[],
+  periodsPerYear: number = 12
+): number[] => {
+  if (history.length === 0) return [];
+  const targetLength = Math.max(periodsPerYear, Math.ceil(history.length / periodsPerYear) * periodsPerYear);
+  const padded = Array.from({ length: targetLength }, (_, index) => history[index] ?? 0);
+  const cleanedSource = normalizeForecastInput(history);
+  const seasonalSource = cleanedSource.length > 0 ? cleanedSource.slice(-Math.min(periodsPerYear, cleanedSource.length)) : [];
+
+  return padded.map((value, index) => {
+    if (Number.isFinite(value) && value > 0) return Math.round(value);
+    const sameMonthPrior = index >= periodsPerYear ? padded[index - periodsPerYear] : undefined;
+    if (Number.isFinite(sameMonthPrior) && sameMonthPrior > 0) return Math.round(sameMonthPrior);
+    const fallback = seasonalSource.length > 0 ? seasonalSource[index % seasonalSource.length] : 0;
+    return Math.max(0, Math.round(fallback));
+  });
+};
+
+export const buildTwoPassYear2Input = (historicalBase: number[], year1EffectiveBase: number[]): number[] => {
+  const priorYear = historicalBase.slice(-12);
+  const priorTotal = priorYear.reduce((sum, value) => sum + value, 0);
+  const year1Total = year1EffectiveBase.reduce((sum, value) => sum + value, 0);
+  const year1Ratio = priorTotal > 0 ? year1Total / priorTotal : 1;
+  const hasStructuralShift = year1Ratio < 0.65 || year1Ratio > 1.55;
+  return hasStructuralShift
+    ? [...year1EffectiveBase, ...year1EffectiveBase]
+    : [...historicalBase, ...year1EffectiveBase];
+};
+
+interface EffectiveYearOnePlanInputs {
+  basePlan: number[];
+  actualsByMonth?: Array<number | null | undefined>;
+  completedMonthIndices?: number[];
+  recutFactor?: number | null;
+  publishedRecut?: number[] | null;
+  sourceHistory?: number[];
+}
+
+/**
+ * Builds the complete Year 1 Jan-Dec series used as extended history for a
+ * two-pass Year 2 forecast. Actualized months override the plan, while all
+ * remaining months stay on the full-year forecast/re-cut plan.
+ */
+export const buildEffectiveYearOnePlan = ({
+  basePlan,
+  actualsByMonth = [],
+  completedMonthIndices = Array.from({ length: 12 }, (_, index) => index),
+  recutFactor = null,
+  publishedRecut = null,
+  sourceHistory = [],
+}: EffectiveYearOnePlanInputs): number[] => {
+  const normalizedBase = normalizeMonthlyForecast(
+    basePlan,
+    sourceHistory,
+    12
+  );
+  const normalizedPublished = publishedRecut
+    ? normalizeMonthlyForecast(publishedRecut.slice(0, 12), normalizedBase, 12)
+    : null;
+  const completed = new Set(completedMonthIndices.filter((index) => index >= 0 && index < 12));
+
+  return Array.from({ length: 12 }, (_, index) => {
+    const baseValue = normalizedPublished?.[index] ?? normalizedBase[index] ?? 0;
+    if (completed.has(index)) {
+      const actual = actualsByMonth[index];
+      if (actual != null && Number.isFinite(actual) && actual >= 0) {
+        return Math.round(actual);
+      }
+    }
+    if (normalizedPublished) return Math.round(baseValue);
+    return recutFactor != null ? Math.round(baseValue * recutFactor) : Math.round(baseValue);
+  });
+};
+
+/**
  * Calculates a linear regression forecast (Simple Trend).
  */
 export const calculateLinearRegression = (historicalData: number[]): number[] => {
@@ -357,21 +475,24 @@ export const getCalculatedVolumes = (
   decompParams: { trendStrength: number; seasonalityStrength: number },
   forecastPeriods: number = 12
 ): number[] => {
-  if (data.length === 0) return Array(forecastPeriods).fill(0);
+  const normalizedData = normalizeForecastInput(data);
+  if (normalizedData.length === 0) return Array(forecastPeriods).fill(0);
   const applyGrowth = (volumes: number[]) => {
     if (assumptions.growthRate === 0) return volumes;
     const multiplier = 1 + assumptions.growthRate / 100;
     return volumes.map((v) => Math.round(v * multiplier));
   };
+  const dataForModel = normalizedData;
+  const normalize = (volumes: number[]) => normalizeMonthlyForecast(volumes, dataForModel, forecastPeriods);
   switch (forecastMethod) {
-    case "yoy": return tileForecast(calculateYoY(data.slice(-12), assumptions.growthRate), forecastPeriods, assumptions.growthRate);
-    case "ma": return tileForecast(applyGrowth(calculateMovingAverage(data, 3)), forecastPeriods, assumptions.growthRate);
-    case "regression": return tileForecast(applyGrowth(calculateLinearRegression(data)), forecastPeriods, assumptions.growthRate);
-    case "holtwinters": return applyGrowth(calculateHoltWinters(data, hwParams.alpha, hwParams.beta, hwParams.gamma, hwParams.seasonLength, forecastPeriods));
-    case "decomposition": return tileForecast(applyGrowth(calculateDecomposition(data, decompParams.trendStrength, decompParams.seasonalityStrength)), forecastPeriods, assumptions.growthRate);
-    case "arima": return tileForecast(applyGrowth(calculateARIMA(data, arimaParams.p, arimaParams.d, arimaParams.q)), forecastPeriods, assumptions.growthRate);
+    case "yoy": return normalize(tileForecast(calculateYoY(dataForModel.slice(-12), assumptions.growthRate), forecastPeriods, assumptions.growthRate));
+    case "ma": return normalize(tileForecast(applyGrowth(calculateMovingAverage(dataForModel, 3)), forecastPeriods, assumptions.growthRate));
+    case "regression": return normalize(tileForecast(applyGrowth(calculateLinearRegression(dataForModel)), forecastPeriods, assumptions.growthRate));
+    case "holtwinters": return normalize(applyGrowth(calculateHoltWinters(dataForModel, hwParams.alpha, hwParams.beta, hwParams.gamma, hwParams.seasonLength, forecastPeriods)));
+    case "decomposition": return normalize(tileForecast(applyGrowth(calculateDecomposition(dataForModel, decompParams.trendStrength, decompParams.seasonalityStrength)), forecastPeriods, assumptions.growthRate));
+    case "arima": return normalize(tileForecast(applyGrowth(calculateARIMA(dataForModel, arimaParams.p, arimaParams.d, arimaParams.q)), forecastPeriods, assumptions.growthRate));
     case "genesys":
-    default: return tileForecast(applyGrowth(data.slice(-12)), forecastPeriods, assumptions.growthRate);
+    default: return normalize(tileForecast(applyGrowth(dataForModel.slice(-12)), forecastPeriods, assumptions.growthRate));
   }
 };
 

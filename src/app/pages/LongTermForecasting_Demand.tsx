@@ -18,7 +18,7 @@ import { Switch } from "../components/ui/switch";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { toast } from "sonner";
-import { calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, getCalculatedVolumes as getCalculatedVolumesBase } from "./forecasting-logic";
+import { calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, buildEffectiveYearOnePlan, buildTwoPassYear2Input, getCalculatedVolumes as getCalculatedVolumesBase, normalizeMonthlyForecast, normalizeMonthlyHistoryForExtendedForecast } from "./forecasting-logic";
 import { buildDemandHelpPrintHtml, demandForecastHelpSections } from "./LongTermForecasting_Demand.help";
 import { useWFMPageData } from "../lib/WFMPageDataContext";
 import { useWhatIf } from "../lib/whatIfContext";
@@ -315,11 +315,6 @@ const normalizeChannelKey = (value: unknown): ChannelKey => (
 );
 
 const validateInput = (value: number, min = 0, max = Infinity) => Math.max(min, Math.min(max, value));
-const trimTrailingZeros = (data: number[]): number[] => {
-  let end = data.length;
-  while (end > 0 && data[end - 1] === 0) end--;
-  return data.slice(0, end);
-};
 const formatInteger = (value: number) => value.toLocaleString();
 const getOpenHoursPerMonth = (assumptions: Assumptions) => assumptions.operatingHoursPerDay * assumptions.operatingDaysPerWeek * WEEKS_PER_MONTH;
 const getOpenSecondsPerMonth = (assumptions: Assumptions) => getOpenHoursPerMonth(assumptions) * 3600;
@@ -749,6 +744,24 @@ function buildChannelHistoricalData(apiData: number[], overrides: Record<number,
     return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : apiVolume;
   });
 }
+function buildIndexedLongTermHistory(rows: LongTermActualRecord[]): number[] {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const isOneBasedMonth = rows.some((row) => Number(row.month_index) === 12);
+  const indexed = new Map<number, number>();
+  let maxIndex = -1;
+  for (const row of rows) {
+    const yearIndex = Number(row.year_index);
+    const rawMonthIndex = Number(row.month_index);
+    if (!Number.isInteger(yearIndex) || !Number.isInteger(rawMonthIndex)) continue;
+    const monthIndex = isOneBasedMonth ? rawMonthIndex - 1 : rawMonthIndex;
+    if (monthIndex < 0 || monthIndex > 11) continue;
+    const absoluteIndex = yearIndex * 12 + monthIndex;
+    indexed.set(absoluteIndex, Number(row.volume) || 0);
+    maxIndex = Math.max(maxIndex, absoluteIndex);
+  }
+  if (maxIndex < 0) return rows.map((row) => Number(row.volume) || 0);
+  return Array.from({ length: maxIndex + 1 }, (_, index) => indexed.get(index) ?? 0);
+}
 function buildPlannerSnapshot(
   assumptions: Assumptions,
   forecastMethod: string,
@@ -950,6 +963,11 @@ const calculatePooledFTE = (
   return getChannelStaffingMetrics("voice", referenceVolume, assumptions).requiredFTE;
 };
 const getCalculatedVolumes = getCalculatedVolumesBase;
+const getYearOneForecastBaseline = (
+  forecastByChannel: Record<ChannelKey, number[]>,
+  historyByChannel: Record<ChannelKey, number[]>,
+  channel: ChannelKey,
+): number[] => normalizeMonthlyForecast(forecastByChannel[channel] ?? [], historyByChannel[channel] ?? [], 12);
 const buildDemandForecastData = (data: number[], assumptions: Assumptions, forecastMethod: string, hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number }, arimaParams: { p: number; d: number; q: number }, decompParams: { trendStrength: number; seasonalityStrength: number }): DemandForecastData[] => {
   const planningMonths = assumptions.planningMonths ?? 12;
   const historyLength = data.length;
@@ -1285,7 +1303,7 @@ export default function LongTermForecastingDemand() {
             if (actualsResponse.ok) {
               const actuals = await actualsResponse.json() as LongTermActualRecord[];
               if (Array.isArray(actuals) && actuals.length > 0) {
-                return { channel, data: actuals.map((row) => Number(row.volume) || 0) };
+                return { channel, data: buildIndexedLongTermHistory(actuals) };
               }
             }
           } catch (error) {
@@ -1685,19 +1703,9 @@ export default function LongTermForecastingDemand() {
     const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
     const published: Record<ChannelKey, number[]> = { voice: [], email: [], chat: [], cases: [] };
     for (const ch of channels) {
-      const vols = combinedForecastVolumesByChannel[ch];
-      const factor = recutFactorByChannel[ch];
-      published[ch] = vols.map((v, i) => {
-        const isYear2 = isTwoYear && i >= 12;
-        if (!isYear2 && completedMonthIndices.includes(i)) {
-          // Use actual if available, else original forecast
-          const key = getActualKey(i, ch);
-          return demandActuals[key] ?? v;
-        }
-        // Year 2 months: use two-pass base directly (re-cut factor already baked into history)
-        if (isYear2) return v;
-        return factor != null ? Math.round(v * factor) : v;
-      });
+      const year1 = normalizeMonthlyForecast(year1EffectiveVolumesByChannel[ch], effectiveFinalHistoricalDataByChannel[ch], 12);
+      const year2 = isTwoYear ? normalizeMonthlyForecast(forecastVolumesByChannelYear2[ch], year1, 12) : [];
+      published[ch] = [...year1, ...year2];
     }
     setRecutVolumesByChannel(published);
     // Persist immediately via active state
@@ -1761,7 +1769,7 @@ export default function LongTermForecastingDemand() {
   }, [dataSourceMode, manualFinalHistoricalDataByChannel, finalHistoricalDataByChannel]);
   // Per-channel forecast volumes — uses each channel's own history when available
   const forecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
-    const pm = assumptions.planningMonths ?? 12;
+    const pm = isTwoYear ? 12 : assumptions.planningMonths ?? 12;
     const voiceForecast = getCalculatedVolumes(effectiveFinalHistoricalDataByChannel.voice, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm);
     const emailHistory = effectiveFinalHistoricalDataByChannel.email;
     const chatHistory = effectiveFinalHistoricalDataByChannel.chat;
@@ -1776,7 +1784,7 @@ export default function LongTermForecastingDemand() {
       ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
       : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
     return { voice: voiceForecast, email: emailForecast, chat: chatForecast, cases: casesForecast };
-  }, [effectiveFinalHistoricalDataByChannel, dataSourceMode, hasExplicitHistoryByChannel, forecastMethod, assumptions, hwParams, arimaParams, decompParams]);
+  }, [effectiveFinalHistoricalDataByChannel, dataSourceMode, hasExplicitHistoryByChannel, forecastMethod, assumptions, isTwoYear, hwParams, arimaParams, decompParams]);
   const visibleFinalHistoricalData = useMemo(() => buildChannelHistoricalData(visibleHistoricalApiData, visibleHistoricalOverrides), [visibleHistoricalApiData, visibleHistoricalOverrides]);
   const canRestoreApiData = useMemo(() => {
     const currentData = historicalApiDataByChannel[historicalChannelView] ?? [];
@@ -1850,16 +1858,15 @@ export default function LongTermForecastingDemand() {
   // Per-channel re-cut factor: Σactuals_completed / Σforecast_completed
   // Returns null if no completed months have actuals (> 0) for that channel.
   // Uses ratio-of-sums (volume-weighted) so high-volume months have proportional influence.
-  // actual > 0 guard: zero actuals are almost always data-entry mistakes; including them
-  // would produce extreme deflation factors that corrupt all future-month forecasts.
+  // Null/undefined means missing; an explicit zero actual is still a recorded month.
   const recutFactorByChannel = useMemo<Record<ChannelKey, number | null>>(() => {
     const compute = (ch: ChannelKey) => {
-      const vols = forecastVolumesByChannel[ch];
+      const vols = getYearOneForecastBaseline(forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, ch);
       let sumActuals = 0, sumForecast = 0, hasAny = false;
       for (const i of completedMonthIndices) {
         const key = getActualKey(i, ch);
         const actual = demandActuals[key];
-        if (actual != null && actual > 0) {
+        if (actual != null && Number.isFinite(actual) && actual >= 0) {
           sumActuals += actual;
           sumForecast += vols[i] ?? 0;
           hasAny = true;
@@ -1869,7 +1876,7 @@ export default function LongTermForecastingDemand() {
     };
     return { voice: compute("voice"), email: compute("email"), chat: compute("chat"), cases: compute("cases") };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [completedMonthIndices, demandActuals, forecastVolumesByChannel, assumptions.startDate]);
+  }, [completedMonthIndices, demandActuals, forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, assumptions.startDate]);
 
   // Year 1 effective volumes: actuals where available, re-cut factor applied for future months.
   // Used as extended history input for the two-pass Year 2 computation.
@@ -1877,19 +1884,20 @@ export default function LongTermForecastingDemand() {
     const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
     const result = {} as Record<ChannelKey, number[]>;
     for (const ch of channels) {
-      result[ch] = (forecastVolumesByChannel[ch] ?? []).map((v, i) => {
-        if (recutVolumesByChannel) return recutVolumesByChannel[ch][i] ?? v;
-        if (completedMonthIndices.includes(i)) {
-          const actual = demandActuals[getActualKey(i, ch)];
-          if (actual != null && actual > 0) return actual;
-        }
-        const factor = recutFactorByChannel[ch];
-        return factor != null ? Math.round(v * factor) : v;
+      const basePlan = getYearOneForecastBaseline(forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, ch);
+      const actualsByMonth = Array.from({ length: 12 }, (_, index) => demandActuals[getActualKey(index, ch)]);
+      result[ch] = buildEffectiveYearOnePlan({
+        basePlan,
+        actualsByMonth,
+        completedMonthIndices,
+        recutFactor: recutFactorByChannel[ch],
+        publishedRecut: recutFactorByChannel[ch] == null ? recutVolumesByChannel?.[ch] ?? null : null,
+        sourceHistory: effectiveFinalHistoricalDataByChannel[ch],
       });
     }
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forecastVolumesByChannel, recutVolumesByChannel, completedMonthIndices, demandActuals, recutFactorByChannel]);
+  }, [forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, recutVolumesByChannel, completedMonthIndices, demandActuals, recutFactorByChannel]);
 
   // Two-pass Year 2 forecast: extend history with Year 1 effective volumes, then run the
   // same forecast model to produce 12 months of Year 2. Inactive when isTwoYear is false.
@@ -1898,8 +1906,14 @@ export default function LongTermForecastingDemand() {
     const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
     const result = {} as Record<ChannelKey, number[]>;
     for (const ch of channels) {
-      const extendedHistory = [...effectiveFinalHistoricalDataByChannel[ch], ...year1EffectiveVolumesByChannel[ch]];
-      result[ch] = getCalculatedVolumes(extendedHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12);
+      const extendedHistoricalBase = normalizeMonthlyHistoryForExtendedForecast(effectiveFinalHistoricalDataByChannel[ch]);
+      const year1EffectiveBase = normalizeMonthlyForecast(year1EffectiveVolumesByChannel[ch], extendedHistoricalBase, 12);
+      const extendedHistory = buildTwoPassYear2Input(extendedHistoricalBase, year1EffectiveBase);
+      result[ch] = normalizeMonthlyForecast(
+        getCalculatedVolumes(extendedHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12),
+        extendedHistory,
+        12
+      );
     }
     return result;
   }, [isTwoYear, effectiveFinalHistoricalDataByChannel, year1EffectiveVolumesByChannel, forecastMethod, assumptions, hwParams, arimaParams, decompParams]);
@@ -1908,12 +1922,12 @@ export default function LongTermForecastingDemand() {
   const combinedForecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     if (!isTwoYear) return forecastVolumesByChannel;
     return {
-      voice:  [...forecastVolumesByChannel.voice,  ...forecastVolumesByChannelYear2.voice],
-      email:  [...forecastVolumesByChannel.email,  ...forecastVolumesByChannelYear2.email],
-      chat:   [...forecastVolumesByChannel.chat,   ...forecastVolumesByChannelYear2.chat],
-      cases:  [...forecastVolumesByChannel.cases,  ...forecastVolumesByChannelYear2.cases],
+      voice:  [...year1EffectiveVolumesByChannel.voice,  ...forecastVolumesByChannelYear2.voice],
+      email:  [...year1EffectiveVolumesByChannel.email,  ...forecastVolumesByChannelYear2.email],
+      chat:   [...year1EffectiveVolumesByChannel.chat,   ...forecastVolumesByChannelYear2.chat],
+      cases:  [...year1EffectiveVolumesByChannel.cases,  ...forecastVolumesByChannelYear2.cases],
     };
-  }, [isTwoYear, forecastVolumesByChannel, forecastVolumesByChannelYear2]);
+  }, [isTwoYear, forecastVolumesByChannel, year1EffectiveVolumesByChannel, forecastVolumesByChannelYear2]);
 
   const volumeTrendComparison = useMemo(() => {
     const historyLength = includedChannels.reduce((max, channel) => Math.max(max, effectiveFinalHistoricalDataByChannel[channel].length), 0);
@@ -1972,16 +1986,10 @@ export default function LongTermForecastingDemand() {
     const isYear2Month = isTwoYear && futureIdx >= 12;
     const isCompletedIdx = !isYear2Month && completedMonthIndices.includes(futureIdx);
     const computeVol = (ch: ChannelKey, baseVol: number): number => {
-      if (recutVolumesByChannel) return recutVolumesByChannel[ch][futureIdx] ?? baseVol;
-      // For completed Year 1 months use the actual directly (same as published re-cut logic)
+      if (recutVolumesByChannel && recutFactorByChannel[ch] == null) return recutVolumesByChannel[ch][futureIdx] ?? baseVol;
       if (isCompletedIdx) {
         const actual = demandActuals[getActualKey(futureIdx, ch)];
         if (actual != null && actual > 0) return actual;
-      }
-      // Apply live re-cut factor to Year 1 future months only
-      if (!isYear2Month) {
-        const factor = recutFactorByChannel[ch];
-        return factor != null ? Math.round(baseVol * factor) : baseVol;
       }
       return baseVol;
     };
@@ -2053,17 +2061,20 @@ export default function LongTermForecastingDemand() {
       const monthLabel = MONTH_NAMES[d.getMonth()];
       const isYear2 = isTwoYear && i >= 12;
       const isCompleted = !isYear2 && completedMonthIndices.includes(i);
-      const forecastVol = combinedForecastVolumesByChannel[detailChannel][i] ?? 0;
+      const year1Forecast = getYearOneForecastBaseline(forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, detailChannel);
+      const forecastVol = isYear2
+        ? forecastVolumesByChannelYear2[detailChannel][i - 12] ?? 0
+        : year1Forecast[i] ?? 0;
       const actualKey = isYear2 ? "" : `${year}-${month1}-${detailChannel}`;
       const actualVol = isYear2 ? null : (demandActuals[actualKey] ?? null);
       const variancePct = !isYear2 && actualVol != null && forecastVol > 0
         ? Number((((actualVol - forecastVol) / forecastVol) * 100).toFixed(1))
         : null;
       const factor = isYear2 ? null : recutFactorByChannel[detailChannel];
-      const recutVol = !isCompleted && !isYear2 && factor != null ? Math.round(forecastVol * factor) : null;
+      const recutVol = !isCompleted && !isYear2 && factor != null ? year1EffectiveVolumesByChannel[detailChannel][i] ?? null : null;
       return { index: i, year, month1, monthLabel, isCompleted, isYear2, forecastVol, actualVol, variancePct, recutVol, actualKey };
     });
-  }, [assumptions.startDate, effectivePlanningMonths, isTwoYear, completedMonthIndices, combinedForecastVolumesByChannel, detailChannel, demandActuals, recutFactorByChannel]);
+  }, [assumptions.startDate, effectivePlanningMonths, isTwoYear, completedMonthIndices, forecastVolumesByChannel, forecastVolumesByChannelYear2, effectiveFinalHistoricalDataByChannel, year1EffectiveVolumesByChannel, detailChannel, demandActuals, recutFactorByChannel]);
 
   const kpis = useMemo(() => futureData.length === 0 ? { avgVolume: 0 } : ({
     avgVolume: Math.round(futureData.reduce((sum, row) => sum + row.volume, 0) / futureData.length),
@@ -3075,7 +3086,7 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
                             {MONTH_NAMES.map((monthName, monthIdx) => {
                               const h2 = yr2HistByMonthIdx.get(monthIdx);
                               const yr1Plan = year1EffectiveVolumesByChannel[detailChannel][monthIdx] ?? 0;
-                              const yr2Forecast = forecastVolumesByChannelYear2[detailChannel][monthIdx] ?? 0;
+                              const yr2Forecast = forecastVolumesByChannelYear2[detailChannel][monthIdx];
                               return (
                                 <TableRow key={`yr2-${monthName}`} className="hover:bg-muted/30">
                                   <TableCell className="px-3 py-2 text-center font-bold text-sm whitespace-nowrap align-middle">{monthName}</TableCell>
@@ -3086,7 +3097,7 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
                                     {yr1Plan > 0 ? yr1Plan.toLocaleString() : "—"}
                                   </TableCell>
                                   <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle font-bold text-primary">
-                                    {yr2Forecast > 0 ? yr2Forecast.toLocaleString() : "—"}
+                                    {Number.isFinite(yr2Forecast) ? Math.max(0, Math.round(yr2Forecast)).toLocaleString() : "—"}
                                   </TableCell>
                                 </TableRow>
                               );
