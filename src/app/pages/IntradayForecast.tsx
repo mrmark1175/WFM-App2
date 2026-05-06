@@ -10,6 +10,17 @@ import { PageLayout } from "../components/PageLayout";
 import { getCalculatedVolumes, Assumptions } from "./forecasting-logic";
 import { getDSTWarning } from "../lib/timezone";
 import {
+  LEGACY_INTRADAY_FTE_PREFS_KEY,
+  LEGACY_INTRADAY_PREFS_KEY,
+  IntradayChannel,
+  IntradayStaffingMode,
+  buildIntradayBaselineKey,
+  buildIntradayFtePrefsPageKey,
+  buildIntradayPrefsPageKey,
+  normalizeIntradayChannel,
+  normalizeIntradayStaffingMode,
+} from "./intraday-scope";
+import {
   GridData, DOW_LABELS, SLOT_COUNT,
   computeMedianPattern, computeDistributionWeights,
   distributeWeeklyVolumeToIntervals, distributeMonthlyToTargetWeek,
@@ -30,7 +41,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Textarea } from "../components/ui/textarea";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type ChannelKey = "voice" | "email" | "chat" | "cases";
+type ChannelKey = IntradayChannel;
 
 interface PlannerSnapshot {
   assumptions: Assumptions;
@@ -41,6 +52,8 @@ interface PlannerSnapshot {
   channelHistoricalApiData: Record<ChannelKey, number[]>;
   channelHistoricalOverrides: Record<ChannelKey, Record<number, string>>;
   recutVolumesByChannel?: Record<ChannelKey, number[]> | null;
+  selectedChannels?: Record<ChannelKey, boolean>;
+  poolingMode?: "dedicated" | "blended";
 }
 
 interface CapacityFteModelSnapshot {
@@ -73,6 +86,8 @@ interface DistributionProfile {
   baseline_end_date: string | null;
   sample_day_count: number | null;
   notes: string | null;
+  staffing_mode?: IntradayStaffingMode;
+  is_legacy_fallback?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -158,8 +173,31 @@ function applyHistoricalOverrides(apiData: number[], overrides: Record<number, s
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export const IntradayForecast = () => {
   const { activeLob, activeChannel } = useLOB();
-  const selectedChannel = activeChannel as ChannelKey;
-  const [prefs, setPrefs] = usePagePreferences<IntradayPrefs>("intraday_forecast", DEFAULT_PREFS);
+  const selectedChannel = normalizeIntradayChannel(activeChannel);
+  const [staffingMode, setStaffingMode] = useState<IntradayStaffingMode>("dedicated");
+  const intradayPrefsPageKey = useMemo(
+    () => buildIntradayPrefsPageKey(selectedChannel, staffingMode),
+    [selectedChannel, staffingMode]
+  );
+  const intradayFtePrefsPageKey = useMemo(
+    () => buildIntradayFtePrefsPageKey(selectedChannel, staffingMode),
+    [selectedChannel, staffingMode]
+  );
+  const intradayBaselineKey = useMemo(
+    () => buildIntradayBaselineKey({
+      lobId: activeLob?.id,
+      lobName: activeLob?.name,
+      channel: selectedChannel,
+      staffingMode,
+    }),
+    [activeLob?.id, activeLob?.name, selectedChannel, staffingMode]
+  );
+  const [prefs, setPrefs, prefsMeta] = usePagePreferences<IntradayPrefs>(
+    intradayPrefsPageKey,
+    DEFAULT_PREFS,
+    true,
+    LEGACY_INTRADAY_PREFS_KEY
+  );
   const { targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource,
           baselineYear, baselineStartWeek, manualRawData, manualWeeklyVolumes, editableWeights,
           hideBlankRows, smoothFTE, smoothWindow, patternShiftHours = 0,
@@ -168,13 +206,14 @@ export const IntradayForecast = () => {
           showFteHeatmap = false } = prefs;
 
   // Reset target month/week when global channel changes
-  const prevChannelRef = React.useRef(selectedChannel);
+  const prevChannelRef = React.useRef(`${selectedChannel}:${staffingMode}`);
   useEffect(() => {
-    if (prevChannelRef.current !== selectedChannel) {
-      prevChannelRef.current = selectedChannel;
+    const scope = `${selectedChannel}:${staffingMode}`;
+    if (prevChannelRef.current !== scope) {
+      prevChannelRef.current = scope;
       setPrefs({ targetMonthOffset: 0, targetWeekStart: "" });
     }
-  }, [selectedChannel]);
+  }, [selectedChannel, staffingMode]);
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [plannerSnapshot, setPlannerSnapshot] = useState<PlannerSnapshot | null>(null);
@@ -264,6 +303,7 @@ export const IntradayForecast = () => {
       }
       if (lobSettings?.demand_timezone) setDemandTZ(lobSettings.demand_timezone as string);
       if (lobSettings?.supply_timezone) setSupplyTZ(lobSettings.supply_timezone as string);
+      if (lobSettings?.pooling_mode) setStaffingMode(normalizeIntradayStaffingMode(lobSettings.pooling_mode));
       if (snapshot) {
         setPlannerSnapshot(snapshot);
       } else if (lobSettings) {
@@ -353,14 +393,14 @@ export const IntradayForecast = () => {
   useEffect(() => {
     if (!activeLob) return;
     setIsLoadingProfiles(true);
-    fetch(apiUrl(`/api/distribution-profiles?lob_id=${activeLob.id}&channel=${selectedChannel}`))
+    fetch(apiUrl(`/api/distribution-profiles?lob_id=${activeLob.id}&channel=${selectedChannel}&staffing_mode=${staffingMode}&allow_legacy_fallback=true`))
       .then((r) => r.json())
       .then((data: DistributionProfile[]) => {
         if (Array.isArray(data)) setSavedProfiles(data);
       })
       .catch(() => setSavedProfiles([]))
       .finally(() => setIsLoadingProfiles(false));
-  }, [activeLob?.id, selectedChannel]);
+  }, [activeLob?.id, selectedChannel, staffingMode]);
 
   // ── Fetch shrinkage plan hours_per_day (FTE daily hour definition) ──────────
   useEffect(() => {
@@ -421,6 +461,23 @@ export const IntradayForecast = () => {
     return { voice: voiceForecast, email: emailForecast, chat: chatForecast, cases: casesForecast };
   }, [plannerSnapshot]);
 
+  const selectedDemandChannels = useMemo<ChannelKey[]>(() => {
+    const selected = plannerSnapshot?.selectedChannels;
+    const channels = (["voice", "email", "chat", "cases"] as ChannelKey[])
+      .filter((channel) => selected?.[channel]);
+    return channels.length > 0 ? channels : [selectedChannel];
+  }, [plannerSnapshot?.selectedChannels, selectedChannel]);
+
+  const blendedForecastVolumes = useMemo<number[]>(() => {
+    const maxLength = Math.max(0, ...selectedDemandChannels.map((channel) => forecastVolumesByChannel[channel]?.length ?? 0));
+    return Array.from({ length: maxLength }, (_, monthIndex) =>
+      selectedDemandChannels.reduce((sum, channel) => sum + (forecastVolumesByChannel[channel]?.[monthIndex] ?? 0), 0)
+    );
+  }, [forecastVolumesByChannel, selectedDemandChannels]);
+
+  const usesBlendedMonthlyVolume = staffingMode === "blended" || plannerSnapshot?.poolingMode === "blended";
+  const targetVolumeSeries = usesBlendedMonthlyVolume ? blendedForecastVolumes : forecastVolumesByChannel[selectedChannel];
+
   const monthLabels = useMemo(
     () => plannerSnapshot?.assumptions?.startDate
       ? generateMonthLabels(plannerSnapshot.assumptions.startDate)
@@ -430,9 +487,9 @@ export const IntradayForecast = () => {
 
   const safeOffset = Math.min(
     Math.max(0, targetMonthOffset),
-    Math.max(0, forecastVolumesByChannel[selectedChannel].length - 1)
+    Math.max(0, targetVolumeSeries.length - 1)
   );
-  const targetMonthlyVolume = forecastVolumesByChannel[selectedChannel][safeOffset] ?? 0;
+  const targetMonthlyVolume = targetVolumeSeries[safeOffset] ?? 0;
   const { year: targetYear, month: targetMonthIndex } = useMemo(
     () => plannerSnapshot?.assumptions?.startDate
       ? monthFromOffset(plannerSnapshot.assumptions.startDate, safeOffset)
@@ -891,13 +948,13 @@ export const IntradayForecast = () => {
     }
 
     const monKey = weekDates[0];
-    console.log(`[Commit→Scheduling] LOB=${activeLob.id} channel=${selectedChannel} grain=${grain} smoothFTE=${smoothFTE}`);
+    console.log(`[Commit→Scheduling] LOB=${activeLob.id} channel=${selectedChannel} staffingMode=${staffingMode} grain=${grain} smoothFTE=${smoothFTE}`);
     console.log(`[Commit→Scheduling] ${monKey} (Mon) first 24 slots:`, dates[monKey]?.slice(0, 24));
     console.log(`[Commit→Scheduling] ${monKey} (Mon) peak slots 48–56:`, dates[monKey]?.slice(48, 56));
 
     setCommitStatus("saving");
     try {
-      await fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`), {
+      await fetch(apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(intradayFtePrefsPageKey)}&lob_id=${activeLob.id}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -910,6 +967,8 @@ export const IntradayForecast = () => {
             sla_sec: fteParams!.slaSec,
             sla_target: fteParams!.slaTarget,
             channel: selectedChannel,
+            staffing_mode: staffingMode,
+            baseline_key: intradayBaselineKey,
             grain: 15,
           },
         }),
@@ -965,9 +1024,10 @@ export const IntradayForecast = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           lob_id: activeLob.id,
-          snapshot_label: `${activeLob.name} • ${selectedChannel} • ${new Date().toISOString().slice(0, 10)}`,
+          snapshot_label: `${activeLob.name} • ${selectedChannel} • ${staffingMode} • ${new Date().toISOString().slice(0, 10)}`,
           interval_minutes: intervalMinutes,
-          notes: `Approved from Intraday Forecast (smoothed=${smoothFTE}, window=${smoothWindow})`,
+          staffing_mode: staffingMode,
+          notes: `Approved from Intraday Forecast (channel=${selectedChannel}, staffing=${staffingMode}, smoothed=${smoothFTE}, window=${smoothWindow})`,
           rows,
         }),
         credentials: "include",
@@ -1062,6 +1122,7 @@ export const IntradayForecast = () => {
         body: JSON.stringify({
           lob_id: activeLob.id,
           channel: selectedChannel,
+          staffing_mode: staffingMode,
           profile_name: profileName.trim(),
           interval_weights: activeIntervalWeights,
           day_weights: distributionWeights.dayWeights,
@@ -1237,7 +1298,7 @@ export const IntradayForecast = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `intraday_forecast_${selectedChannel}_${monthLabels[safeOffset]?.replace(" ", "_")}_${targetWeekStart}.csv`;
+    a.download = `intraday_forecast_${selectedChannel}_${staffingMode}_${monthLabels[safeOffset]?.replace(" ", "_")}_${targetWeekStart}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1299,6 +1360,8 @@ export const IntradayForecast = () => {
     const a = plannerSnapshot?.assumptions;
     setPageData({
       channel: selectedChannel,
+      staffingMode,
+      monthlyVolumeMode: usesBlendedMonthlyVolume ? "blended-total" : "channel",
       targetMonthlyVolume,
       forecastedWeekVolume,
       grain,
@@ -1323,7 +1386,7 @@ export const IntradayForecast = () => {
         : null,
     });
     return () => setPageData(null);
-  }, [selectedChannel, targetMonthlyVolume, forecastedWeekVolume, grain, plannerSnapshot, smoothedFteTable, setPageData]);
+  }, [selectedChannel, staffingMode, usesBlendedMonthlyVolume, targetMonthlyVolume, forecastedWeekVolume, grain, plannerSnapshot, smoothedFteTable, setPageData]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1386,13 +1449,40 @@ export const IntradayForecast = () => {
         </div>
         <div className="p-4">
           <div className="flex flex-wrap items-end gap-4">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-semibold text-foreground">LOB</span>
+              <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold min-w-[140px]">
+                {activeLob?.name ?? "Select LOB"}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-semibold text-foreground">Channel</span>
+              <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold capitalize min-w-[100px]">
+                {selectedChannel}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-semibold text-foreground">Staffing Mode</span>
+              <Select value={staffingMode} onValueChange={(v) => setStaffingMode(normalizeIntradayStaffingMode(v))}>
+                <SelectTrigger className="w-36 h-8 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="dedicated">Dedicated</SelectItem>
+                  <SelectItem value="blended">Blended</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             {/* Target month */}
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-semibold text-foreground">Target Month</span>
               <Select
                 value={String(safeOffset)}
                 onValueChange={(v) => setPrefs({ targetMonthOffset: parseInt(v), targetWeekStart: "" })}
-                disabled={forecastVolumesByChannel[selectedChannel].length === 0}
+                disabled={targetVolumeSeries.length === 0}
               >
                 <SelectTrigger className="w-36 h-8 text-sm">
                   <SelectValue placeholder="Select month" />
@@ -1439,7 +1529,7 @@ export const IntradayForecast = () => {
                 </div>
                 {targetMonthlyVolume > 0 && (
                   <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${volumeSourceLabel.color}`}>
-                    {volumeSourceLabel.label}
+                    {usesBlendedMonthlyVolume ? `${volumeSourceLabel.label} · blended total` : volumeSourceLabel.label}
                   </span>
                 )}
               </div>
@@ -1478,6 +1568,15 @@ export const IntradayForecast = () => {
               )}
             </div>
           </div>
+
+          {prefsMeta.loadedFromFallback && (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>
+                Loaded legacy intraday preferences because no scoped baseline exists for this LOB, channel, and staffing mode. Saving or editing will write to the scoped key only.
+              </span>
+            </div>
+          )}
 
           {/* DST transition warning for the selected target week */}
           {targetWeekDSTWarning && (
@@ -3082,6 +3181,7 @@ export const IntradayForecast = () => {
             <Save className="h-4 w-4 text-green-500" />
             Distribution Profiles
             <Badge variant="outline" className="text-xs">{selectedChannel}</Badge>
+            <Badge variant="outline" className="text-xs">{staffingMode}</Badge>
           </h2>
           <Button
             size="sm"
@@ -3096,7 +3196,7 @@ export const IntradayForecast = () => {
             <p className="text-sm text-slate-400 animate-pulse">Loading profiles...</p>
           ) : savedProfiles.length === 0 ? (
             <p className="text-sm text-slate-400">
-              No saved profiles for this LOB + channel yet. Compute a pattern and save it.
+              No saved profiles for this LOB + channel + staffing mode yet. Compute a pattern and save it.
             </p>
           ) : (
             <div className="flex flex-col gap-2">
@@ -3112,6 +3212,7 @@ export const IntradayForecast = () => {
                         ? `Baseline: ${profile.baseline_start_date} \u2192 ${profile.baseline_end_date}`
                         : "No baseline metadata"}
                       {profile.sample_day_count ? ` \u00b7 ${profile.sample_day_count} days` : ""}
+                      {profile.is_legacy_fallback ? " · legacy fallback" : ""}
                     </p>
                   </div>
                   <div className="flex gap-2">
@@ -3154,6 +3255,7 @@ export const IntradayForecast = () => {
             </div>
             <div className="text-xs text-muted-foreground">
               Channel: <strong>{selectedChannel}</strong> &middot;
+              Staffing: <strong>{staffingMode}</strong> &middot;
               Month: <strong>{monthLabels[safeOffset]}</strong> &middot;
               Week: <strong>{targetWeekStart}</strong> &middot;
               Baseline: <strong>{baselineDataCount} days</strong>

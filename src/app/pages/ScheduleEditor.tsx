@@ -13,6 +13,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle, Eraser, Settings2, AlertTriangle } from "lucide-react";
 import { erlangC, erlangServiceLevel } from "./intraday-distribution-logic";
 import { getDSTWarning } from "../lib/timezone";
+import {
+  LEGACY_INTRADAY_FTE_PREFS_KEY,
+  buildIntradayFtePrefsPageKey,
+  normalizeIntradayChannel,
+  normalizeIntradayStaffingMode,
+} from "./intraday-scope";
 import { toast } from "sonner";
 import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
 import { WeeklyScheduleGrid } from "../components/schedule/WeeklyScheduleGrid";
@@ -267,6 +273,7 @@ function AddShiftDialog({ open, onClose, agents, templates, prefillAgentId, pref
 interface DemandSnapshot {
   id: number;
   snapshot_label: string | null;
+  staffing_mode?: string;
   interval_minutes: number;
   approved_at: string;
 }
@@ -550,7 +557,8 @@ function PublishDraftsDialog({ open, onClose, lobId, dateStart, dateEnd, agents,
 
 export function ScheduleEditor() {
   const navigate = useNavigate();
-  const { activeLob } = useLOB();
+  const { activeLob, activeChannel } = useLOB();
+  const selectedChannel = normalizeIntradayChannel(activeChannel);
 
   const [weekStart, setWeekStart] = useState<Date>(() => getMondayOf(new Date()));
   const [activeDayIdx, setActiveDayIdx] = useState(0);
@@ -587,6 +595,7 @@ export function ScheduleEditor() {
   // Timezone (for DST banner)
   const [demandTZ, setDemandTZ] = useState("America/New_York");
   const [supplyTZ, setSupplyTZ] = useState("Asia/Manila");
+  const [staffingMode, setStaffingMode] = useState<"dedicated" | "blended">("dedicated");
   const [dstBannerDismissed, setDstBannerDismissed] = useState(false);
 
   // Local-first: dirty tracking + publish
@@ -716,6 +725,7 @@ export function ScheduleEditor() {
       .then(data => {
         if (data?.demand_timezone) setDemandTZ(data.demand_timezone as string);
         if (data?.supply_timezone) setSupplyTZ(data.supply_timezone as string);
+        if (data?.pooling_mode) setStaffingMode(normalizeIntradayStaffingMode(data.pooling_mode));
       })
       .catch(() => {});
   }, [activeLob]);
@@ -725,10 +735,25 @@ export function ScheduleEditor() {
 
   const loadRequiredFte = useCallback(() => {
     if (!activeLob) return;
-    fetch(apiUrl(`/api/user-preferences?page_key=intraday_fte&lob_id=${activeLob.id}`))
-      .then(r => r.ok ? r.json() : null)
+    const scopedKey = buildIntradayFtePrefsPageKey(selectedChannel, staffingMode);
+    const loadPrefs = (pageKey: string) =>
+      fetch(apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(pageKey)}&lob_id=${activeLob.id}`))
+        .then(r => r.ok ? r.json() : null);
+
+    loadPrefs(scopedKey)
+      .then(async data => {
+        if (data && typeof data === "object" && Object.keys(data).length > 0) return data;
+        return loadPrefs(LEGACY_INTRADAY_FTE_PREFS_KEY);
+      })
       .then(data => {
-        if (!data) return;
+        if (!data) {
+          setRequiredFteByWeekday({});
+          setErlangsByWeekday({});
+          setRequiredFteByDate({});
+          setErlangsByDate({});
+          setSlaParams(null);
+          return;
+        }
 
         const expand = (map: unknown): Record<string, number[]> => {
           const out: Record<string, number[]> = {};
@@ -767,7 +792,7 @@ export function ScheduleEditor() {
         setRequiredFteByDate({ "*": padded.slice(0, 96) });
       })
       .catch(() => {});
-  }, [activeLob]);
+  }, [activeLob, selectedChannel, staffingMode]);
 
   useEffect(() => { loadRequiredFte(); }, [loadRequiredFte]);
 

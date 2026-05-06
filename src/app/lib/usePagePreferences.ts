@@ -17,15 +17,17 @@ import { useLOB } from "@/app/lib/lobContext";
 export function usePagePreferences<T extends Record<string, unknown>>(
   pageKey: string,
   defaults: T,
-  lobScoped = true
-): [T, (updater: Partial<T> | ((prev: T) => T)) => void] {
+  lobScoped = true,
+  fallbackPageKey?: string
+): [T, (updater: Partial<T> | ((prev: T) => T)) => void, { loadedFromFallback: boolean }] {
   const { activeLob, isLoading: lobLoading } = useLOB();
   const [prefs, setPrefsState] = useState<T>(defaults);
+  const [loadedFromFallback, setLoadedFromFallback] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialized = useRef(false);
-  // Track the lob_id that was used to load the current prefs so we can
-  // reload when the LOB switches.
-  const loadedForLob = useRef<number | null | undefined>(undefined);
+  // Track the exact scope that was loaded so dynamic page keys reload when
+  // channel/staffing-mode scoped pages switch inside the same LOB.
+  const loadedForScope = useRef<string | undefined>(undefined);
 
   const lobId = lobScoped ? activeLob?.id : undefined;
 
@@ -35,32 +37,47 @@ export function usePagePreferences<T extends Record<string, unknown>>(
     if (lobLoading) return;
     // If lob-scoped and no active LOB yet, wait
     if (lobScoped && !activeLob) return;
-    // Skip if we already loaded for this exact LOB
-    if (loadedForLob.current === lobId) return;
+    const loadScope = `${pageKey}|${fallbackPageKey ?? ""}|${lobId ?? "global"}`;
+    // Skip if we already loaded for this exact scope
+    if (loadedForScope.current === loadScope) return;
 
     initialized.current = false;
-    loadedForLob.current = lobId;
+    loadedForScope.current = loadScope;
 
     const url = lobId
-      ? apiUrl(`/api/user-preferences?page_key=${pageKey}&lob_id=${lobId}`)
-      : apiUrl(`/api/user-preferences?page_key=${pageKey}`);
+      ? apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(pageKey)}&lob_id=${lobId}`)
+      : apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(pageKey)}`);
 
     fetch(url)
       .then((r) => r.json())
-      .then((data: Partial<T>) => {
+      .then(async (data: Partial<T>) => {
         if (data && typeof data === "object" && Object.keys(data).length > 0) {
           setPrefsState({ ...defaults, ...data });
+          setLoadedFromFallback(false);
         } else {
+          if (fallbackPageKey && fallbackPageKey !== pageKey) {
+            const fallbackUrl = lobId
+              ? apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(fallbackPageKey)}&lob_id=${lobId}`)
+              : apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(fallbackPageKey)}`);
+            const fallback = await fetch(fallbackUrl).then((r) => r.ok ? r.json() : null).catch(() => null) as Partial<T> | null;
+            if (fallback && typeof fallback === "object" && Object.keys(fallback).length > 0) {
+              setPrefsState({ ...defaults, ...fallback });
+              setLoadedFromFallback(true);
+              return;
+            }
+          }
           setPrefsState(defaults);
+          setLoadedFromFallback(false);
         }
       })
       .catch(() => {
         setPrefsState(defaults);
+        setLoadedFromFallback(false);
       })
       .finally(() => {
         initialized.current = true;
       });
-  }, [lobLoading, lobScoped, activeLob, lobId, pageKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lobLoading, lobScoped, activeLob, lobId, pageKey, fallbackPageKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Save to DB (debounced 1.5s) ───────────────────────────────────────────────
   const saveToDb = useCallback(
@@ -69,8 +86,8 @@ export function usePagePreferences<T extends Record<string, unknown>>(
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(async () => {
         const url = lobId
-          ? apiUrl(`/api/user-preferences?page_key=${pageKey}&lob_id=${lobId}`)
-          : apiUrl(`/api/user-preferences?page_key=${pageKey}`);
+          ? apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(pageKey)}&lob_id=${lobId}`)
+          : apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(pageKey)}`);
         try {
           const res = await fetch(url, {
             method: "PUT",
@@ -97,11 +114,12 @@ export function usePagePreferences<T extends Record<string, unknown>>(
             ? updater(prev)
             : { ...prev, ...updater };
         saveToDb(next);
+        setLoadedFromFallback(false);
         return next;
       });
     },
     [saveToDb]
   );
 
-  return [prefs, setPrefs];
+  return [prefs, setPrefs, { loadedFromFallback }];
 }

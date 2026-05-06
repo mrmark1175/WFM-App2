@@ -321,6 +321,7 @@ async function ensureAppTables() {
       organization_id INTEGER NOT NULL DEFAULT 1,
       lob_id          INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
       channel         TEXT NOT NULL DEFAULT 'voice',
+      staffing_mode   TEXT NOT NULL DEFAULT 'dedicated',
       profile_name    TEXT NOT NULL,
       interval_weights JSONB NOT NULL,
       day_weights      JSONB NOT NULL,
@@ -335,8 +336,23 @@ async function ensureAppTables() {
   await pool.query(`
     DO $$ BEGIN
       ALTER TABLE distribution_profiles
-        ADD CONSTRAINT dist_profiles_org_lob_channel_name_key
-        UNIQUE (organization_id, lob_id, channel, profile_name);
+        ADD COLUMN IF NOT EXISTS staffing_mode TEXT NOT NULL DEFAULT 'dedicated';
+    EXCEPTION WHEN duplicate_column THEN NULL; WHEN duplicate_table THEN NULL; END; $$
+  `);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE distribution_profiles
+        DROP CONSTRAINT IF EXISTS dist_profiles_org_lob_channel_name_key;
+      ALTER TABLE distribution_profiles
+        ADD CONSTRAINT dist_profiles_org_lob_channel_staffing_name_key
+        UNIQUE (organization_id, lob_id, channel, staffing_mode, profile_name);
+    EXCEPTION WHEN duplicate_object THEN NULL; WHEN duplicate_table THEN NULL; END; $$
+  `);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE distribution_profiles
+        ADD CONSTRAINT dist_profiles_staffing_mode_check
+        CHECK (staffing_mode IN ('dedicated', 'blended'));
     EXCEPTION WHEN duplicate_object THEN NULL; WHEN duplicate_table THEN NULL; END; $$
   `);
 
@@ -595,11 +611,18 @@ async function ensureAppTables() {
       organization_id   INTEGER NOT NULL DEFAULT 1,
       lob_id            INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
       snapshot_label    VARCHAR(255),
+      staffing_mode     TEXT NOT NULL DEFAULT 'dedicated',
       interval_minutes  INTEGER NOT NULL DEFAULT 30,
       approved_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       approved_by       VARCHAR(255),
       notes             TEXT
     )
+  `);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE scheduling_demand_snapshots
+        ADD COLUMN IF NOT EXISTS staffing_mode TEXT NOT NULL DEFAULT 'dedicated';
+    EXCEPTION WHEN duplicate_column THEN NULL; WHEN duplicate_table THEN NULL; END; $$
   `);
 
   await pool.query(`
@@ -2123,12 +2146,22 @@ app.get('/api/distribution-profiles', async (req, res) => {
     const user = getCurrentUser(req);
     const lobId = parseInt(req.query.lob_id) || await getDefaultLobId(user.organization_id);
     const channel = req.query.channel || 'voice';
+    const staffingMode = req.query.staffing_mode === 'blended' ? 'blended' : 'dedicated';
     const result = await pool.query(
       `SELECT * FROM distribution_profiles
-       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4
        ORDER BY updated_at DESC`,
-      [user.organization_id, lobId, channel]
+      [user.organization_id, lobId, channel, staffingMode]
     );
+    if (result.rows.length === 0 && req.query.allow_legacy_fallback === 'true' && staffingMode !== 'dedicated') {
+      const legacy = await pool.query(
+        `SELECT *, true AS is_legacy_fallback FROM distribution_profiles
+         WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = 'dedicated'
+         ORDER BY updated_at DESC`,
+        [user.organization_id, lobId, channel]
+      );
+      return res.json(legacy.rows);
+    }
     res.json(result.rows);
   } catch (err) {
     console.error('Distribution Profiles GET Error:', err.message);
@@ -2139,19 +2172,20 @@ app.get('/api/distribution-profiles', async (req, res) => {
 app.post('/api/distribution-profiles', async (req, res) => {
   try {
     const user = getCurrentUser(req);
-    const { lob_id, channel = 'voice', profile_name, interval_weights, day_weights,
+    const { lob_id, channel = 'voice', staffing_mode = 'dedicated', profile_name, interval_weights, day_weights,
             baseline_start_date, baseline_end_date, sample_day_count, notes } = req.body;
     if (!profile_name || !interval_weights || !day_weights) {
       return res.status(400).json({ error: 'profile_name, interval_weights, and day_weights are required' });
     }
     const lobId = lob_id || await getDefaultLobId(user.organization_id);
+    const staffingMode = staffing_mode === 'blended' ? 'blended' : 'dedicated';
     const result = await pool.query(
       `INSERT INTO distribution_profiles
-         (organization_id, lob_id, channel, profile_name, interval_weights, day_weights,
+         (organization_id, lob_id, channel, staffing_mode, profile_name, interval_weights, day_weights,
           baseline_start_date, baseline_end_date, sample_day_count, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
-      [user.organization_id, lobId, channel, profile_name,
+      [user.organization_id, lobId, channel, staffingMode, profile_name,
        JSON.stringify(interval_weights), JSON.stringify(day_weights),
        baseline_start_date || null, baseline_end_date || null,
        sample_day_count || null, notes || null]
@@ -2799,7 +2833,7 @@ app.get('/api/scheduling/demand-snapshots', async (req, res) => {
   if (!lob_id) return res.status(400).json({ error: 'lob_id required' });
   try {
     const snapshots = await pool.query(
-      `SELECT id, snapshot_label, interval_minutes, approved_at, approved_by, notes
+      `SELECT id, snapshot_label, staffing_mode, interval_minutes, approved_at, approved_by, notes
        FROM scheduling_demand_snapshots
        WHERE organization_id=$1 AND lob_id=$2
        ORDER BY approved_at DESC`,
@@ -2831,17 +2865,18 @@ app.get('/api/scheduling/demand-snapshots/:id', async (req, res) => {
 
 app.post('/api/scheduling/demand-snapshots', async (req, res) => {
   const { organization_id } = getCurrentUser(req);
-  const { lob_id, snapshot_label, interval_minutes, approved_by, notes, rows } = req.body;
+  const { lob_id, snapshot_label, staffing_mode, interval_minutes, approved_by, notes, rows } = req.body;
   if (!lob_id || !Array.isArray(rows) || rows.length === 0) {
     return res.status(400).json({ error: 'lob_id and rows[] required' });
   }
+  const staffingMode = staffing_mode === 'blended' ? 'blended' : 'dedicated';
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const snap = await client.query(
-      `INSERT INTO scheduling_demand_snapshots (organization_id, lob_id, snapshot_label, interval_minutes, approved_by, notes)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-      [organization_id, lob_id, snapshot_label || null, interval_minutes || 30, approved_by || null, notes || null]
+      `INSERT INTO scheduling_demand_snapshots (organization_id, lob_id, snapshot_label, staffing_mode, interval_minutes, approved_by, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [organization_id, lob_id, snapshot_label || null, staffingMode, interval_minutes || 30, approved_by || null, notes || null]
     );
     const snapshot_id = snap.rows[0].id;
     for (const r of rows) {
