@@ -516,15 +516,16 @@ function normalizePositiveNumber(value: unknown, fallback: number): number {
 }
 
 function normalizePlanConfig(raw: Partial<PlanConfig> | null | undefined): PlanConfig {
+  const source = raw as (Partial<PlanConfig> & Record<string, unknown>) | null | undefined;
   return {
     ...DEFAULT_CONFIG,
     ...(raw ?? {}),
     planStartDate: raw?.planStartDate ?? DEFAULT_CONFIG.planStartDate,
     horizonWeeks: Number(raw?.horizonWeeks ?? DEFAULT_CONFIG.horizonWeeks),
     attritionRateMonthly: Number(raw?.attritionRateMonthly ?? DEFAULT_CONFIG.attritionRateMonthly),
-    attritionModel: normalizeAttritionModel(raw?.attritionModel),
-    attritionFixedCount: normalizeNonNegativeNumber(raw?.attritionFixedCount, DEFAULT_CONFIG.attritionFixedCount),
-    attritionFixedEveryMonths: normalizePositiveNumber(raw?.attritionFixedEveryMonths, DEFAULT_CONFIG.attritionFixedEveryMonths),
+    attritionModel: normalizeAttritionModel(source?.attritionModel ?? source?.attrition_model),
+    attritionFixedCount: normalizeNonNegativeNumber(source?.attritionFixedCount ?? source?.attrition_fixed_count, DEFAULT_CONFIG.attritionFixedCount),
+    attritionFixedEveryMonths: normalizePositiveNumber(source?.attritionFixedEveryMonths ?? source?.attrition_fixed_every_months, DEFAULT_CONFIG.attritionFixedEveryMonths),
     rampTrainingWeeks: Number(raw?.rampTrainingWeeks ?? DEFAULT_CONFIG.rampTrainingWeeks),
     rampNestingWeeks: Number(raw?.rampNestingWeeks ?? DEFAULT_CONFIG.rampNestingWeeks),
     rampNestingPct: Number(raw?.rampNestingPct ?? DEFAULT_CONFIG.rampNestingPct),
@@ -1376,7 +1377,7 @@ export function CapacityPlanning() {
           wifMap[r.whatif_id] = {
             id: r.whatif_id, name: r.whatif_name,
             is_committed: r.is_committed,
-            configSnapshot: normalizePlanConfig(snapshot),
+            configSnapshot: r.whatif_id === "base" ? loadedConfig : normalizePlanConfig(snapshot),
             fteModelSnapshot: normalizeFteModelSnapshot(snapshot.fteModelSnapshot),
           };
         }
@@ -1384,7 +1385,7 @@ export function CapacityPlanning() {
         const savedId = localStorage.getItem(`capWhatIfId_${lobId}_${channel}`);
         const validId = savedId && wifMap[savedId] ? savedId : Object.keys(wifMap)[0];
         setSelectedWhatIfId(validId);
-        setConfig(wifMap[validId].configSnapshot);
+        setConfig(validId === "base" ? loadedConfig : wifMap[validId].configSnapshot);
         setFteModelOverride(wifMap[validId].fteModelSnapshot ?? null);
       } else {
         const base: CapacityWhatIf = { id: "base", name: "Base", is_committed: false, configSnapshot: loadedConfig };
@@ -1482,6 +1483,11 @@ export function CapacityPlanning() {
   function updateConfig(patch: Partial<PlanConfig>) {
     const next = { ...config, ...patch };
     setConfig(next);
+    setWhatIfs(prev => {
+      const active = selectedWhatIfId ? prev[selectedWhatIfId] : undefined;
+      if (!active) return prev;
+      return { ...prev, [active.id]: { ...active, configSnapshot: next } };
+    });
     saveConfig(next);
   }
 
