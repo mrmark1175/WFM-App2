@@ -1038,7 +1038,7 @@ function ReadOnlyCell({ value, className = "", bold = false }: { value: string; 
   );
 }
 
-function InputCell({ value, onChange, onReset, placeholder = "", color = "default", note, onNoteChange }: {
+function InputCell({ value, onChange, onReset, placeholder = "", note, onNoteChange }: {
   value: number | undefined; onChange: (v: number | null) => void; onReset?: () => void;
   placeholder?: string; color?: "blue" | "orange" | "green" | "default";
   note?: string; onNoteChange?: (v: string) => void;
@@ -1048,12 +1048,10 @@ function InputCell({ value, onChange, onReset, placeholder = "", color = "defaul
   const [noteDraft, setNoteDraft] = useState<string>("");
   const [noteOpen, setNoteOpen] = useState(false);
 
-  const colorClass = {
-    blue: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800",
-    orange: "bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800",
-    green: "bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800",
-    default: "bg-muted/30 border-border",
-  }[color];
+  const hasManualValue = focused ? draft.trim() !== "" : value != null;
+  const editableCellClass = hasManualValue
+    ? "bg-yellow-100 border-blue-500 text-black"
+    : "bg-white border-blue-500 text-black";
 
   function commit(raw: string) {
     const t = raw.trim();
@@ -1111,7 +1109,7 @@ function InputCell({ value, onChange, onReset, placeholder = "", color = "defaul
         onChange={e => setDraft(e.target.value)}
         onBlur={() => { commit(draft); setFocused(false); }}
         onKeyDown={e => { if (e.key === "Enter") { commit(draft); setFocused(false); (e.target as HTMLInputElement).blur(); } }}
-        className={`w-full text-right text-xs border rounded px-1 py-0.5 outline-none focus:ring-1 focus:ring-blue-400 ${colorClass}`}
+        className={`w-full text-right text-xs border rounded px-1 py-0.5 outline-none focus:ring-1 focus:ring-blue-400 ${editableCellClass}`}
       />
     </td>
   );
@@ -3443,7 +3441,7 @@ export function CapacityPlanning() {
                     {weekCalcs.map(wk => (
                       <InputCell key={wk.weekOffset}
                         value={weeklyInputs[wk.weekOffset]?.plannedHires}
-                        onChange={v => setCellInput(wk.weekOffset, "plannedHires", v ?? 0)}
+                        onChange={v => setCellInput(wk.weekOffset, "plannedHires", v)}
                         placeholder="0" color="blue"
                       />
                     ))}
@@ -3471,7 +3469,7 @@ export function CapacityPlanning() {
                     {weekCalcs.map(wk => (
                       <InputCell key={wk.weekOffset}
                         value={weeklyInputs[wk.weekOffset]?.knownExits}
-                        onChange={v => setCellInput(wk.weekOffset, "knownExits", v ?? 0)}
+                        onChange={v => setCellInput(wk.weekOffset, "knownExits", v)}
                         placeholder="0" color="orange"
                       />
                     ))}
@@ -3481,7 +3479,7 @@ export function CapacityPlanning() {
                     {weekCalcs.map(wk => (
                       <InputCell key={wk.weekOffset}
                         value={weeklyInputs[wk.weekOffset]?.transfersOut}
-                        onChange={v => setCellInput(wk.weekOffset, "transfersOut", v ?? 0)}
+                        onChange={v => setCellInput(wk.weekOffset, "transfersOut", v)}
                         placeholder="0" color="orange"
                         note={weeklyInputs[wk.weekOffset]?.transfersOutNote}
                         onNoteChange={v => setCellNote(wk.weekOffset, "transfersOutNote", v)}
@@ -3493,7 +3491,7 @@ export function CapacityPlanning() {
                     {weekCalcs.map(wk => (
                       <InputCell key={wk.weekOffset}
                         value={weeklyInputs[wk.weekOffset]?.promotionsOut}
-                        onChange={v => setCellInput(wk.weekOffset, "promotionsOut", v ?? 0)}
+                        onChange={v => setCellInput(wk.weekOffset, "promotionsOut", v)}
                         placeholder="0" color="orange"
                         note={weeklyInputs[wk.weekOffset]?.promotionsOutNote}
                         onNoteChange={v => setCellNote(wk.weekOffset, "promotionsOutNote", v)}
