@@ -526,6 +526,15 @@ async function ensureAppTables() {
   await pool.query(`
     ALTER TABLE capacity_plan_config ADD COLUMN IF NOT EXISTS training_grad_rate NUMERIC NOT NULL DEFAULT 100
   `);
+  await pool.query(`
+    ALTER TABLE capacity_plan_config ADD COLUMN IF NOT EXISTS attrition_model TEXT NOT NULL DEFAULT 'monthly_rate'
+  `);
+  await pool.query(`
+    ALTER TABLE capacity_plan_config ADD COLUMN IF NOT EXISTS attrition_fixed_count NUMERIC NOT NULL DEFAULT 1
+  `);
+  await pool.query(`
+    ALTER TABLE capacity_plan_config ADD COLUMN IF NOT EXISTS attrition_fixed_every_months NUMERIC NOT NULL DEFAULT 1
+  `);
 
   // ── Capacity Plan Weekly Inputs — user-entered data per LOB+channel+week ──────
   await pool.query(`
@@ -3630,15 +3639,28 @@ app.put('/api/capacity-plan-config', async (req, res) => {
   const {
     plan_start_date, horizon_weeks, attrition_rate_monthly,
     ramp_training_weeks, ramp_nesting_weeks, ramp_nesting_pct, starting_hc, billable_fte,
-    training_grad_rate
+    training_grad_rate, attrition_model, attrition_fixed_count, attrition_fixed_every_months
   } = req.body;
+  const normalizedAttritionModel = attrition_model ?? 'monthly_rate';
+  const normalizedFixedCount = Number(attrition_fixed_count ?? 1);
+  const normalizedFixedEveryMonths = Number(attrition_fixed_every_months ?? 1);
+  if (!['monthly_rate', 'fixed_count'].includes(normalizedAttritionModel)) {
+    return res.status(400).json({ error: 'attrition_model must be monthly_rate or fixed_count' });
+  }
+  if (!Number.isFinite(normalizedFixedCount) || normalizedFixedCount < 0) {
+    return res.status(400).json({ error: 'attrition_fixed_count must be greater than or equal to 0' });
+  }
+  if (!Number.isFinite(normalizedFixedEveryMonths) || normalizedFixedEveryMonths <= 0) {
+    return res.status(400).json({ error: 'attrition_fixed_every_months must be greater than 0' });
+  }
   try {
     const result = await pool.query(
       `INSERT INTO capacity_plan_config
          (organization_id, lob_id, channel, plan_start_date, horizon_weeks,
           attrition_rate_monthly, ramp_training_weeks, ramp_nesting_weeks,
-          ramp_nesting_pct, starting_hc, billable_fte, training_grad_rate, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+          ramp_nesting_pct, starting_hc, billable_fte, training_grad_rate,
+          attrition_model, attrition_fixed_count, attrition_fixed_every_months, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
        ON CONFLICT (organization_id, lob_id, channel) DO UPDATE SET
          plan_start_date        = EXCLUDED.plan_start_date,
          horizon_weeks          = EXCLUDED.horizon_weeks,
@@ -3649,6 +3671,9 @@ app.put('/api/capacity-plan-config', async (req, res) => {
          starting_hc            = EXCLUDED.starting_hc,
          billable_fte           = EXCLUDED.billable_fte,
          training_grad_rate     = EXCLUDED.training_grad_rate,
+         attrition_model        = EXCLUDED.attrition_model,
+         attrition_fixed_count  = EXCLUDED.attrition_fixed_count,
+         attrition_fixed_every_months = EXCLUDED.attrition_fixed_every_months,
          updated_at             = NOW()
        RETURNING *`,
       [user.organization_id, lobId, channel,
@@ -3656,7 +3681,8 @@ app.put('/api/capacity-plan-config', async (req, res) => {
        attrition_rate_monthly ?? 2.0,
        ramp_training_weeks ?? 4, ramp_nesting_weeks ?? 2,
        ramp_nesting_pct ?? 50, starting_hc ?? 0, billable_fte ?? 0,
-       training_grad_rate ?? 100]
+       training_grad_rate ?? 100, normalizedAttritionModel, normalizedFixedCount,
+       normalizedFixedEveryMonths]
     );
     res.json(result.rows[0]);
   } catch (err) {

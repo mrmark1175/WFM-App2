@@ -24,11 +24,15 @@ import {
 
 type ChannelKey = "voice" | "chat" | "email" | "cases";
 type DemandSourceType = "committed" | "active" | "fallback";
+type AttritionModel = "monthly_rate" | "fixed_count";
 
 interface PlanConfig {
   planStartDate: string;
   horizonWeeks: number;
   attritionRateMonthly: number;
+  attritionModel: AttritionModel;
+  attritionFixedCount: number;
+  attritionFixedEveryMonths: number;
   rampTrainingWeeks: number;
   rampNestingWeeks: number;
   rampNestingPct: number;
@@ -186,6 +190,9 @@ const DEFAULT_CONFIG: PlanConfig = {
   planStartDate: new Date().toISOString().split("T")[0],
   horizonWeeks: 26,
   attritionRateMonthly: 2,
+  attritionModel: "monthly_rate",
+  attritionFixedCount: 1,
+  attritionFixedEveryMonths: 1,
   rampTrainingWeeks: 4,
   rampNestingWeeks: 2,
   rampNestingPct: 50,
@@ -494,6 +501,20 @@ function distributionSourceLabel(source: DistributionSource): string {
   return "Default fallback distribution";
 }
 
+function normalizeAttritionModel(value: unknown): AttritionModel {
+  return value === "fixed_count" ? "fixed_count" : "monthly_rate";
+}
+
+function normalizeNonNegativeNumber(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function normalizePositiveNumber(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 function normalizePlanConfig(raw: Partial<PlanConfig> | null | undefined): PlanConfig {
   return {
     ...DEFAULT_CONFIG,
@@ -501,6 +522,9 @@ function normalizePlanConfig(raw: Partial<PlanConfig> | null | undefined): PlanC
     planStartDate: raw?.planStartDate ?? DEFAULT_CONFIG.planStartDate,
     horizonWeeks: Number(raw?.horizonWeeks ?? DEFAULT_CONFIG.horizonWeeks),
     attritionRateMonthly: Number(raw?.attritionRateMonthly ?? DEFAULT_CONFIG.attritionRateMonthly),
+    attritionModel: normalizeAttritionModel(raw?.attritionModel),
+    attritionFixedCount: normalizeNonNegativeNumber(raw?.attritionFixedCount, DEFAULT_CONFIG.attritionFixedCount),
+    attritionFixedEveryMonths: normalizePositiveNumber(raw?.attritionFixedEveryMonths, DEFAULT_CONFIG.attritionFixedEveryMonths),
     rampTrainingWeeks: Number(raw?.rampTrainingWeeks ?? DEFAULT_CONFIG.rampTrainingWeeks),
     rampNestingWeeks: Number(raw?.rampNestingWeeks ?? DEFAULT_CONFIG.rampNestingWeeks),
     rampNestingPct: Number(raw?.rampNestingPct ?? DEFAULT_CONFIG.rampNestingPct),
@@ -508,6 +532,19 @@ function normalizePlanConfig(raw: Partial<PlanConfig> | null | undefined): PlanC
     startingHc: Number(raw?.startingHc ?? DEFAULT_CONFIG.startingHc),
     billableFte: Number(raw?.billableFte ?? DEFAULT_CONFIG.billableFte),
   };
+}
+
+function getMonthlyFixedAttritionCount(config: PlanConfig): number {
+  return config.attritionFixedCount / Math.max(config.attritionFixedEveryMonths, 0.0001);
+}
+
+function getWeeklyAttritionDecay(projectedHc: number, weekIndex: number, config: PlanConfig): number {
+  if (weekIndex <= 0) return 0;
+  if (config.attritionModel === "fixed_count") {
+    return getMonthlyFixedAttritionCount(config) * 12 / 52;
+  }
+  const weeklyAttritionRate = 1 - Math.pow(1 - config.attritionRateMonthly / 100, 12 / 52);
+  return roundTo(projectedHc * weeklyAttritionRate, 2);
 }
 
 function normalizeFteModelSnapshot(raw: Partial<FteModelSnapshot> | null | undefined): FteModelSnapshot | undefined {
@@ -1320,6 +1357,9 @@ export function CapacityPlanning() {
         planStartDate: cfgData.plan_start_date?.split("T")[0] ?? DEFAULT_CONFIG.planStartDate,
         horizonWeeks: cfgData.horizon_weeks ?? DEFAULT_CONFIG.horizonWeeks,
         attritionRateMonthly: parseFloat(cfgData.attrition_rate_monthly) ?? DEFAULT_CONFIG.attritionRateMonthly,
+        attritionModel: normalizeAttritionModel(cfgData.attrition_model),
+        attritionFixedCount: normalizeNonNegativeNumber(cfgData.attrition_fixed_count, DEFAULT_CONFIG.attritionFixedCount),
+        attritionFixedEveryMonths: normalizePositiveNumber(cfgData.attrition_fixed_every_months, DEFAULT_CONFIG.attritionFixedEveryMonths),
         rampTrainingWeeks: cfgData.ramp_training_weeks ?? DEFAULT_CONFIG.rampTrainingWeeks,
         rampNestingWeeks: cfgData.ramp_nesting_weeks ?? DEFAULT_CONFIG.rampNestingWeeks,
         rampNestingPct: parseFloat(cfgData.ramp_nesting_pct) ?? DEFAULT_CONFIG.rampNestingPct,
@@ -1424,6 +1464,9 @@ export function CapacityPlanning() {
             plan_start_date: next.planStartDate,
             horizon_weeks: next.horizonWeeks,
             attrition_rate_monthly: next.attritionRateMonthly,
+            attrition_model: next.attritionModel,
+            attrition_fixed_count: next.attritionFixedCount,
+            attrition_fixed_every_months: next.attritionFixedEveryMonths,
             ramp_training_weeks: next.rampTrainingWeeks,
             ramp_nesting_weeks: next.rampNestingWeeks,
             ramp_nesting_pct: next.rampNestingPct,
@@ -1899,8 +1942,7 @@ export function CapacityPlanning() {
   // ── Full computed calculations per week
   const weekCalcs = useMemo<WeekCalc[]>(() => {
     let projHC = config.startingHc;
-    const { attritionRateMonthly, rampTrainingWeeks, rampNestingWeeks, rampNestingPct, trainingGradRate } = config;
-    const weeklyAttritionRate = 1 - Math.pow(1 - attritionRateMonthly / 100, 12 / 52);
+    const { rampTrainingWeeks, rampNestingWeeks, rampNestingPct, trainingGradRate } = config;
 
     return weeks.map((wk, w) => {
       const inp = weeklyInputs[w] ?? {};
@@ -2004,7 +2046,7 @@ export function CapacityPlanning() {
       }
 
       // Attrition decay
-      const attritionDecay = w > 0 ? roundTo(projHC * weeklyAttritionRate, 2) : 0;
+      const attritionDecay = getWeeklyAttritionDecay(projHC, w, config);
 
       // Effective new HC delta from ramp (all cohorts)
       let effectiveNewHc = 0;
@@ -2222,12 +2264,11 @@ export function CapacityPlanning() {
   const whatIfComparisons = useMemo(() => {
     if (Object.keys(whatIfs).length < 2) return null;
     return Object.values(whatIfs).map(wif => {
-      const c = wif.configSnapshot;
-      const weeklyAttrRate = 1 - Math.pow(1 - c.attritionRateMonthly / 100, 12 / 52);
+      const c = normalizePlanConfig(wif.configSnapshot);
       let hc = c.startingHc;
       const weeklyHC = weeks.map((_, w) => {
         const inp = weeklyInputs[w] ?? {};
-        const attrDecay = w > 0 ? roundTo(hc * weeklyAttrRate, 2) : 0;
+        const attrDecay = getWeeklyAttritionDecay(hc, w, c);
         let effNew = 0;
         for (let h = 0; h <= w; h++) {
           const cohort = (weeklyInputs[h]?.plannedHires ?? 0) * (c.trainingGradRate / 100);
@@ -2250,9 +2291,10 @@ export function CapacityPlanning() {
   const attritionSummary = useMemo(() => {
     const totalExits = weekCalcs.reduce((s, w) => s + w.attritionDecay + w.knownExits + w.transfersOut + w.promotionsOut, 0);
     const annualizedPct = config.attritionRateMonthly * 12;
+    const annualizedProjectedAttritions = getMonthlyFixedAttritionCount(config) * 12;
     const totalActualAttrition = weekCalcs.reduce((s, w) => s + (w.actualAttrition ?? 0), 0);
-    return { totalExits: roundTo(totalExits), annualizedPct, totalActualAttrition };
-  }, [weekCalcs, config.attritionRateMonthly]);
+    return { totalExits: roundTo(totalExits), annualizedPct, annualizedProjectedAttritions, totalActualAttrition };
+  }, [weekCalcs, config]);
 
   // ── Hiring action summary
   // Focuses on the *next* actionable hiring decision rather than a cumulative horizon total.
@@ -2376,6 +2418,12 @@ export function CapacityPlanning() {
 
     // ── Headcount Plan
     rows.push(["--- HEADCOUNT PLAN ---", ...weekCalcs.map(() => "")]);
+    rows.push(row("Attrition Model", weekCalcs.map(() => config.attritionModel === "fixed_count" ? "Fixed attrition count" : "Monthly rate %")));
+    if (config.attritionModel === "fixed_count") {
+      rows.push(row("Equivalent Attritions / Month", weekCalcs.map(() => roundTo(getMonthlyFixedAttritionCount(config), 2))));
+    } else {
+      rows.push(row("Attrition Rate % / Month", weekCalcs.map(() => config.attritionRateMonthly)));
+    }
     rows.push(row("Planned Hires", weekCalcs.map(wk => wk.plannedHires)));
     rows.push(row("Effective New HC", weekCalcs.map(wk => roundTo(wk.effectiveNewHc, 1))));
     rows.push(row("Attrition Decay", weekCalcs.map(wk => roundTo(wk.attritionDecay, 2))));
@@ -2589,9 +2637,39 @@ export function CapacityPlanning() {
                 <CommitNumberInput value={config.startingHc} min={0} step={1} onCommit={startingHc => updateConfig({ startingHc })} />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs text-black">Attrition Rate (%/mo)</Label>
-                <CommitNumberInput value={config.attritionRateMonthly} min={0} max={50} step={0.1} onCommit={attritionRateMonthly => updateConfig({ attritionRateMonthly })} />
+                <Label className="text-xs text-black">Attrition model</Label>
+                <select
+                  value={config.attritionModel}
+                  onChange={e => updateConfig({ attritionModel: normalizeAttritionModel(e.target.value) })}
+                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-black outline-none focus:ring-1 focus:ring-blue-400"
+                >
+                  <option value="monthly_rate">Monthly rate %</option>
+                  <option value="fixed_count">Fixed attrition count</option>
+                </select>
               </div>
+              {config.attritionModel === "monthly_rate" ? (
+                <div className="space-y-1">
+                  <Label className="text-xs text-black">Attrition Rate (%/mo)</Label>
+                  <CommitNumberInput value={config.attritionRateMonthly} min={0} max={50} step={0.1} onCommit={attritionRateMonthly => updateConfig({ attritionRateMonthly })} />
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-black">Attrition count</Label>
+                    <CommitNumberInput value={config.attritionFixedCount} min={0} step={0.1} onCommit={attritionFixedCount => updateConfig({ attritionFixedCount })} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-black">Every month(s)</Label>
+                    <CommitNumberInput value={config.attritionFixedEveryMonths} min={0.1} step={0.1} onCommit={attritionFixedEveryMonths => updateConfig({ attritionFixedEveryMonths })} />
+                  </div>
+                </>
+              )}
+              {config.attritionModel === "fixed_count" && (
+                <div className="col-span-2 sm:col-span-4 lg:col-span-2 rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] leading-snug text-black">
+                  <div>Projected attrition will use expected attrition count instead of monthly percentage.</div>
+                  <div className="font-semibold">Equivalent: {fmt1(getMonthlyFixedAttritionCount(config))} attritions/month</div>
+                </div>
+              )}
               <div className="space-y-1">
                 <Label className="text-xs text-black">Training Weeks (0%)</Label>
                 <CommitNumberInput value={config.rampTrainingWeeks} min={0} max={26} step={1} integer onCommit={rampTrainingWeeks => updateConfig({ rampTrainingWeeks })} />
@@ -2988,8 +3066,10 @@ export function CapacityPlanning() {
       <div className="flex items-center gap-3 mb-4 flex-wrap text-xs">
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <TrendingDown className="size-3.5 text-black" />
-          <span className="text-black">Annualized Attrition:</span>
-          <span className="font-semibold">{fmtPct(attritionSummary.annualizedPct)}</span>
+          <span className="text-black">{config.attritionModel === "fixed_count" ? "Annualized Projected Attritions:" : "Annualized Attrition:"}</span>
+          <span className="font-semibold">
+            {config.attritionModel === "fixed_count" ? fmt1(attritionSummary.annualizedProjectedAttritions) : fmtPct(attritionSummary.annualizedPct)}
+          </span>
         </div>
         <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5">
           <AlertTriangle className="size-3.5 text-black" />
