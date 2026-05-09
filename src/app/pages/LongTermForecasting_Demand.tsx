@@ -741,7 +741,7 @@ function buildChannelHistoricalData(apiData: number[], overrides: Record<number,
     const overrideValue = overrides[index];
     if (overrideValue === undefined || overrideValue === "") return apiVolume;
     const parsedValue = Number.parseInt(overrideValue, 10);
-    return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : apiVolume;
+    return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : apiVolume;
   });
 }
 function buildIndexedLongTermHistory(rows: LongTermActualRecord[]): number[] {
@@ -1557,7 +1557,7 @@ export default function LongTermForecastingDemand() {
         return { ...current, [historicalChannelView]: nextChannelOverrides };
       }
       const parsedValue = Number.parseInt(existing, 10);
-      if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+      if (!Number.isFinite(parsedValue) || parsedValue < 0) {
         delete nextChannelOverrides[index];
         return { ...current, [historicalChannelView]: nextChannelOverrides };
       }
@@ -1626,7 +1626,7 @@ export default function LongTermForecastingDemand() {
       let filled = 0;
       toPaste.forEach((val, offset) => {
         const n = parseInt(val, 10);
-        if (Number.isFinite(n) && n > 0) {
+        if (Number.isFinite(n) && n >= 0) {
           nextChannelOverrides[startIdx + monthIdx + offset] = String(n);
           filled++;
         }
@@ -1737,6 +1737,12 @@ export default function LongTermForecastingDemand() {
     const applyOverrides = (channel: ChannelKey) => buildChannelHistoricalData(historicalApiDataByChannel[channel], debouncedOverridesByChannel[channel]);
     return { voice: finalHistoricalData, email: applyOverrides("email"), chat: applyOverrides("chat"), cases: applyOverrides("cases") };
   }, [finalHistoricalData, historicalApiDataByChannel, debouncedOverridesByChannel]);
+  const hasManualEntriesByChannel = useMemo<Record<ChannelKey, boolean>>(() => ({
+    voice: Object.keys(debouncedOverridesByChannel.voice).length > 0,
+    email: Object.keys(debouncedOverridesByChannel.email).length > 0,
+    chat: Object.keys(debouncedOverridesByChannel.chat).length > 0,
+    cases: Object.keys(debouncedOverridesByChannel.cases).length > 0,
+  }), [debouncedOverridesByChannel]);
   const hasExplicitHistoryByChannel = useMemo<Record<ChannelKey, boolean>>(() => ({
     voice: historicalApiDataByChannel.voice.length > 0 || Object.keys(debouncedOverridesByChannel.voice).length > 0,
     email: historicalApiDataByChannel.email.length > 0 || Object.keys(debouncedOverridesByChannel.email).length > 0,
@@ -1744,10 +1750,9 @@ export default function LongTermForecastingDemand() {
     cases: historicalApiDataByChannel.cases.length > 0 || Object.keys(debouncedOverridesByChannel.cases).length > 0,
   }), [historicalApiDataByChannel, debouncedOverridesByChannel]);
   // Manual mode: build history from overrides only (ignores API data).
-  // Zero values mean "not entered" (handleOverrideBlur deletes ≤0 overrides), so we
-  // filter them out entirely rather than trimming only trailing zeros. This prevents
-  // middle-gap zeros from distorting linear regression when a user enters
-  // e.g. Jan 2024 and then Jan–Feb 2025 but leaves Feb–Dec 2024 blank.
+  // Explicit zero is a valid entered value and must be preserved so a channel can
+  // intentionally stay at zero instead of falling back to a derived forecast.
+  // Empty cells still mean "not entered" because they have no override key.
   const manualFinalHistoricalDataByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     const build = (channel: ChannelKey): number[] => {
       const overrides = debouncedOverridesByChannel[channel];
@@ -1756,7 +1761,7 @@ export default function LongTermForecastingDemand() {
         const v = overrides[i];
         if (!v || v === "") continue;
         const n = parseInt(v, 10);
-        if (Number.isFinite(n) && n > 0) values.push(n);
+        if (Number.isFinite(n) && n >= 0) values.push(n);
       }
       return values;
     };
@@ -1774,17 +1779,35 @@ export default function LongTermForecastingDemand() {
     const emailHistory = effectiveFinalHistoricalDataByChannel.email;
     const chatHistory = effectiveFinalHistoricalDataByChannel.chat;
     const casesHistory = effectiveFinalHistoricalDataByChannel.cases;
-    const emailForecast = (dataSourceMode === "manual" ? emailHistory.length > 0 : hasExplicitHistoryByChannel.email)
-      ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
-      : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
-    const chatForecast = (dataSourceMode === "manual" ? chatHistory.length > 0 : hasExplicitHistoryByChannel.chat)
-      ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
-      : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
-    const casesForecast = (dataSourceMode === "manual" ? casesHistory.length > 0 : hasExplicitHistoryByChannel.cases)
-      ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
-      : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
+    const emailForecast = dataSourceMode === "manual"
+      ? emailHistory.length > 0
+        ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        : hasManualEntriesByChannel.email
+          ? Array(pm).fill(0)
+          : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email))
+      : hasExplicitHistoryByChannel.email
+        ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
+    const chatForecast = dataSourceMode === "manual"
+      ? chatHistory.length > 0
+        ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        : hasManualEntriesByChannel.chat
+          ? Array(pm).fill(0)
+          : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat))
+      : hasExplicitHistoryByChannel.chat
+        ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
+    const casesForecast = dataSourceMode === "manual"
+      ? casesHistory.length > 0
+        ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        : hasManualEntriesByChannel.cases
+          ? Array(pm).fill(0)
+          : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases))
+      : hasExplicitHistoryByChannel.cases
+        ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
     return { voice: voiceForecast, email: emailForecast, chat: chatForecast, cases: casesForecast };
-  }, [effectiveFinalHistoricalDataByChannel, dataSourceMode, hasExplicitHistoryByChannel, forecastMethod, assumptions, isTwoYear, hwParams, arimaParams, decompParams]);
+  }, [effectiveFinalHistoricalDataByChannel, dataSourceMode, hasExplicitHistoryByChannel, hasManualEntriesByChannel, forecastMethod, assumptions, isTwoYear, hwParams, arimaParams, decompParams]);
   const visibleFinalHistoricalData = useMemo(() => buildChannelHistoricalData(visibleHistoricalApiData, visibleHistoricalOverrides), [visibleHistoricalApiData, visibleHistoricalOverrides]);
   const canRestoreApiData = useMemo(() => {
     const currentData = historicalApiDataByChannel[historicalChannelView] ?? [];
@@ -1798,7 +1821,8 @@ export default function LongTermForecastingDemand() {
     return Array.from({ length: historyLength }, (_, index) => {
       const apiVolume = visibleHistoricalApiData[index] ?? 0;
       const overrideVolume = visibleHistoricalOverrides[index] ?? "";
-      const hasOverride = overrideVolume !== "" && Number.parseInt(overrideVolume, 10) > 0;
+      const parsedOverride = Number.parseInt(overrideVolume, 10);
+      const hasOverride = overrideVolume !== "" && Number.isFinite(parsedOverride) && parsedOverride >= 0;
       const isManualRow = apiVolume === 0;
       const finalVolume = visibleFinalHistoricalData[index] ?? apiVolume;
       const variancePct = hasOverride && apiVolume > 0 ? Number((((finalVolume - apiVolume) / apiVolume) * 100).toFixed(1)) : null;
@@ -1878,12 +1902,29 @@ export default function LongTermForecastingDemand() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [completedMonthIndices, demandActuals, forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, assumptions.startDate]);
 
+  const hasMeaningfulPlanningBasisByChannel = useMemo<Record<ChannelKey, boolean>>(() => {
+    const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
+    const result = {} as Record<ChannelKey, boolean>;
+    for (const ch of channels) {
+      const hasPositiveHistory = (effectiveFinalHistoricalDataByChannel[ch] ?? []).some((value) => Number.isFinite(value) && value > 0);
+      const hasPositiveActual = Array.from({ length: 12 }, (_, index) => demandActuals[getActualKey(index, ch)])
+        .some((value) => value != null && Number.isFinite(value) && value > 0);
+      result[ch] = hasPositiveHistory || hasPositiveActual;
+    }
+    return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveFinalHistoricalDataByChannel, demandActuals, assumptions.startDate]);
+
   // Year 1 effective volumes: actuals where available, re-cut factor applied for future months.
   // Used as extended history input for the two-pass Year 2 computation.
   const year1EffectiveVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
     const result = {} as Record<ChannelKey, number[]>;
     for (const ch of channels) {
+      if (!hasMeaningfulPlanningBasisByChannel[ch]) {
+        result[ch] = [];
+        continue;
+      }
       const basePlan = getYearOneForecastBaseline(forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, ch);
       const actualsByMonth = Array.from({ length: 12 }, (_, index) => demandActuals[getActualKey(index, ch)]);
       result[ch] = buildEffectiveYearOnePlan({
@@ -1897,7 +1938,7 @@ export default function LongTermForecastingDemand() {
     }
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, recutVolumesByChannel, completedMonthIndices, demandActuals, recutFactorByChannel]);
+  }, [forecastVolumesByChannel, effectiveFinalHistoricalDataByChannel, recutVolumesByChannel, completedMonthIndices, demandActuals, recutFactorByChannel, hasMeaningfulPlanningBasisByChannel]);
 
   // Two-pass Year 2 forecast: extend history with Year 1 effective volumes, then run the
   // same forecast model to produce 12 months of Year 2. Inactive when isTwoYear is false.
@@ -1906,6 +1947,10 @@ export default function LongTermForecastingDemand() {
     const channels: ChannelKey[] = ["voice", "email", "chat", "cases"];
     const result = {} as Record<ChannelKey, number[]>;
     for (const ch of channels) {
+      if (!hasMeaningfulPlanningBasisByChannel[ch]) {
+        result[ch] = [];
+        continue;
+      }
       const extendedHistoricalBase = normalizeMonthlyHistoryForExtendedForecast(effectiveFinalHistoricalDataByChannel[ch]);
       const year1EffectiveBase = normalizeMonthlyForecast(year1EffectiveVolumesByChannel[ch], extendedHistoricalBase, 12);
       const extendedHistory = buildTwoPassYear2Input(extendedHistoricalBase, year1EffectiveBase);
@@ -1916,7 +1961,7 @@ export default function LongTermForecastingDemand() {
       );
     }
     return result;
-  }, [isTwoYear, effectiveFinalHistoricalDataByChannel, year1EffectiveVolumesByChannel, forecastMethod, assumptions, hwParams, arimaParams, decompParams]);
+  }, [isTwoYear, effectiveFinalHistoricalDataByChannel, year1EffectiveVolumesByChannel, forecastMethod, assumptions, hwParams, arimaParams, decompParams, hasMeaningfulPlanningBasisByChannel]);
 
   // Combined Year 1 + Year 2 forecast volumes (24 entries when isTwoYear, 12 otherwise).
   const combinedForecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
@@ -2164,7 +2209,7 @@ export default function LongTermForecastingDemand() {
           const ov = activeOverrides?.[channel]?.[i];
           if (ov === undefined || ov === "") return v;
           const parsed = parseInt(ov, 10);
-          return Number.isFinite(parsed) && parsed > 0 ? parsed : v;
+          return Number.isFinite(parsed) && parsed >= 0 ? parsed : v;
         });
       const _snapVoiceRaw = buildSnapHistory("voice");
       const snapVoiceHistory = _snapVoiceRaw.length > 0 ? _snapVoiceRaw : finalHistoricalData;
@@ -2173,15 +2218,39 @@ export default function LongTermForecastingDemand() {
       const snapCasesHistory = buildSnapHistory("cases");
       const snapPm = activeAssumptions.planningMonths ?? 12;
       const voiceForecast = getCalculatedVolumes(snapVoiceHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm);
-      const emailForecast = snapEmailHistory.length > 0
-        ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
-        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
-      const chatForecast = snapChatHistory.length > 0
-        ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
-        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
-      const casesForecast = snapCasesHistory.length > 0
-        ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
-        : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
+      const snapHasManualEntries = {
+        voice: Object.keys(activeOverrides?.voice ?? {}).length > 0,
+        email: Object.keys(activeOverrides?.email ?? {}).length > 0,
+        chat: Object.keys(activeOverrides?.chat ?? {}).length > 0,
+        cases: Object.keys(activeOverrides?.cases ?? {}).length > 0,
+      };
+      const emailForecast = dataSourceMode === "manual"
+        ? snapEmailHistory.length > 0
+          ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          : snapHasManualEntries.email
+            ? Array(snapPm).fill(0)
+            : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email))
+        : snapEmailHistory.length > 0
+          ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
+      const chatForecast = dataSourceMode === "manual"
+        ? snapChatHistory.length > 0
+          ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          : snapHasManualEntries.chat
+            ? Array(snapPm).fill(0)
+            : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat))
+        : snapChatHistory.length > 0
+          ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
+      const casesForecast = dataSourceMode === "manual"
+        ? snapCasesHistory.length > 0
+          ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          : snapHasManualEntries.cases
+            ? Array(snapPm).fill(0)
+            : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases))
+        : snapCasesHistory.length > 0
+          ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
       const activeChannels = (Object.keys(activeSelectedChannels) as ChannelKey[]).filter((channel) => activeSelectedChannels[channel]);
       const months = Array.from({ length: Math.min(12, snapPm) }, (_, index) => {
         const date = new Date(activeAssumptions.startDate || assumptions.startDate);
@@ -3061,6 +3130,7 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
                   {isTwoYear && (() => {
                     const yr2Hist = historicalRowsByYear.find((g) => g.year === String(forecastYear - 1))?.rows ?? [];
                     const yr2HistByMonthIdx = new Map(yr2Hist.map((r) => [MONTH_NAMES.indexOf(r.monthLabel.split(" ")[0]), r]));
+                    const showTwoPassValues = hasMeaningfulPlanningBasisByChannel[detailChannel];
                     return (
                       <>
                         <div className="flex items-center gap-3 px-4 py-2 bg-primary/5 border-t-2 border-primary/20">
@@ -3091,13 +3161,13 @@ Rules: cite specific months and numbers; no filler phrases; avoid capacity or he
                                 <TableRow key={`yr2-${monthName}`} className="hover:bg-muted/30">
                                   <TableCell className="px-3 py-2 text-center font-bold text-sm whitespace-nowrap align-middle">{monthName}</TableCell>
                                   <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle text-muted-foreground">
-                                    {h2 ? h2.finalVolume.toLocaleString() : "—"}
+                                    {showTwoPassValues && h2 ? h2.finalVolume.toLocaleString() : "—"}
                                   </TableCell>
                                   <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle text-foreground/80">
-                                    {yr1Plan > 0 ? yr1Plan.toLocaleString() : "—"}
+                                    {showTwoPassValues && yr1Plan > 0 ? yr1Plan.toLocaleString() : "—"}
                                   </TableCell>
                                   <TableCell className="px-3 py-2 text-center font-mono text-sm tabular-nums whitespace-nowrap align-middle font-bold text-primary">
-                                    {Number.isFinite(yr2Forecast) ? Math.max(0, Math.round(yr2Forecast)).toLocaleString() : "—"}
+                                    {showTwoPassValues && Number.isFinite(yr2Forecast) ? Math.max(0, Math.round(yr2Forecast)).toLocaleString() : "—"}
                                   </TableCell>
                                 </TableRow>
                               );
