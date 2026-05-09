@@ -3,6 +3,8 @@ import { apiUrl } from "../lib/api";
 import { useLOB } from "../lib/lobContext";
 import { getCalculatedVolumes, Assumptions } from "./forecasting-logic";
 import { computeIntervalFTE, computeAchievedSLFromFTE } from "./intraday-distribution-logic";
+import { distributeMonthlyToWeekViaDailyDOW, getWeeksInMonth } from "./intraday-distribution-logic";
+import { buildIntradayPrefsPageKey, normalizeIntradayStaffingMode } from "./intraday-scope";
 import { useWFMPageData } from "../lib/WFMPageDataContext";
 import { PageLayout } from "../components/PageLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -83,6 +85,7 @@ interface WeekCalc extends WeekMeta {
   reqCoverageRatio: number | null;  // opHoursPerDay / fteHoursPerDay
   flatRequiredFTE: number;
   distributionSource: DistributionSource;
+  weeklyVolumeSource: WeeklyVolumeSource;
   requiredStaffedHours: number;
 }
 
@@ -173,6 +176,11 @@ interface DistributionProfile {
   day_weights: number[];
 }
 
+interface IntradayPrefsSnapshot {
+  dataSource?: "api" | "manual";
+  manualWeeklyVolumes?: number[];
+}
+
 interface InteractionArrivalRecord {
   interval_date: string;
   interval_index: number;
@@ -182,6 +190,7 @@ interface InteractionArrivalRecord {
 }
 
 type DistributionSource = "intraday-based" | "saved-profile-fallback" | "default-fallback-distribution" | "configuration-needed";
+type WeeklyVolumeSource = "intraday-allocation" | "default-weekly-distribution" | "flat-fallback";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -499,6 +508,68 @@ function distributionSourceLabel(source: DistributionSource): string {
   if (source === "saved-profile-fallback") return "Saved profile fallback";
   if (source === "configuration-needed") return "Operating hours need configuration";
   return "Default fallback distribution";
+}
+
+function weeklyVolumeSourceLabel(source: WeeklyVolumeSource): string {
+  if (source === "intraday-allocation") return "Intraday allocation";
+  if (source === "default-weekly-distribution") return "Default weekly distribution";
+  return "Flat fallback";
+}
+
+function getMonthOffset(startDate: string, date: Date): number {
+  const start = new Date(startDate + "T12:00:00");
+  return (date.getFullYear() - start.getFullYear()) * 12 + (date.getMonth() - start.getMonth());
+}
+
+function getWeekMonthSegments(weekStart: Date, forecastStart: string, maxMonths: number): Array<{ monthOffset: number; year: number; month: number; overlapDays: number }> {
+  const segments = new Map<number, { monthOffset: number; year: number; month: number; overlapDays: number }>();
+  for (let i = 0; i < 7; i++) {
+    const day = addDays(weekStart, i);
+    const monthOffset = getMonthOffset(forecastStart, day);
+    if (monthOffset < 0 || monthOffset >= maxMonths) continue;
+    const current = segments.get(monthOffset);
+    if (current) {
+      current.overlapDays += 1;
+    } else {
+      segments.set(monthOffset, {
+        monthOffset,
+        year: day.getFullYear(),
+        month: day.getMonth(),
+        overlapDays: 1,
+      });
+    }
+  }
+  return Array.from(segments.values()).sort((left, right) => left.monthOffset - right.monthOffset);
+}
+
+function getManualPatternContribution(
+  monthlyVolume: number,
+  year: number,
+  month: number,
+  weekStart: Date,
+  overlapDays: number,
+  manualWeeklyVolumes: number[],
+): number {
+  const allVolumes = manualWeeklyVolumes.filter((value) => Number.isFinite(value) && value > 0);
+  if (monthlyVolume <= 0 || allVolumes.length < 4) return 0;
+
+  const monthWeeks = getWeeksInMonth(year, month);
+  if (monthWeeks.length === 0) return 0;
+  const weekIndex = monthWeeks.findIndex((week) => week.start === fmtISODate(weekStart));
+  if (weekIndex < 0) return 0;
+
+  const cycleLength = monthWeeks.length;
+  const cycleAverages = Array.from({ length: cycleLength }, (_, position) => {
+    const values: number[] = [];
+    for (let cycle = 0; cycle * cycleLength + position < allVolumes.length; cycle++) {
+      values.push(allVolumes[cycle * cycleLength + position]);
+    }
+    return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+  });
+  const totalAverage = cycleAverages.reduce((sum, value) => sum + value, 0);
+  if (totalAverage <= 0) return 0;
+
+  return monthlyVolume * (cycleAverages[weekIndex] / totalAverage) * (overlapDays / 7);
 }
 
 function normalizeAttritionModel(value: unknown): AttritionModel {
@@ -1275,6 +1346,7 @@ export function CapacityPlanning() {
   const [computedShrinkagePct, setComputedShrinkagePct] = useState<number | null>(null);
   const [intradayRecordsByChannel, setIntradayRecordsByChannel] = useState<Partial<Record<ChannelKey, InteractionArrivalRecord[]>>>({});
   const [profilesByChannel, setProfilesByChannel] = useState<Partial<Record<ChannelKey, DistributionProfile>>>({});
+  const [intradayPrefsByChannel, setIntradayPrefsByChannel] = useState<Partial<Record<ChannelKey, IntradayPrefsSnapshot>>>({});
   const [activeChannel, setActiveChannel] = useState<ChannelKey>("voice");
   const [assumptionsOpen, setAssumptionsOpen] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -1713,6 +1785,7 @@ export function CapacityPlanning() {
     if (!activeLob || weeks.length === 0 || enabledChannels.length === 0) {
       setIntradayRecordsByChannel({});
       setProfilesByChannel({});
+      setIntradayPrefsByChannel({});
       return;
     }
 
@@ -1721,34 +1794,42 @@ export function CapacityPlanning() {
     const end = addDays(getWeekStartDate(config.planStartDate, Math.max(0, config.horizonWeeks - 1)), 6);
     const startDate = fmtISODate(start);
     const endDate = fmtISODate(end);
+    const staffingMode = normalizeIntradayStaffingMode(isDedicated ? "dedicated" : "blended");
 
     Promise.all(enabledChannels.map(async channel => {
-      const [arrivalRes, profileRes] = await Promise.all([
+      const intradayPrefsPageKey = buildIntradayPrefsPageKey(channel, staffingMode);
+      const [arrivalRes, profileRes, prefsRes] = await Promise.all([
         fetch(apiUrl(`/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}&channel=${channel}&lob_id=${activeLob.id}`))
           .then(r => r.ok ? r.json() : [])
           .catch(() => []),
-        fetch(apiUrl(`/api/distribution-profiles?lob_id=${activeLob.id}&channel=${channel}`))
+        fetch(apiUrl(`/api/distribution-profiles?lob_id=${activeLob.id}&channel=${channel}&staffing_mode=${staffingMode}&allow_legacy_fallback=true`))
           .then(r => r.ok ? r.json() : [])
           .catch(() => []),
+        fetch(apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(intradayPrefsPageKey)}&lob_id=${activeLob.id}`))
+          .then(r => r.ok ? r.json() : {})
+          .catch(() => ({})),
       ]);
       return {
         channel,
         records: Array.isArray(arrivalRes) ? arrivalRes as InteractionArrivalRecord[] : [],
         profile: Array.isArray(profileRes) && profileRes.length > 0 ? profileRes[0] as DistributionProfile : undefined,
+        prefs: prefsRes && typeof prefsRes === "object" ? prefsRes as IntradayPrefsSnapshot : undefined,
       };
     })).then(entries => {
       if (cancelled) return;
       setIntradayRecordsByChannel(Object.fromEntries(entries.map(e => [e.channel, e.records])) as Partial<Record<ChannelKey, InteractionArrivalRecord[]>>);
       setProfilesByChannel(Object.fromEntries(entries.filter(e => e.profile).map(e => [e.channel, e.profile])) as Partial<Record<ChannelKey, DistributionProfile>>);
+      setIntradayPrefsByChannel(Object.fromEntries(entries.filter(e => e.prefs).map(e => [e.channel, e.prefs])) as Partial<Record<ChannelKey, IntradayPrefsSnapshot>>);
     }).catch(() => {
       if (!cancelled) {
         setIntradayRecordsByChannel({});
         setProfilesByChannel({});
+        setIntradayPrefsByChannel({});
       }
     });
 
     return () => { cancelled = true; };
-  }, [activeLob?.id, weeks.length, enabledChannels, config.planStartDate, config.horizonWeeks]);
+  }, [activeLob?.id, weeks.length, enabledChannels, config.planStartDate, config.horizonWeeks, isDedicated]);
 
   // ── Monthly forecast arrays from demand planner snapshot (captures seasonality)
   const forecastedMonthlyVols = useMemo<{ voice: number[]; chat: number[]; email: number[]; cases: number[] } | null>(() => {
@@ -1839,41 +1920,91 @@ export function CapacityPlanning() {
   }, [plannerSnapshot]);
 
   // ── Auto volumes from demand snapshot
-  const autoBaseVolumes = useMemo(() => {
+  const autoBaseVolumePlan = useMemo(() => {
     const forecastStart = plannerSnapshot?.assumptions?.startDate;
     const growthPct = demandAssumptions?.growthRate ?? 0;
     const monday = getMondayOf(new Date(config.planStartDate + "T00:00:00"));
+    const blendedScopeChannel = enabledChannels.includes(activeChannel) ? activeChannel : (enabledChannels[0] ?? "voice");
 
-    return weeks.map(w => {
-      if (forecastedMonthlyVols && forecastStart) {
-        const weekStart = new Date(monday);
-        weekStart.setDate(weekStart.getDate() + w.weekOffset * 7);
-        const midWeek = new Date(weekStart);
-        midWeek.setDate(midWeek.getDate() + 3);
-        const start = new Date(forecastStart + "T00:00:00");
-        const monthOffset = (midWeek.getFullYear() - start.getFullYear()) * 12
-          + (midWeek.getMonth() - start.getMonth());
-        if (monthOffset >= 0 && monthOffset < forecastedMonthlyVols.voice.length) {
-          const daysInMonth = new Date(midWeek.getFullYear(), midWeek.getMonth() + 1, 0).getDate();
-          const f = 7 / daysInMonth;
-          return {
-            voice: Math.round(forecastedMonthlyVols.voice[monthOffset] * f),
-            chat: Math.round(forecastedMonthlyVols.chat[monthOffset] * f),
-            email: Math.round(forecastedMonthlyVols.email[monthOffset] * f),
-            cases: Math.round(forecastedMonthlyVols.cases[monthOffset] * f),
-          };
-        }
+    const getChannelWeeklyVolume = (
+      channel: ChannelKey,
+      weekStart: Date,
+      weekOffset: number,
+      series: number[],
+    ): { value: number; source: WeeklyVolumeSource } => {
+      if (!forecastStart || series.length === 0) {
+        const a = demandAssumptions;
+        const fallbackValue = channel === "voice"
+          ? monthlyToWeekly(a?.voiceVolume ?? 0, growthPct, weekOffset)
+          : channel === "chat"
+            ? monthlyToWeekly(a?.chatVolume ?? 0, growthPct, weekOffset)
+            : channel === "email"
+              ? monthlyToWeekly(a?.emailVolume ?? 0, growthPct, weekOffset)
+              : monthlyToWeekly(a?.casesVolume ?? 0, growthPct, weekOffset);
+        return { value: fallbackValue, source: "flat-fallback" };
       }
-      // Fallback: flat conversion from base monthly volumes
-      const a = demandAssumptions;
+
+      const prefsChannel = isDedicated ? channel : blendedScopeChannel;
+      const prefs = intradayPrefsByChannel[prefsChannel];
+      const profile = profilesByChannel[prefsChannel];
+      const manualWeeklyVolumes = prefs?.dataSource === "manual" ? (prefs.manualWeeklyVolumes ?? []) : [];
+      const hasManualPattern = manualWeeklyVolumes.filter((value) => Number.isFinite(value) && value > 0).length >= 4;
+      const hasProfileWeights = Array.isArray(profile?.day_weights) && profile.day_weights.some((value) => Number(value) > 0);
+      const segments = getWeekMonthSegments(weekStart, forecastStart, series.length);
+      if (segments.length === 0) return { value: 0, source: hasManualPattern || hasProfileWeights ? "intraday-allocation" : "default-weekly-distribution" };
+
+      if (hasManualPattern || hasProfileWeights) {
+        let intradayValue = 0;
+        for (const segment of segments) {
+          const monthlyVolume = series[segment.monthOffset] ?? 0;
+          if (monthlyVolume <= 0) continue;
+          intradayValue += hasProfileWeights
+            ? distributeMonthlyToWeekViaDailyDOW(monthlyVolume, segment.year, segment.month, fmtISODate(weekStart), profile?.day_weights ?? [])
+            : getManualPatternContribution(monthlyVolume, segment.year, segment.month, weekStart, segment.overlapDays, manualWeeklyVolumes);
+        }
+        return { value: Math.round(intradayValue), source: "intraday-allocation" };
+      }
+
+      let defaultValue = 0;
+      for (const segment of segments) {
+        const monthlyVolume = series[segment.monthOffset] ?? 0;
+        if (monthlyVolume <= 0) continue;
+        const daysInMonth = new Date(segment.year, segment.month + 1, 0).getDate();
+        defaultValue += monthlyVolume * (segment.overlapDays / daysInMonth);
+      }
+      return { value: Math.round(defaultValue), source: "default-weekly-distribution" };
+    };
+
+    return weeks.map((week) => {
+      const weekStart = new Date(monday);
+      weekStart.setDate(weekStart.getDate() + week.weekOffset * 7);
+
+      const voice = getChannelWeeklyVolume("voice", weekStart, week.weekOffset, forecastedMonthlyVols?.voice ?? []);
+      const chat = getChannelWeeklyVolume("chat", weekStart, week.weekOffset, forecastedMonthlyVols?.chat ?? []);
+      const email = getChannelWeeklyVolume("email", weekStart, week.weekOffset, forecastedMonthlyVols?.email ?? []);
+      const cases = getChannelWeeklyVolume("cases", weekStart, week.weekOffset, forecastedMonthlyVols?.cases ?? []);
+
+      const source = isDedicated
+        ? (activeChannel === "voice" ? voice.source : activeChannel === "chat" ? chat.source : activeChannel === "email" ? email.source : cases.source)
+        : (voice.source === "flat-fallback" || chat.source === "flat-fallback" || email.source === "flat-fallback" || cases.source === "flat-fallback")
+          ? "flat-fallback"
+          : (voice.source === "intraday-allocation" || chat.source === "intraday-allocation" || email.source === "intraday-allocation" || cases.source === "intraday-allocation")
+            ? "intraday-allocation"
+            : "default-weekly-distribution";
+
       return {
-        voice: monthlyToWeekly(a?.voiceVolume ?? 0, growthPct, w.weekOffset),
-        chat: monthlyToWeekly(a?.chatVolume ?? 0, growthPct, w.weekOffset),
-        email: monthlyToWeekly(a?.emailVolume ?? 0, growthPct, w.weekOffset),
-        cases: monthlyToWeekly(a?.casesVolume ?? 0, growthPct, w.weekOffset),
+        volumes: {
+          voice: voice.value,
+          chat: chat.value,
+          email: email.value,
+          cases: cases.value,
+        },
+        source,
       };
     });
-  }, [demandAssumptions, weeks, forecastedMonthlyVols, plannerSnapshot, config.planStartDate]);
+  }, [activeChannel, config.planStartDate, demandAssumptions, enabledChannels, forecastedMonthlyVols, intradayPrefsByChannel, isDedicated, plannerSnapshot?.assumptions?.startDate, profilesByChannel, weeks]);
+
+  const autoBaseVolumes = useMemo(() => autoBaseVolumePlan.map((entry) => entry.volumes), [autoBaseVolumePlan]);
 
   // ── Auto AHTs (from lob_settings, fall back to demand assumptions)
   const defaultAhts = useMemo(() => ({
@@ -2140,13 +2271,13 @@ export function CapacityPlanning() {
         autoAhtVoice: autoAhts.voice, autoAhtChat: autoAhts.chat, autoAhtEmail: autoAhts.email, autoAhtCases: autoAhts.cases,
         effAhtVoice, effAhtChat, effAhtEmail, effAhtCases,
         projOccupancyPct: erlangOccupancy, projShrinkagePct: shrinkagePct,
-        reqRawAgents, reqAfterShrinkFte, reqCoverageRatio, flatRequiredFTE, distributionSource, requiredStaffedHours,
+        reqRawAgents, reqAfterShrinkFte, reqCoverageRatio, flatRequiredFTE, distributionSource, weeklyVolumeSource: autoBaseVolumePlan[w]?.source ?? "flat-fallback", requiredStaffedHours,
         requiredFTE, plannedHires, effectiveNewHc, attritionDecay,
         knownExits, transfersOut, promotionsOut, projectedHc: modelProjHC, actualHc, actualAttrition,
         gapSurplus, actualGapSurplus, billableGapSurplus, achievedSLAProj, achievedSLAActual,
       };
     });
-  }, [weeks, weeklyInputs, autoBaseVolumes, autoAhts, config, isDedicated, activeChannel, effectiveFteHoursPerDay,
+  }, [weeks, weeklyInputs, autoBaseVolumes, autoBaseVolumePlan, autoAhts, config, isDedicated, activeChannel, effectiveFteHoursPerDay,
       effectiveFteWorkdaysPerWeek, shrinkagePct, daysPerWeek, operatingHoursPerDay, enabledChannels,
       slaVoiceTarget, slaVoiceSec, slaChatTarget, slaChatSec, slaEmailTarget, slaEmailSec,
       emailOccupancy, chatConcurrency, taskSwitchMultiplier, lobSettings, intradayRecordsByChannel, profilesByChannel]);
@@ -2417,6 +2548,7 @@ export function CapacityPlanning() {
     rows.push(["--- STAFFING REQUIREMENTS ---", ...weekCalcs.map(() => "")]);
     rows.push(row("Weekly Required FTE Estimate", weekCalcs.map(wk => roundTo(wk.requiredFTE, 1))));
     rows.push(row("Previous Flat Estimate Comparison", weekCalcs.map(wk => roundTo(wk.flatRequiredFTE, 1))));
+    rows.push(row("Weekly Volume Source", weekCalcs.map(wk => weeklyVolumeSourceLabel(wk.weeklyVolumeSource))));
     rows.push(row("Distribution Source", weekCalcs.map(wk => distributionSourceLabel(wk.distributionSource))));
     rows.push(row("Required Staffed Hours", weekCalcs.map(wk => roundTo(wk.requiredStaffedHours, 1))));
     rows.push(row("Proj. Occupancy %", weekCalcs.map(wk => roundTo(wk.projOccupancyPct, 1))));
@@ -2862,6 +2994,9 @@ export function CapacityPlanning() {
               Enabled: <span className="font-semibold">{enabledChannels.map(ch => CHANNEL_LABELS[ch]).join(", ") || "None"}</span>
             </span>
             <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
+              Weekly volume source: <span className="font-semibold">{weeklyVolumeSourceLabel(weekCalcs[0]?.weeklyVolumeSource ?? "flat-fallback")}</span>
+            </span>
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-black">
               Distribution: <span className="font-semibold">{distributionSourceLabel(weekCalcs[0]?.distributionSource ?? "default-fallback-distribution")}</span>
             </span>
           </div>
@@ -2923,6 +3058,9 @@ export function CapacityPlanning() {
                   </p>
                   <p className="mt-1 text-[11px] text-black">
                     Source: {distributionSourceLabel(weekCalcs[0]?.distributionSource ?? "default-fallback-distribution")}
+                  </p>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Weekly volume source: {weeklyVolumeSourceLabel(weekCalcs[0]?.weeklyVolumeSource ?? "flat-fallback")}
                   </p>
                   <p className="mt-1 text-[10px] text-slate-500">
                     Previous flat estimate comparison: {weekCalcs[0] ? fmt1(weekCalcs[0].flatRequiredFTE) : "-"} FTE
