@@ -179,6 +179,8 @@ interface DistributionProfile {
 interface IntradayPrefsSnapshot {
   dataSource?: "api" | "manual";
   manualWeeklyVolumes?: number[];
+  useManualMonthlyVolume?: boolean;
+  manualMonthlyVolumeByMonth?: Record<string, number>;
 }
 
 interface InteractionArrivalRecord {
@@ -190,7 +192,11 @@ interface InteractionArrivalRecord {
 }
 
 type DistributionSource = "intraday-based" | "saved-profile-fallback" | "default-fallback-distribution" | "configuration-needed";
-type WeeklyVolumeSource = "intraday-allocation" | "default-weekly-distribution" | "flat-fallback";
+type WeeklyVolumeSource =
+  | "intraday-manual-monthly-override"
+  | "demand-planner-via-intraday"
+  | "default-weekly-distribution"
+  | "flat-fallback";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -511,9 +517,14 @@ function distributionSourceLabel(source: DistributionSource): string {
 }
 
 function weeklyVolumeSourceLabel(source: WeeklyVolumeSource): string {
-  if (source === "intraday-allocation") return "Intraday allocation";
+  if (source === "intraday-manual-monthly-override") return "Intraday manual monthly override";
+  if (source === "demand-planner-via-intraday") return "Demand Planner via Intraday";
   if (source === "default-weekly-distribution") return "Default weekly distribution";
   return "Flat fallback";
+}
+
+function buildMonthKey(year: number, month: number): string {
+  return `${year}-${String(month + 1).padStart(2, "0")}`;
 }
 
 function getMonthOffset(startDate: string, date: Date): number {
@@ -1924,7 +1935,6 @@ export function CapacityPlanning() {
     const forecastStart = plannerSnapshot?.assumptions?.startDate;
     const growthPct = demandAssumptions?.growthRate ?? 0;
     const monday = getMondayOf(new Date(config.planStartDate + "T00:00:00"));
-    const blendedScopeChannel = enabledChannels.includes(activeChannel) ? activeChannel : (enabledChannels[0] ?? "voice");
 
     const getChannelWeeklyVolume = (
       channel: ChannelKey,
@@ -1944,35 +1954,59 @@ export function CapacityPlanning() {
         return { value: fallbackValue, source: "flat-fallback" };
       }
 
-      const prefsChannel = isDedicated ? channel : blendedScopeChannel;
-      const prefs = intradayPrefsByChannel[prefsChannel];
-      const profile = profilesByChannel[prefsChannel];
+      const prefs = intradayPrefsByChannel[channel];
+      const profile = profilesByChannel[channel];
       const manualWeeklyVolumes = prefs?.dataSource === "manual" ? (prefs.manualWeeklyVolumes ?? []) : [];
       const hasManualPattern = manualWeeklyVolumes.filter((value) => Number.isFinite(value) && value > 0).length >= 4;
       const hasProfileWeights = Array.isArray(profile?.day_weights) && profile.day_weights.some((value) => Number(value) > 0);
       const segments = getWeekMonthSegments(weekStart, forecastStart, series.length);
-      if (segments.length === 0) return { value: 0, source: hasManualPattern || hasProfileWeights ? "intraday-allocation" : "default-weekly-distribution" };
+      const hasIntradayPattern = hasManualPattern || hasProfileWeights;
+      const hasManualMonthlyOverride = prefs?.useManualMonthlyVolume === true;
+      if (segments.length === 0) {
+        return {
+          value: 0,
+          source: hasManualMonthlyOverride
+            ? "intraday-manual-monthly-override"
+            : hasIntradayPattern
+              ? "demand-planner-via-intraday"
+              : "default-weekly-distribution",
+        };
+      }
 
-      if (hasManualPattern || hasProfileWeights) {
+      if (hasIntradayPattern) {
         let intradayValue = 0;
         for (const segment of segments) {
-          const monthlyVolume = series[segment.monthOffset] ?? 0;
+          const monthKey = buildMonthKey(segment.year, segment.month);
+          const overrideVolume = Number(prefs?.manualMonthlyVolumeByMonth?.[monthKey] ?? NaN);
+          const monthlyVolume = hasManualMonthlyOverride && Number.isFinite(overrideVolume)
+            ? Math.max(0, Math.round(overrideVolume))
+            : (series[segment.monthOffset] ?? 0);
           if (monthlyVolume <= 0) continue;
           intradayValue += hasProfileWeights
             ? distributeMonthlyToWeekViaDailyDOW(monthlyVolume, segment.year, segment.month, fmtISODate(weekStart), profile?.day_weights ?? [])
             : getManualPatternContribution(monthlyVolume, segment.year, segment.month, weekStart, segment.overlapDays, manualWeeklyVolumes);
         }
-        return { value: Math.round(intradayValue), source: "intraday-allocation" };
+        return {
+          value: Math.round(intradayValue),
+          source: hasManualMonthlyOverride ? "intraday-manual-monthly-override" : "demand-planner-via-intraday",
+        };
       }
 
       let defaultValue = 0;
       for (const segment of segments) {
-        const monthlyVolume = series[segment.monthOffset] ?? 0;
+        const monthKey = buildMonthKey(segment.year, segment.month);
+        const overrideVolume = Number(prefs?.manualMonthlyVolumeByMonth?.[monthKey] ?? NaN);
+        const monthlyVolume = hasManualMonthlyOverride && Number.isFinite(overrideVolume)
+          ? Math.max(0, Math.round(overrideVolume))
+          : (series[segment.monthOffset] ?? 0);
         if (monthlyVolume <= 0) continue;
         const daysInMonth = new Date(segment.year, segment.month + 1, 0).getDate();
         defaultValue += monthlyVolume * (segment.overlapDays / daysInMonth);
       }
-      return { value: Math.round(defaultValue), source: "default-weekly-distribution" };
+      return {
+        value: Math.round(defaultValue),
+        source: hasManualMonthlyOverride ? "intraday-manual-monthly-override" : "default-weekly-distribution",
+      };
     };
 
     return weeks.map((week) => {
@@ -1988,9 +2022,11 @@ export function CapacityPlanning() {
         ? (activeChannel === "voice" ? voice.source : activeChannel === "chat" ? chat.source : activeChannel === "email" ? email.source : cases.source)
         : (voice.source === "flat-fallback" || chat.source === "flat-fallback" || email.source === "flat-fallback" || cases.source === "flat-fallback")
           ? "flat-fallback"
-          : (voice.source === "intraday-allocation" || chat.source === "intraday-allocation" || email.source === "intraday-allocation" || cases.source === "intraday-allocation")
-            ? "intraday-allocation"
-            : "default-weekly-distribution";
+          : (voice.source === "intraday-manual-monthly-override" || chat.source === "intraday-manual-monthly-override" || email.source === "intraday-manual-monthly-override" || cases.source === "intraday-manual-monthly-override")
+            ? "intraday-manual-monthly-override"
+            : (voice.source === "demand-planner-via-intraday" || chat.source === "demand-planner-via-intraday" || email.source === "demand-planner-via-intraday" || cases.source === "demand-planner-via-intraday")
+              ? "demand-planner-via-intraday"
+              : "default-weekly-distribution";
 
       return {
         volumes: {
@@ -2002,7 +2038,7 @@ export function CapacityPlanning() {
         source,
       };
     });
-  }, [activeChannel, config.planStartDate, demandAssumptions, enabledChannels, forecastedMonthlyVols, intradayPrefsByChannel, isDedicated, plannerSnapshot?.assumptions?.startDate, profilesByChannel, weeks]);
+  }, [activeChannel, config.planStartDate, demandAssumptions, forecastedMonthlyVols, intradayPrefsByChannel, isDedicated, plannerSnapshot?.assumptions?.startDate, profilesByChannel, weeks]);
 
   const autoBaseVolumes = useMemo(() => autoBaseVolumePlan.map((entry) => entry.volumes), [autoBaseVolumePlan]);
 
