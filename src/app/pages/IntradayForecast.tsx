@@ -115,6 +115,8 @@ interface IntradayPrefs {
   apiBaselineCustomEnd: string;
   /** Show FTE table with global-max heatmap coloring (vs row-relative). */
   showFteHeatmap: boolean;
+  useManualMonthlyVolume: boolean;
+  manualMonthlyVolumeByMonth: Record<string, number>;
 }
 
 const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
@@ -139,6 +141,8 @@ const DEFAULT_PREFS: IntradayPrefs = {
   apiBaselineCustomStart: "",
   apiBaselineCustomEnd: "",
   showFteHeatmap: false,
+  useManualMonthlyVolume: false,
+  manualMonthlyVolumeByMonth: {},
 };
 const DOW_COLORS = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#9333ea", "#e11d48", "#94a3b8"];
 
@@ -168,6 +172,10 @@ function applyHistoricalOverrides(apiData: number[], overrides: Record<number, s
     const parsed = Math.round(parseFloat(ov));
     return Number.isFinite(parsed) && parsed > 0 ? parsed : api;
   });
+}
+
+function buildMonthKey(year: number, month: number): string {
+  return `${year}-${String(month + 1).padStart(2, "0")}`;
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
@@ -203,7 +211,8 @@ export const IntradayForecast = () => {
           hideBlankRows, smoothFTE, smoothWindow, patternShiftHours = 0,
           dayOverrideMultipliers = [1,1,1,1,1,1,1],
           apiBaselinePreset = "last28", apiBaselineCustomStart = "", apiBaselineCustomEnd = "",
-          showFteHeatmap = false } = prefs;
+          showFteHeatmap = false, useManualMonthlyVolume = false,
+          manualMonthlyVolumeByMonth = {} } = prefs;
 
   // Reset target month/week when global channel changes
   const prevChannelRef = React.useRef(`${selectedChannel}:${staffingMode}`);
@@ -476,7 +485,7 @@ export const IntradayForecast = () => {
   }, [forecastVolumesByChannel, selectedDemandChannels]);
 
   const usesBlendedMonthlyVolume = staffingMode === "blended" || plannerSnapshot?.poolingMode === "blended";
-  const targetVolumeSeries = usesBlendedMonthlyVolume ? blendedForecastVolumes : forecastVolumesByChannel[selectedChannel];
+  const targetVolumeSeries = forecastVolumesByChannel[selectedChannel];
 
   const monthLabels = useMemo(
     () => plannerSnapshot?.assumptions?.startDate
@@ -489,13 +498,22 @@ export const IntradayForecast = () => {
     Math.max(0, targetMonthOffset),
     Math.max(0, targetVolumeSeries.length - 1)
   );
-  const targetMonthlyVolume = targetVolumeSeries[safeOffset] ?? 0;
   const { year: targetYear, month: targetMonthIndex } = useMemo(
     () => plannerSnapshot?.assumptions?.startDate
       ? monthFromOffset(plannerSnapshot.assumptions.startDate, safeOffset)
       : { year: new Date().getFullYear(), month: new Date().getMonth() },
     [plannerSnapshot?.assumptions?.startDate, safeOffset]
   );
+  const targetMonthKey = useMemo(
+    () => buildMonthKey(targetYear, targetMonthIndex),
+    [targetYear, targetMonthIndex]
+  );
+  const demandPlannerMonthlyVolume = targetVolumeSeries[safeOffset] ?? 0;
+  const blendedMonthlyVolume = blendedForecastVolumes[safeOffset] ?? 0;
+  const manualMonthlyVolume = Number(manualMonthlyVolumeByMonth[targetMonthKey] ?? 0);
+  const effectiveMonthlyVolume = useManualMonthlyVolume
+    ? Math.max(0, Math.round(manualMonthlyVolume))
+    : demandPlannerMonthlyVolume;
 
   // ── Weeks in target month ──────────────────────────────────────────────────
   const weeksInMonth = useMemo(
@@ -554,7 +572,7 @@ export const IntradayForecast = () => {
         ? {
             mode: "historical",
             channel: selectedChannel,
-            monthlyForecast: targetMonthlyVolume,
+            monthlyForecast: effectiveMonthlyVolume,
             weeks: weekBuckets.map((w, i) => ({
               index: i,
               weekStart: w.weekStart,
@@ -565,7 +583,7 @@ export const IntradayForecast = () => {
         : {
             mode: "manual",
             channel: selectedChannel,
-            monthlyForecast: targetMonthlyVolume,
+            monthlyForecast: effectiveMonthlyVolume,
             weeks: manualWeeklyVolumes.map((v, i) => ({
               index: i,
               volume: v,
@@ -665,7 +683,7 @@ export const IntradayForecast = () => {
 
   // Compute the forecasted weekly volume
   const forecastedWeekVolume = useMemo(() => {
-    if (targetMonthlyVolume === 0 || !targetWeekStart) return 0;
+    if (effectiveMonthlyVolume === 0 || !targetWeekStart) return 0;
 
     if (dataSource === "manual") {
       // Use all entered weekly volumes. Require at least 4.
@@ -690,7 +708,7 @@ export const IntradayForecast = () => {
       const totalAvg = cycleAvgs.reduce((a, b) => a + b, 0);
       if (totalAvg === 0) return 0;
       const pct = cycleAvgs[weekIdx] / totalAvg;
-      return targetMonthlyVolume * pct;
+      return effectiveMonthlyVolume * pct;
     }
 
     if (dataSource === "api") {
@@ -700,23 +718,23 @@ export const IntradayForecast = () => {
       const hasDOWWeights = dw.some(w => w > 0);
       if (hasDOWWeights) {
         return distributeMonthlyToWeekViaDailyDOW(
-          targetMonthlyVolume, targetYear, targetMonthIndex, targetWeekStart, dw
+          effectiveMonthlyVolume, targetYear, targetMonthIndex, targetWeekStart, dw
         );
       }
       if (weekBuckets.length > 0) {
-        return distributeMonthlyToTargetWeek(targetMonthlyVolume, weekBuckets, targetWeekStart);
+        return distributeMonthlyToTargetWeek(effectiveMonthlyVolume, weekBuckets, targetWeekStart);
       }
     }
 
     // Fallback: simple division by weeks in month
-    return weeksInMonth.length > 0 ? targetMonthlyVolume / weeksInMonth.length : 0;
-  }, [targetMonthlyVolume, targetWeekStart, weekBuckets, manualWeeklyVolumes, dataSource,
+    return weeksInMonth.length > 0 ? effectiveMonthlyVolume / weeksInMonth.length : 0;
+  }, [effectiveMonthlyVolume, targetWeekStart, weekBuckets, manualWeeklyVolumes, dataSource,
       weeksInMonth, distributionWeights.dayWeights, targetYear, targetMonthIndex]);
   const activeIntervalWeights = editableWeights ?? distributionWeights.intervalWeights;
 
   // Volume breakdown for every week in the target month — drives the new summary table.
   const allWeeksBreakdown = useMemo(() => {
-    if (targetMonthlyVolume === 0 || weeksInMonth.length === 0) return [];
+    if (effectiveMonthlyVolume === 0 || weeksInMonth.length === 0) return [];
     const dw = distributionWeights.dayWeights;
     const totalDowWeight = dw.reduce((s, w) => s + w, 0) || 1;
     return weeksInMonth.map((week, i) => {
@@ -731,20 +749,20 @@ export const IntradayForecast = () => {
             return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
           });
           const totalAvg = cycleAvgs.reduce((a, b) => a + b, 0);
-          if (totalAvg > 0) weekVol = targetMonthlyVolume * cycleAvgs[i] / totalAvg;
+          if (totalAvg > 0) weekVol = effectiveMonthlyVolume * cycleAvgs[i] / totalAvg;
         }
       } else {
         const hasDOW = dw.some(w => w > 0);
         weekVol = hasDOW
-          ? distributeMonthlyToWeekViaDailyDOW(targetMonthlyVolume, targetYear, targetMonthIndex, week.start, dw)
+          ? distributeMonthlyToWeekViaDailyDOW(effectiveMonthlyVolume, targetYear, targetMonthIndex, week.start, dw)
           : weekBuckets.length > 0
-            ? distributeMonthlyToTargetWeek(targetMonthlyVolume, weekBuckets, week.start)
-            : targetMonthlyVolume / weeksInMonth.length;
+            ? distributeMonthlyToTargetWeek(effectiveMonthlyVolume, weekBuckets, week.start)
+            : effectiveMonthlyVolume / weeksInMonth.length;
       }
       const dailyVols = dw.map(w => weekVol * w / totalDowWeight);
-      return { week, weekVol: Math.round(weekVol), dailyVols, pct: targetMonthlyVolume > 0 ? weekVol / targetMonthlyVolume : 0 };
+      return { week, weekVol: Math.round(weekVol), dailyVols, pct: effectiveMonthlyVolume > 0 ? weekVol / effectiveMonthlyVolume : 0 };
     });
-  }, [targetMonthlyVolume, weeksInMonth, dataSource, manualWeeklyVolumes,
+  }, [effectiveMonthlyVolume, weeksInMonth, dataSource, manualWeeklyVolumes,
       distributionWeights.dayWeights, weekBuckets, targetYear, targetMonthIndex]);
 
   // Distribute the forecasted week volume to interval-level
@@ -1341,6 +1359,9 @@ export const IntradayForecast = () => {
 
   // Volume tier: was this month sourced from a published recut, or is it a forecast?
   const volumeSourceLabel = useMemo((): { label: string; color: string } => {
+    if (useManualMonthlyVolume) {
+      return { label: "Manual Override", color: "text-violet-700 bg-violet-50 border-violet-200" };
+    }
     const recut = (plannerSnapshot as Record<string, unknown>)?.recutVolumesByChannel as Record<ChannelKey, number[]> | null | undefined;
     if (Array.isArray(recut?.[selectedChannel]) && recut![selectedChannel]!.length > 0) {
       return { label: "Recut", color: "text-blue-700 bg-blue-50 border-blue-200" };
@@ -1353,7 +1374,7 @@ export const IntradayForecast = () => {
       }
     }
     return { label: "Forecast", color: "text-emerald-700 bg-emerald-50 border-emerald-200" };
-  }, [plannerSnapshot, selectedChannel, safeOffset]);
+  }, [plannerSnapshot, selectedChannel, safeOffset, useManualMonthlyVolume]);
 
   const { setPageData } = useWFMPageData();
   useEffect(() => {
@@ -1361,8 +1382,9 @@ export const IntradayForecast = () => {
     setPageData({
       channel: selectedChannel,
       staffingMode,
-      monthlyVolumeMode: usesBlendedMonthlyVolume ? "blended-total" : "channel",
-      targetMonthlyVolume,
+      monthlyVolumeMode: "channel",
+      targetMonthlyVolume: effectiveMonthlyVolume,
+      blendedMonthlyVolume: usesBlendedMonthlyVolume ? blendedMonthlyVolume : null,
       forecastedWeekVolume,
       grain,
       assumptions: a ? {
@@ -1386,12 +1408,12 @@ export const IntradayForecast = () => {
         : null,
     });
     return () => setPageData(null);
-  }, [selectedChannel, staffingMode, usesBlendedMonthlyVolume, targetMonthlyVolume, forecastedWeekVolume, grain, plannerSnapshot, smoothedFteTable, setPageData]);
+  }, [selectedChannel, staffingMode, usesBlendedMonthlyVolume, effectiveMonthlyVolume, blendedMonthlyVolume, forecastedWeekVolume, grain, plannerSnapshot, smoothedFteTable, setPageData]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   // Forecast can be generated when there is real interval data OR the LOB-hours fallback is available.
-  const canGenerateForecast = targetMonthlyVolume > 0 && (baselineDataCount > 0 || usingFallbackPattern) && forecastedWeekVolume > 0;
+  const canGenerateForecast = effectiveMonthlyVolume > 0 && (baselineDataCount > 0 || usingFallbackPattern) && forecastedWeekVolume > 0;
 
   return (
     <PageLayout title="Intraday Forecast">
@@ -1517,19 +1539,61 @@ export const IntradayForecast = () => {
             </div>
 
             {/* Monthly volume display */}
-            <div className="flex flex-col gap-1.5">
+            <div className="flex min-w-[240px] flex-col gap-1.5">
               <span className="text-xs font-semibold text-foreground">Monthly Volume</span>
-              <div className="flex flex-col gap-0.5">
-                <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold min-w-[100px]">
-                  {isLoadingForecast
-                    ? <span className="text-muted-foreground animate-pulse">Loading...</span>
-                    : targetMonthlyVolume > 0
-                      ? targetMonthlyVolume.toLocaleString()
-                      : <span className="text-muted-foreground">&mdash;</span>}
+              <div className="flex flex-col gap-2 rounded-md border border-slate-200 bg-slate-50 p-2.5">
+                <Input
+                  type="number"
+                  min="0"
+                  step="1"
+                  className="h-8 bg-white text-sm font-semibold"
+                  disabled={isLoadingForecast || !useManualMonthlyVolume}
+                  value={
+                    useManualMonthlyVolume
+                      ? (manualMonthlyVolumeByMonth[targetMonthKey] ?? "")
+                      : (effectiveMonthlyVolume > 0 ? String(effectiveMonthlyVolume) : "")
+                  }
+                  placeholder={isLoadingForecast ? "Loading..." : "Enter volume"}
+                  onChange={(event) => {
+                    const rawValue = event.target.value.trim();
+                    setPrefs((prev) => {
+                      const next = { ...(prev.manualMonthlyVolumeByMonth ?? {}) };
+                      if (rawValue === "") {
+                        delete next[targetMonthKey];
+                      } else {
+                        const parsed = Math.max(0, Math.round(Number(rawValue) || 0));
+                        next[targetMonthKey] = parsed;
+                      }
+                      return { ...prev, manualMonthlyVolumeByMonth: next };
+                    });
+                  }}
+                />
+                <label className="flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 rounded border-slate-300"
+                    checked={useManualMonthlyVolume}
+                    onChange={(event) => setPrefs({ useManualMonthlyVolume: event.target.checked })}
+                  />
+                  Use manual monthly volume
+                </label>
+                <div className="text-[11px] text-slate-500">
+                  Demand Planner default:{" "}
+                  <span className="font-semibold text-slate-700">
+                    {demandPlannerMonthlyVolume > 0 ? demandPlannerMonthlyVolume.toLocaleString() : "—"}
+                  </span>
                 </div>
-                {targetMonthlyVolume > 0 && (
+                {usesBlendedMonthlyVolume && (
+                  <div className="text-[11px] text-slate-500">
+                    Blended total this month:{" "}
+                    <span className="font-semibold text-slate-700">
+                      {blendedMonthlyVolume > 0 ? blendedMonthlyVolume.toLocaleString() : "—"}
+                    </span>
+                  </div>
+                )}
+                {effectiveMonthlyVolume > 0 && (
                   <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${volumeSourceLabel.color}`}>
-                    {usesBlendedMonthlyVolume ? `${volumeSourceLabel.label} · blended total` : volumeSourceLabel.label}
+                    {volumeSourceLabel.label}
                   </span>
                 )}
               </div>
@@ -1557,6 +1621,10 @@ export const IntradayForecast = () => {
               <span className="text-xs font-semibold text-foreground">Source</span>
               {isLoadingForecast ? (
                 <Badge variant="secondary" className="h-8 px-3 text-xs">Loading...</Badge>
+              ) : useManualMonthlyVolume ? (
+                <Badge variant="secondary" className="h-8 px-3 text-xs border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50">
+                  Manual Override
+                </Badge>
               ) : plannerSnapshot ? (
                 <Badge variant="default" className="h-8 px-3 text-xs bg-green-600 hover:bg-green-600">
                   Demand Planner
@@ -1587,7 +1655,7 @@ export const IntradayForecast = () => {
           )}
 
           {/* Weekly distribution summary */}
-          {weekBuckets.length > 0 && dataSource === "api" && targetMonthlyVolume > 0 && (
+          {weekBuckets.length > 0 && dataSource === "api" && effectiveMonthlyVolume > 0 && (
             <div className="mt-4 p-3 rounded-lg border bg-muted/20">
               <div className="flex items-center gap-2 mb-2">
                 <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
@@ -1966,7 +2034,7 @@ export const IntradayForecast = () => {
       </section>
 
       {/* ── Monthly → Weekly Breakdown ── */}
-      {targetMonthlyVolume > 0 && weeksInMonth.length > 0 && (
+      {effectiveMonthlyVolume > 0 && weeksInMonth.length > 0 && (
         <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
             <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
@@ -1975,7 +2043,7 @@ export const IntradayForecast = () => {
               <span className="text-xs font-normal text-slate-400">{monthLabels[safeOffset]}</span>
             </h2>
             <span className="text-xs text-muted-foreground">
-              Monthly total: <span className="font-bold text-slate-700">{targetMonthlyVolume.toLocaleString()}</span>
+              Monthly total: <span className="font-bold text-slate-700">{effectiveMonthlyVolume.toLocaleString()}</span>
             </span>
           </div>
           <div className="overflow-auto">
@@ -2371,7 +2439,7 @@ export const IntradayForecast = () => {
         <div className="p-4">
           {!canGenerateForecast ? (
             <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
-              {targetMonthlyVolume === 0
+              {effectiveMonthlyVolume === 0
                 ? "Select a month with forecast data to see the pattern"
                 : dataSource === "manual" && manualWeeklyVolumes.filter(v => v > 0).length < 4
                   ? "Enter at least 4 weeks of manual volume to generate the arrival pattern"
