@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { CHANNEL_OPTIONS, type ChannelKey, useLOB } from "../lib/lobContext";
 import { apiUrl } from "../lib/api";
 import { getCalculatedVolumes, type Assumptions } from "./forecasting-logic";
@@ -55,6 +56,43 @@ interface DemandVolumeResolution {
   source: "demand_forecasting" | "recut" | "missing";
 }
 
+interface IntradayV2WeekAllocation {
+  id?: number;
+  week_start: string;
+  week_index: number;
+  weight: number | string;
+  volume: number | string;
+  is_locked?: boolean;
+  updated_at?: string;
+}
+
+interface MonthWeek {
+  weekStart: string;
+  weekEnd: string;
+  weekIndex: number;
+  label: string;
+  dateRange: string;
+  daysInMonth: number;
+  defaultWeight: number;
+}
+
+interface WeekAllocationPreviewRow {
+  week: MonthWeek;
+  inputValue: string;
+  rawWeight: number;
+  normalizedWeight: number;
+  allocatedVolume: number;
+  invalid: boolean;
+}
+
+interface WeekAllocationPreview {
+  rows: WeekAllocationPreviewRow[];
+  totalRawWeight: number;
+  totalAllocatedVolume: number;
+  hasInvalidWeight: boolean;
+  usingDefaultPreviewWeights: boolean;
+}
+
 const DEFAULT_ENABLED_CHANNELS: Record<ChannelKey, boolean> = {
   voice: true,
   email: false,
@@ -70,11 +108,6 @@ const CHANNEL_SELECT_OPTIONS = [
 ] as const satisfies ReadonlyArray<{ value: ChannelKey; label: string }>;
 
 const PLACEHOLDER_SECTIONS = [
-  {
-    title: "Week Allocation",
-    description: "Future month-to-week distribution for the selected scope.",
-    icon: CalendarDays,
-  },
   {
     title: "Day Allocation",
     description: "Future week-to-day distribution for the selected scope.",
@@ -96,6 +129,9 @@ const PLACEHOLDER_SECTIONS = [
     icon: Send,
   },
 ];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEIGHT_TOTAL_TOLERANCE = 0.05;
 
 function currentMonthKey() {
   const now = new Date();
@@ -127,12 +163,183 @@ function formatNumberInput(value: number | string | null | undefined): string {
 }
 
 function formatVolume(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
   return Math.round(value).toLocaleString();
 }
 
 function formatChannelLabel(channel: ChannelKey): string {
   return CHANNEL_OPTIONS.find((option) => option.value === channel)?.label ?? "Voice";
+}
+
+function parseMonthParts(monthKey: string): { year: number; month: number } | null {
+  if (!/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(monthKey)) return null;
+  const [year, month] = monthKey.split("-").map(Number);
+  return { year, month };
+}
+
+function isoFromDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function dateFromIso(isoDate: string): Date {
+  return new Date(`${String(isoDate).slice(0, 10)}T00:00:00Z`);
+}
+
+function addUtcDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * DAY_MS);
+}
+
+function startOfUtcWeekMonday(date: Date): Date {
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  return addUtcDays(date, -mondayOffset);
+}
+
+function formatShortDate(isoDate: string, includeYear = false): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(includeYear ? { year: "numeric" as const } : {}),
+    timeZone: "UTC",
+  }).format(dateFromIso(isoDate));
+}
+
+function formatDateRange(startIso: string, endIso: string): string {
+  const sameYear = startIso.slice(0, 4) === endIso.slice(0, 4);
+  return sameYear
+    ? `${formatShortDate(startIso)} - ${formatShortDate(endIso, true)}`
+    : `${formatShortDate(startIso, true)} - ${formatShortDate(endIso, true)}`;
+}
+
+function formatWeightInput(weight: number | string | null | undefined): string {
+  const parsed = parseOptionalNumber(weight);
+  if (parsed === null) return "0";
+  return (Math.round(parsed * 10000) / 10000).toFixed(4).replace(/\.?0+$/, "");
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return "0%";
+  return `${(Math.round(value * 100) / 100).toFixed(2).replace(/\.?0+$/, "")}%`;
+}
+
+function normalizeDateKey(value: string | Date): string {
+  if (value instanceof Date) return isoFromDate(value);
+  return String(value).slice(0, 10);
+}
+
+function parseWeightInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (trimmed === "") return 0;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildMonthWeeks(monthKey: string): MonthWeek[] {
+  const parts = parseMonthParts(monthKey);
+  if (!parts) return [];
+
+  const monthStart = new Date(Date.UTC(parts.year, parts.month - 1, 1));
+  const monthEnd = new Date(Date.UTC(parts.year, parts.month, 0));
+  const daysInMonth = monthEnd.getUTCDate();
+  const weeks: MonthWeek[] = [];
+  let weekStart = startOfUtcWeekMonday(monthStart);
+
+  while (weekStart.getTime() <= monthEnd.getTime()) {
+    const weekEnd = addUtcDays(weekStart, 6);
+    const overlapStart = Math.max(weekStart.getTime(), monthStart.getTime());
+    const overlapEnd = Math.min(weekEnd.getTime(), monthEnd.getTime());
+    const daysInSelectedMonth = Math.max(0, Math.floor((overlapEnd - overlapStart) / DAY_MS) + 1);
+
+    if (daysInSelectedMonth > 0) {
+      const weekStartIso = isoFromDate(weekStart);
+      const weekEndIso = isoFromDate(weekEnd);
+      weeks.push({
+        weekStart: weekStartIso,
+        weekEnd: weekEndIso,
+        weekIndex: weeks.length + 1,
+        label: `Week ${weeks.length + 1}`,
+        dateRange: formatDateRange(weekStartIso, weekEndIso),
+        daysInMonth: daysInSelectedMonth,
+        defaultWeight: daysInMonth > 0 ? (daysInSelectedMonth / daysInMonth) * 100 : 0,
+      });
+    }
+
+    weekStart = addUtcDays(weekStart, 7);
+  }
+
+  return weeks;
+}
+
+function buildDefaultWeekWeightInputs(weeks: MonthWeek[]): Record<string, string> {
+  return Object.fromEntries(weeks.map((week) => [week.weekStart, formatWeightInput(week.defaultWeight)]));
+}
+
+function buildSavedWeekWeightInputs(weeks: MonthWeek[], allocations: IntradayV2WeekAllocation[]): Record<string, string> {
+  const savedWeightsByWeek = new Map(
+    allocations.map((allocation) => [normalizeDateKey(allocation.week_start), formatWeightInput(allocation.weight)])
+  );
+  return Object.fromEntries(
+    weeks.map((week) => [week.weekStart, savedWeightsByWeek.get(week.weekStart) ?? formatWeightInput(week.defaultWeight)])
+  );
+}
+
+function allocateIntegerVolume(totalVolume: number, weights: number[]): number[] {
+  const total = Math.max(0, Math.round(totalVolume));
+  if (total === 0 || weights.length === 0) return weights.map(() => 0);
+
+  const weightTotal = weights.reduce((sum, weight) => sum + Math.max(0, weight), 0);
+  if (weightTotal <= 0) return weights.map(() => 0);
+
+  const exactVolumes = weights.map((weight) => (total * Math.max(0, weight)) / weightTotal);
+  const allocated = exactVolumes.map(Math.floor);
+  let remainder = total - allocated.reduce((sum, value) => sum + value, 0);
+  const remainderOrder = exactVolumes
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((left, right) => right.fraction - left.fraction || left.index - right.index);
+
+  for (let i = 0; i < remainder; i += 1) {
+    allocated[remainderOrder[i % remainderOrder.length].index] += 1;
+  }
+
+  return allocated;
+}
+
+function buildWeekAllocationPreview(
+  weeks: MonthWeek[],
+  weightInputs: Record<string, string>,
+  effectiveMonthlyVolume: number
+): WeekAllocationPreview {
+  const parsedRows = weeks.map((week) => {
+    const inputValue = weightInputs[week.weekStart] ?? formatWeightInput(week.defaultWeight);
+    const parsed = parseWeightInput(inputValue);
+    const invalid = parsed === null || parsed < 0;
+    return {
+      week,
+      inputValue,
+      rawWeight: invalid ? 0 : parsed,
+      invalid,
+    };
+  });
+  const hasInvalidWeight = parsedRows.some((row) => row.invalid);
+  const rawWeights = parsedRows.map((row) => row.rawWeight);
+  const totalRawWeight = rawWeights.reduce((sum, weight) => sum + weight, 0);
+  const usingDefaultPreviewWeights = hasInvalidWeight || totalRawWeight <= 0;
+  const previewWeights = usingDefaultPreviewWeights ? weeks.map((week) => week.defaultWeight) : rawWeights;
+  const previewWeightTotal = previewWeights.reduce((sum, weight) => sum + weight, 0);
+  const normalizedWeights = previewWeights.map((weight) => (previewWeightTotal > 0 ? (weight / previewWeightTotal) * 100 : 0));
+  const allocatedVolumes = allocateIntegerVolume(effectiveMonthlyVolume, previewWeights);
+  const rows = parsedRows.map((row, index) => ({
+    ...row,
+    normalizedWeight: normalizedWeights[index] ?? 0,
+    allocatedVolume: allocatedVolumes[index] ?? 0,
+  }));
+
+  return {
+    rows,
+    totalRawWeight,
+    totalAllocatedVolume: allocatedVolumes.reduce((sum, value) => sum + value, 0),
+    hasInvalidWeight,
+    usingDefaultPreviewWeights,
+  };
 }
 
 function applyHistoricalOverrides(apiData: number[], overrides: Record<number, string> = {}): number[] {
@@ -284,6 +491,12 @@ export function IntradayForecastV2() {
   const [planError, setPlanError] = useState<string | null>(null);
   const [manualOverrideInput, setManualOverrideInput] = useState("");
   const [savingPlan, setSavingPlan] = useState(false);
+  const [weekWeightInputs, setWeekWeightInputs] = useState<Record<string, string>>({});
+  const [savedWeekAllocations, setSavedWeekAllocations] = useState<IntradayV2WeekAllocation[]>([]);
+  const [weekAllocationScopeKey, setWeekAllocationScopeKey] = useState("");
+  const [weekAllocationLoading, setWeekAllocationLoading] = useState(false);
+  const [weekAllocationError, setWeekAllocationError] = useState<string | null>(null);
+  const [savingWeekAllocation, setSavingWeekAllocation] = useState(false);
   const activeScopeKeyRef = useRef("");
 
   useEffect(() => {
@@ -382,6 +595,8 @@ export function IntradayForecastV2() {
     () => lobs.find((lob) => lob.id === selectedLobId) ?? activeLob ?? null,
     [activeLob, lobs, selectedLobId]
   );
+  const monthWeeks = useMemo(() => buildMonthWeeks(monthKey), [monthKey]);
+  const defaultWeekWeightInputs = useMemo(() => buildDefaultWeekWeightInputs(monthWeeks), [monthWeeks]);
 
   const activeChannelLabel = formatChannelLabel(selectedChannel);
   const scopeLabel = `${selectedLob?.lob_name ?? "No LOB"} / ${activeChannelLabel} / ${staffingMode} / ${monthKey}`;
@@ -433,6 +648,57 @@ export function IntradayForecastV2() {
 
     return () => controller.abort();
   }, [monthKey, scopeKey, selectedChannel, selectedLobId, staffingMode]);
+
+  useEffect(() => {
+    setWeekAllocationScopeKey(scopeKey);
+    setSavedWeekAllocations([]);
+    setWeekWeightInputs(defaultWeekWeightInputs);
+    setWeekAllocationError(null);
+
+    if (!selectedLobId || monthWeeks.length === 0) {
+      setWeekAllocationLoading(false);
+      return;
+    }
+
+    const requestScopeKey = scopeKey;
+    const controller = new AbortController();
+    setWeekAllocationLoading(true);
+
+    fetch(apiUrl(`/api/intraday-v2/week-allocations?${buildPlanQuery(selectedLobId, selectedChannel, staffingMode, monthKey)}`), {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.error || "Unable to load scoped week allocation.");
+        }
+        return response.json() as Promise<IntradayV2WeekAllocation[]>;
+      })
+      .then((allocations) => {
+        if (activeScopeKeyRef.current !== requestScopeKey) return;
+        const scopedAllocations = Array.isArray(allocations) ? allocations : [];
+        setWeekAllocationScopeKey(requestScopeKey);
+        setSavedWeekAllocations(scopedAllocations);
+        setWeekWeightInputs(
+          scopedAllocations.length > 0
+            ? buildSavedWeekWeightInputs(monthWeeks, scopedAllocations)
+            : defaultWeekWeightInputs
+        );
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        if (activeScopeKeyRef.current !== requestScopeKey) return;
+        setWeekAllocationScopeKey(requestScopeKey);
+        setSavedWeekAllocations([]);
+        setWeekWeightInputs(defaultWeekWeightInputs);
+        setWeekAllocationError(error?.message || "Unable to load scoped week allocation.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && activeScopeKeyRef.current === requestScopeKey) setWeekAllocationLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [defaultWeekWeightInputs, monthKey, monthWeeks, scopeKey, selectedChannel, selectedLobId, staffingMode]);
 
   const demandVolume = useMemo(
     () => resolveDemandForecastVolume(demandSnapshot, selectedChannel, monthKey),
@@ -514,6 +780,99 @@ export function IntradayForecastV2() {
     await persistManualOverride(null);
   };
 
+  const weekInputsForScope = weekAllocationScopeKey === scopeKey ? weekWeightInputs : defaultWeekWeightInputs;
+  const hasSavedWeekAllocation = weekAllocationScopeKey === scopeKey && savedWeekAllocations.length > 0;
+  const baselineWeekInputs = hasSavedWeekAllocation
+    ? buildSavedWeekWeightInputs(monthWeeks, savedWeekAllocations)
+    : defaultWeekWeightInputs;
+  const hasUnsavedWeekChanges = monthWeeks.some(
+    (week) => (weekInputsForScope[week.weekStart] ?? "") !== (baselineWeekInputs[week.weekStart] ?? "")
+  );
+  const weekAllocationPreview = useMemo(
+    () => buildWeekAllocationPreview(monthWeeks, weekInputsForScope, effectiveMonthlyVolume),
+    [effectiveMonthlyVolume, monthWeeks, weekInputsForScope]
+  );
+  const weekWeightsTotalIs100 = Math.abs(weekAllocationPreview.totalRawWeight - 100) <= WEIGHT_TOTAL_TOLERANCE;
+  const weekAllocationWarning = weekAllocationPreview.hasInvalidWeight
+    ? "Weights must be non-negative numbers. Default month-day allocation is shown for the preview."
+    : weekAllocationPreview.totalRawWeight <= 0
+      ? "Enter at least one positive week weight. Default month-day allocation is shown for the preview."
+      : !weekWeightsTotalIs100
+        ? `Weights total ${formatPercent(weekAllocationPreview.totalRawWeight)}. Volumes are normalized to 100% before allocation.`
+        : null;
+  const weekAllocationSourceLabel = hasSavedWeekAllocation ? "Saved manual week allocation" : "Default month-day allocation";
+  const weekAllocationBadgeClass = hasSavedWeekAllocation
+    ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50"
+    : "border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-50";
+  const weekAllocationSumsToMonthly = Math.abs(weekAllocationPreview.totalAllocatedVolume - effectiveMonthlyVolume) <= 1;
+  const weekSaveDisabled =
+    !selectedLobId ||
+    monthWeeks.length === 0 ||
+    planLoading ||
+    demandLoading ||
+    weekAllocationLoading ||
+    savingWeekAllocation ||
+    weekAllocationPreview.hasInvalidWeight ||
+    weekAllocationPreview.totalRawWeight <= 0;
+
+  const updateWeekWeightInput = (weekStart: string, value: string) => {
+    setWeekAllocationScopeKey(scopeKey);
+    setWeekWeightInputs((previous) => ({
+      ...(weekAllocationScopeKey === scopeKey ? previous : defaultWeekWeightInputs),
+      [weekStart]: value,
+    }));
+  };
+
+  const resetWeekWeightsToDefault = () => {
+    setWeekAllocationScopeKey(scopeKey);
+    setWeekWeightInputs(defaultWeekWeightInputs);
+  };
+
+  const saveWeekAllocation = async () => {
+    if (!selectedLobId || weekSaveDisabled) return;
+    const requestScopeKey = scopeKey;
+    const allocations = weekAllocationPreview.rows.map((row) => ({
+      week_start: row.week.weekStart,
+      week_index: row.week.weekIndex,
+      weight: Number(row.normalizedWeight.toFixed(6)),
+      volume: row.allocatedVolume,
+      is_locked: false,
+    }));
+
+    setSavingWeekAllocation(true);
+    setWeekAllocationError(null);
+    try {
+      const response = await fetch(apiUrl("/api/intraday-v2/week-allocations"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lob_id: selectedLobId,
+          channel: selectedChannel,
+          staffing_mode: staffingMode,
+          month_key: monthKey,
+          allocations,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Unable to save week allocation.");
+      }
+      const result = await response.json() as { rows?: IntradayV2WeekAllocation[] };
+      if (activeScopeKeyRef.current !== requestScopeKey) return;
+      const savedRows = Array.isArray(result.rows) ? result.rows : allocations;
+      setWeekAllocationScopeKey(requestScopeKey);
+      setSavedWeekAllocations(savedRows);
+      setWeekWeightInputs(buildSavedWeekWeightInputs(monthWeeks, savedRows));
+      toast.success("Week allocation saved");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save week allocation.";
+      if (activeScopeKeyRef.current === requestScopeKey) setWeekAllocationError(message);
+      toast.error(message);
+    } finally {
+      setSavingWeekAllocation(false);
+    }
+  };
+
   return (
     <PageLayout>
       <div className="py-6 space-y-6">
@@ -543,7 +902,7 @@ export function IntradayForecastV2() {
               Scope Bar
             </CardTitle>
             <CardDescription>
-              Phase 2 shell only. These controls define the future planning scope; no planning data is saved.
+              These controls define the exact planning scope for monthly source and week allocation data.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 pt-5 md:grid-cols-2 xl:grid-cols-4">
@@ -710,6 +1069,143 @@ export function IntradayForecastV2() {
           </CardContent>
         </Card>
 
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <span className="rounded-lg bg-cyan-50 p-2 text-cyan-700">
+                    <CalendarDays className="size-4" />
+                  </span>
+                  Week Allocation
+                </CardTitle>
+                <CardDescription className="mt-2">
+                  Split the effective monthly volume into the weeks overlapping {monthKey}. The default uses actual
+                  days inside the selected month.
+                </CardDescription>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {weekAllocationLoading && <Loader2 className="size-4 animate-spin text-slate-500" />}
+                <Badge variant="outline" className={weekAllocationBadgeClass}>
+                  {weekAllocationSourceLabel}
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5 pt-5">
+            {(weekAllocationError || weekAllocationWarning || !weekAllocationSumsToMonthly) && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <span>
+                  {weekAllocationError ||
+                    weekAllocationWarning ||
+                    "Allocated weekly volume does not match the effective monthly volume."}
+                </span>
+              </div>
+            )}
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Effective Monthly Volume</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">{formatVolume(effectiveMonthlyVolume)}</p>
+                <p className="mt-1 text-xs text-slate-500">{sourceLabel}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total Weight</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">{formatPercent(weekAllocationPreview.totalRawWeight)}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {weekWeightsTotalIs100 ? "Ready for allocation." : "Normalized before volume calculation."}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-cyan-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Allocated Volume</p>
+                <p className="mt-2 text-2xl font-semibold text-cyan-950">
+                  {formatVolume(weekAllocationPreview.totalAllocatedVolume)}
+                </p>
+                <p className="mt-1 text-xs text-cyan-800">
+                  {weekAllocationSumsToMonthly ? "Sums back to monthly volume." : "Review rounding or weights."}
+                </p>
+              </div>
+            </div>
+
+            <Table containerClassName="rounded-lg border border-slate-200">
+              <TableHeader>
+                <TableRow className="bg-slate-50 hover:bg-slate-50">
+                  <TableHead>Week label</TableHead>
+                  <TableHead>Date range</TableHead>
+                  <TableHead className="text-right">Days in selected month</TableHead>
+                  <TableHead className="min-w-[190px] text-right">Weight %</TableHead>
+                  <TableHead className="text-right">Allocated volume</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {weekAllocationPreview.rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="h-24 text-center text-sm text-slate-500">
+                      Select a valid month to generate week allocation rows.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  weekAllocationPreview.rows.map((row) => (
+                    <TableRow key={row.week.weekStart}>
+                      <TableCell className="font-medium text-slate-900">{row.week.label}</TableCell>
+                      <TableCell className="text-slate-600">{row.week.dateRange}</TableCell>
+                      <TableCell className="text-right tabular-nums">{row.week.daysInMonth}</TableCell>
+                      <TableCell className="text-right">
+                        <Input
+                          className={`ml-auto h-8 w-28 text-right tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          inputMode="decimal"
+                          disabled={!selectedLobId || weekAllocationLoading || savingWeekAllocation}
+                          value={row.inputValue}
+                          onChange={(event) => updateWeekWeightInput(row.week.weekStart, event.target.value)}
+                        />
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          Normalized {formatPercent(row.normalizedWeight)}
+                        </p>
+                      </TableCell>
+                      <TableCell className="text-right font-medium tabular-nums text-slate-900">
+                        {formatVolume(row.allocatedVolume)}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+              <TableFooter>
+                <TableRow>
+                  <TableCell colSpan={3}>Totals</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatPercent(weekAllocationPreview.totalRawWeight)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatVolume(weekAllocationPreview.totalAllocatedVolume)}</TableCell>
+                </TableRow>
+              </TableFooter>
+            </Table>
+
+            <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-500">
+                Scope: <span className="font-medium text-slate-700">{scopeLabel}</span>
+                {hasUnsavedWeekChanges ? <span className="ml-2 text-amber-700">Unsaved week edits</span> : null}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!selectedLobId || weekAllocationLoading || savingWeekAllocation}
+                  onClick={resetWeekWeightsToDefault}
+                >
+                  <RefreshCw className="mr-2 size-4" />
+                  Reset default
+                </Button>
+                <Button type="button" disabled={weekSaveDisabled} onClick={saveWeekAllocation}>
+                  {savingWeekAllocation ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
+                  Save week allocation
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <div className="grid gap-4 lg:grid-cols-2">
           {PLACEHOLDER_SECTIONS.map((section) => {
             const Icon = section.icon;
@@ -726,7 +1222,7 @@ export function IntradayForecastV2() {
                 </CardHeader>
                 <CardContent>
                   <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-600">
-                    Phase 2 shell only — not wired yet.
+                    Later phase placeholder - not wired yet.
                   </div>
                 </CardContent>
               </Card>
