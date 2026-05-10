@@ -170,6 +170,12 @@ async function ensureAppTables() {
       ) WHERE lob_id IS NULL;
     EXCEPTION WHEN undefined_table THEN NULL; END; $$
   `);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE interaction_arrival
+        ADD COLUMN IF NOT EXISTS staffing_mode TEXT NOT NULL DEFAULT 'dedicated';
+    EXCEPTION WHEN undefined_table THEN NULL; END; $$
+  `);
   // Drop ALL unique constraints on interaction_arrival that don't include lob_id,
   // regardless of their auto-generated name (Supabase names vary per environment).
   await pool.query(`
@@ -182,7 +188,7 @@ async function ensureAppTables() {
         JOIN pg_class t ON t.oid = c.conrelid
         WHERE t.relname = 'interaction_arrival'
           AND c.contype = 'u'
-          AND c.conname != 'ia_date_idx_lob_channel_key'
+          AND c.conname != 'ia_date_idx_lob_channel_staffing_key'
       LOOP
         BEGIN
           EXECUTE 'ALTER TABLE interaction_arrival DROP CONSTRAINT IF EXISTS ' || quote_ident(r.conname);
@@ -194,8 +200,16 @@ async function ensureAppTables() {
   `);
   await pool.query(`
     DO $$ BEGIN
-      ALTER TABLE interaction_arrival ADD CONSTRAINT ia_date_idx_lob_channel_key UNIQUE (interval_date, interval_index, lob_id, channel);
-    EXCEPTION WHEN duplicate_object THEN NULL; WHEN duplicate_table THEN NULL; WHEN undefined_table THEN NULL; END; $$
+      ALTER TABLE interaction_arrival
+        ADD CONSTRAINT ia_date_idx_lob_channel_staffing_key
+        UNIQUE (interval_date, interval_index, lob_id, channel, staffing_mode);
+    EXCEPTION
+      WHEN duplicate_object THEN NULL;
+      WHEN unique_violation THEN
+        RAISE NOTICE 'Skipping interaction_arrival scoped unique constraint because duplicate legacy rows exist';
+      WHEN duplicate_table THEN NULL;
+      WHEN undefined_table THEN NULL;
+    END; $$
   `);
 
   // interaction_arrival — new columns per spec
@@ -1788,17 +1802,20 @@ app.delete('/api/forecasts/:year', async (req, res) => {
 // --- INTERACTION ARRIVAL ROUTES ---
 
 app.get('/api/interaction-arrival', async (req, res) => {
-  const { startDate, endDate, channel, lob_id } = req.query;
+  const { startDate, endDate, channel, lob_id, staffing_mode } = req.query;
   const user = getCurrentUser(req);
   const targetChannel = channel || 'voice';
+  const staffingMode = staffing_mode === 'blended' ? 'blended' : 'dedicated';
   const lobId = lob_id ? parseInt(lob_id) : await getDefaultLobId(user.organization_id);
 
   try {
     const result = await pool.query(
-      `SELECT interval_date, interval_index, volume, aht, channel FROM interaction_arrival
-       WHERE organization_id = $3 AND channel = $4 AND lob_id = $5 AND interval_date BETWEEN $1 AND $2
-       ORDER BY interval_date ASC, interval_index ASC`,
-      [startDate, endDate, user.organization_id, targetChannel, lobId]
+      `SELECT DISTINCT ON (interval_date, interval_index)
+          interval_date, interval_index, volume, aht, channel, staffing_mode
+       FROM interaction_arrival
+       WHERE organization_id = $3 AND channel = $4 AND lob_id = $5 AND staffing_mode = $6 AND interval_date BETWEEN $1 AND $2
+       ORDER BY interval_date ASC, interval_index ASC, updated_at DESC`,
+      [startDate, endDate, user.organization_id, targetChannel, lobId, staffingMode]
     );
     res.json(result.rows);
   } catch (err) {
@@ -1808,9 +1825,10 @@ app.get('/api/interaction-arrival', async (req, res) => {
 });
 
 app.post('/api/interaction-arrival', async (req, res) => {
-  const { records, channel, lob_id } = req.body;
+  const { records, channel, lob_id, staffing_mode } = req.body;
   const user = getCurrentUser(req);
   const targetChannel = channel || 'voice';
+  const staffingMode = staffing_mode === 'blended' ? 'blended' : 'dedicated';
   const lobId = lob_id || await getDefaultLobId(user.organization_id);
 
   if (!Array.isArray(records) || records.length === 0)
@@ -1824,27 +1842,49 @@ app.post('/api/interaction-arrival', async (req, res) => {
 
     for (let i = 0; i < records.length; i += BATCH_SIZE) {
       const batch = records.slice(i, i + BATCH_SIZE);
-      const values = batch.map((_, j) =>
-        `($${j*7+1},$${j*7+2},$${j*7+3},$${j*7+4},$${j*7+5},$${j*7+6},$${j*7+7})`
-      ).join(',');
+      for (const r of batch) {
+        const rowChannel = r.channel || targetChannel;
+        const rowLobId = r.lob_id || lobId;
+        const rowStaffingMode = r.staffing_mode === 'blended' ? 'blended' : staffingMode;
+        const updateResult = await client.query(
+          `UPDATE interaction_arrival
+           SET volume = $1, aht = $2, updated_at = NOW()
+           WHERE organization_id = $3
+             AND interval_date = $4
+             AND interval_index = $5
+             AND lob_id = $6
+             AND channel = $7
+             AND staffing_mode = $8`,
+          [
+            r.volume ?? 0,
+            r.aht ?? 0,
+            user.organization_id,
+            r.interval_date,
+            r.interval_index,
+            rowLobId,
+            rowChannel,
+            rowStaffingMode,
+          ]
+        );
 
-      const flat = batch.flatMap(r => [
-        r.interval_date,
-        r.interval_index,
-        r.volume ?? 0,
-        r.aht ?? 0,
-        user.organization_id,
-        r.channel || targetChannel,
-        r.lob_id || lobId,
-      ]);
-
-      await client.query(
-        `INSERT INTO interaction_arrival (interval_date, interval_index, volume, aht, organization_id, channel, lob_id)
-         VALUES ${values}
-         ON CONFLICT ON CONSTRAINT ia_date_idx_lob_channel_key DO UPDATE SET
-           volume=EXCLUDED.volume, aht=EXCLUDED.aht, updated_at=NOW()`,
-        flat
-      );
+        if (updateResult.rowCount === 0) {
+          await client.query(
+            `INSERT INTO interaction_arrival
+               (interval_date, interval_index, volume, aht, organization_id, channel, lob_id, staffing_mode)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [
+              r.interval_date,
+              r.interval_index,
+              r.volume ?? 0,
+              r.aht ?? 0,
+              user.organization_id,
+              rowChannel,
+              rowLobId,
+              rowStaffingMode,
+            ]
+          );
+        }
+      }
     }
 
     await client.query('COMMIT');

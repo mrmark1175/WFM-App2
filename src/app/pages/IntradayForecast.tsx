@@ -3,7 +3,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
 import { BarChart2, Download, Edit2, Eye, EyeOff, Info, LayoutDashboard, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2, SlidersHorizontal, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 import { apiUrl } from "../lib/api";
-import { useLOB } from "../lib/lobContext";
+import { CHANNEL_OPTIONS, useLOB } from "../lib/lobContext";
 import { useWFMPageData } from "../lib/WFMPageDataContext";
 import { usePagePreferences } from "../lib/usePagePreferences";
 import { PageLayout } from "../components/PageLayout";
@@ -119,7 +119,6 @@ interface IntradayPrefs {
   manualMonthlyVolumeByMonth: Record<string, number>;
 }
 
-const CHANNEL_VOLUME_FACTORS: Record<ChannelKey, number> = { voice: 1, email: 0.2, chat: 0.3, cases: 0.2 };
 const USER_INPUTS_STORAGE_KEY = "lt_forecast_demand_user_inputs";
 const DEFAULT_PREFS: IntradayPrefs = {
   targetMonthOffset: 0,
@@ -178,11 +177,154 @@ function buildMonthKey(year: number, month: number): string {
   return `${year}-${String(month + 1).padStart(2, "0")}`;
 }
 
+function formatScopeLabel(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function hasEditableWeights(weights: number[][] | null | undefined): boolean {
+  return Array.isArray(weights) && weights.length > 0;
+}
+
+function hasWeeklyVolumes(volumes: number[] | undefined): boolean {
+  return Array.isArray(volumes) && volumes.some((value) => Number.isFinite(value) && value > 0);
+}
+
+function hasManualGridData(data: GridData | undefined): boolean {
+  return !!data && Object.keys(data).length > 0;
+}
+
+function hasRealSavedIntradayBaseline(prefs: Partial<IntradayPrefs> | null | undefined): boolean {
+  if (!prefs || typeof prefs !== "object") return false;
+  return hasManualGridData(prefs.manualRawData) || hasWeeklyVolumes(prefs.manualWeeklyVolumes) || hasEditableWeights(prefs.editableWeights);
+}
+
+function hasScopedMonthlyOverride(prefs: Partial<IntradayPrefs> | null | undefined): boolean {
+  if (!prefs || typeof prefs !== "object") return false;
+  const manualMonthlyVolumeByMonth = prefs.manualMonthlyVolumeByMonth;
+  return prefs.useManualMonthlyVolume === true || !!manualMonthlyVolumeByMonth && Object.keys(manualMonthlyVolumeByMonth).length > 0;
+}
+
+function shouldUseScopedIntradayPrefs(prefs: Partial<IntradayPrefs> | null | undefined): boolean {
+  return hasRealSavedIntradayBaseline(prefs) || hasScopedMonthlyOverride(prefs);
+}
+
+function selectLegacyBaselineFallback(prefs: Partial<IntradayPrefs>): Partial<IntradayPrefs> {
+  const next: Partial<IntradayPrefs> = {};
+  if (hasManualGridData(prefs.manualRawData)) next.manualRawData = prefs.manualRawData;
+  if (hasWeeklyVolumes(prefs.manualWeeklyVolumes)) next.manualWeeklyVolumes = prefs.manualWeeklyVolumes;
+  if (hasEditableWeights(prefs.editableWeights)) next.editableWeights = prefs.editableWeights;
+  if (prefs.dataSource === "manual" && hasManualGridData(prefs.manualRawData)) next.dataSource = "manual";
+  if (typeof prefs.baselineYear === "number") next.baselineYear = prefs.baselineYear;
+  if (typeof prefs.baselineStartWeek === "number") next.baselineStartWeek = prefs.baselineStartWeek;
+  if (typeof prefs.isBaselineOpen === "boolean") next.isBaselineOpen = prefs.isBaselineOpen;
+  if (typeof prefs.hideBlankRows === "boolean") next.hideBlankRows = prefs.hideBlankRows;
+  return next;
+}
+
+function canUseLegacyBaselineFallback(channel: ChannelKey, staffingMode: IntradayStaffingMode): boolean {
+  // Legacy intraday prefs had no channel or staffing identity. Restrict fallback to the
+  // original/default scope so old Voice baselines do not bleed into other channels or modes.
+  return channel === "voice" && staffingMode === "dedicated";
+}
+
+function sanitizeIntradayPrefsForSave(prefs: IntradayPrefs): Partial<IntradayPrefs> {
+  const next: Partial<IntradayPrefs> = { ...prefs };
+  if (!hasManualGridData(prefs.manualRawData)) delete next.manualRawData;
+  if (!hasWeeklyVolumes(prefs.manualWeeklyVolumes)) delete next.manualWeeklyVolumes;
+  if (!hasEditableWeights(prefs.editableWeights)) delete next.editableWeights;
+  return next;
+}
+
+function arraysEqual(a: number[] | undefined, b: number[] | undefined): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function hasChannelSpecificHistory(snapshot: PlannerSnapshot | null, channel: ChannelKey): boolean {
+  if (!snapshot) return false;
+  const apiData = snapshot.channelHistoricalApiData?.[channel] ?? [];
+  const overrides = snapshot.channelHistoricalOverrides?.[channel] ?? {};
+  return apiData.length > 0 || Object.keys(overrides).length > 0;
+}
+
+function hasPooledLookingRecut(snapshot: PlannerSnapshot | null, channel: ChannelKey): boolean {
+  if (!snapshot?.recutVolumesByChannel || snapshot.poolingMode !== "blended") return false;
+  const selectedChannels = (["voice", "email", "chat", "cases"] as ChannelKey[]).filter((candidate) => snapshot.selectedChannels?.[candidate]);
+  if (selectedChannels.length <= 1) return false;
+  const target = snapshot.recutVolumesByChannel[channel];
+  if (!Array.isArray(target) || target.length === 0) return false;
+  return selectedChannels
+    .filter((candidate) => candidate !== channel)
+    .some((candidate) => arraysEqual(target, snapshot.recutVolumesByChannel?.[candidate]));
+}
+
+function hasChannelSpecificPlannerVolume(snapshot: PlannerSnapshot | null, channel: ChannelKey): boolean {
+  if (!snapshot) return false;
+  if (channel === "voice") return true;
+  if (hasChannelSpecificHistory(snapshot, channel)) return true;
+  const recut = snapshot.recutVolumesByChannel?.[channel];
+  return Array.isArray(recut) && recut.length > 0 && !hasPooledLookingRecut(snapshot, channel);
+}
+
+function getScopedMonthlyVolumeForChannel({
+  selectedChannel,
+  targetMonthKey,
+  targetMonthOffset,
+  useManualMonthlyVolume,
+  manualMonthlyVolumeByMonth,
+  forecastVolumesByChannel,
+  plannerSnapshot,
+}: {
+  selectedChannel: ChannelKey;
+  targetMonthKey: string;
+  targetMonthOffset: number;
+  useManualMonthlyVolume: boolean;
+  manualMonthlyVolumeByMonth: Record<string, number>;
+  forecastVolumesByChannel: Record<ChannelKey, number[]>;
+  plannerSnapshot: PlannerSnapshot | null;
+}): {
+  demandPlannerMonthlyVolume: number;
+  effectiveMonthlyVolume: number;
+  manualMonthlyVolume: number;
+  hasChannelPlannerVolume: boolean;
+  source: "manual" | "recut" | "forecast" | "none";
+} {
+  const manualMonthlyVolume = Number(manualMonthlyVolumeByMonth[targetMonthKey] ?? 0);
+  if (useManualMonthlyVolume) {
+    return {
+      demandPlannerMonthlyVolume: 0,
+      effectiveMonthlyVolume: Math.max(0, Math.round(manualMonthlyVolume)),
+      manualMonthlyVolume,
+      hasChannelPlannerVolume: false,
+      source: "manual",
+    };
+  }
+
+  const hasPlannerVolume = hasChannelSpecificPlannerVolume(plannerSnapshot, selectedChannel);
+  const channelSeries = hasPlannerVolume ? (forecastVolumesByChannel[selectedChannel] ?? []) : [];
+  const demandPlannerMonthlyVolume = channelSeries[targetMonthOffset] ?? 0;
+  const source = !hasPlannerVolume
+    ? "none"
+    : Array.isArray(plannerSnapshot?.recutVolumesByChannel?.[selectedChannel]) && (plannerSnapshot!.recutVolumesByChannel![selectedChannel]!.length > 0) && !hasPooledLookingRecut(plannerSnapshot, selectedChannel)
+      ? "recut"
+      : "forecast";
+
+  return {
+    demandPlannerMonthlyVolume,
+    effectiveMonthlyVolume: demandPlannerMonthlyVolume,
+    manualMonthlyVolume,
+    hasChannelPlannerVolume: hasPlannerVolume,
+    source,
+  };
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export const IntradayForecast = () => {
-  const { activeLob, activeChannel } = useLOB();
+  const { activeLob, activeChannel, setActiveChannel, lobs, setActiveLob, isLoading: isLoadingLobs } = useLOB();
   const selectedChannel = normalizeIntradayChannel(activeChannel);
+  const activeLobName = activeLob?.lob_name ?? "";
   const [staffingMode, setStaffingMode] = useState<IntradayStaffingMode>("dedicated");
+  const initializedStaffingModeLobRef = useRef<string | number | null>(null);
   const intradayPrefsPageKey = useMemo(
     () => buildIntradayPrefsPageKey(selectedChannel, staffingMode),
     [selectedChannel, staffingMode]
@@ -194,17 +336,29 @@ export const IntradayForecast = () => {
   const intradayBaselineKey = useMemo(
     () => buildIntradayBaselineKey({
       lobId: activeLob?.id,
-      lobName: activeLob?.name,
+      lobName: activeLobName,
       channel: selectedChannel,
       staffingMode,
     }),
-    [activeLob?.id, activeLob?.name, selectedChannel, staffingMode]
+    [activeLob?.id, activeLobName, selectedChannel, staffingMode]
+  );
+  const intradayPrefsOptions = useMemo(
+    () => ({
+      shouldUsePrimary: shouldUseScopedIntradayPrefs,
+      prepareForSave: sanitizeIntradayPrefsForSave,
+      transformFallback: (prefs: Partial<IntradayPrefs>) =>
+        canUseLegacyBaselineFallback(selectedChannel, staffingMode)
+          ? selectLegacyBaselineFallback(prefs)
+          : {},
+    }),
+    [selectedChannel, staffingMode]
   );
   const [prefs, setPrefs, prefsMeta] = usePagePreferences<IntradayPrefs>(
     intradayPrefsPageKey,
     DEFAULT_PREFS,
     true,
-    LEGACY_INTRADAY_PREFS_KEY
+    LEGACY_INTRADAY_PREFS_KEY,
+    intradayPrefsOptions
   );
   const { targetMonthOffset, targetWeekStart, grain, isBaselineOpen, dataSource,
           baselineYear, baselineStartWeek, manualRawData, manualWeeklyVolumes, editableWeights,
@@ -214,22 +368,20 @@ export const IntradayForecast = () => {
           showFteHeatmap = false, useManualMonthlyVolume = false,
           manualMonthlyVolumeByMonth = {} } = prefs;
 
-  // Reset target month/week when global channel changes
-  const prevChannelRef = React.useRef(`${selectedChannel}:${staffingMode}`);
-  useEffect(() => {
-    const scope = `${selectedChannel}:${staffingMode}`;
-    if (prevChannelRef.current !== scope) {
-      prevChannelRef.current = scope;
-      setPrefs({ targetMonthOffset: 0, targetWeekStart: "" });
-    }
-  }, [selectedChannel, staffingMode]);
-
   // ── State ──────────────────────────────────────────────────────────────────
   const [plannerSnapshot, setPlannerSnapshot] = useState<PlannerSnapshot | null>(null);
   const [committedCapacityFteModel, setCommittedCapacityFteModel] = useState<CapacityFteModelSnapshot | null>(null);
   const [committedCapacityWhatIfName, setCommittedCapacityWhatIfName] = useState<string | null>(null);
   // apiRawData: loaded from API (not persisted). manualRawData in prefs: user-pasted (persisted).
-  const [apiRawData, setApiRawData] = useState<GridData>({});
+  const baselineScopeKey = `${activeLob?.id ?? "none"}:${selectedChannel}:${staffingMode}`;
+  const [apiRawDataState, setApiRawDataState] = useState<{ scope: string; data: GridData }>(() => ({
+    scope: baselineScopeKey,
+    data: {},
+  }));
+  const apiRawData = apiRawDataState.scope === baselineScopeKey ? apiRawDataState.data : {};
+  const setApiRawData = useCallback((data: GridData) => {
+    setApiRawDataState({ scope: baselineScopeKey, data });
+  }, [baselineScopeKey]);
   const rawData: GridData = dataSource === "api" ? apiRawData : (manualRawData ?? {});
   const [savedProfiles, setSavedProfiles] = useState<DistributionProfile[]>([]);
   const [isEditingWeights, setIsEditingWeights] = useState(false);
@@ -251,6 +403,7 @@ export const IntradayForecast = () => {
   const [showDistributionTable, setShowDistributionTable] = useState(false);
   const [shrinkageHoursPerDay, setShrinkageHoursPerDay] = useState<number>(7.5);
   const [lobHoursOfOperation, setLobHoursOfOperation] = useState<Record<string, Record<string, { enabled: boolean; open: string; close: string }>> | null>(null);
+  const [lobEnabledChannels, setLobEnabledChannels] = useState<Record<ChannelKey, boolean> | null>(null);
   const [demandTZ, setDemandTZ] = useState<string>("America/New_York");
   const [supplyTZ, setSupplyTZ] = useState<string>("Asia/Manila");
   const [commitStatus, setCommitStatus] = useState<"idle" | "saving" | "saved">("idle");
@@ -286,6 +439,7 @@ export const IntradayForecast = () => {
   useEffect(() => {
     if (!activeLob) return;
     setIsLoadingForecast(true);
+    setLobEnabledChannels(null);
     Promise.all([
       fetch(apiUrl(`/api/demand-planner-active-state?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
       fetch(apiUrl(`/api/lob-settings?lob_id=${activeLob.id}`)).then((r) => r.ok ? r.json() : null).catch(() => null),
@@ -310,9 +464,15 @@ export const IntradayForecast = () => {
       if (lobSettings?.hours_of_operation) {
         setLobHoursOfOperation(lobSettings.hours_of_operation as Record<string, Record<string, { enabled: boolean; open: string; close: string }>>);
       }
+      if (lobSettings?.channels_enabled) {
+        setLobEnabledChannels(lobSettings.channels_enabled as Record<ChannelKey, boolean>);
+      }
       if (lobSettings?.demand_timezone) setDemandTZ(lobSettings.demand_timezone as string);
       if (lobSettings?.supply_timezone) setSupplyTZ(lobSettings.supply_timezone as string);
-      if (lobSettings?.pooling_mode) setStaffingMode(normalizeIntradayStaffingMode(lobSettings.pooling_mode));
+      if (lobSettings?.pooling_mode && initializedStaffingModeLobRef.current !== activeLob.id) {
+        setStaffingMode(normalizeIntradayStaffingMode(lobSettings.pooling_mode));
+        initializedStaffingModeLobRef.current = activeLob.id;
+      }
       if (snapshot) {
         setPlannerSnapshot(snapshot);
       } else if (lobSettings) {
@@ -380,23 +540,41 @@ export const IntradayForecast = () => {
 
   // ── Load baseline interaction data ─────────────────────────────────────────
   useEffect(() => {
-    if (!activeLob || dataSource !== "api") return;
+    setApiRawData({});
+    setIsEditingBaselineValues(false);
+  }, [activeLob?.id, selectedChannel, staffingMode]);
+
+  useEffect(() => {
+    if (!activeLob || dataSource !== "api") {
+      setApiRawData({});
+      setIsLoadingBaseline(false);
+      return;
+    }
+    let cancelled = false;
     setIsLoadingBaseline(true);
-    fetch(apiUrl(`/api/interaction-arrival?startDate=${baselineStart}&endDate=${baselineEnd}&channel=${selectedChannel}&lob_id=${activeLob.id}`))
+    setApiRawData({});
+    fetch(apiUrl(`/api/interaction-arrival?startDate=${baselineStart}&endDate=${baselineEnd}&channel=${selectedChannel}&lob_id=${activeLob.id}&staffing_mode=${staffingMode}`))
       .then((r) => r.json())
       .then((records: any[]) => {
-        if (!Array.isArray(records)) return;
+        if (cancelled || !Array.isArray(records)) return;
         const newData: GridData = {};
         records.forEach((r) => {
           const ds = (r.interval_date as string).split("T")[0];
           if (!newData[ds]) newData[ds] = {};
           newData[ds][r.interval_index] = { volume: r.volume || 0, aht: r.aht || 0 };
         });
-        setApiRawData(newData);
+        if (!cancelled) setApiRawData(newData);
       })
-      .catch(() => setApiRawData({}))
-      .finally(() => setIsLoadingBaseline(false));
-  }, [activeLob?.id, selectedChannel, baselineStart, baselineEnd, dataSource]);
+      .catch(() => {
+        if (!cancelled) setApiRawData({});
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingBaseline(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLob?.id, selectedChannel, staffingMode, baselineStart, baselineEnd, dataSource]);
 
   // ── Load saved profiles ────────────────────────────────────────────────────
   useEffect(() => {
@@ -455,17 +633,17 @@ export const IntradayForecast = () => {
       ? recut!.email
       : emailHistory.length > 0
         ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
+        : [];
     const chatForecast = hasRecut("chat")
       ? recut!.chat
       : chatHistory.length > 0
         ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-        : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
+        : [];
     const casesForecast = hasRecut("cases")
       ? recut!.cases
       : casesHistory.length > 0
         ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams)
-        : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases));
+        : [];
 
     return { voice: voiceForecast, email: emailForecast, chat: chatForecast, cases: casesForecast };
   }, [plannerSnapshot]);
@@ -485,7 +663,6 @@ export const IntradayForecast = () => {
   }, [forecastVolumesByChannel, selectedDemandChannels]);
 
   const usesBlendedMonthlyVolume = staffingMode === "blended" || plannerSnapshot?.poolingMode === "blended";
-  const targetVolumeSeries = forecastVolumesByChannel[selectedChannel];
 
   const monthLabels = useMemo(
     () => plannerSnapshot?.assumptions?.startDate
@@ -496,7 +673,7 @@ export const IntradayForecast = () => {
 
   const safeOffset = Math.min(
     Math.max(0, targetMonthOffset),
-    Math.max(0, targetVolumeSeries.length - 1)
+    Math.max(0, monthLabels.length - 1)
   );
   const { year: targetYear, month: targetMonthIndex } = useMemo(
     () => plannerSnapshot?.assumptions?.startDate
@@ -508,12 +685,23 @@ export const IntradayForecast = () => {
     () => buildMonthKey(targetYear, targetMonthIndex),
     [targetYear, targetMonthIndex]
   );
-  const demandPlannerMonthlyVolume = targetVolumeSeries[safeOffset] ?? 0;
   const blendedMonthlyVolume = blendedForecastVolumes[safeOffset] ?? 0;
-  const manualMonthlyVolume = Number(manualMonthlyVolumeByMonth[targetMonthKey] ?? 0);
-  const effectiveMonthlyVolume = useManualMonthlyVolume
-    ? Math.max(0, Math.round(manualMonthlyVolume))
-    : demandPlannerMonthlyVolume;
+  const {
+    demandPlannerMonthlyVolume,
+    effectiveMonthlyVolume,
+    source: monthlyVolumeSource,
+  } = useMemo(
+    () => getScopedMonthlyVolumeForChannel({
+      selectedChannel,
+      targetMonthKey,
+      targetMonthOffset: safeOffset,
+      useManualMonthlyVolume,
+      manualMonthlyVolumeByMonth,
+      forecastVolumesByChannel,
+      plannerSnapshot,
+    }),
+    [selectedChannel, targetMonthKey, safeOffset, useManualMonthlyVolume, manualMonthlyVolumeByMonth, forecastVolumesByChannel, plannerSnapshot]
+  );
 
   // ── Weeks in target month ──────────────────────────────────────────────────
   const weeksInMonth = useMemo(
@@ -625,6 +813,23 @@ export const IntradayForecast = () => {
   // Declared here (not near the grid helpers below) to avoid TDZ: syntheticMedianPattern,
   // usingFallbackPattern, and medianPattern all read this value.
   const baselineDataCount = useMemo(() => Object.keys(rawData).length, [rawData]);
+  const activeScopeLabel = `${formatScopeLabel(selectedChannel)} / ${formatScopeLabel(staffingMode)}`;
+  const manualBaselineExists = useMemo(
+    () => Object.keys(manualRawData ?? {}).length > 0 || manualWeeklyVolumes.some((value) => value > 0) || editableWeights !== null,
+    [manualRawData, manualWeeklyVolumes, editableWeights]
+  );
+  const availableChannels = useMemo(() => {
+    const enabledMap = lobEnabledChannels;
+    const filtered = CHANNEL_OPTIONS.filter((option) => enabledMap ? enabledMap[option.value] : true);
+    return filtered.length > 0 ? filtered : CHANNEL_OPTIONS.filter((option) => option.value === "voice");
+  }, [lobEnabledChannels]);
+
+  useEffect(() => {
+    if (!activeLob || availableChannels.length === 0) return;
+    if (!availableChannels.some((option) => option.value === selectedChannel)) {
+      setActiveChannel(availableChannels[0].value);
+    }
+  }, [activeLob, availableChannels, selectedChannel, setActiveChannel]);
 
   // Synthetic flat pattern built from LOB hours of operation.
   // Used as a fallback when no real interval data has been loaded yet.
@@ -993,7 +1198,7 @@ export const IntradayForecast = () => {
         credentials: "include",
       });
       setCommitStatus("saved");
-      toast.success(`Committed for LOB ${activeLob.name}. Mon 4:00 AM = ${dates[monKey]?.[16]?.toFixed(2) ?? "—"}`);
+      toast.success(`Committed for LOB ${activeLobName}. Mon 4:00 AM = ${dates[monKey]?.[16]?.toFixed(2) ?? "—"}`);
       setTimeout(() => setCommitStatus("idle"), 3000);
     } catch {
       setCommitStatus("idle");
@@ -1032,7 +1237,6 @@ export const IntradayForecast = () => {
 
     if (rows.length === 0) {
       toast.error("No non-zero FTE to approve. Check operating hours / data.");
-      return;
     }
 
     setApproveStatus("saving");
@@ -1042,7 +1246,7 @@ export const IntradayForecast = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           lob_id: activeLob.id,
-          snapshot_label: `${activeLob.name} • ${selectedChannel} • ${staffingMode} • ${new Date().toISOString().slice(0, 10)}`,
+          snapshot_label: `${activeLobName} • ${selectedChannel} • ${staffingMode} • ${new Date().toISOString().slice(0, 10)}`,
           interval_minutes: intervalMinutes,
           staffing_mode: staffingMode,
           notes: `Approved from Intraday Forecast (channel=${selectedChannel}, staffing=${staffingMode}, smoothed=${smoothFTE}, window=${smoothWindow})`,
@@ -1196,14 +1400,23 @@ export const IntradayForecast = () => {
       const slotIdx = header.indexOf("interval_index");
       const volIdx = header.indexOf("volume");
       const ahtIdx = header.indexOf("aht");
+      const channelIdx = header.indexOf("channel");
+      const staffingModeIdx = header.indexOf("staffing_mode");
       if (dateIdx < 0 || slotIdx < 0 || volIdx < 0) {
         setCsvError("CSV must have columns: date, interval_index, volume (aht optional)");
         return;
       }
       const newData: GridData = { ...(manualRawData ?? {}) };
       let rowsImported = 0;
+      let rowsSkippedForScope = 0;
       for (let i = 1; i < lines.length; i++) {
         const cols = lines[i].split(",").map((c) => c.trim());
+        const rowChannel = channelIdx >= 0 ? normalizeIntradayChannel(cols[channelIdx]) : selectedChannel;
+        const rowStaffingMode = staffingModeIdx >= 0 ? normalizeIntradayStaffingMode(cols[staffingModeIdx]) : staffingMode;
+        if (rowChannel !== selectedChannel || rowStaffingMode !== staffingMode) {
+          rowsSkippedForScope++;
+          continue;
+        }
         const ds = cols[dateIdx];
         const slot = parseInt(cols[slotIdx]);
         const vol = parseFloat(cols[volIdx]);
@@ -1215,9 +1428,9 @@ export const IntradayForecast = () => {
       }
       const csvBuckets = computeWeeklyBuckets(newData);
       const csvWeeklyVols = csvBuckets.map((b) => Math.round(b.volume));
-      setPrefs({ manualRawData: newData, editableWeights: null, manualWeeklyVolumes: csvWeeklyVols });
+      setPrefs({ manualRawData: newData, editableWeights: null, manualWeeklyVolumes: csvWeeklyVols, dataSource: "manual" });
       setCsvModalOpen(false);
-      toast.success(`Imported ${rowsImported} rows from CSV · weekly volumes auto-filled (${csvBuckets.length} wk${csvBuckets.length !== 1 ? "s" : ""})`);
+      toast.success(`Imported ${rowsImported} row${rowsImported !== 1 ? "s" : ""} into ${activeScopeLabel}${rowsSkippedForScope > 0 ? ` · skipped ${rowsSkippedForScope} row${rowsSkippedForScope !== 1 ? "s" : ""} outside this scope` : ""} · weekly volumes auto-filled (${csvBuckets.length} wk${csvBuckets.length !== 1 ? "s" : ""})`);
     };
     reader.readAsText(file);
     e.target.value = "";
@@ -1259,13 +1472,9 @@ export const IntradayForecast = () => {
     // Auto-populate weekly volumes from the merged baseline so the two sections stay in sync.
     const pasteBuckets = computeWeeklyBuckets(merged);
     const pasteWeeklyVols = pasteBuckets.map((b) => Math.round(b.volume));
-    setPrefs({ manualRawData: merged, editableWeights: null, manualWeeklyVolumes: pasteWeeklyVols });
-    toast.success(
-      `Added Wk ${baselineStartWeek} ${baselineYear} · ${result.colCount} day${result.colCount !== 1 ? "s" : ""}` +
-      (result.weekCount > 1 ? ` (${result.weekCount} wks)` : "") +
-      ` — ${totalDays} days total (${totalWeeks} wk${totalWeeks !== 1 ? "s" : ""}) · weekly volumes auto-filled`
-    );
-  }, [baselineYear, baselineStartWeek, manualRawData, setPrefs]);
+    setPrefs({ manualRawData: merged, editableWeights: null, manualWeeklyVolumes: pasteWeeklyVols, dataSource: "manual" });
+    toast.success(`Added Wk ${baselineStartWeek} ${baselineYear} to ${activeScopeLabel} · ${result.colCount} day${result.colCount !== 1 ? "s" : ""}${result.weekCount > 1 ? ` (${result.weekCount} wks)` : ""} · ${totalDays} days total (${totalWeeks} wk${totalWeeks !== 1 ? "s" : ""}) · weekly volumes auto-filled`);
+  }, [activeScopeLabel, baselineYear, baselineStartWeek, manualRawData, setPrefs]);
 
   const handleBaselineVolumeChange = useCallback((date: string, slotIndex: number, value: string) => {
     if (dataSource !== "manual") return;
@@ -1362,9 +1571,11 @@ export const IntradayForecast = () => {
     if (useManualMonthlyVolume) {
       return { label: "Manual Override", color: "text-violet-700 bg-violet-50 border-violet-200" };
     }
-    const recut = (plannerSnapshot as Record<string, unknown>)?.recutVolumesByChannel as Record<ChannelKey, number[]> | null | undefined;
-    if (Array.isArray(recut?.[selectedChannel]) && recut![selectedChannel]!.length > 0) {
+    if (monthlyVolumeSource === "recut") {
       return { label: "Recut", color: "text-blue-700 bg-blue-50 border-blue-200" };
+    }
+    if (monthlyVolumeSource === "none") {
+      return { label: "No channel volume", color: "text-slate-600 bg-slate-100 border-slate-200" };
     }
     if (plannerSnapshot?.assumptions?.startDate) {
       const { year, month } = monthFromOffset(plannerSnapshot.assumptions.startDate, safeOffset);
@@ -1374,7 +1585,7 @@ export const IntradayForecast = () => {
       }
     }
     return { label: "Forecast", color: "text-emerald-700 bg-emerald-50 border-emerald-200" };
-  }, [plannerSnapshot, selectedChannel, safeOffset, useManualMonthlyVolume]);
+  }, [plannerSnapshot, safeOffset, useManualMonthlyVolume, monthlyVolumeSource]);
 
   const { setPageData } = useWFMPageData();
   useEffect(() => {
@@ -1473,16 +1684,45 @@ export const IntradayForecast = () => {
           <div className="flex flex-wrap items-end gap-4">
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-semibold text-foreground">LOB</span>
-              <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold min-w-[140px]">
-                {activeLob?.name ?? "Select LOB"}
-              </div>
+              <Select
+                value={activeLob ? String(activeLob.id) : ""}
+                onValueChange={(value) => {
+                  const nextLob = lobs.find((lob) => String(lob.id) === value);
+                  if (nextLob) setActiveLob(nextLob);
+                }}
+                disabled={isLoadingLobs || lobs.length === 0}
+              >
+                <SelectTrigger className="w-44 h-8 text-sm">
+                  <SelectValue placeholder={isLoadingLobs ? "Loading LOBs..." : "Select LOB"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {lobs.map((lob) => (
+                    <SelectItem key={lob.id} value={String(lob.id)}>
+                      {lob.lob_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-semibold text-foreground">Channel</span>
-              <div className="h-8 flex items-center px-3 rounded-md border bg-muted/40 text-sm font-semibold capitalize min-w-[100px]">
-                {selectedChannel}
-              </div>
+              <Select
+                value={selectedChannel}
+                onValueChange={(value) => setActiveChannel(normalizeIntradayChannel(value))}
+                disabled={availableChannels.length <= 1}
+              >
+                <SelectTrigger className="w-32 h-8 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableChannels.map((channel) => (
+                    <SelectItem key={channel.value} value={channel.value}>
+                      {channel.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -1504,7 +1744,7 @@ export const IntradayForecast = () => {
               <Select
                 value={String(safeOffset)}
                 onValueChange={(v) => setPrefs({ targetMonthOffset: parseInt(v), targetWeekStart: "" })}
-                disabled={targetVolumeSeries.length === 0}
+                disabled={monthLabels.length === 0}
               >
                 <SelectTrigger className="w-36 h-8 text-sm">
                   <SelectValue placeholder="Select month" />
@@ -2133,7 +2373,7 @@ export const IntradayForecast = () => {
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 cursor-pointer" onClick={() => setPrefs({ isBaselineOpen: !isBaselineOpen })}>
           <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
             <Table2 className="h-4 w-4 text-orange-500" />
-            Interval Pattern Baseline
+            {`Interval Pattern Baseline — ${activeScopeLabel}`}
             <span className="text-xs font-normal text-slate-400">(shapes the intraday curve)</span>
           </h2>
           <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
@@ -2154,7 +2394,11 @@ export const IntradayForecast = () => {
           <div className="p-4 space-y-3">
             {/* Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-xs text-muted-foreground">
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-700">
+                  These interval values apply only to the selected LOB, channel, and staffing mode.
+                </div>
+                <div className="text-xs text-muted-foreground">
                 {isLoadingBaseline ? (
                   <span className="animate-pulse">Loading data from API...</span>
                 ) : baselineDataCount > 0 ? (
@@ -2172,8 +2416,9 @@ export const IntradayForecast = () => {
                     })}
                   </span>
                 ) : (
-                  <span className="text-muted-foreground">Click the grid below and paste your Excel data (Ctrl+V)</span>
+                  <span className="text-muted-foreground">Click the grid below and paste your Excel data (Ctrl+V) for {activeScopeLabel}</span>
                 )}
+                </div>
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => setCsvModalOpen(true)}>
@@ -2192,12 +2437,16 @@ export const IntradayForecast = () => {
                     )}
                   </Button>
                 )}
-                {baselineDataCount > 0 && (
+                {dataSource === "manual" && manualBaselineExists && (
                   <Button
                     variant="ghost"
                     size="sm"
                     className="text-destructive hover:text-destructive"
-                    onClick={() => { setIsEditingBaselineValues(false); setPrefs({ manualRawData: {}, editableWeights: null }); toast.success("Baseline cleared"); }}
+                    onClick={() => {
+                      setIsEditingBaselineValues(false);
+                      setPrefs({ manualRawData: {}, editableWeights: null, manualWeeklyVolumes: [] });
+                      toast.success(`Cleared baseline for ${activeScopeLabel}`);
+                    }}
                   >
                     <X className="h-3.5 w-3.5 mr-1.5" />Clear
                   </Button>
