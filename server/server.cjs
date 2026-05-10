@@ -47,6 +47,7 @@ app.use([
   '/api/demand-planner-active-state',
   '/api/demand-actuals',
   '/api/distribution-profiles',
+  '/api/intraday-v2',
   '/api/capacity-plan-config',
   '/api/capacity-plan-inputs',
   '/api/capacity-planner-whatifs',
@@ -369,6 +370,94 @@ async function ensureAppTables() {
         CHECK (staffing_mode IN ('dedicated', 'blended'));
     EXCEPTION WHEN duplicate_object THEN NULL; WHEN duplicate_table THEN NULL; END; $$
   `);
+
+  // Intraday v2 planning data. These tables are additive and intentionally
+  // separate from user_preferences so planning data has a scoped source of truth.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS intraday_v2_month_plans (
+      id                       SERIAL PRIMARY KEY,
+      organization_id          INTEGER NOT NULL DEFAULT 1,
+      lob_id                   INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel                  TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
+      staffing_mode            TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
+      month_key                TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      demand_forecast_volume   NUMERIC,
+      demand_source            TEXT,
+      manual_monthly_volume    NUMERIC,
+      effective_monthly_volume NUMERIC,
+      status                   TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+      created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, channel, staffing_mode, month_key)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_month_plans_scope ON intraday_v2_month_plans (organization_id, lob_id, channel, staffing_mode, month_key)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS intraday_v2_week_allocations (
+      id              SERIAL PRIMARY KEY,
+      plan_id         INTEGER NOT NULL REFERENCES intraday_v2_month_plans(id) ON DELETE CASCADE,
+      organization_id INTEGER NOT NULL DEFAULT 1,
+      lob_id          INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel         TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
+      staffing_mode   TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
+      month_key       TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      week_start      DATE NOT NULL,
+      week_index      INTEGER NOT NULL,
+      weight          NUMERIC NOT NULL DEFAULT 0,
+      volume          NUMERIC NOT NULL DEFAULT 0,
+      is_locked       BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, channel, staffing_mode, month_key, week_start)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_week_allocations_scope ON intraday_v2_week_allocations (organization_id, lob_id, channel, staffing_mode, month_key)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS intraday_v2_day_allocations (
+      id              SERIAL PRIMARY KEY,
+      plan_id         INTEGER NOT NULL REFERENCES intraday_v2_month_plans(id) ON DELETE CASCADE,
+      organization_id INTEGER NOT NULL DEFAULT 1,
+      lob_id          INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel         TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
+      staffing_mode   TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
+      month_key       TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      calendar_date   DATE NOT NULL,
+      day_of_week     INTEGER NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
+      week_start      DATE NOT NULL,
+      weight          NUMERIC NOT NULL DEFAULT 0,
+      volume          NUMERIC NOT NULL DEFAULT 0,
+      is_locked       BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, channel, staffing_mode, month_key, calendar_date)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_day_allocations_scope ON intraday_v2_day_allocations (organization_id, lob_id, channel, staffing_mode, month_key)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS intraday_v2_interval_allocations (
+      id               SERIAL PRIMARY KEY,
+      plan_id          INTEGER NOT NULL REFERENCES intraday_v2_month_plans(id) ON DELETE CASCADE,
+      organization_id  INTEGER NOT NULL DEFAULT 1,
+      lob_id           INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel          TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
+      staffing_mode    TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
+      month_key        TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      calendar_date    DATE NOT NULL,
+      interval_index   INTEGER NOT NULL,
+      interval_start   TIME NOT NULL,
+      interval_minutes INTEGER NOT NULL DEFAULT 15,
+      weight           NUMERIC NOT NULL DEFAULT 0,
+      volume           NUMERIC NOT NULL DEFAULT 0,
+      aht_seconds      NUMERIC,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, channel, staffing_mode, month_key, calendar_date, interval_index)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_interval_allocations_scope ON intraday_v2_interval_allocations (organization_id, lob_id, channel, staffing_mode, month_key)`);
 
   // ── lob_settings — per-LOB channel, staffing, and hours-of-operation config ──
   await pool.query(`
@@ -1241,6 +1330,238 @@ async function getDefaultLobId(organizationId) {
   return res.rows[0]?.id || null;
 }
 
+const INTRADAY_V2_CHANNELS = new Set(['voice', 'email', 'chat', 'cases']);
+const INTRADAY_V2_STAFFING_MODES = new Set(['dedicated', 'blended']);
+const INTRADAY_V2_PLAN_STATUSES = new Set(['draft', 'published', 'archived']);
+
+function apiValidationError(message, status = 400) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+
+function requireIntradayV2Field(source, field) {
+  const value = source?.[field];
+  if (value === undefined || value === null || value === '') {
+    throw apiValidationError(`${field} is required`);
+  }
+  return value;
+}
+
+function parseIntradayV2Integer(value, field, { min = null, max = null } = {}) {
+  if (value === undefined || value === null || value === '') {
+    throw apiValidationError(`${field} is required`);
+  }
+  const text = String(value);
+  if (!/^-?[0-9]+$/.test(text)) throw apiValidationError(`${field} must be an integer`);
+  const parsed = Number.parseInt(text, 10);
+  if (min !== null && parsed < min) throw apiValidationError(`${field} must be at least ${min}`);
+  if (max !== null && parsed > max) throw apiValidationError(`${field} must be at most ${max}`);
+  return parsed;
+}
+
+function parseIntradayV2Number(value, field, { required = false, min = null } = {}) {
+  if (value === undefined || value === null || value === '') {
+    if (required) throw apiValidationError(`${field} is required`);
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw apiValidationError(`${field} must be a valid number`);
+  if (min !== null && parsed < min) throw apiValidationError(`${field} must be at least ${min}`);
+  return parsed;
+}
+
+function parseIntradayV2Boolean(value) {
+  if (value === true || value === 'true' || value === 1 || value === '1') return true;
+  return false;
+}
+
+function normalizeIntradayV2Channel(value) {
+  const channel = String(requireIntradayV2Field({ channel: value }, 'channel')).trim().toLowerCase();
+  if (!INTRADAY_V2_CHANNELS.has(channel)) {
+    throw apiValidationError('channel must be one of voice, email, chat, cases');
+  }
+  return channel;
+}
+
+function normalizeIntradayV2StaffingMode(value) {
+  const staffingMode = String(requireIntradayV2Field({ staffing_mode: value }, 'staffing_mode')).trim().toLowerCase();
+  if (!INTRADAY_V2_STAFFING_MODES.has(staffingMode)) {
+    throw apiValidationError('staffing_mode must be one of dedicated, blended');
+  }
+  return staffingMode;
+}
+
+function normalizeIntradayV2Status(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const status = String(value).trim().toLowerCase();
+  if (!INTRADAY_V2_PLAN_STATUSES.has(status)) {
+    throw apiValidationError('status must be one of draft, published, archived');
+  }
+  return status;
+}
+
+function validateIntradayV2MonthKey(value) {
+  const monthKey = String(requireIntradayV2Field({ month_key: value }, 'month_key')).trim();
+  if (!/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(monthKey)) {
+    throw apiValidationError('month_key must use YYYY-MM format');
+  }
+  return monthKey;
+}
+
+function validateIntradayV2Date(value, field) {
+  const text = String(requireIntradayV2Field({ [field]: value }, field)).trim();
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(text)) {
+    throw apiValidationError(`${field} must use YYYY-MM-DD format`);
+  }
+  const date = new Date(`${text}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) {
+    throw apiValidationError(`${field} must be a valid calendar date`);
+  }
+  return text;
+}
+
+function validateIntradayV2Time(value, field) {
+  const text = String(requireIntradayV2Field({ [field]: value }, field)).trim();
+  if (!/^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/.test(text)) {
+    throw apiValidationError(`${field} must use HH:MM or HH:MM:SS format`);
+  }
+  return text;
+}
+
+async function validateIntradayV2Scope(req, source) {
+  const user = getCurrentUser(req);
+  const lobId = parseIntradayV2Integer(requireIntradayV2Field(source, 'lob_id'), 'lob_id', { min: 1 });
+  const channel = normalizeIntradayV2Channel(requireIntradayV2Field(source, 'channel'));
+  const staffingMode = normalizeIntradayV2StaffingMode(requireIntradayV2Field(source, 'staffing_mode'));
+  const monthKey = validateIntradayV2MonthKey(requireIntradayV2Field(source, 'month_key'));
+
+  const lob = await pool.query(
+    'SELECT id FROM lobs WHERE id = $1 AND organization_id = $2',
+    [lobId, user.organization_id]
+  );
+  if (lob.rows.length === 0) throw apiValidationError('LOB not found for this organization', 404);
+
+  return {
+    organizationId: user.organization_id,
+    lobId,
+    channel,
+    staffingMode,
+    monthKey,
+  };
+}
+
+function intradayV2ScopeParams(scope) {
+  return [scope.organizationId, scope.lobId, scope.channel, scope.staffingMode, scope.monthKey];
+}
+
+async function ensureIntradayV2MonthPlan(db, scope) {
+  const { rows } = await db.query(
+    `INSERT INTO intraday_v2_month_plans
+       (organization_id, lob_id, channel, staffing_mode, month_key)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (organization_id, lob_id, channel, staffing_mode, month_key)
+     DO UPDATE SET updated_at = NOW()
+     RETURNING id`,
+    intradayV2ScopeParams(scope)
+  );
+  return rows[0].id;
+}
+
+function handleIntradayV2Error(res, err, label) {
+  if (err.status) return res.status(err.status).json({ error: err.message });
+  console.error(`${label}:`, err.message);
+  return res.status(500).json({ error: 'Failed to process Intraday v2 request' });
+}
+
+function validateIntradayV2WeekAllocation(row, index) {
+  return {
+    week_start: validateIntradayV2Date(row.week_start, `allocations[${index}].week_start`),
+    week_index: parseIntradayV2Integer(row.week_index ?? index + 1, `allocations[${index}].week_index`, { min: 1 }),
+    weight: parseIntradayV2Number(row.weight ?? 0, `allocations[${index}].weight`, { required: true, min: 0 }),
+    volume: parseIntradayV2Number(row.volume ?? 0, `allocations[${index}].volume`, { required: true, min: 0 }),
+    is_locked: parseIntradayV2Boolean(row.is_locked),
+  };
+}
+
+function validateIntradayV2DayAllocation(row, index) {
+  const calendarDate = validateIntradayV2Date(row.calendar_date, `allocations[${index}].calendar_date`);
+  return {
+    calendar_date: calendarDate,
+    day_of_week: parseIntradayV2Integer(row.day_of_week ?? getMondayBasedWeekday(calendarDate), `allocations[${index}].day_of_week`, { min: 0, max: 6 }),
+    week_start: validateIntradayV2Date(row.week_start, `allocations[${index}].week_start`),
+    weight: parseIntradayV2Number(row.weight ?? 0, `allocations[${index}].weight`, { required: true, min: 0 }),
+    volume: parseIntradayV2Number(row.volume ?? 0, `allocations[${index}].volume`, { required: true, min: 0 }),
+    is_locked: parseIntradayV2Boolean(row.is_locked),
+  };
+}
+
+function validateIntradayV2IntervalAllocation(row, index) {
+  const intervalIndex = parseIntradayV2Integer(row.interval_index, `allocations[${index}].interval_index`, { min: 0 });
+  const intervalMinutes = parseIntradayV2Integer(row.interval_minutes ?? 15, `allocations[${index}].interval_minutes`, { min: 1 });
+  return {
+    calendar_date: validateIntradayV2Date(row.calendar_date, `allocations[${index}].calendar_date`),
+    interval_index: intervalIndex,
+    interval_start: validateIntradayV2Time(row.interval_start ?? formatIntervalTime(intervalIndex, intervalMinutes), `allocations[${index}].interval_start`),
+    interval_minutes: intervalMinutes,
+    weight: parseIntradayV2Number(row.weight ?? 0, `allocations[${index}].weight`, { required: true, min: 0 }),
+    volume: parseIntradayV2Number(row.volume ?? 0, `allocations[${index}].volume`, { required: true, min: 0 }),
+    aht_seconds: parseIntradayV2Number(row.aht_seconds, `allocations[${index}].aht_seconds`, { min: 0 }),
+  };
+}
+
+async function replaceIntradayV2Allocations(client, scope, tableName, allocations, validateRow) {
+  if (!Array.isArray(allocations)) throw apiValidationError('allocations array is required');
+  const planId = await ensureIntradayV2MonthPlan(client, scope);
+  const params = intradayV2ScopeParams(scope);
+
+  await client.query(
+    `DELETE FROM ${tableName}
+     WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+    params
+  );
+
+  for (let i = 0; i < allocations.length; i += 1) {
+    const row = validateRow(allocations[i] || {}, i);
+    if (tableName === 'intraday_v2_week_allocations') {
+      await client.query(
+        `INSERT INTO intraday_v2_week_allocations
+           (plan_id, organization_id, lob_id, channel, staffing_mode, month_key,
+            week_start, week_index, weight, volume, is_locked)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [planId, ...params, row.week_start, row.week_index, row.weight, row.volume, row.is_locked]
+      );
+    } else if (tableName === 'intraday_v2_day_allocations') {
+      await client.query(
+        `INSERT INTO intraday_v2_day_allocations
+           (plan_id, organization_id, lob_id, channel, staffing_mode, month_key,
+            calendar_date, day_of_week, week_start, weight, volume, is_locked)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [planId, ...params, row.calendar_date, row.day_of_week, row.week_start, row.weight, row.volume, row.is_locked]
+      );
+    } else if (tableName === 'intraday_v2_interval_allocations') {
+      await client.query(
+        `INSERT INTO intraday_v2_interval_allocations
+           (plan_id, organization_id, lob_id, channel, staffing_mode, month_key,
+            calendar_date, interval_index, interval_start, interval_minutes, weight, volume, aht_seconds)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [planId, ...params, row.calendar_date, row.interval_index, row.interval_start, row.interval_minutes, row.weight, row.volume, row.aht_seconds]
+      );
+    }
+  }
+
+  await client.query(
+    `UPDATE intraday_v2_month_plans
+     SET updated_at = NOW()
+     WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+    params
+  );
+}
+
 function parseTimeToMinutes(value) {
   if (!value) return 0;
   const [h, m] = String(value).split(':').map(Number);
@@ -1893,6 +2214,194 @@ app.post('/api/interaction-arrival', async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Interaction Arrival Save Error:', err.message);
     res.status(500).json({ error: 'Failed to save interaction arrival data' });
+  } finally {
+    client.release();
+  }
+});
+
+// --- INTRADAY V2 ROUTES ---
+
+app.get('/api/intraday-v2/plans', async (req, res) => {
+  try {
+    const scope = await validateIntradayV2Scope(req, req.query);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_month_plans
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json(rows[0] || null);
+  } catch (err) {
+    handleIntradayV2Error(res, err, 'Intraday v2 plan GET error');
+  }
+});
+
+app.put('/api/intraday-v2/plans', async (req, res) => {
+  try {
+    const scope = await validateIntradayV2Scope(req, req.body);
+    await ensureIntradayV2MonthPlan(pool, scope);
+
+    const updates = [];
+    const values = [];
+    const addUpdate = (column, value) => {
+      values.push(value);
+      updates.push(`${column} = $${values.length}`);
+    };
+
+    if (hasOwn(req.body, 'demand_forecast_volume')) {
+      addUpdate('demand_forecast_volume', parseIntradayV2Number(req.body.demand_forecast_volume, 'demand_forecast_volume'));
+    }
+    if (hasOwn(req.body, 'demand_source')) {
+      addUpdate('demand_source', req.body.demand_source === undefined || req.body.demand_source === null || req.body.demand_source === '' ? null : String(req.body.demand_source));
+    }
+    if (hasOwn(req.body, 'manual_monthly_volume')) {
+      addUpdate('manual_monthly_volume', parseIntradayV2Number(req.body.manual_monthly_volume, 'manual_monthly_volume'));
+    }
+    if (hasOwn(req.body, 'effective_monthly_volume')) {
+      addUpdate('effective_monthly_volume', parseIntradayV2Number(req.body.effective_monthly_volume, 'effective_monthly_volume'));
+    }
+    if (hasOwn(req.body, 'status')) {
+      addUpdate('status', normalizeIntradayV2Status(req.body.status) || 'draft');
+    }
+
+    if (updates.length > 0) {
+      values.push(...intradayV2ScopeParams(scope));
+      await pool.query(
+        `UPDATE intraday_v2_month_plans
+         SET ${updates.join(', ')}, updated_at = NOW()
+         WHERE organization_id = $${values.length - 4}
+           AND lob_id = $${values.length - 3}
+           AND channel = $${values.length - 2}
+           AND staffing_mode = $${values.length - 1}
+           AND month_key = $${values.length}`,
+        values
+      );
+    }
+
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_month_plans
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    handleIntradayV2Error(res, err, 'Intraday v2 plan PUT error');
+  }
+});
+
+app.get('/api/intraday-v2/week-allocations', async (req, res) => {
+  try {
+    const scope = await validateIntradayV2Scope(req, req.query);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_week_allocations
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+       ORDER BY week_start ASC, week_index ASC`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json(rows);
+  } catch (err) {
+    handleIntradayV2Error(res, err, 'Intraday v2 week allocations GET error');
+  }
+});
+
+app.put('/api/intraday-v2/week-allocations', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const scope = await validateIntradayV2Scope(req, req.body);
+    await client.query('BEGIN');
+    await replaceIntradayV2Allocations(client, scope, 'intraday_v2_week_allocations', req.body.allocations, validateIntradayV2WeekAllocation);
+    await client.query('COMMIT');
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_week_allocations
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+       ORDER BY week_start ASC, week_index ASC`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json({ success: true, count: rows.length, rows });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    handleIntradayV2Error(res, err, 'Intraday v2 week allocations PUT error');
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/intraday-v2/day-allocations', async (req, res) => {
+  try {
+    const scope = await validateIntradayV2Scope(req, req.query);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_day_allocations
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+       ORDER BY calendar_date ASC`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json(rows);
+  } catch (err) {
+    handleIntradayV2Error(res, err, 'Intraday v2 day allocations GET error');
+  }
+});
+
+app.put('/api/intraday-v2/day-allocations', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const scope = await validateIntradayV2Scope(req, req.body);
+    await client.query('BEGIN');
+    await replaceIntradayV2Allocations(client, scope, 'intraday_v2_day_allocations', req.body.allocations, validateIntradayV2DayAllocation);
+    await client.query('COMMIT');
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_day_allocations
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+       ORDER BY calendar_date ASC`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json({ success: true, count: rows.length, rows });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    handleIntradayV2Error(res, err, 'Intraday v2 day allocations PUT error');
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/intraday-v2/interval-allocations', async (req, res) => {
+  try {
+    const scope = await validateIntradayV2Scope(req, req.query);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_interval_allocations
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+       ORDER BY calendar_date ASC, interval_index ASC`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json(rows);
+  } catch (err) {
+    handleIntradayV2Error(res, err, 'Intraday v2 interval allocations GET error');
+  }
+});
+
+app.put('/api/intraday-v2/interval-allocations', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const scope = await validateIntradayV2Scope(req, req.body);
+    await client.query('BEGIN');
+    await replaceIntradayV2Allocations(client, scope, 'intraday_v2_interval_allocations', req.body.allocations, validateIntradayV2IntervalAllocation);
+    await client.query('COMMIT');
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_interval_allocations
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+       ORDER BY calendar_date ASC, interval_index ASC`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json({ success: true, count: rows.length, rows });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    handleIntradayV2Error(res, err, 'Intraday v2 interval allocations PUT error');
   } finally {
     client.release();
   }
