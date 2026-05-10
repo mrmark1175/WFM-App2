@@ -36,6 +36,7 @@ const CYCLE_STEPS: CycleStep[] = [
       { label: "Demand Forecasting", path: "/wfm/long-term-forecasting-demand", icon: LineChart },
       { label: "Shrinkage Planning",  path: "/wfm/shrinkage",                   icon: Layers },
       { label: "Intraday Forecast",   path: "/wfm/intraday",                    icon: TrendingUp },
+      { label: "Intraday Forecast v2", path: "/wfm/intraday-v2",                icon: TrendingUp },
     ],
   },
   {
