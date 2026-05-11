@@ -226,11 +226,6 @@ const CHANNEL_SELECT_OPTIONS = [
 
 const PLACEHOLDER_SECTIONS = [
   {
-    title: "Output Preview",
-    description: "Future scoped weekly and interval output preview before publishing.",
-    icon: Layers3,
-  },
-  {
     title: "Publish / Commit",
     description: "Future publish step for approved downstream outputs.",
     icon: Send,
@@ -283,6 +278,12 @@ function formatNumberInput(value: number | string | null | undefined): string {
 function formatVolume(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "-";
   return Math.round(value).toLocaleString();
+}
+
+function formatSignedVolume(value: number): string {
+  if (!Number.isFinite(value)) return "-";
+  const rounded = Math.round(value);
+  return `${rounded > 0 ? "+" : ""}${rounded.toLocaleString()}`;
 }
 
 function formatChannelLabel(channel: ChannelKey): string {
@@ -1520,6 +1521,64 @@ export function IntradayForecastV2() {
     intervalAllocationPreview.hasMissingIntervals ||
     !intervalAllocationPreview.allDaysSumToSource;
 
+  const previewScopeReady =
+    weekAllocationScopeKey === scopeKey &&
+    dayAllocationScopeKey === scopeKey &&
+    intervalAllocationScopeKey === scopeKey;
+  const outputPreviewLoading = planLoading || weekAllocationLoading || dayAllocationLoading || intervalAllocationLoading;
+  const weekPreviewRows = previewScopeReady ? weekAllocationPreview.rows : [];
+  const dayPreviewRows = previewScopeReady ? dayAllocationPreview.rows.filter((row) => row.insideMonth) : [];
+  const intervalPreviewRows = previewScopeReady ? intervalAllocationPreview.rows : [];
+  const outputWeekTotal = previewScopeReady ? weekAllocationPreview.totalAllocatedVolume : 0;
+  const outputDayTotal = previewScopeReady ? dayAllocationPreview.totalAllocatedVolume : 0;
+  const outputIntervalTotal = previewScopeReady ? intervalAllocationPreview.totalAllocatedVolume : 0;
+  const outputVariance = outputIntervalTotal - effectiveMonthlyVolume;
+  const outputWeekMatchesMonthly = previewScopeReady && Math.abs(outputWeekTotal - effectiveMonthlyVolume) <= 1;
+  const outputDayMatchesWeek = previewScopeReady && Math.abs(outputDayTotal - outputWeekTotal) <= 1 && dayAllocationPreview.allWeeksSumToSource;
+  const outputIntervalMatchesDay = previewScopeReady && Math.abs(outputIntervalTotal - outputDayTotal) <= 1 && intervalAllocationPreview.allDaysSumToSource;
+  const outputHasNoZeroWeightIssue = previewScopeReady
+    && (effectiveMonthlyVolume === 0 || weekAllocationPreview.totalRawWeight > 0)
+    && !dayAllocationPreview.hasZeroWeightWeek
+    && !intervalAllocationPreview.hasZeroWeightDay;
+  const outputSummaryCards = [
+    { label: "Selected LOB", value: selectedLob?.lob_name ?? "No LOB", detail: "Current scope" },
+    { label: "Selected Channel", value: activeChannelLabel, detail: selectedChannel },
+    { label: "Staffing Mode", value: staffingMode === "blended" ? "Blended" : "Dedicated", detail: "Current scope" },
+    { label: "Month", value: monthKey, detail: "Current scope" },
+    { label: "Effective Monthly Volume", value: formatVolume(effectiveMonthlyVolume), detail: sourceLabel },
+    { label: "Total Week Allocated", value: formatVolume(outputWeekTotal), detail: "Week allocation output" },
+    { label: "Total Day Allocated", value: formatVolume(outputDayTotal), detail: "Day allocation output" },
+    { label: "Total Interval Allocated", value: formatVolume(outputIntervalTotal), detail: "Interval allocation output" },
+    { label: "Difference / Variance", value: formatSignedVolume(outputVariance), detail: "Interval total minus monthly" },
+  ];
+  const outputValidationItems = [
+    {
+      label: "Week total matches monthly volume",
+      ok: outputWeekMatchesMonthly,
+      detail: `${formatVolume(outputWeekTotal)} / ${formatVolume(effectiveMonthlyVolume)}`,
+    },
+    {
+      label: "Day total matches week total",
+      ok: outputDayMatchesWeek,
+      detail: `${formatVolume(outputDayTotal)} / ${formatVolume(outputWeekTotal)}`,
+    },
+    {
+      label: "Interval total matches day total",
+      ok: outputIntervalMatchesDay,
+      detail: `${formatVolume(outputIntervalTotal)} / ${formatVolume(outputDayTotal)}`,
+    },
+    {
+      label: "No missing operating intervals for positive-volume days",
+      ok: previewScopeReady && !intervalAllocationPreview.hasMissingIntervals,
+      detail: intervalAllocationPreview.hasMissingIntervals ? "Review LOB operating hours" : "No gaps detected",
+    },
+    {
+      label: "No zero-weight issue for positive-volume groups",
+      ok: outputHasNoZeroWeightIssue,
+      detail: outputHasNoZeroWeightIssue ? "Weights are usable" : "Review positive-volume weights",
+    },
+  ];
+
   const updateWeekWeightInput = (weekStart: string, value: string) => {
     setWeekAllocationScopeKey(scopeKey);
     setWeekWeightInputs((previous) => ({
@@ -2348,6 +2407,196 @@ export function IntradayForecastV2() {
                   Save interval allocation
                 </Button>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <span className="rounded-lg bg-cyan-50 p-2 text-cyan-700">
+                    <Layers3 className="size-4" />
+                  </span>
+                  Output Preview
+                </CardTitle>
+                <CardDescription className="mt-2">
+                  Read-only final volume preview for the active LOB, channel, staffing mode, and month.
+                </CardDescription>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {outputPreviewLoading && <Loader2 className="size-4 animate-spin text-slate-500" />}
+                <Badge
+                  variant="outline"
+                  className={
+                    outputValidationItems.every((item) => item.ok)
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+                      : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50"
+                  }
+                >
+                  {outputValidationItems.every((item) => item.ok) ? "Preview balanced" : "Preview warnings"}
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5 pt-5">
+            {!previewScopeReady && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <span>Preview is refreshing for the active scope.</span>
+              </div>
+            )}
+
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+              {outputSummaryCards.map((card) => (
+                <div key={card.label} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{card.label}</p>
+                  <p className="mt-2 truncate text-xl font-semibold text-slate-900">{card.value}</p>
+                  <p className="mt-1 truncate text-xs text-slate-500">{card.detail}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-5">
+              {outputValidationItems.map((item) => (
+                <div
+                  key={item.label}
+                  className={`rounded-xl border px-4 py-3 ${
+                    item.ok
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                      : "border-amber-200 bg-amber-50 text-amber-900"
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    {item.ok ? (
+                      <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+                    ) : (
+                      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+                    )}
+                    <div>
+                      <p className="text-sm font-semibold">{item.label}</p>
+                      <p className="mt-1 text-xs opacity-80">{item.detail}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-3">
+              <details className="rounded-lg border border-slate-200 bg-white" open>
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">
+                  Week Preview
+                </summary>
+                <Table containerClassName="border-t border-slate-200">
+                  <TableHeader>
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead>Week label</TableHead>
+                      <TableHead>Start date</TableHead>
+                      <TableHead>End date</TableHead>
+                      <TableHead className="text-right">Weight %</TableHead>
+                      <TableHead className="text-right">Allocated volume</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {weekPreviewRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="h-20 text-center text-sm text-slate-500">
+                          No week preview rows for the active scope.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      weekPreviewRows.map((row) => (
+                        <TableRow key={row.week.weekStart}>
+                          <TableCell className="font-medium text-slate-900">{row.week.label}</TableCell>
+                          <TableCell className="text-slate-600">{row.week.weekStart}</TableCell>
+                          <TableCell className="text-slate-600">{row.week.weekEnd}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatPercent(row.normalizedWeight)}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums text-slate-900">
+                            {formatVolume(row.allocatedVolume)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </details>
+
+              <details className="rounded-lg border border-slate-200 bg-white">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">
+                  Day Preview
+                </summary>
+                <Table containerClassName="max-h-[520px] overflow-auto border-t border-slate-200">
+                  <TableHeader>
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead>Week label</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Day of week</TableHead>
+                      <TableHead className="text-right">Weight %</TableHead>
+                      <TableHead className="text-right">Allocated volume</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {dayPreviewRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="h-20 text-center text-sm text-slate-500">
+                          No day preview rows for the active scope.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      dayPreviewRows.map((row) => (
+                        <TableRow key={row.calendarDate}>
+                          <TableCell className="font-medium text-slate-900">{row.weekLabel}</TableCell>
+                          <TableCell className="text-slate-600">{row.calendarDate}</TableCell>
+                          <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatPercent(row.normalizedWeight)}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums text-slate-900">
+                            {formatVolume(row.allocatedVolume)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </details>
+
+              <details className="rounded-lg border border-slate-200 bg-white">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">
+                  Interval Preview
+                </summary>
+                <Table containerClassName="max-h-[620px] overflow-auto border-t border-slate-200">
+                  <TableHeader>
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead>Date</TableHead>
+                      <TableHead>Day of week</TableHead>
+                      <TableHead>Interval time</TableHead>
+                      <TableHead className="text-right">Weight %</TableHead>
+                      <TableHead className="text-right">Allocated volume</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {intervalPreviewRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="h-20 text-center text-sm text-slate-500">
+                          No interval preview rows for the active scope.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      intervalPreviewRows.map((row) => (
+                        <TableRow key={row.key}>
+                          <TableCell className="font-medium text-slate-900">{row.calendarDate}</TableCell>
+                          <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
+                          <TableCell className="text-slate-600">{row.intervalLabel}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatPercent(row.normalizedWeight)}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums text-slate-900">
+                            {formatVolume(row.allocatedVolume)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </details>
             </div>
           </CardContent>
         </Card>
