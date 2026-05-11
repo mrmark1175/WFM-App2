@@ -459,6 +459,26 @@ async function ensureAppTables() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_interval_allocations_scope ON intraday_v2_interval_allocations (organization_id, lob_id, channel, staffing_mode, month_key)`);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS intraday_v2_actual_baseline_intervals (
+      id              SERIAL PRIMARY KEY,
+      organization_id INTEGER NOT NULL DEFAULT 1,
+      lob_id          INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel         TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
+      staffing_mode   TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
+      month_key       TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      interval_date   DATE NOT NULL,
+      day_of_week     INTEGER NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
+      interval_time   TIME NOT NULL,
+      actual_volume   NUMERIC NOT NULL DEFAULT 0,
+      source          TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'uploaded')),
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, channel, staffing_mode, month_key, interval_date, interval_time)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_actual_baseline_intervals_scope ON intraday_v2_actual_baseline_intervals (organization_id, lob_id, channel, staffing_mode, month_key)`);
+
   // ── lob_settings — per-LOB channel, staffing, and hours-of-operation config ──
   await pool.query(`
     CREATE TABLE IF NOT EXISTS lob_settings (
@@ -1514,6 +1534,52 @@ function validateIntradayV2IntervalAllocation(row, index) {
   };
 }
 
+function validateIntradayV2ActualBaselineSource(value) {
+  const source = String(value || 'manual').trim().toLowerCase();
+  if (source !== 'manual' && source !== 'uploaded') {
+    throw apiValidationError('source must be one of manual or uploaded');
+  }
+  return source;
+}
+
+function validateIntradayV2ActualBaselineRow(row, index, defaultSource = 'manual') {
+  const intervalDate = validateIntradayV2Date(row.interval_date ?? row.calendar_date, `rows[${index}].interval_date`);
+  return {
+    interval_date: intervalDate,
+    day_of_week: parseIntradayV2Integer(row.day_of_week ?? getMondayBasedWeekday(intervalDate), `rows[${index}].day_of_week`, { min: 0, max: 6 }),
+    interval_time: validateIntradayV2Time(row.interval_time ?? row.interval_start, `rows[${index}].interval_time`),
+    actual_volume: parseIntradayV2Number(row.actual_volume ?? row.volume, `rows[${index}].actual_volume`, { required: true, min: 0 }),
+    source: validateIntradayV2ActualBaselineSource(row.source ?? defaultSource),
+  };
+}
+
+async function replaceIntradayV2ActualBaseline(client, scope, rows, defaultSource = 'manual') {
+  if (!Array.isArray(rows)) throw apiValidationError('rows array is required');
+  const params = intradayV2ScopeParams(scope);
+  const source = validateIntradayV2ActualBaselineSource(defaultSource);
+
+  await client.query(
+    `DELETE FROM intraday_v2_actual_baseline_intervals
+     WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+    params
+  );
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = validateIntradayV2ActualBaselineRow(rows[i] || {}, i, source);
+    if (!row.interval_date.startsWith(scope.monthKey)) {
+      throw apiValidationError(`rows[${i}].interval_date must fall within month_key`);
+    }
+    if (row.actual_volume <= 0) continue;
+    await client.query(
+      `INSERT INTO intraday_v2_actual_baseline_intervals
+         (organization_id, lob_id, channel, staffing_mode, month_key,
+          interval_date, day_of_week, interval_time, actual_volume, source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [...params, row.interval_date, row.day_of_week, row.interval_time, row.actual_volume, row.source]
+    );
+  }
+}
+
 async function replaceIntradayV2Allocations(client, scope, tableName, allocations, validateRow) {
   if (!Array.isArray(allocations)) throw apiValidationError('allocations array is required');
   const planId = await ensureIntradayV2MonthPlan(client, scope);
@@ -2404,6 +2470,59 @@ app.put('/api/intraday-v2/interval-allocations', async (req, res) => {
     handleIntradayV2Error(res, err, 'Intraday v2 interval allocations PUT error');
   } finally {
     client.release();
+  }
+});
+
+app.get('/api/intraday-v2/actual-baseline', async (req, res) => {
+  try {
+    const scope = await validateIntradayV2Scope(req, req.query);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_actual_baseline_intervals
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+       ORDER BY interval_date ASC, interval_time ASC`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json(rows);
+  } catch (err) {
+    handleIntradayV2Error(res, err, 'Intraday v2 actual baseline GET error');
+  }
+});
+
+app.put('/api/intraday-v2/actual-baseline', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const scope = await validateIntradayV2Scope(req, req.body);
+    await client.query('BEGIN');
+    await replaceIntradayV2ActualBaseline(client, scope, req.body.rows, req.body.source);
+    await client.query('COMMIT');
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM intraday_v2_actual_baseline_intervals
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+       ORDER BY interval_date ASC, interval_time ASC`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json({ success: true, count: rows.length, rows });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    handleIntradayV2Error(res, err, 'Intraday v2 actual baseline PUT error');
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/intraday-v2/actual-baseline', async (req, res) => {
+  try {
+    const scope = await validateIntradayV2Scope(req, req.query);
+    const { rowCount } = await pool.query(
+      `DELETE FROM intraday_v2_actual_baseline_intervals
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json({ success: true, count: rowCount });
+  } catch (err) {
+    handleIntradayV2Error(res, err, 'Intraday v2 actual baseline DELETE error');
   }
 });
 

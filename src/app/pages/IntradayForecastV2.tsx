@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, Clock3, Layers3, Loader2, RefreshCw, Save, Send, Table2, TrendingUp } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, Clock3, Layers3, Loader2, RefreshCw, Save, Send, Table2, TrendingUp, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { PageLayout } from "../components/PageLayout";
 import { Badge } from "../components/ui/badge";
@@ -14,6 +14,7 @@ import { getCalculatedVolumes, type Assumptions } from "./forecasting-logic";
 
 type StaffingMode = "dedicated" | "blended";
 type DayKey = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+type ActualBaselineSource = "manual" | "uploaded";
 
 interface DaySchedule {
   enabled?: boolean;
@@ -94,6 +95,16 @@ interface IntradayV2IntervalAllocation {
   weight: number | string;
   volume: number | string;
   aht_seconds?: number | string | null;
+  updated_at?: string;
+}
+
+interface IntradayV2ActualBaselineInterval {
+  id?: number;
+  interval_date: string;
+  day_of_week: number;
+  interval_time: string;
+  actual_volume: number | string;
+  source?: ActualBaselineSource | string;
   updated_at?: string;
 }
 
@@ -208,6 +219,24 @@ interface IntervalAllocationPreview {
   hasZeroWeightDay: boolean;
   hasMissingIntervals: boolean;
   allDaysSumToSource: boolean;
+}
+
+interface ActualBaselineIntervalRow {
+  key: string;
+  intervalDate: string;
+  dateLabel: string;
+  dayKey: DayKey;
+  dayOfWeek: number;
+  dayLabel: string;
+  intervalTime: string;
+  intervalIndex: number;
+  intervalLabel: string;
+}
+
+interface ActualBaselinePreviewRow extends ActualBaselineIntervalRow {
+  inputValue: string;
+  actualVolume: number;
+  invalid: boolean;
 }
 
 const DEFAULT_ENABLED_CHANNELS: Record<ChannelKey, boolean> = {
@@ -820,6 +849,174 @@ function buildIntervalAllocationPreview(
   };
 }
 
+function actualBaselineInputKey(intervalDate: string, intervalTime: string): string {
+  return `${intervalDate}:${normalizeTimeKey(intervalTime)}`;
+}
+
+function formatActualVolumeInput(value: number | string | null | undefined): string {
+  const parsed = parseOptionalNumber(value);
+  if (parsed === null) return "0";
+  return (Math.round(parsed * 10000) / 10000).toFixed(4).replace(/\.?0+$/, "");
+}
+
+function buildActualBaselineRows(
+  monthKey: string,
+  settings: LobSettings | null,
+  channel: ChannelKey
+): ActualBaselineIntervalRow[] {
+  const parts = parseMonthParts(monthKey);
+  const schedule = settings?.hours_of_operation?.[channel];
+  if (!parts || !schedule) return [];
+
+  const monthStart = new Date(Date.UTC(parts.year, parts.month - 1, 1));
+  const monthEnd = new Date(Date.UTC(parts.year, parts.month, 0));
+  const rows: ActualBaselineIntervalRow[] = [];
+
+  for (let date = monthStart; date.getTime() <= monthEnd.getTime(); date = addUtcDays(date, 1)) {
+    const intervalDate = isoFromDate(date);
+    const dayKey = getDayKeyFromIso(intervalDate);
+    const daySchedule = schedule[dayKey];
+    if (!daySchedule?.enabled) continue;
+
+    const openMinutes = parseTimeToMinutes(daySchedule.open ?? "08:00");
+    const closeRaw = parseTimeToMinutes(daySchedule.close ?? "17:00");
+    if (openMinutes === null || closeRaw === null) continue;
+
+    const closeMinutes = closeRaw === 23 * 60 + 59 ? 24 * 60 : closeRaw;
+    if (closeMinutes <= openMinutes) continue;
+
+    const firstStart = Math.ceil(openMinutes / INTERVAL_MINUTES) * INTERVAL_MINUTES;
+    for (let start = firstStart; start + INTERVAL_MINUTES <= closeMinutes && start < 24 * 60; start += INTERVAL_MINUTES) {
+      const intervalTime = formatIntervalStart(start);
+      const intervalIndex = Math.floor(start / INTERVAL_MINUTES);
+      rows.push({
+        key: actualBaselineInputKey(intervalDate, intervalTime),
+        intervalDate,
+        dateLabel: formatShortDate(intervalDate, intervalDate.slice(0, 4) !== monthKey.slice(0, 4)),
+        dayKey,
+        dayOfWeek: getMondayBasedDayOfWeek(intervalDate),
+        dayLabel: DAY_LABELS[dayKey],
+        intervalTime,
+        intervalIndex,
+        intervalLabel: formatIntervalRangeLabel(intervalTime, INTERVAL_MINUTES),
+      });
+    }
+  }
+
+  return rows;
+}
+
+function buildDefaultActualBaselineInputs(rows: ActualBaselineIntervalRow[]): Record<string, string> {
+  return Object.fromEntries(rows.map((row) => [row.key, "0"]));
+}
+
+function buildSavedActualBaselineInputs(
+  rows: ActualBaselineIntervalRow[],
+  baselineRows: IntradayV2ActualBaselineInterval[]
+): Record<string, string> {
+  const savedVolumesByInterval = new Map(
+    baselineRows.map((row) => [
+      actualBaselineInputKey(normalizeDateKey(row.interval_date), row.interval_time),
+      formatActualVolumeInput(row.actual_volume),
+    ])
+  );
+  return Object.fromEntries(rows.map((row) => [row.key, savedVolumesByInterval.get(row.key) ?? "0"]));
+}
+
+function buildActualBaselinePreviewRows(
+  rows: ActualBaselineIntervalRow[],
+  inputs: Record<string, string>
+): ActualBaselinePreviewRow[] {
+  return rows.map((row) => {
+    const inputValue = inputs[row.key] ?? "0";
+    const parsed = parseWeightInput(inputValue);
+    const invalid = parsed === null || parsed < 0;
+    return {
+      ...row,
+      inputValue,
+      actualVolume: invalid ? 0 : parsed,
+      invalid,
+    };
+  });
+}
+
+function buildActualDerivedWeekWeightInputs(
+  weeks: MonthWeek[],
+  actualRows: ActualBaselinePreviewRow[],
+  fallbackInputs: Record<string, string>
+): Record<string, string> {
+  const validRows = actualRows.filter((row) => !row.invalid && row.actualVolume > 0);
+  const totalActual = validRows.reduce((sum, row) => sum + row.actualVolume, 0);
+  if (totalActual <= 0) return fallbackInputs;
+
+  return Object.fromEntries(
+    weeks.map((week) => {
+      const weekActual = validRows
+        .filter((row) => row.intervalDate >= week.weekStart && row.intervalDate <= week.weekEnd)
+        .reduce((sum, row) => sum + row.actualVolume, 0);
+      return [week.weekStart, formatWeightInput((weekActual / totalActual) * 100)];
+    })
+  );
+}
+
+function buildActualDerivedDayWeightInputs(
+  rows: DayAllocationDay[],
+  actualRows: ActualBaselinePreviewRow[],
+  fallbackInputs: Record<string, string>
+): Record<string, string> {
+  const actualByDate = new Map<string, number>();
+  actualRows
+    .filter((row) => !row.invalid && row.actualVolume > 0)
+    .forEach((row) => {
+      actualByDate.set(row.intervalDate, (actualByDate.get(row.intervalDate) ?? 0) + row.actualVolume);
+    });
+
+  const entries: Array<[string, string]> = [];
+  groupDayRowsByWeek(rows).forEach((weekRows) => {
+    const insideRows = weekRows.filter((row) => row.insideMonth);
+    const totalActual = insideRows.reduce((sum, row) => sum + (actualByDate.get(row.calendarDate) ?? 0), 0);
+
+    weekRows.forEach((row) => {
+      if (!row.insideMonth) {
+        entries.push([row.calendarDate, "0"]);
+      } else if (totalActual > 0) {
+        entries.push([row.calendarDate, formatWeightInput(((actualByDate.get(row.calendarDate) ?? 0) / totalActual) * 100)]);
+      } else {
+        entries.push([row.calendarDate, fallbackInputs[row.calendarDate] ?? "0"]);
+      }
+    });
+  });
+
+  return Object.fromEntries(entries);
+}
+
+function buildActualDerivedIntervalWeightInputs(
+  rows: IntervalAllocationInterval[],
+  actualRows: ActualBaselinePreviewRow[],
+  fallbackInputs: Record<string, string>
+): Record<string, string> {
+  const actualByInterval = new Map<string, number>();
+  actualRows
+    .filter((row) => !row.invalid && row.actualVolume > 0)
+    .forEach((row) => {
+      const key = intervalInputKey(row.intervalDate, row.intervalIndex);
+      actualByInterval.set(key, (actualByInterval.get(key) ?? 0) + row.actualVolume);
+    });
+
+  const entries: Array<[string, string]> = [];
+  groupIntervalRowsByDay(rows).forEach((dayRows) => {
+    const totalActual = dayRows.reduce((sum, row) => sum + (actualByInterval.get(row.key) ?? 0), 0);
+    dayRows.forEach((row) => {
+      if (totalActual > 0) {
+        entries.push([row.key, formatWeightInput(((actualByInterval.get(row.key) ?? 0) / totalActual) * 100)]);
+      } else {
+        entries.push([row.key, fallbackInputs[row.key] ?? "0"]);
+      }
+    });
+  });
+  return Object.fromEntries(entries);
+}
+
 function applyHistoricalOverrides(apiData: number[], overrides: Record<number, string> = {}): number[] {
   const overrideIndexes = Object.keys(overrides).map(Number).filter(Number.isFinite);
   const len = Math.max(apiData.length, ...overrideIndexes.map((index) => index + 1), 0);
@@ -969,6 +1166,15 @@ export function IntradayForecastV2() {
   const [planError, setPlanError] = useState<string | null>(null);
   const [manualOverrideInput, setManualOverrideInput] = useState("");
   const [savingPlan, setSavingPlan] = useState(false);
+  const [actualBaselineInputs, setActualBaselineInputs] = useState<Record<string, string>>({});
+  const [savedActualBaselineRows, setSavedActualBaselineRows] = useState<IntradayV2ActualBaselineInterval[]>([]);
+  const [actualBaselineScopeKey, setActualBaselineScopeKey] = useState("");
+  const [actualBaselineLoading, setActualBaselineLoading] = useState(false);
+  const [actualBaselineError, setActualBaselineError] = useState<string | null>(null);
+  const [actualBaselineEditing, setActualBaselineEditing] = useState(false);
+  const [actualBaselineDraftSource, setActualBaselineDraftSource] = useState<ActualBaselineSource>("manual");
+  const [actualBaselinePatternAppliedScopeKey, setActualBaselinePatternAppliedScopeKey] = useState("");
+  const [savingActualBaseline, setSavingActualBaseline] = useState(false);
   const [weekWeightInputs, setWeekWeightInputs] = useState<Record<string, string>>({});
   const [savedWeekAllocations, setSavedWeekAllocations] = useState<IntradayV2WeekAllocation[]>([]);
   const [weekAllocationScopeKey, setWeekAllocationScopeKey] = useState("");
@@ -1270,9 +1476,112 @@ export function IntradayForecastV2() {
     await persistManualOverride(null);
   };
 
+  const actualBaselineRows = useMemo(
+    () => buildActualBaselineRows(monthKey, lobSettings, selectedChannel),
+    [lobSettings, monthKey, selectedChannel]
+  );
+  const defaultActualBaselineInputs = useMemo(
+    () => buildDefaultActualBaselineInputs(actualBaselineRows),
+    [actualBaselineRows]
+  );
+
+  useEffect(() => {
+    setActualBaselineScopeKey(scopeKey);
+    setSavedActualBaselineRows([]);
+    setActualBaselineInputs(defaultActualBaselineInputs);
+    setActualBaselineError(null);
+    setActualBaselineEditing(false);
+    setActualBaselineDraftSource("manual");
+    setActualBaselinePatternAppliedScopeKey("");
+
+    if (!selectedLobId || actualBaselineRows.length === 0) {
+      setActualBaselineLoading(false);
+      return;
+    }
+
+    const requestScopeKey = scopeKey;
+    const controller = new AbortController();
+    setActualBaselineLoading(true);
+
+    fetch(apiUrl(`/api/intraday-v2/actual-baseline?${buildPlanQuery(selectedLobId, selectedChannel, staffingMode, monthKey)}`), {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.error || "Unable to load scoped actual baseline.");
+        }
+        return response.json() as Promise<IntradayV2ActualBaselineInterval[]>;
+      })
+      .then((rows) => {
+        if (activeScopeKeyRef.current !== requestScopeKey) return;
+        const scopedRows = Array.isArray(rows) ? rows : [];
+        setActualBaselineScopeKey(requestScopeKey);
+        setSavedActualBaselineRows(scopedRows);
+        setActualBaselineInputs(
+          scopedRows.length > 0
+            ? buildSavedActualBaselineInputs(actualBaselineRows, scopedRows)
+            : defaultActualBaselineInputs
+        );
+        setActualBaselineDraftSource(scopedRows.some((row) => row.source === "uploaded") ? "uploaded" : "manual");
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        if (activeScopeKeyRef.current !== requestScopeKey) return;
+        setActualBaselineScopeKey(requestScopeKey);
+        setSavedActualBaselineRows([]);
+        setActualBaselineInputs(defaultActualBaselineInputs);
+        setActualBaselineError(error?.message || "Unable to load scoped actual baseline.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && activeScopeKeyRef.current === requestScopeKey) setActualBaselineLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [actualBaselineRows, defaultActualBaselineInputs, monthKey, scopeKey, selectedChannel, selectedLobId, staffingMode]);
+
+  const actualBaselineInputsForScope = actualBaselineScopeKey === scopeKey ? actualBaselineInputs : defaultActualBaselineInputs;
+  const actualBaselinePreviewRows = useMemo(
+    () => buildActualBaselinePreviewRows(actualBaselineRows, actualBaselineInputsForScope),
+    [actualBaselineInputsForScope, actualBaselineRows]
+  );
+  const actualBaselineTotal = actualBaselinePreviewRows.reduce((sum, row) => sum + row.actualVolume, 0);
+  const actualBaselinePositiveRowCount = actualBaselinePreviewRows.filter((row) => row.actualVolume > 0).length;
+  const actualBaselineHasInvalid = actualBaselinePreviewRows.some((row) => row.invalid);
+  const hasSavedActualBaseline = actualBaselineScopeKey === scopeKey && savedActualBaselineRows.length > 0;
+  const hasActualBaselinePattern = actualBaselineScopeKey === scopeKey && !actualBaselineHasInvalid && actualBaselineTotal > 0;
+  const hasAppliedActualBaselinePattern = hasActualBaselinePattern && actualBaselinePatternAppliedScopeKey === scopeKey;
+  const baselineActualInputs = hasSavedActualBaseline
+    ? buildSavedActualBaselineInputs(actualBaselineRows, savedActualBaselineRows)
+    : defaultActualBaselineInputs;
+  const hasUnsavedActualBaselineChanges = actualBaselineRows.some(
+    (row) => (actualBaselineInputsForScope[row.key] ?? "") !== (baselineActualInputs[row.key] ?? "")
+  );
+  const actualBaselineStatusLabel = hasSavedActualBaseline
+    ? "Saved actual baseline"
+    : actualBaselineDraftSource === "uploaded" && actualBaselineTotal > 0
+      ? "Uploaded actual baseline"
+      : actualBaselineTotal > 0
+        ? "Manual actual baseline"
+        : "No actual baseline";
+  const actualBaselineBadgeClass = hasSavedActualBaseline
+    ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50"
+    : actualBaselineTotal > 0
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+      : "border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-100";
+  const actualBaselineWarning = actualBaselineError
+    || (actualBaselineHasInvalid ? "Actual interval volumes must be non-negative numbers." : null)
+    || (actualBaselineRows.length === 0 ? "No operating interval rows are available for this LOB/channel/month. Check LOB operating hours." : null);
+  const actualDerivedWeekWeightInputs = useMemo(
+    () => buildActualDerivedWeekWeightInputs(monthWeeks, actualBaselinePreviewRows, defaultWeekWeightInputs),
+    [actualBaselinePreviewRows, defaultWeekWeightInputs, monthWeeks]
+  );
+
   const weekInputsForScope = weekAllocationScopeKey === scopeKey ? weekWeightInputs : defaultWeekWeightInputs;
   const hasSavedWeekAllocation = weekAllocationScopeKey === scopeKey && savedWeekAllocations.length > 0;
-  const baselineWeekInputs = hasSavedWeekAllocation
+  const baselineWeekInputs = hasAppliedActualBaselinePattern
+    ? actualDerivedWeekWeightInputs
+    : hasSavedWeekAllocation
     ? buildSavedWeekWeightInputs(monthWeeks, savedWeekAllocations)
     : defaultWeekWeightInputs;
   const hasUnsavedWeekChanges = monthWeeks.some(
@@ -1290,8 +1599,12 @@ export function IntradayForecastV2() {
       : !weekWeightsTotalIs100
         ? `Weights total ${formatPercent(weekAllocationPreview.totalRawWeight)}. Volumes are normalized to 100% before allocation.`
         : null;
-  const weekAllocationSourceLabel = hasSavedWeekAllocation ? "Saved manual week allocation" : "Default month-day allocation";
-  const weekAllocationBadgeClass = hasSavedWeekAllocation
+  const weekAllocationSourceLabel = hasAppliedActualBaselinePattern
+    ? "Actual baseline pattern"
+    : hasSavedWeekAllocation ? "Saved manual week allocation" : "Default month-day allocation";
+  const weekAllocationBadgeClass = hasAppliedActualBaselinePattern
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+    : hasSavedWeekAllocation
     ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50"
     : "border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-50";
   const weekAllocationSumsToMonthly = Math.abs(weekAllocationPreview.totalAllocatedVolume - effectiveMonthlyVolume) <= 1;
@@ -1321,6 +1634,10 @@ export function IntradayForecastV2() {
   const defaultDayWeightInputs = useMemo(
     () => buildDefaultDayWeightInputs(dayAllocationInputRows, operatingDaySet),
     [dayAllocationInputRows, operatingDaySet]
+  );
+  const actualDerivedDayWeightInputs = useMemo(
+    () => buildActualDerivedDayWeightInputs(dayAllocationInputRows, actualBaselinePreviewRows, defaultDayWeightInputs),
+    [actualBaselinePreviewRows, dayAllocationInputRows, defaultDayWeightInputs]
   );
 
   useEffect(() => {
@@ -1376,7 +1693,9 @@ export function IntradayForecastV2() {
 
   const dayInputsForScope = dayAllocationScopeKey === scopeKey ? dayWeightInputs : defaultDayWeightInputs;
   const hasSavedDayAllocation = dayAllocationScopeKey === scopeKey && savedDayAllocations.length > 0;
-  const baselineDayInputs = hasSavedDayAllocation
+  const baselineDayInputs = hasAppliedActualBaselinePattern
+    ? actualDerivedDayWeightInputs
+    : hasSavedDayAllocation
     ? buildSavedDayWeightInputs(dayAllocationInputRows, savedDayAllocations, defaultDayWeightInputs)
     : defaultDayWeightInputs;
   const hasUnsavedDayChanges = dayAllocationInputRows.some(
@@ -1386,12 +1705,16 @@ export function IntradayForecastV2() {
     () => buildDayAllocationPreview(dayAllocationRows, dayInputsForScope),
     [dayAllocationRows, dayInputsForScope]
   );
-  const dayAllocationSourceLabel = hasSavedDayAllocation
+  const dayAllocationSourceLabel = hasAppliedActualBaselinePattern
+    ? "Actual baseline pattern"
+    : hasSavedDayAllocation
     ? "Saved manual day allocation"
     : operatingDaySet
       ? "Default operating-day allocation"
       : "Default equal-day allocation";
-  const dayAllocationBadgeClass = hasSavedDayAllocation
+  const dayAllocationBadgeClass = hasAppliedActualBaselinePattern
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+    : hasSavedDayAllocation
     ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50"
     : operatingDaySet
       ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
@@ -1423,6 +1746,10 @@ export function IntradayForecastV2() {
   const defaultIntervalWeightInputs = useMemo(
     () => buildDefaultIntervalWeightInputs(intervalAllocationInputRows),
     [intervalAllocationInputRows]
+  );
+  const actualDerivedIntervalWeightInputs = useMemo(
+    () => buildActualDerivedIntervalWeightInputs(intervalAllocationInputRows, actualBaselinePreviewRows, defaultIntervalWeightInputs),
+    [actualBaselinePreviewRows, defaultIntervalWeightInputs, intervalAllocationInputRows]
   );
 
   useEffect(() => {
@@ -1486,7 +1813,9 @@ export function IntradayForecastV2() {
 
   const intervalInputsForScope = intervalAllocationScopeKey === scopeKey ? intervalWeightInputs : defaultIntervalWeightInputs;
   const hasSavedIntervalAllocation = intervalAllocationScopeKey === scopeKey && savedIntervalAllocations.length > 0;
-  const baselineIntervalInputs = hasSavedIntervalAllocation
+  const baselineIntervalInputs = hasAppliedActualBaselinePattern
+    ? actualDerivedIntervalWeightInputs
+    : hasSavedIntervalAllocation
     ? buildSavedIntervalWeightInputs(intervalAllocationInputRows, savedIntervalAllocations, defaultIntervalWeightInputs)
     : defaultIntervalWeightInputs;
   const hasUnsavedIntervalChanges = intervalAllocationInputRows.some(
@@ -1496,10 +1825,14 @@ export function IntradayForecastV2() {
     () => buildIntervalAllocationPreview(intervalAllocationRows, dayAllocationPreview.rows, intervalInputsForScope),
     [dayAllocationPreview.rows, intervalAllocationRows, intervalInputsForScope]
   );
-  const intervalAllocationSourceLabel = hasSavedIntervalAllocation
+  const intervalAllocationSourceLabel = hasAppliedActualBaselinePattern
+    ? "Actual baseline pattern"
+    : hasSavedIntervalAllocation
     ? "Saved manual interval allocation"
     : "Default operating-interval allocation";
-  const intervalAllocationBadgeClass = hasSavedIntervalAllocation
+  const intervalAllocationBadgeClass = hasAppliedActualBaselinePattern
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+    : hasSavedIntervalAllocation
     ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50"
     : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50";
   const intervalAllocationWarning = intervalAllocationError
@@ -1522,10 +1855,11 @@ export function IntradayForecastV2() {
     !intervalAllocationPreview.allDaysSumToSource;
 
   const previewScopeReady =
+    actualBaselineScopeKey === scopeKey &&
     weekAllocationScopeKey === scopeKey &&
     dayAllocationScopeKey === scopeKey &&
     intervalAllocationScopeKey === scopeKey;
-  const outputPreviewLoading = planLoading || weekAllocationLoading || dayAllocationLoading || intervalAllocationLoading;
+  const outputPreviewLoading = planLoading || actualBaselineLoading || weekAllocationLoading || dayAllocationLoading || intervalAllocationLoading;
   const weekPreviewRows = previewScopeReady ? weekAllocationPreview.rows : [];
   const dayPreviewRows = previewScopeReady ? dayAllocationPreview.rows.filter((row) => row.insideMonth) : [];
   const intervalPreviewRows = previewScopeReady ? intervalAllocationPreview.rows : [];
@@ -1579,6 +1913,181 @@ export function IntradayForecastV2() {
     },
   ];
 
+  const updateActualBaselineInput = (key: string, value: string) => {
+    setActualBaselineScopeKey(scopeKey);
+    setActualBaselineDraftSource("manual");
+    setActualBaselineEditing(true);
+    setActualBaselinePatternAppliedScopeKey("");
+    setActualBaselineInputs((previous) => ({
+      ...(actualBaselineScopeKey === scopeKey ? previous : defaultActualBaselineInputs),
+      [key]: value,
+    }));
+  };
+
+  const uploadActualBaselineCsv = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (lines.length < 2) throw new Error("CSV must include headers and at least one data row.");
+
+      const splitCsvLine = (line: string) => line.split(",").map((cell) => cell.trim().replace(/^"|"$/g, ""));
+      const headers = splitCsvLine(lines[0]).map((header) => header.toLowerCase().replace(/\s+/g, "_"));
+      const findColumn = (names: string[]) => headers.findIndex((header) => names.includes(header));
+      const dateIndex = findColumn(["date", "interval_date", "calendar_date"]);
+      const timeIndex = findColumn(["interval_time", "interval_start", "time"]);
+      const volumeIndex = findColumn(["actual_volume", "volume", "actual"]);
+
+      if (dateIndex < 0 || timeIndex < 0 || volumeIndex < 0) {
+        throw new Error("CSV requires date, interval_time, and actual_volume columns.");
+      }
+
+      const allowedKeys = new Set(actualBaselineRows.map((row) => row.key));
+      const uploadedInputs: Record<string, string> = {};
+      for (const line of lines.slice(1)) {
+        const cells = splitCsvLine(line);
+        const intervalDate = normalizeDateKey(cells[dateIndex] ?? "");
+        const intervalTime = normalizeTimeKey(cells[timeIndex] ?? "");
+        const key = actualBaselineInputKey(intervalDate, intervalTime);
+        if (!allowedKeys.has(key)) continue;
+        const parsed = Number(cells[volumeIndex] ?? "");
+        uploadedInputs[key] = Number.isFinite(parsed) && parsed >= 0 ? formatActualVolumeInput(parsed) : cells[volumeIndex] ?? "";
+      }
+
+      if (Object.keys(uploadedInputs).length === 0) {
+        throw new Error("CSV did not contain intervals matching the active scope and operating hours.");
+      }
+
+      setActualBaselineScopeKey(scopeKey);
+      setActualBaselineDraftSource("uploaded");
+      setActualBaselineEditing(true);
+      setActualBaselinePatternAppliedScopeKey("");
+      setActualBaselineInputs({ ...defaultActualBaselineInputs, ...uploadedInputs });
+      toast.success("Actual baseline CSV loaded");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to load actual baseline CSV.";
+      setActualBaselineError(message);
+      toast.error(message);
+    }
+  };
+
+  const actualBaselineSaveDisabled =
+    !selectedLobId ||
+    actualBaselineRows.length === 0 ||
+    actualBaselineLoading ||
+    savingActualBaseline ||
+    actualBaselineHasInvalid;
+  const actualBaselineApplyDisabled =
+    !hasActualBaselinePattern ||
+    actualBaselineLoading ||
+    weekAllocationLoading ||
+    dayAllocationLoading ||
+    intervalAllocationLoading;
+
+  const applyActualBaselinePattern = () => {
+    if (actualBaselineApplyDisabled) return;
+    setActualBaselinePatternAppliedScopeKey(scopeKey);
+    setWeekAllocationScopeKey(scopeKey);
+    setWeekWeightInputs(actualDerivedWeekWeightInputs);
+    setDayAllocationScopeKey(scopeKey);
+    setDayWeightInputs(actualDerivedDayWeightInputs);
+    setIntervalAllocationScopeKey(scopeKey);
+    setIntervalWeightInputs(actualDerivedIntervalWeightInputs);
+    toast.success("Actual baseline pattern applied");
+  };
+
+  const saveActualBaseline = async () => {
+    if (!selectedLobId || actualBaselineSaveDisabled) return;
+    const requestScopeKey = scopeKey;
+    const rows = actualBaselinePreviewRows
+      .filter((row) => row.actualVolume > 0)
+      .map((row) => ({
+        interval_date: row.intervalDate,
+        day_of_week: row.dayOfWeek,
+        interval_time: row.intervalTime,
+        actual_volume: row.actualVolume,
+        source: actualBaselineDraftSource,
+      }));
+
+    setSavingActualBaseline(true);
+    setActualBaselineError(null);
+    try {
+      const response = await fetch(apiUrl("/api/intraday-v2/actual-baseline"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lob_id: selectedLobId,
+          channel: selectedChannel,
+          staffing_mode: staffingMode,
+          month_key: monthKey,
+          source: actualBaselineDraftSource,
+          rows,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Unable to save actual baseline.");
+      }
+      const result = await response.json() as { rows?: IntradayV2ActualBaselineInterval[] };
+      if (activeScopeKeyRef.current !== requestScopeKey) return;
+      const savedRows = Array.isArray(result.rows) ? result.rows : rows;
+      setActualBaselineScopeKey(requestScopeKey);
+      setSavedActualBaselineRows(savedRows);
+      setActualBaselineInputs(
+        savedRows.length > 0
+          ? buildSavedActualBaselineInputs(actualBaselineRows, savedRows)
+          : defaultActualBaselineInputs
+      );
+      setActualBaselineDraftSource(savedRows.some((row) => row.source === "uploaded") ? "uploaded" : "manual");
+      setActualBaselinePatternAppliedScopeKey("");
+      setActualBaselineEditing(false);
+      toast.success(savedRows.length > 0 ? "Actual baseline saved" : "Actual baseline cleared");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save actual baseline.";
+      if (activeScopeKeyRef.current === requestScopeKey) setActualBaselineError(message);
+      toast.error(message);
+    } finally {
+      setSavingActualBaseline(false);
+    }
+  };
+
+  const clearActualBaseline = async () => {
+    if (!selectedLobId) {
+      setActualBaselineInputs(defaultActualBaselineInputs);
+      setSavedActualBaselineRows([]);
+      setActualBaselineDraftSource("manual");
+      setActualBaselinePatternAppliedScopeKey("");
+      return;
+    }
+
+    const requestScopeKey = scopeKey;
+    setSavingActualBaseline(true);
+    setActualBaselineError(null);
+    try {
+      const response = await fetch(apiUrl(`/api/intraday-v2/actual-baseline?${buildPlanQuery(selectedLobId, selectedChannel, staffingMode, monthKey)}`), {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Unable to clear actual baseline.");
+      }
+      if (activeScopeKeyRef.current !== requestScopeKey) return;
+      setActualBaselineScopeKey(requestScopeKey);
+      setSavedActualBaselineRows([]);
+      setActualBaselineInputs(defaultActualBaselineInputs);
+      setActualBaselineDraftSource("manual");
+      setActualBaselinePatternAppliedScopeKey("");
+      setActualBaselineEditing(false);
+      toast.success("Actual baseline cleared");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to clear actual baseline.";
+      if (activeScopeKeyRef.current === requestScopeKey) setActualBaselineError(message);
+      toast.error(message);
+    } finally {
+      setSavingActualBaseline(false);
+    }
+  };
+
   const updateWeekWeightInput = (weekStart: string, value: string) => {
     setWeekAllocationScopeKey(scopeKey);
     setWeekWeightInputs((previous) => ({
@@ -1589,7 +2098,7 @@ export function IntradayForecastV2() {
 
   const resetWeekWeightsToDefault = () => {
     setWeekAllocationScopeKey(scopeKey);
-    setWeekWeightInputs(defaultWeekWeightInputs);
+    setWeekWeightInputs(hasAppliedActualBaselinePattern ? actualDerivedWeekWeightInputs : defaultWeekWeightInputs);
   };
 
   const saveWeekAllocation = async () => {
@@ -1647,7 +2156,7 @@ export function IntradayForecastV2() {
 
   const resetDayWeightsToDefault = () => {
     setDayAllocationScopeKey(scopeKey);
-    setDayWeightInputs(defaultDayWeightInputs);
+    setDayWeightInputs(hasAppliedActualBaselinePattern ? actualDerivedDayWeightInputs : defaultDayWeightInputs);
   };
 
   const saveDayAllocation = async () => {
@@ -1706,7 +2215,7 @@ export function IntradayForecastV2() {
 
   const resetIntervalWeightsToDefault = () => {
     setIntervalAllocationScopeKey(scopeKey);
-    setIntervalWeightInputs(defaultIntervalWeightInputs);
+    setIntervalWeightInputs(hasAppliedActualBaselinePattern ? actualDerivedIntervalWeightInputs : defaultIntervalWeightInputs);
   };
 
   const saveIntervalAllocation = async () => {
@@ -1850,6 +2359,182 @@ export function IntradayForecastV2() {
               </Select>
               <p className="text-[11px] text-slate-500">Defaults from LOB settings when available.</p>
             </label>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <span className="rounded-lg bg-emerald-50 p-2 text-emerald-700">
+                    <Clock3 className="size-4" />
+                  </span>
+                  Actual Interval Volume Baseline
+                </CardTitle>
+                <CardDescription className="mt-2">
+                  Use actual interval volumes to create the distribution pattern. Forecasted monthly volume remains
+                  the volume source.
+                </CardDescription>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {actualBaselineLoading && <Loader2 className="size-4 animate-spin text-slate-500" />}
+                <Badge variant="outline" className={actualBaselineBadgeClass}>
+                  {actualBaselineStatusLabel}
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5 pt-5">
+            {actualBaselineWarning && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <span>{actualBaselineWarning}</span>
+              </div>
+            )}
+
+            {hasActualBaselinePattern && (
+              <div className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+                hasAppliedActualBaselinePattern
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  : "border-sky-200 bg-sky-50 text-sky-800"
+              }`}>
+                {hasAppliedActualBaselinePattern ? (
+                  <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
+                ) : (
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                )}
+                <span>
+                  {hasAppliedActualBaselinePattern
+                    ? "Actual-derived week, day, and interval weights are applied to the current on-screen allocation pattern."
+                    : "Actual-derived weights are ready. Use baseline pattern to update the on-screen allocation weights."}
+                </span>
+              </div>
+            )}
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Baseline Intervals</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">{actualBaselineRows.length.toLocaleString()}</p>
+                <p className="mt-1 text-xs text-slate-500">Operating intervals in the selected month.</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Rows With Actuals</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">{actualBaselinePositiveRowCount.toLocaleString()}</p>
+                <p className="mt-1 text-xs text-slate-500">{actualBaselineStatusLabel}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-emerald-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Actual Baseline Total</p>
+                <p className="mt-2 text-2xl font-semibold text-emerald-950">{formatVolume(actualBaselineTotal)}</p>
+                <p className="mt-1 text-xs text-emerald-800">Pattern only; forecast volume stays {formatVolume(effectiveMonthlyVolume)}.</p>
+              </div>
+            </div>
+
+            <Table containerClassName="max-h-[560px] overflow-auto rounded-lg border border-slate-200">
+              <TableHeader>
+                <TableRow className="bg-slate-50 hover:bg-slate-50">
+                  <TableHead>Date</TableHead>
+                  <TableHead>Day of week</TableHead>
+                  <TableHead>Interval time</TableHead>
+                  <TableHead className="min-w-[190px] text-right">Actual volume</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {actualBaselinePreviewRows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="h-24 text-center text-sm text-slate-500">
+                      No operating interval rows are available for the selected scope.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  actualBaselinePreviewRows.map((row) => (
+                    <TableRow key={row.key}>
+                      <TableCell className="font-medium text-slate-900">{row.dateLabel}</TableCell>
+                      <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
+                      <TableCell className="text-slate-600">{row.intervalLabel}</TableCell>
+                      <TableCell className="text-right">
+                        <Input
+                          className={`ml-auto h-8 w-28 text-right tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
+                          type="number"
+                          min="0"
+                          step="1"
+                          inputMode="numeric"
+                          disabled={!actualBaselineEditing || actualBaselineLoading || savingActualBaseline}
+                          value={row.inputValue}
+                          onChange={(event) => updateActualBaselineInput(row.key, event.target.value)}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+              <TableFooter>
+                <TableRow>
+                  <TableCell colSpan={3}>Actual baseline total</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatVolume(actualBaselineTotal)}</TableCell>
+                </TableRow>
+              </TableFooter>
+            </Table>
+
+            <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-500">
+                Scope: <span className="font-medium text-slate-700">{scopeLabel}</span>
+                {hasUnsavedActualBaselineChanges ? <span className="ml-2 text-amber-700">Unsaved actual baseline edits</span> : null}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!selectedLobId || actualBaselineRows.length === 0 || actualBaselineLoading || savingActualBaseline}
+                  onClick={() => setActualBaselineEditing(true)}
+                >
+                  <Table2 className="mr-2 size-4" />
+                  {actualBaselineEditing ? "Editing actual baseline" : "Edit actual baseline"}
+                </Button>
+                <label
+                  className={`inline-flex h-10 cursor-pointer items-center justify-center rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 ${
+                    !selectedLobId || actualBaselineRows.length === 0 || actualBaselineLoading || savingActualBaseline
+                      ? "pointer-events-none opacity-50"
+                      : ""
+                  }`}
+                >
+                  <Upload className="mr-2 size-4" />
+                  Upload CSV
+                  <Input
+                    className="hidden"
+                    type="file"
+                    accept=".csv,text/csv"
+                    disabled={!selectedLobId || actualBaselineRows.length === 0 || actualBaselineLoading || savingActualBaseline}
+                    onChange={(event) => {
+                      void uploadActualBaselineCsv(event.target.files?.[0] ?? null);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={
+                    !selectedLobId ||
+                    actualBaselineLoading ||
+                    savingActualBaseline ||
+                    !hasSavedActualBaseline && actualBaselineTotal <= 0 && !hasUnsavedActualBaselineChanges
+                  }
+                  onClick={clearActualBaseline}
+                >
+                  {savingActualBaseline ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
+                  Clear actual baseline
+                </Button>
+                <Button type="button" variant="outline" disabled={actualBaselineApplyDisabled} onClick={applyActualBaselinePattern}>
+                  <CheckCircle2 className="mr-2 size-4" />
+                  {hasAppliedActualBaselinePattern ? "Pattern applied" : "Use baseline pattern"}
+                </Button>
+                <Button type="button" disabled={actualBaselineSaveDisabled} onClick={saveActualBaseline}>
+                  {savingActualBaseline ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
+                  Save actual baseline
+                </Button>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -2078,7 +2763,7 @@ export function IntradayForecastV2() {
                   onClick={resetWeekWeightsToDefault}
                 >
                   <RefreshCw className="mr-2 size-4" />
-                  Reset default
+                  {hasAppliedActualBaselinePattern ? "Reset pattern" : "Reset default"}
                 </Button>
                 <Button type="button" disabled={weekSaveDisabled} onClick={saveWeekAllocation}>
                   {savingWeekAllocation ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
@@ -2232,7 +2917,7 @@ export function IntradayForecastV2() {
                   onClick={resetDayWeightsToDefault}
                 >
                   <RefreshCw className="mr-2 size-4" />
-                  Reset default
+                  {hasAppliedActualBaselinePattern ? "Reset pattern" : "Reset default"}
                 </Button>
                 <Button type="button" disabled={daySaveDisabled} onClick={saveDayAllocation}>
                   {savingDayAllocation ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
@@ -2400,7 +3085,7 @@ export function IntradayForecastV2() {
                   onClick={resetIntervalWeightsToDefault}
                 >
                   <RefreshCw className="mr-2 size-4" />
-                  Reset default
+                  {hasAppliedActualBaselinePattern ? "Reset pattern" : "Reset default"}
                 </Button>
                 <Button type="button" disabled={intervalSaveDisabled} onClick={saveIntervalAllocation}>
                   {savingIntervalAllocation ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
