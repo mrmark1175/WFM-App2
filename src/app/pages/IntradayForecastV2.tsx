@@ -85,6 +85,18 @@ interface IntradayV2DayAllocation {
   updated_at?: string;
 }
 
+interface IntradayV2IntervalAllocation {
+  id?: number;
+  calendar_date: string;
+  interval_index: number;
+  interval_start: string;
+  interval_minutes: number | string;
+  weight: number | string;
+  volume: number | string;
+  aht_seconds?: number | string | null;
+  updated_at?: string;
+}
+
 interface MonthWeek {
   weekStart: string;
   weekEnd: string;
@@ -153,6 +165,51 @@ interface DayAllocationPreview {
   allWeeksSumToSource: boolean;
 }
 
+interface IntervalAllocationInterval {
+  key: string;
+  calendarDate: string;
+  dateLabel: string;
+  dayKey: DayKey;
+  dayLabel: string;
+  intervalIndex: number;
+  intervalStart: string;
+  intervalLabel: string;
+  intervalMinutes: number;
+  dayVolume: number;
+}
+
+interface IntervalAllocationPreviewRow extends IntervalAllocationInterval {
+  inputValue: string;
+  rawWeight: number;
+  normalizedWeight: number;
+  allocatedVolume: number;
+  invalid: boolean;
+}
+
+interface IntervalAllocationDaySummary {
+  calendarDate: string;
+  dateLabel: string;
+  dayLabel: string;
+  dayVolume: number;
+  totalRawWeight: number;
+  totalAllocatedVolume: number;
+  hasInvalidWeight: boolean;
+  hasZeroWeight: boolean;
+  missingIntervals: boolean;
+  totalIs100: boolean;
+  sumsToDay: boolean;
+}
+
+interface IntervalAllocationPreview {
+  rows: IntervalAllocationPreviewRow[];
+  daySummaries: IntervalAllocationDaySummary[];
+  totalAllocatedVolume: number;
+  hasInvalidWeight: boolean;
+  hasZeroWeightDay: boolean;
+  hasMissingIntervals: boolean;
+  allDaysSumToSource: boolean;
+}
+
 const DEFAULT_ENABLED_CHANNELS: Record<ChannelKey, boolean> = {
   voice: true,
   email: false,
@@ -169,11 +226,6 @@ const CHANNEL_SELECT_OPTIONS = [
 
 const PLACEHOLDER_SECTIONS = [
   {
-    title: "Interval Allocation",
-    description: "Future day-to-interval volume shaping. This is volume, not FTE.",
-    icon: Clock3,
-  },
-  {
     title: "Output Preview",
     description: "Future scoped weekly and interval output preview before publishing.",
     icon: Layers3,
@@ -186,6 +238,7 @@ const PLACEHOLDER_SECTIONS = [
 ];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const INTERVAL_MINUTES = 15;
 const WEIGHT_TOTAL_TOLERANCE = 0.05;
 const DAY_KEYS: DayKey[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 const DAY_LABELS: Record<DayKey, string> = {
@@ -558,6 +611,214 @@ function buildDayAllocationPreview(
   };
 }
 
+function intervalInputKey(calendarDate: string, intervalIndex: number): string {
+  return `${calendarDate}:${intervalIndex}`;
+}
+
+function normalizeTimeKey(value: string | null | undefined): string {
+  const match = String(value ?? "").trim().match(/^([01][0-9]|2[0-3]):([0-5][0-9])/);
+  return match ? `${match[1]}:${match[2]}` : "";
+}
+
+function parseTimeToMinutes(value: string | null | undefined): number | null {
+  const normalized = normalizeTimeKey(value);
+  if (!normalized) return null;
+  const [hours, minutes] = normalized.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function formatIntervalStart(minutes: number): string {
+  const bounded = ((minutes % (24 * 60)) + 24 * 60) % (24 * 60);
+  const hours = Math.floor(bounded / 60);
+  const mins = bounded % 60;
+  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+}
+
+function formatClockLabel(minutes: number): string {
+  const bounded = ((minutes % (24 * 60)) + 24 * 60) % (24 * 60);
+  const hours = Math.floor(bounded / 60);
+  const mins = bounded % 60;
+  const suffix = hours >= 12 ? "PM" : "AM";
+  const displayHour = hours % 12 || 12;
+  return `${displayHour}:${String(mins).padStart(2, "0")} ${suffix}`;
+}
+
+function formatIntervalRangeLabel(intervalStart: string, intervalMinutes: number): string {
+  const startMinutes = parseTimeToMinutes(intervalStart) ?? 0;
+  return `${formatClockLabel(startMinutes)} - ${formatClockLabel(startMinutes + intervalMinutes)}`;
+}
+
+function buildIntervalAllocationRows(
+  dayRows: Array<DayAllocationDay & { allocatedVolume?: number }>,
+  settings: LobSettings | null,
+  channel: ChannelKey
+): IntervalAllocationInterval[] {
+  const schedule = settings?.hours_of_operation?.[channel];
+  if (!schedule) return [];
+
+  return dayRows.flatMap((day) => {
+    if (!day.insideMonth) return [];
+    const daySchedule = schedule[day.dayKey];
+    if (!daySchedule?.enabled) return [];
+
+    const openMinutes = parseTimeToMinutes(daySchedule.open ?? "08:00");
+    const closeRaw = parseTimeToMinutes(daySchedule.close ?? "17:00");
+    if (openMinutes === null || closeRaw === null) return [];
+
+    const closeMinutes = closeRaw === 23 * 60 + 59 ? 24 * 60 : closeRaw;
+    if (closeMinutes <= openMinutes) return [];
+
+    const firstStart = Math.ceil(openMinutes / INTERVAL_MINUTES) * INTERVAL_MINUTES;
+    const intervals: IntervalAllocationInterval[] = [];
+    for (let start = firstStart; start + INTERVAL_MINUTES <= closeMinutes && start < 24 * 60; start += INTERVAL_MINUTES) {
+      const intervalIndex = Math.floor(start / INTERVAL_MINUTES);
+      const intervalStart = formatIntervalStart(start);
+      intervals.push({
+        key: intervalInputKey(day.calendarDate, intervalIndex),
+        calendarDate: day.calendarDate,
+        dateLabel: day.dateLabel,
+        dayKey: day.dayKey,
+        dayLabel: day.dayLabel,
+        intervalIndex,
+        intervalStart,
+        intervalLabel: formatIntervalRangeLabel(intervalStart, INTERVAL_MINUTES),
+        intervalMinutes: INTERVAL_MINUTES,
+        dayVolume: Math.max(0, Math.round(day.allocatedVolume ?? 0)),
+      });
+    }
+    return intervals;
+  });
+}
+
+function groupIntervalRowsByDay<T extends { calendarDate: string }>(rows: T[]): T[][] {
+  const groups = new Map<string, T[]>();
+  rows.forEach((row) => {
+    groups.set(row.calendarDate, [...(groups.get(row.calendarDate) ?? []), row]);
+  });
+  return Array.from(groups.values());
+}
+
+function buildDefaultIntervalWeightInputs(rows: IntervalAllocationInterval[]): Record<string, string> {
+  const entries: Array<[string, string]> = [];
+  groupIntervalRowsByDay(rows).forEach((dayRows) => {
+    const weight = dayRows.length > 0 ? 100 / dayRows.length : 0;
+    dayRows.forEach((row) => entries.push([row.key, formatWeightInput(weight)]));
+  });
+  return Object.fromEntries(entries);
+}
+
+function buildSavedIntervalWeightInputs(
+  rows: IntervalAllocationInterval[],
+  allocations: IntradayV2IntervalAllocation[],
+  defaultInputs: Record<string, string>
+): Record<string, string> {
+  const savedWeightsByInterval = new Map(
+    allocations.map((allocation) => [
+      intervalInputKey(normalizeDateKey(allocation.calendar_date), Number(allocation.interval_index)),
+      formatWeightInput(allocation.weight),
+    ])
+  );
+  return Object.fromEntries(
+    rows.map((row) => [row.key, savedWeightsByInterval.get(row.key) ?? defaultInputs[row.key] ?? "0"])
+  );
+}
+
+function buildIntervalAllocationPreview(
+  intervalRows: IntervalAllocationInterval[],
+  sourceDayRows: DayAllocationPreviewRow[],
+  weightInputs: Record<string, string>
+): IntervalAllocationPreview {
+  const intervalRowsByDay = new Map<string, IntervalAllocationInterval[]>();
+  intervalRows.forEach((row) => {
+    intervalRowsByDay.set(row.calendarDate, [...(intervalRowsByDay.get(row.calendarDate) ?? []), row]);
+  });
+
+  const previewRows: IntervalAllocationPreviewRow[] = [];
+  const daySummaries: IntervalAllocationDaySummary[] = [];
+
+  sourceDayRows
+    .filter((day) => day.insideMonth)
+    .forEach((day) => {
+      const rowsForDay = intervalRowsByDay.get(day.calendarDate) ?? [];
+      const dayVolume = Math.max(0, Math.round(day.allocatedVolume));
+
+      if (rowsForDay.length === 0) {
+        if (dayVolume > 0) {
+          daySummaries.push({
+            calendarDate: day.calendarDate,
+            dateLabel: day.dateLabel,
+            dayLabel: day.dayLabel,
+            dayVolume,
+            totalRawWeight: 0,
+            totalAllocatedVolume: 0,
+            hasInvalidWeight: false,
+            hasZeroWeight: false,
+            missingIntervals: true,
+            totalIs100: false,
+            sumsToDay: false,
+          });
+        }
+        return;
+      }
+
+      const parsedRows = rowsForDay.map((row) => {
+        const inputValue = weightInputs[row.key] ?? "0";
+        const parsed = parseWeightInput(inputValue);
+        const invalid = parsed === null || parsed < 0;
+        const rawWeight = parsed !== null && parsed >= 0 ? parsed : 0;
+        return {
+          ...row,
+          dayVolume,
+          inputValue,
+          rawWeight,
+          normalizedWeight: 0,
+          allocatedVolume: 0,
+          invalid,
+        };
+      });
+      const hasInvalidWeight = parsedRows.some((row) => row.invalid);
+      const rawWeights = parsedRows.map((row) => row.rawWeight);
+      const totalRawWeight = rawWeights.reduce((sum, weight) => sum + weight, 0);
+      const hasZeroWeight = dayVolume > 0 && totalRawWeight <= 0;
+      const canAllocate = !hasInvalidWeight && totalRawWeight > 0;
+      const normalizedWeights = canAllocate ? rawWeights.map((weight) => (weight / totalRawWeight) * 100) : rawWeights.map(() => 0);
+      const allocatedVolumes = canAllocate ? allocateIntegerVolume(dayVolume, rawWeights) : rawWeights.map(() => 0);
+
+      parsedRows.forEach((row, index) => {
+        previewRows.push({
+          ...row,
+          normalizedWeight: normalizedWeights[index] ?? 0,
+          allocatedVolume: allocatedVolumes[index] ?? 0,
+        });
+      });
+
+      const totalAllocatedVolume = allocatedVolumes.reduce((sum, value) => sum + value, 0);
+      daySummaries.push({
+        calendarDate: day.calendarDate,
+        dateLabel: day.dateLabel,
+        dayLabel: day.dayLabel,
+        dayVolume,
+        totalRawWeight,
+        totalAllocatedVolume,
+        hasInvalidWeight,
+        hasZeroWeight,
+        missingIntervals: false,
+        totalIs100: Math.abs(totalRawWeight - 100) <= WEIGHT_TOTAL_TOLERANCE,
+        sumsToDay: Math.abs(totalAllocatedVolume - dayVolume) <= 1,
+      });
+    });
+
+  return {
+    rows: previewRows,
+    daySummaries,
+    totalAllocatedVolume: previewRows.reduce((sum, row) => sum + row.allocatedVolume, 0),
+    hasInvalidWeight: daySummaries.some((summary) => summary.hasInvalidWeight),
+    hasZeroWeightDay: daySummaries.some((summary) => summary.hasZeroWeight),
+    hasMissingIntervals: daySummaries.some((summary) => summary.missingIntervals),
+    allDaysSumToSource: daySummaries.every((summary) => summary.sumsToDay),
+  };
+}
+
 function applyHistoricalOverrides(apiData: number[], overrides: Record<number, string> = {}): number[] {
   const overrideIndexes = Object.keys(overrides).map(Number).filter(Number.isFinite);
   const len = Math.max(apiData.length, ...overrideIndexes.map((index) => index + 1), 0);
@@ -719,6 +980,12 @@ export function IntradayForecastV2() {
   const [dayAllocationLoading, setDayAllocationLoading] = useState(false);
   const [dayAllocationError, setDayAllocationError] = useState<string | null>(null);
   const [savingDayAllocation, setSavingDayAllocation] = useState(false);
+  const [intervalWeightInputs, setIntervalWeightInputs] = useState<Record<string, string>>({});
+  const [savedIntervalAllocations, setSavedIntervalAllocations] = useState<IntradayV2IntervalAllocation[]>([]);
+  const [intervalAllocationScopeKey, setIntervalAllocationScopeKey] = useState("");
+  const [intervalAllocationLoading, setIntervalAllocationLoading] = useState(false);
+  const [intervalAllocationError, setIntervalAllocationError] = useState<string | null>(null);
+  const [savingIntervalAllocation, setSavingIntervalAllocation] = useState(false);
   const activeScopeKeyRef = useRef("");
 
   useEffect(() => {
@@ -1144,6 +1411,115 @@ export function IntradayForecastV2() {
     dayAllocationPreview.hasInvalidWeight ||
     dayAllocationPreview.hasZeroWeightWeek;
 
+  const intervalAllocationRows = useMemo(
+    () => buildIntervalAllocationRows(dayAllocationPreview.rows, lobSettings, selectedChannel),
+    [dayAllocationPreview.rows, lobSettings, selectedChannel]
+  );
+  const intervalAllocationInputRows = useMemo(
+    () => buildIntervalAllocationRows(dayAllocationInputRows, lobSettings, selectedChannel),
+    [dayAllocationInputRows, lobSettings, selectedChannel]
+  );
+  const defaultIntervalWeightInputs = useMemo(
+    () => buildDefaultIntervalWeightInputs(intervalAllocationInputRows),
+    [intervalAllocationInputRows]
+  );
+
+  useEffect(() => {
+    setIntervalAllocationScopeKey(scopeKey);
+    setSavedIntervalAllocations([]);
+    setIntervalWeightInputs(defaultIntervalWeightInputs);
+    setIntervalAllocationError(null);
+
+    if (!selectedLobId || !/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(monthKey)) {
+      setIntervalAllocationLoading(false);
+      return;
+    }
+
+    const requestScopeKey = scopeKey;
+    const controller = new AbortController();
+    setIntervalAllocationLoading(true);
+
+    fetch(apiUrl(`/api/intraday-v2/interval-allocations?${buildPlanQuery(selectedLobId, selectedChannel, staffingMode, monthKey)}`), {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.error || "Unable to load scoped interval allocation.");
+        }
+        return response.json() as Promise<IntradayV2IntervalAllocation[]>;
+      })
+      .then((allocations) => {
+        if (activeScopeKeyRef.current !== requestScopeKey) return;
+        const scopedAllocations = Array.isArray(allocations) ? allocations : [];
+        setIntervalAllocationScopeKey(requestScopeKey);
+        setSavedIntervalAllocations(scopedAllocations);
+        setIntervalWeightInputs(
+          scopedAllocations.length > 0
+            ? buildSavedIntervalWeightInputs(intervalAllocationInputRows, scopedAllocations, defaultIntervalWeightInputs)
+            : defaultIntervalWeightInputs
+        );
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        if (activeScopeKeyRef.current !== requestScopeKey) return;
+        setIntervalAllocationScopeKey(requestScopeKey);
+        setSavedIntervalAllocations([]);
+        setIntervalWeightInputs(defaultIntervalWeightInputs);
+        setIntervalAllocationError(error?.message || "Unable to load scoped interval allocation.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && activeScopeKeyRef.current === requestScopeKey) setIntervalAllocationLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [
+    defaultIntervalWeightInputs,
+    intervalAllocationInputRows,
+    monthKey,
+    scopeKey,
+    selectedChannel,
+    selectedLobId,
+    staffingMode,
+  ]);
+
+  const intervalInputsForScope = intervalAllocationScopeKey === scopeKey ? intervalWeightInputs : defaultIntervalWeightInputs;
+  const hasSavedIntervalAllocation = intervalAllocationScopeKey === scopeKey && savedIntervalAllocations.length > 0;
+  const baselineIntervalInputs = hasSavedIntervalAllocation
+    ? buildSavedIntervalWeightInputs(intervalAllocationInputRows, savedIntervalAllocations, defaultIntervalWeightInputs)
+    : defaultIntervalWeightInputs;
+  const hasUnsavedIntervalChanges = intervalAllocationInputRows.some(
+    (row) => (intervalInputsForScope[row.key] ?? "") !== (baselineIntervalInputs[row.key] ?? "")
+  );
+  const intervalAllocationPreview = useMemo(
+    () => buildIntervalAllocationPreview(intervalAllocationRows, dayAllocationPreview.rows, intervalInputsForScope),
+    [dayAllocationPreview.rows, intervalAllocationRows, intervalInputsForScope]
+  );
+  const intervalAllocationSourceLabel = hasSavedIntervalAllocation
+    ? "Saved manual interval allocation"
+    : "Default operating-interval allocation";
+  const intervalAllocationBadgeClass = hasSavedIntervalAllocation
+    ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50"
+    : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50";
+  const intervalAllocationWarning = intervalAllocationError
+    || (intervalAllocationPreview.hasMissingIntervals ? "One or more days have allocated volume but no operating intervals in LOB settings." : null)
+    || (intervalAllocationPreview.hasInvalidWeight ? "Interval weights must be non-negative numbers." : null)
+    || (intervalAllocationPreview.hasZeroWeightDay ? "At least one day has all interval weights set to 0; that day allocates 0 until corrected." : null)
+    || (intervalAllocationPreview.daySummaries.some((summary) => summary.dayVolume > 0 && !summary.totalIs100 && summary.totalRawWeight > 0)
+      ? "One or more day interval-weight totals are not 100%. Volumes are normalized within each day before allocation."
+      : null)
+    || (!intervalAllocationPreview.allDaysSumToSource ? "One or more interval totals do not match their day allocation." : null);
+  const intervalSaveDisabled =
+    !selectedLobId ||
+    intervalAllocationInputRows.length === 0 ||
+    dayAllocationLoading ||
+    intervalAllocationLoading ||
+    savingIntervalAllocation ||
+    intervalAllocationPreview.hasInvalidWeight ||
+    intervalAllocationPreview.hasZeroWeightDay ||
+    intervalAllocationPreview.hasMissingIntervals ||
+    !intervalAllocationPreview.allDaysSumToSource;
+
   const updateWeekWeightInput = (weekStart: string, value: string) => {
     setWeekAllocationScopeKey(scopeKey);
     setWeekWeightInputs((previous) => ({
@@ -1258,6 +1634,66 @@ export function IntradayForecastV2() {
       toast.error(message);
     } finally {
       setSavingDayAllocation(false);
+    }
+  };
+
+  const updateIntervalWeightInput = (key: string, value: string) => {
+    setIntervalAllocationScopeKey(scopeKey);
+    setIntervalWeightInputs((previous) => ({
+      ...(intervalAllocationScopeKey === scopeKey ? previous : defaultIntervalWeightInputs),
+      [key]: value,
+    }));
+  };
+
+  const resetIntervalWeightsToDefault = () => {
+    setIntervalAllocationScopeKey(scopeKey);
+    setIntervalWeightInputs(defaultIntervalWeightInputs);
+  };
+
+  const saveIntervalAllocation = async () => {
+    if (!selectedLobId || intervalSaveDisabled) return;
+    const requestScopeKey = scopeKey;
+    const allocations = intervalAllocationPreview.rows.map((row) => ({
+      calendar_date: row.calendarDate,
+      interval_index: row.intervalIndex,
+      interval_start: row.intervalStart,
+      interval_minutes: row.intervalMinutes,
+      weight: Number(row.normalizedWeight.toFixed(6)),
+      volume: row.allocatedVolume,
+      aht_seconds: null,
+    }));
+
+    setSavingIntervalAllocation(true);
+    setIntervalAllocationError(null);
+    try {
+      const response = await fetch(apiUrl("/api/intraday-v2/interval-allocations"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lob_id: selectedLobId,
+          channel: selectedChannel,
+          staffing_mode: staffingMode,
+          month_key: monthKey,
+          allocations,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Unable to save interval allocation.");
+      }
+      const result = await response.json() as { rows?: IntradayV2IntervalAllocation[] };
+      if (activeScopeKeyRef.current !== requestScopeKey) return;
+      const savedRows: IntradayV2IntervalAllocation[] = Array.isArray(result.rows) ? result.rows : allocations;
+      setIntervalAllocationScopeKey(requestScopeKey);
+      setSavedIntervalAllocations(savedRows);
+      setIntervalWeightInputs(buildSavedIntervalWeightInputs(intervalAllocationInputRows, savedRows, defaultIntervalWeightInputs));
+      toast.success("Interval allocation saved");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save interval allocation.";
+      if (activeScopeKeyRef.current === requestScopeKey) setIntervalAllocationError(message);
+      toast.error(message);
+    } finally {
+      setSavingIntervalAllocation(false);
     }
   };
 
@@ -1742,6 +2178,174 @@ export function IntradayForecastV2() {
                 <Button type="button" disabled={daySaveDisabled} onClick={saveDayAllocation}>
                   {savingDayAllocation ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
                   Save day allocation
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <span className="rounded-lg bg-cyan-50 p-2 text-cyan-700">
+                    <Clock3 className="size-4" />
+                  </span>
+                  Interval Allocation
+                </CardTitle>
+                <CardDescription className="mt-2">
+                  Split each day allocation into 15-minute operating intervals. Intervals outside LOB operating hours are not shown.
+                </CardDescription>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {intervalAllocationLoading && <Loader2 className="size-4 animate-spin text-slate-500" />}
+                {hasUnsavedDayChanges && (
+                  <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50">
+                    Based on current day allocation
+                  </Badge>
+                )}
+                <Badge variant="outline" className={intervalAllocationBadgeClass}>
+                  {intervalAllocationSourceLabel}
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5 pt-5">
+            {intervalAllocationWarning && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <span>{intervalAllocationWarning}</span>
+              </div>
+            )}
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Day Allocation Basis</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">
+                  {formatVolume(dayAllocationPreview.totalAllocatedVolume)}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {hasUnsavedDayChanges ? "Current on-screen day allocation." : dayAllocationSourceLabel}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Days Balanced</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">
+                  {intervalAllocationPreview.daySummaries.filter((summary) => summary.sumsToDay).length}/{intervalAllocationPreview.daySummaries.length}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Each day should sum to its day volume.</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-cyan-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Allocated Interval Volume</p>
+                <p className="mt-2 text-2xl font-semibold text-cyan-950">
+                  {formatVolume(intervalAllocationPreview.totalAllocatedVolume)}
+                </p>
+                <p className="mt-1 text-xs text-cyan-800">
+                  {intervalAllocationPreview.allDaysSumToSource ? "Sums back to day allocation." : "Review interval weights."}
+                </p>
+              </div>
+            </div>
+
+            <Table containerClassName="max-h-[620px] overflow-auto rounded-lg border border-slate-200">
+              <TableHeader>
+                <TableRow className="bg-slate-50 hover:bg-slate-50">
+                  <TableHead>Date</TableHead>
+                  <TableHead>Day of week</TableHead>
+                  <TableHead>Interval time</TableHead>
+                  <TableHead className="min-w-[190px] text-right">Weight %</TableHead>
+                  <TableHead className="text-right">Allocated volume</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {intervalAllocationPreview.daySummaries.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="h-24 text-center text-sm text-slate-500">
+                      No operating interval rows are available for the selected scope.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  intervalAllocationPreview.daySummaries.map((summary) => {
+                    const rowsForDay = intervalAllocationPreview.rows.filter((row) => row.calendarDate === summary.calendarDate);
+                    return (
+                      <React.Fragment key={summary.calendarDate}>
+                        {rowsForDay.length === 0 ? (
+                          <TableRow className="bg-slate-50/70">
+                            <TableCell className="font-medium text-slate-900">{summary.dateLabel}</TableCell>
+                            <TableCell className="text-slate-600">{summary.dayLabel}</TableCell>
+                            <TableCell className="text-amber-700">No operating intervals</TableCell>
+                            <TableCell className="text-right tabular-nums">0%</TableCell>
+                            <TableCell className="text-right font-medium tabular-nums text-slate-900">0</TableCell>
+                          </TableRow>
+                        ) : (
+                          rowsForDay.map((row) => (
+                            <TableRow key={row.key}>
+                              <TableCell className="font-medium text-slate-900">{row.dateLabel}</TableCell>
+                              <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
+                              <TableCell className="text-slate-600">{row.intervalLabel}</TableCell>
+                              <TableCell className="text-right">
+                                <Input
+                                  className={`ml-auto h-8 w-28 text-right tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  inputMode="decimal"
+                                  disabled={!selectedLobId || intervalAllocationLoading || savingIntervalAllocation}
+                                  value={row.inputValue}
+                                  onChange={(event) => updateIntervalWeightInput(row.key, event.target.value)}
+                                />
+                                <p className="mt-1 text-[11px] text-slate-500">
+                                  Normalized {formatPercent(row.normalizedWeight)}
+                                </p>
+                              </TableCell>
+                              <TableCell className="text-right font-medium tabular-nums text-slate-900">
+                                {formatVolume(row.allocatedVolume)}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                        <TableRow className="bg-slate-50 hover:bg-slate-50">
+                          <TableCell colSpan={3} className="font-semibold text-slate-700">
+                            {summary.dateLabel} total
+                            {!summary.totalIs100 && summary.totalRawWeight > 0 ? (
+                              <span className="ml-2 text-xs font-normal text-amber-700">Normalized for allocation</span>
+                            ) : null}
+                            {summary.missingIntervals ? (
+                              <span className="ml-2 text-xs font-normal text-amber-700">Operating hours required</span>
+                            ) : null}
+                          </TableCell>
+                          <TableCell className="text-right font-semibold tabular-nums">
+                            {formatPercent(summary.totalRawWeight)}
+                          </TableCell>
+                          <TableCell className="text-right font-semibold tabular-nums">
+                            {formatVolume(summary.totalAllocatedVolume)} / {formatVolume(summary.dayVolume)}
+                          </TableCell>
+                        </TableRow>
+                      </React.Fragment>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+
+            <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-500">
+                Scope: <span className="font-medium text-slate-700">{scopeLabel}</span>
+                {hasUnsavedIntervalChanges ? <span className="ml-2 text-amber-700">Unsaved interval edits</span> : null}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!selectedLobId || intervalAllocationLoading || savingIntervalAllocation}
+                  onClick={resetIntervalWeightsToDefault}
+                >
+                  <RefreshCw className="mr-2 size-4" />
+                  Reset default
+                </Button>
+                <Button type="button" disabled={intervalSaveDisabled} onClick={saveIntervalAllocation}>
+                  {savingIntervalAllocation ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
+                  Save interval allocation
                 </Button>
               </div>
             </div>
