@@ -13,10 +13,18 @@ import { apiUrl } from "../lib/api";
 import { getCalculatedVolumes, type Assumptions } from "./forecasting-logic";
 
 type StaffingMode = "dedicated" | "blended";
+type DayKey = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+
+interface DaySchedule {
+  enabled?: boolean;
+  open?: string;
+  close?: string;
+}
 
 interface LobSettings {
   channels_enabled?: Partial<Record<ChannelKey, boolean>>;
   pooling_mode?: StaffingMode | string;
+  hours_of_operation?: Partial<Record<ChannelKey, Partial<Record<DayKey, DaySchedule>>>>;
 }
 
 interface PlannerSnapshot {
@@ -66,6 +74,17 @@ interface IntradayV2WeekAllocation {
   updated_at?: string;
 }
 
+interface IntradayV2DayAllocation {
+  id?: number;
+  calendar_date: string;
+  day_of_week: number;
+  week_start: string;
+  weight: number | string;
+  volume: number | string;
+  is_locked?: boolean;
+  updated_at?: string;
+}
+
 interface MonthWeek {
   weekStart: string;
   weekEnd: string;
@@ -93,6 +112,47 @@ interface WeekAllocationPreview {
   usingDefaultPreviewWeights: boolean;
 }
 
+interface DayAllocationDay {
+  weekStart: string;
+  weekLabel: string;
+  calendarDate: string;
+  dateLabel: string;
+  dayKey: DayKey;
+  dayOfWeek: number;
+  dayLabel: string;
+  insideMonth: boolean;
+  weekVolume: number;
+}
+
+interface DayAllocationPreviewRow extends DayAllocationDay {
+  inputValue: string;
+  rawWeight: number;
+  normalizedWeight: number;
+  allocatedVolume: number;
+  invalid: boolean;
+}
+
+interface DayAllocationWeekSummary {
+  weekStart: string;
+  weekLabel: string;
+  weekVolume: number;
+  totalRawWeight: number;
+  totalAllocatedVolume: number;
+  hasInvalidWeight: boolean;
+  hasZeroWeight: boolean;
+  totalIs100: boolean;
+  sumsToWeek: boolean;
+}
+
+interface DayAllocationPreview {
+  rows: DayAllocationPreviewRow[];
+  weekSummaries: DayAllocationWeekSummary[];
+  totalAllocatedVolume: number;
+  hasInvalidWeight: boolean;
+  hasZeroWeightWeek: boolean;
+  allWeeksSumToSource: boolean;
+}
+
 const DEFAULT_ENABLED_CHANNELS: Record<ChannelKey, boolean> = {
   voice: true,
   email: false,
@@ -108,11 +168,6 @@ const CHANNEL_SELECT_OPTIONS = [
 ] as const satisfies ReadonlyArray<{ value: ChannelKey; label: string }>;
 
 const PLACEHOLDER_SECTIONS = [
-  {
-    title: "Day Allocation",
-    description: "Future week-to-day distribution for the selected scope.",
-    icon: Table2,
-  },
   {
     title: "Interval Allocation",
     description: "Future day-to-interval volume shaping. This is volume, not FTE.",
@@ -132,6 +187,16 @@ const PLACEHOLDER_SECTIONS = [
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEIGHT_TOTAL_TOLERANCE = 0.05;
+const DAY_KEYS: DayKey[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const DAY_LABELS: Record<DayKey, string> = {
+  monday: "Monday",
+  tuesday: "Tuesday",
+  wednesday: "Wednesday",
+  thursday: "Thursday",
+  friday: "Friday",
+  saturday: "Saturday",
+  sunday: "Sunday",
+};
 
 function currentMonthKey() {
   const now = new Date();
@@ -342,6 +407,157 @@ function buildWeekAllocationPreview(
   };
 }
 
+function getDayKeyFromIso(isoDate: string): DayKey {
+  return DAY_KEYS[(dateFromIso(isoDate).getUTCDay() + 6) % 7];
+}
+
+function getMondayBasedDayOfWeek(isoDate: string): number {
+  return (dateFromIso(isoDate).getUTCDay() + 6) % 7;
+}
+
+function getOperatingDaySet(settings: LobSettings | null, channel: ChannelKey): Set<DayKey> | null {
+  const schedule = settings?.hours_of_operation?.[channel];
+  if (!schedule) return null;
+  const configuredDays = DAY_KEYS.filter((day) => typeof schedule[day]?.enabled === "boolean");
+  if (configuredDays.length === 0) return null;
+  return new Set(configuredDays.filter((day) => schedule[day]?.enabled));
+}
+
+function buildDayAllocationDays(
+  weeks: MonthWeek[],
+  weekVolumesByStart: Record<string, number>,
+  monthKey: string
+): DayAllocationDay[] {
+  return weeks.flatMap((week) => {
+    const weekStartDate = dateFromIso(week.weekStart);
+    return Array.from({ length: 7 }, (_, offset) => {
+      const calendarDate = isoFromDate(addUtcDays(weekStartDate, offset));
+      const dayKey = getDayKeyFromIso(calendarDate);
+      return {
+        weekStart: week.weekStart,
+        weekLabel: week.label,
+        calendarDate,
+        dateLabel: formatShortDate(calendarDate, calendarDate.slice(0, 4) !== monthKey.slice(0, 4)),
+        dayKey,
+        dayOfWeek: getMondayBasedDayOfWeek(calendarDate),
+        dayLabel: DAY_LABELS[dayKey],
+        insideMonth: calendarDate.startsWith(monthKey),
+        weekVolume: weekVolumesByStart[week.weekStart] ?? 0,
+      };
+    });
+  });
+}
+
+function groupDayRowsByWeek<T extends { weekStart: string }>(rows: T[]): T[][] {
+  const groups = new Map<string, T[]>();
+  rows.forEach((row) => {
+    groups.set(row.weekStart, [...(groups.get(row.weekStart) ?? []), row]);
+  });
+  return Array.from(groups.values());
+}
+
+function buildDefaultDayWeightInputs(
+  rows: DayAllocationDay[],
+  operatingDaySet: Set<DayKey> | null
+): Record<string, string> {
+  const entries: Array<[string, string]> = [];
+
+  groupDayRowsByWeek(rows).forEach((weekRows) => {
+    const insideRows = weekRows.filter((row) => row.insideMonth);
+    const operatingRows = operatingDaySet
+      ? insideRows.filter((row) => operatingDaySet.has(row.dayKey))
+      : [];
+    const weightedRows = operatingDaySet && operatingRows.length > 0 ? operatingRows : insideRows;
+    const weight = weightedRows.length > 0 ? 100 / weightedRows.length : 0;
+    const weightedDates = new Set(weightedRows.map((row) => row.calendarDate));
+
+    weekRows.forEach((row) => {
+      entries.push([row.calendarDate, row.insideMonth && weightedDates.has(row.calendarDate) ? formatWeightInput(weight) : "0"]);
+    });
+  });
+
+  return Object.fromEntries(entries);
+}
+
+function buildSavedDayWeightInputs(
+  rows: DayAllocationDay[],
+  allocations: IntradayV2DayAllocation[],
+  defaultInputs: Record<string, string>
+): Record<string, string> {
+  const savedWeightsByDate = new Map(
+    allocations.map((allocation) => [normalizeDateKey(allocation.calendar_date), formatWeightInput(allocation.weight)])
+  );
+  return Object.fromEntries(
+    rows.map((row) => [
+      row.calendarDate,
+      row.insideMonth ? savedWeightsByDate.get(row.calendarDate) ?? defaultInputs[row.calendarDate] ?? "0" : "0",
+    ])
+  );
+}
+
+function buildDayAllocationPreview(
+  dayRows: DayAllocationDay[],
+  weightInputs: Record<string, string>
+): DayAllocationPreview {
+  const previewRows: DayAllocationPreviewRow[] = [];
+  const weekSummaries: DayAllocationWeekSummary[] = [];
+
+  groupDayRowsByWeek(dayRows).forEach((weekRows) => {
+    const parsedRows = weekRows.map((row) => {
+      const inputValue = row.insideMonth ? weightInputs[row.calendarDate] ?? "0" : "0";
+      const parsed = parseWeightInput(inputValue);
+      const invalid = row.insideMonth && (parsed === null || parsed < 0);
+      const rawWeight = row.insideMonth && parsed !== null && parsed >= 0 ? parsed : 0;
+      return {
+        ...row,
+        inputValue,
+        rawWeight,
+        normalizedWeight: 0,
+        allocatedVolume: 0,
+        invalid,
+      };
+    });
+    const weekVolume = parsedRows[0]?.weekVolume ?? 0;
+    const hasInvalidWeight = parsedRows.some((row) => row.invalid);
+    const rawWeights = parsedRows.map((row) => row.rawWeight);
+    const totalRawWeight = rawWeights.reduce((sum, weight) => sum + weight, 0);
+    const hasZeroWeight = weekVolume > 0 && totalRawWeight <= 0;
+    const canAllocate = !hasInvalidWeight && totalRawWeight > 0;
+    const normalizedWeights = canAllocate ? rawWeights.map((weight) => (weight / totalRawWeight) * 100) : rawWeights.map(() => 0);
+    const allocatedVolumes = canAllocate ? allocateIntegerVolume(weekVolume, rawWeights) : rawWeights.map(() => 0);
+
+    parsedRows.forEach((row, index) => {
+      previewRows.push({
+        ...row,
+        normalizedWeight: normalizedWeights[index] ?? 0,
+        allocatedVolume: allocatedVolumes[index] ?? 0,
+      });
+    });
+
+    const totalAllocatedVolume = allocatedVolumes.reduce((sum, value) => sum + value, 0);
+    weekSummaries.push({
+      weekStart: parsedRows[0]?.weekStart ?? "",
+      weekLabel: parsedRows[0]?.weekLabel ?? "Week",
+      weekVolume,
+      totalRawWeight,
+      totalAllocatedVolume,
+      hasInvalidWeight,
+      hasZeroWeight,
+      totalIs100: Math.abs(totalRawWeight - 100) <= WEIGHT_TOTAL_TOLERANCE,
+      sumsToWeek: Math.abs(totalAllocatedVolume - weekVolume) <= 1,
+    });
+  });
+
+  return {
+    rows: previewRows,
+    weekSummaries,
+    totalAllocatedVolume: previewRows.reduce((sum, row) => sum + row.allocatedVolume, 0),
+    hasInvalidWeight: weekSummaries.some((summary) => summary.hasInvalidWeight),
+    hasZeroWeightWeek: weekSummaries.some((summary) => summary.hasZeroWeight),
+    allWeeksSumToSource: weekSummaries.every((summary) => summary.sumsToWeek),
+  };
+}
+
 function applyHistoricalOverrides(apiData: number[], overrides: Record<number, string> = {}): number[] {
   const overrideIndexes = Object.keys(overrides).map(Number).filter(Number.isFinite);
   const len = Math.max(apiData.length, ...overrideIndexes.map((index) => index + 1), 0);
@@ -497,6 +713,12 @@ export function IntradayForecastV2() {
   const [weekAllocationLoading, setWeekAllocationLoading] = useState(false);
   const [weekAllocationError, setWeekAllocationError] = useState<string | null>(null);
   const [savingWeekAllocation, setSavingWeekAllocation] = useState(false);
+  const [dayWeightInputs, setDayWeightInputs] = useState<Record<string, string>>({});
+  const [savedDayAllocations, setSavedDayAllocations] = useState<IntradayV2DayAllocation[]>([]);
+  const [dayAllocationScopeKey, setDayAllocationScopeKey] = useState("");
+  const [dayAllocationLoading, setDayAllocationLoading] = useState(false);
+  const [dayAllocationError, setDayAllocationError] = useState<string | null>(null);
+  const [savingDayAllocation, setSavingDayAllocation] = useState(false);
   const activeScopeKeyRef = useRef("");
 
   useEffect(() => {
@@ -815,6 +1037,113 @@ export function IntradayForecastV2() {
     weekAllocationPreview.hasInvalidWeight ||
     weekAllocationPreview.totalRawWeight <= 0;
 
+  const operatingDaySet = useMemo(() => getOperatingDaySet(lobSettings, selectedChannel), [lobSettings, selectedChannel]);
+  const weekVolumesByStart = useMemo(
+    () => Object.fromEntries(weekAllocationPreview.rows.map((row) => [row.week.weekStart, row.allocatedVolume])),
+    [weekAllocationPreview.rows]
+  );
+  const dayAllocationRows = useMemo(
+    () => buildDayAllocationDays(monthWeeks, weekVolumesByStart, monthKey),
+    [monthKey, monthWeeks, weekVolumesByStart]
+  );
+  const dayAllocationInputRows = useMemo(
+    () => buildDayAllocationDays(monthWeeks, {}, monthKey),
+    [monthKey, monthWeeks]
+  );
+  const defaultDayWeightInputs = useMemo(
+    () => buildDefaultDayWeightInputs(dayAllocationInputRows, operatingDaySet),
+    [dayAllocationInputRows, operatingDaySet]
+  );
+
+  useEffect(() => {
+    setDayAllocationScopeKey(scopeKey);
+    setSavedDayAllocations([]);
+    setDayWeightInputs(defaultDayWeightInputs);
+    setDayAllocationError(null);
+
+    if (!selectedLobId || dayAllocationInputRows.length === 0) {
+      setDayAllocationLoading(false);
+      return;
+    }
+
+    const requestScopeKey = scopeKey;
+    const controller = new AbortController();
+    setDayAllocationLoading(true);
+
+    fetch(apiUrl(`/api/intraday-v2/day-allocations?${buildPlanQuery(selectedLobId, selectedChannel, staffingMode, monthKey)}`), {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.error || "Unable to load scoped day allocation.");
+        }
+        return response.json() as Promise<IntradayV2DayAllocation[]>;
+      })
+      .then((allocations) => {
+        if (activeScopeKeyRef.current !== requestScopeKey) return;
+        const scopedAllocations = Array.isArray(allocations) ? allocations : [];
+        setDayAllocationScopeKey(requestScopeKey);
+        setSavedDayAllocations(scopedAllocations);
+        setDayWeightInputs(
+          scopedAllocations.length > 0
+            ? buildSavedDayWeightInputs(dayAllocationInputRows, scopedAllocations, defaultDayWeightInputs)
+            : defaultDayWeightInputs
+        );
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        if (activeScopeKeyRef.current !== requestScopeKey) return;
+        setDayAllocationScopeKey(requestScopeKey);
+        setSavedDayAllocations([]);
+        setDayWeightInputs(defaultDayWeightInputs);
+        setDayAllocationError(error?.message || "Unable to load scoped day allocation.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && activeScopeKeyRef.current === requestScopeKey) setDayAllocationLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [dayAllocationInputRows, defaultDayWeightInputs, monthKey, scopeKey, selectedChannel, selectedLobId, staffingMode]);
+
+  const dayInputsForScope = dayAllocationScopeKey === scopeKey ? dayWeightInputs : defaultDayWeightInputs;
+  const hasSavedDayAllocation = dayAllocationScopeKey === scopeKey && savedDayAllocations.length > 0;
+  const baselineDayInputs = hasSavedDayAllocation
+    ? buildSavedDayWeightInputs(dayAllocationInputRows, savedDayAllocations, defaultDayWeightInputs)
+    : defaultDayWeightInputs;
+  const hasUnsavedDayChanges = dayAllocationInputRows.some(
+    (row) => (dayInputsForScope[row.calendarDate] ?? "") !== (baselineDayInputs[row.calendarDate] ?? "")
+  );
+  const dayAllocationPreview = useMemo(
+    () => buildDayAllocationPreview(dayAllocationRows, dayInputsForScope),
+    [dayAllocationRows, dayInputsForScope]
+  );
+  const dayAllocationSourceLabel = hasSavedDayAllocation
+    ? "Saved manual day allocation"
+    : operatingDaySet
+      ? "Default operating-day allocation"
+      : "Default equal-day allocation";
+  const dayAllocationBadgeClass = hasSavedDayAllocation
+    ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-50"
+    : operatingDaySet
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+      : "border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-50";
+  const dayAllocationWarning = dayAllocationError
+    || (dayAllocationPreview.hasInvalidWeight ? "Day weights must be non-negative numbers." : null)
+    || (dayAllocationPreview.hasZeroWeightWeek ? "At least one week has all day weights set to 0; that week allocates 0 until corrected." : null)
+    || (dayAllocationPreview.weekSummaries.some((summary) => !summary.totalIs100 && summary.totalRawWeight > 0)
+      ? "One or more week day-weight totals are not 100%. Volumes are normalized within each week before allocation."
+      : null)
+    || (!dayAllocationPreview.allWeeksSumToSource ? "One or more day totals do not match their week allocation." : null);
+  const daySaveDisabled =
+    !selectedLobId ||
+    dayAllocationInputRows.length === 0 ||
+    weekAllocationLoading ||
+    dayAllocationLoading ||
+    savingDayAllocation ||
+    dayAllocationPreview.hasInvalidWeight ||
+    dayAllocationPreview.hasZeroWeightWeek;
+
   const updateWeekWeightInput = (weekStart: string, value: string) => {
     setWeekAllocationScopeKey(scopeKey);
     setWeekWeightInputs((previous) => ({
@@ -870,6 +1199,65 @@ export function IntradayForecastV2() {
       toast.error(message);
     } finally {
       setSavingWeekAllocation(false);
+    }
+  };
+
+  const updateDayWeightInput = (calendarDate: string, value: string) => {
+    setDayAllocationScopeKey(scopeKey);
+    setDayWeightInputs((previous) => ({
+      ...(dayAllocationScopeKey === scopeKey ? previous : defaultDayWeightInputs),
+      [calendarDate]: value,
+    }));
+  };
+
+  const resetDayWeightsToDefault = () => {
+    setDayAllocationScopeKey(scopeKey);
+    setDayWeightInputs(defaultDayWeightInputs);
+  };
+
+  const saveDayAllocation = async () => {
+    if (!selectedLobId || daySaveDisabled) return;
+    const requestScopeKey = scopeKey;
+    const allocations = dayAllocationPreview.rows.map((row) => ({
+      calendar_date: row.calendarDate,
+      day_of_week: row.dayOfWeek,
+      week_start: row.weekStart,
+      weight: Number(row.normalizedWeight.toFixed(6)),
+      volume: row.allocatedVolume,
+      is_locked: false,
+    }));
+
+    setSavingDayAllocation(true);
+    setDayAllocationError(null);
+    try {
+      const response = await fetch(apiUrl("/api/intraday-v2/day-allocations"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lob_id: selectedLobId,
+          channel: selectedChannel,
+          staffing_mode: staffingMode,
+          month_key: monthKey,
+          allocations,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Unable to save day allocation.");
+      }
+      const result = await response.json() as { rows?: IntradayV2DayAllocation[] };
+      if (activeScopeKeyRef.current !== requestScopeKey) return;
+      const savedRows = Array.isArray(result.rows) ? result.rows : allocations;
+      setDayAllocationScopeKey(requestScopeKey);
+      setSavedDayAllocations(savedRows);
+      setDayWeightInputs(buildSavedDayWeightInputs(dayAllocationInputRows, savedRows, defaultDayWeightInputs));
+      toast.success("Day allocation saved");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save day allocation.";
+      if (activeScopeKeyRef.current === requestScopeKey) setDayAllocationError(message);
+      toast.error(message);
+    } finally {
+      setSavingDayAllocation(false);
     }
   };
 
@@ -1200,6 +1588,160 @@ export function IntradayForecastV2() {
                 <Button type="button" disabled={weekSaveDisabled} onClick={saveWeekAllocation}>
                   {savingWeekAllocation ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
                   Save week allocation
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <span className="rounded-lg bg-cyan-50 p-2 text-cyan-700">
+                    <Table2 className="size-4" />
+                  </span>
+                  Day Allocation
+                </CardTitle>
+                <CardDescription className="mt-2">
+                  Split each week allocation into calendar days. Days outside {monthKey} stay at 0 weight and 0 volume.
+                </CardDescription>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {dayAllocationLoading && <Loader2 className="size-4 animate-spin text-slate-500" />}
+                {hasUnsavedWeekChanges && (
+                  <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50">
+                    Based on current week allocation
+                  </Badge>
+                )}
+                <Badge variant="outline" className={dayAllocationBadgeClass}>
+                  {dayAllocationSourceLabel}
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5 pt-5">
+            {dayAllocationWarning && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <span>{dayAllocationWarning}</span>
+              </div>
+            )}
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Week Allocation Basis</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">
+                  {formatVolume(weekAllocationPreview.totalAllocatedVolume)}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {hasUnsavedWeekChanges ? "Current on-screen week allocation." : weekAllocationSourceLabel}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Weeks Balanced</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">
+                  {dayAllocationPreview.weekSummaries.filter((summary) => summary.sumsToWeek).length}/{dayAllocationPreview.weekSummaries.length}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Each week should sum to its week volume.</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-cyan-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Allocated Day Volume</p>
+                <p className="mt-2 text-2xl font-semibold text-cyan-950">
+                  {formatVolume(dayAllocationPreview.totalAllocatedVolume)}
+                </p>
+                <p className="mt-1 text-xs text-cyan-800">
+                  {dayAllocationPreview.allWeeksSumToSource ? "Sums back to week allocation." : "Review day weights."}
+                </p>
+              </div>
+            </div>
+
+            <Table containerClassName="rounded-lg border border-slate-200">
+              <TableHeader>
+                <TableRow className="bg-slate-50 hover:bg-slate-50">
+                  <TableHead>Week label</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Day of week</TableHead>
+                  <TableHead className="min-w-[190px] text-right">Weight %</TableHead>
+                  <TableHead className="text-right">Allocated volume</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {dayAllocationPreview.weekSummaries.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="h-24 text-center text-sm text-slate-500">
+                      Select a valid month to generate day allocation rows.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  dayAllocationPreview.weekSummaries.map((summary) => (
+                    <React.Fragment key={summary.weekStart}>
+                      {dayAllocationPreview.rows
+                        .filter((row) => row.weekStart === summary.weekStart)
+                        .map((row) => (
+                          <TableRow key={row.calendarDate} className={!row.insideMonth ? "bg-slate-50/70 text-slate-400" : ""}>
+                            <TableCell className="font-medium text-slate-900">{row.weekLabel}</TableCell>
+                            <TableCell className="text-slate-600">{row.dateLabel}</TableCell>
+                            <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
+                            <TableCell className="text-right">
+                              <Input
+                                className={`ml-auto h-8 w-28 text-right tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                disabled={!selectedLobId || !row.insideMonth || dayAllocationLoading || savingDayAllocation}
+                                value={row.inputValue}
+                                onChange={(event) => updateDayWeightInput(row.calendarDate, event.target.value)}
+                              />
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                Normalized {formatPercent(row.normalizedWeight)}
+                              </p>
+                            </TableCell>
+                            <TableCell className="text-right font-medium tabular-nums text-slate-900">
+                              {formatVolume(row.allocatedVolume)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      <TableRow className="bg-slate-50 hover:bg-slate-50">
+                        <TableCell colSpan={3} className="font-semibold text-slate-700">
+                          {summary.weekLabel} total
+                          {!summary.totalIs100 && summary.totalRawWeight > 0 ? (
+                            <span className="ml-2 text-xs font-normal text-amber-700">Normalized for allocation</span>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums">
+                          {formatPercent(summary.totalRawWeight)}
+                        </TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums">
+                          {formatVolume(summary.totalAllocatedVolume)} / {formatVolume(summary.weekVolume)}
+                        </TableCell>
+                      </TableRow>
+                    </React.Fragment>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+
+            <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-500">
+                Scope: <span className="font-medium text-slate-700">{scopeLabel}</span>
+                {hasUnsavedDayChanges ? <span className="ml-2 text-amber-700">Unsaved day edits</span> : null}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!selectedLobId || dayAllocationLoading || savingDayAllocation}
+                  onClick={resetDayWeightsToDefault}
+                >
+                  <RefreshCw className="mr-2 size-4" />
+                  Reset default
+                </Button>
+                <Button type="button" disabled={daySaveDisabled} onClick={saveDayAllocation}>
+                  {savingDayAllocation ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
+                  Save day allocation
                 </Button>
               </div>
             </div>
