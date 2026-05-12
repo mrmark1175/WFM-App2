@@ -10,6 +10,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { CHANNEL_OPTIONS, type ChannelKey, useLOB } from "../lib/lobContext";
 import { apiUrl } from "../lib/api";
+import {
+  DEFAULT_DEMAND_TIMEZONE,
+  buildDemandTimezoneDayIntervals,
+  getCurrentMonthKeyInTimeZone,
+  normalizeDemandTimeZone,
+} from "../lib/demandTimezone";
 import { getCalculatedVolumes, type Assumptions } from "./forecasting-logic";
 
 type StaffingMode = "dedicated" | "blended";
@@ -26,6 +32,8 @@ interface LobSettings {
   channels_enabled?: Partial<Record<ChannelKey, boolean>>;
   pooling_mode?: StaffingMode | string;
   hours_of_operation?: Partial<Record<ChannelKey, Partial<Record<DayKey, DaySchedule>>>>;
+  demand_timezone?: string;
+  supply_timezone?: string;
 }
 
 interface PlannerSnapshot {
@@ -51,6 +59,7 @@ interface DemandPlannerCommittedScenario {
 
 interface IntradayV2MonthPlan {
   id: number;
+  demand_timezone?: string | null;
   demand_forecast_volume: number | string | null;
   demand_source: string | null;
   manual_monthly_volume: number | string | null;
@@ -92,6 +101,12 @@ interface IntradayV2IntervalAllocation {
   interval_index: number;
   interval_start: string;
   interval_minutes: number | string;
+  demand_timezone?: string | null;
+  interval_start_utc?: string | null;
+  utc_offset_minutes?: number | string | null;
+  dst_fold?: number | string | null;
+  occurrence_index?: number | string | null;
+  interval_ordinal?: number | string | null;
   weight: number | string;
   volume: number | string;
   aht_seconds?: number | string | null;
@@ -103,6 +118,12 @@ interface IntradayV2ActualBaselineInterval {
   interval_date: string;
   day_of_week: number;
   interval_time: string;
+  demand_timezone?: string | null;
+  interval_start_utc?: string | null;
+  utc_offset_minutes?: number | string | null;
+  dst_fold?: number | string | null;
+  occurrence_index?: number | string | null;
+  interval_ordinal?: number | string | null;
   actual_volume: number | string;
   source?: ActualBaselineSource | string;
   updated_at?: string;
@@ -184,6 +205,13 @@ interface IntervalAllocationInterval {
   dayLabel: string;
   intervalIndex: number;
   intervalStart: string;
+  demandTimezone: string;
+  intervalStartUtc: string | null;
+  utcOffsetMinutes: number | null;
+  dstFold: number;
+  occurrenceIndex: number;
+  intervalOrdinal: number;
+  repeated: boolean;
   intervalLabel: string;
   intervalMinutes: number;
   dayVolume: number;
@@ -230,6 +258,13 @@ interface ActualBaselineIntervalRow {
   dayLabel: string;
   intervalTime: string;
   intervalIndex: number;
+  demandTimezone: string;
+  intervalStartUtc: string | null;
+  utcOffsetMinutes: number | null;
+  dstFold: number;
+  occurrenceIndex: number;
+  intervalOrdinal: number;
+  repeated: boolean;
   intervalLabel: string;
 }
 
@@ -237,6 +272,32 @@ interface ActualBaselinePreviewRow extends ActualBaselineIntervalRow {
   inputValue: string;
   actualVolume: number;
   invalid: boolean;
+}
+
+interface ActualBaselineDateColumn {
+  intervalDate: string;
+  dateLabel: string;
+  compactDateLabel: string;
+  dayKey: DayKey;
+  dayOfWeek: number;
+  dayLabel: string;
+  shortDayLabel: string;
+  weekStart: string;
+  weekLabel: string;
+}
+
+interface ActualBaselineIntervalSlot {
+  slotKey: string;
+  intervalTime: string;
+  intervalIndex: number;
+  occurrenceIndex: number;
+  intervalLabel: string;
+}
+
+interface ActualBaselineWeekGroup {
+  weekStart: string;
+  weekLabel: string;
+  columns: ActualBaselineDateColumn[];
 }
 
 const DEFAULT_ENABLED_CHANNELS: Record<ChannelKey, boolean> = {
@@ -275,9 +336,8 @@ const DAY_LABELS: Record<DayKey, string> = {
   sunday: "Sunday",
 };
 
-function currentMonthKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+function currentMonthKey(timeZone = DEFAULT_DEMAND_TIMEZONE) {
+  return getCurrentMonthKeyInTimeZone(timeZone);
 }
 
 function normalizeStaffingMode(value?: string): StaffingMode {
@@ -645,6 +705,13 @@ function intervalInputKey(calendarDate: string, intervalIndex: number): string {
   return `${calendarDate}:${intervalIndex}`;
 }
 
+function occurrenceLabel(occurrenceIndex: number): string {
+  if (occurrenceIndex <= 0) return "";
+  const value = occurrenceIndex + 1;
+  const suffix = value === 2 ? "nd" : value === 3 ? "rd" : "th";
+  return ` (${value}${suffix})`;
+}
+
 function normalizeTimeKey(value: string | null | undefined): string {
   const match = String(value ?? "").trim().match(/^([01][0-9]|2[0-3]):([0-5][0-9])/);
   return match ? `${match[1]}:${match[2]}` : "";
@@ -681,10 +748,12 @@ function formatIntervalRangeLabel(intervalStart: string, intervalMinutes: number
 function buildIntervalAllocationRows(
   dayRows: Array<DayAllocationDay & { allocatedVolume?: number }>,
   settings: LobSettings | null,
-  channel: ChannelKey
+  channel: ChannelKey,
+  demandTimezone: string
 ): IntervalAllocationInterval[] {
   const schedule = settings?.hours_of_operation?.[channel];
   if (!schedule) return [];
+  const normalizedDemandTimezone = normalizeDemandTimeZone(demandTimezone);
 
   return dayRows.flatMap((day) => {
     if (!day.insideMonth) return [];
@@ -698,25 +767,35 @@ function buildIntervalAllocationRows(
     const closeMinutes = closeRaw === 23 * 60 + 59 ? 24 * 60 : closeRaw;
     if (closeMinutes <= openMinutes) return [];
 
-    const firstStart = Math.ceil(openMinutes / INTERVAL_MINUTES) * INTERVAL_MINUTES;
-    const intervals: IntervalAllocationInterval[] = [];
-    for (let start = firstStart; start + INTERVAL_MINUTES <= closeMinutes && start < 24 * 60; start += INTERVAL_MINUTES) {
-      const intervalIndex = Math.floor(start / INTERVAL_MINUTES);
-      const intervalStart = formatIntervalStart(start);
-      intervals.push({
-        key: intervalInputKey(day.calendarDate, intervalIndex),
+    return buildDemandTimezoneDayIntervals(
+      day.calendarDate,
+      normalizedDemandTimezone,
+      INTERVAL_MINUTES,
+      Math.ceil(openMinutes / INTERVAL_MINUTES) * INTERVAL_MINUTES,
+      closeMinutes
+    ).map((interval) => {
+      const intervalStart = interval.intervalTime;
+      const repeatedLabel = interval.repeated ? occurrenceLabel(interval.occurrenceIndex) : "";
+      return {
+        key: intervalInputKey(day.calendarDate, interval.intervalOrdinal),
         calendarDate: day.calendarDate,
         dateLabel: day.dateLabel,
         dayKey: day.dayKey,
         dayLabel: day.dayLabel,
-        intervalIndex,
+        intervalIndex: interval.intervalOrdinal,
         intervalStart,
-        intervalLabel: formatIntervalRangeLabel(intervalStart, INTERVAL_MINUTES),
+        demandTimezone: normalizedDemandTimezone,
+        intervalStartUtc: interval.intervalStartUtc,
+        utcOffsetMinutes: interval.utcOffsetMinutes,
+        dstFold: interval.dstFold,
+        occurrenceIndex: interval.occurrenceIndex,
+        intervalOrdinal: interval.intervalOrdinal,
+        repeated: interval.repeated,
+        intervalLabel: `${formatIntervalRangeLabel(intervalStart, INTERVAL_MINUTES)}${repeatedLabel}`,
         intervalMinutes: INTERVAL_MINUTES,
         dayVolume: Math.max(0, Math.round(day.allocatedVolume ?? 0)),
-      });
-    }
-    return intervals;
+      };
+    });
   });
 }
 
@@ -849,8 +928,12 @@ function buildIntervalAllocationPreview(
   };
 }
 
-function actualBaselineInputKey(intervalDate: string, intervalTime: string): string {
-  return `${intervalDate}:${normalizeTimeKey(intervalTime)}`;
+function actualBaselineInputKey(intervalDate: string, intervalTime: string, occurrenceIndex = 0): string {
+  return `${intervalDate}:${normalizeTimeKey(intervalTime)}:${Math.max(0, Math.round(Number(occurrenceIndex) || 0))}`;
+}
+
+function actualBaselineSlotKey(intervalTime: string, occurrenceIndex = 0): string {
+  return `${normalizeTimeKey(intervalTime)}:${Math.max(0, Math.round(Number(occurrenceIndex) || 0))}`;
 }
 
 function formatActualVolumeInput(value: number | string | null | undefined): string {
@@ -859,14 +942,32 @@ function formatActualVolumeInput(value: number | string | null | undefined): str
   return (Math.round(parsed * 10000) / 10000).toFixed(4).replace(/\.?0+$/, "");
 }
 
+function parseActualVolumeCell(value: string): number | null {
+  const cleaned = value.trim().replace(/[$%\s]/g, "").replace(/,/g, "");
+  if (cleaned === "") return null;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function splitPastedActualBaselineMatrix(text: string): string[][] {
+  return text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim() !== "")
+    .map((line) => (line.includes("\t") ? line.split("\t") : line.split(",")));
+}
+
 function buildActualBaselineRows(
   monthKey: string,
   settings: LobSettings | null,
-  channel: ChannelKey
+  channel: ChannelKey,
+  demandTimezone: string
 ): ActualBaselineIntervalRow[] {
   const parts = parseMonthParts(monthKey);
   const schedule = settings?.hours_of_operation?.[channel];
   if (!parts || !schedule) return [];
+  const normalizedDemandTimezone = normalizeDemandTimeZone(demandTimezone);
 
   const monthStart = new Date(Date.UTC(parts.year, parts.month - 1, 1));
   const monthEnd = new Date(Date.UTC(parts.year, parts.month, 0));
@@ -885,25 +986,111 @@ function buildActualBaselineRows(
     const closeMinutes = closeRaw === 23 * 60 + 59 ? 24 * 60 : closeRaw;
     if (closeMinutes <= openMinutes) continue;
 
-    const firstStart = Math.ceil(openMinutes / INTERVAL_MINUTES) * INTERVAL_MINUTES;
-    for (let start = firstStart; start + INTERVAL_MINUTES <= closeMinutes && start < 24 * 60; start += INTERVAL_MINUTES) {
-      const intervalTime = formatIntervalStart(start);
-      const intervalIndex = Math.floor(start / INTERVAL_MINUTES);
+    const intervals = buildDemandTimezoneDayIntervals(
+      intervalDate,
+      normalizedDemandTimezone,
+      INTERVAL_MINUTES,
+      Math.ceil(openMinutes / INTERVAL_MINUTES) * INTERVAL_MINUTES,
+      closeMinutes
+    );
+    for (const interval of intervals) {
+      const intervalTime = interval.intervalTime;
+      const repeatedLabel = interval.repeated ? occurrenceLabel(interval.occurrenceIndex) : "";
       rows.push({
-        key: actualBaselineInputKey(intervalDate, intervalTime),
+        key: actualBaselineInputKey(intervalDate, intervalTime, interval.occurrenceIndex),
         intervalDate,
         dateLabel: formatShortDate(intervalDate, intervalDate.slice(0, 4) !== monthKey.slice(0, 4)),
         dayKey,
         dayOfWeek: getMondayBasedDayOfWeek(intervalDate),
         dayLabel: DAY_LABELS[dayKey],
         intervalTime,
-        intervalIndex,
-        intervalLabel: formatIntervalRangeLabel(intervalTime, INTERVAL_MINUTES),
+        intervalIndex: interval.intervalOrdinal,
+        demandTimezone: normalizedDemandTimezone,
+        intervalStartUtc: interval.intervalStartUtc,
+        utcOffsetMinutes: interval.utcOffsetMinutes,
+        dstFold: interval.dstFold,
+        occurrenceIndex: interval.occurrenceIndex,
+        intervalOrdinal: interval.intervalOrdinal,
+        repeated: interval.repeated,
+        intervalLabel: `${formatIntervalRangeLabel(intervalTime, INTERVAL_MINUTES)}${repeatedLabel}`,
       });
     }
   }
 
   return rows;
+}
+
+function buildActualBaselineDateColumns(monthKey: string, weeks: MonthWeek[]): ActualBaselineDateColumn[] {
+  const parts = parseMonthParts(monthKey);
+  if (!parts) return [];
+
+  const weekByDate = new Map<string, MonthWeek>();
+  weeks.forEach((week) => {
+    let date = dateFromIso(week.weekStart);
+    const weekEnd = dateFromIso(week.weekEnd);
+    while (date.getTime() <= weekEnd.getTime()) {
+      weekByDate.set(isoFromDate(date), week);
+      date = addUtcDays(date, 1);
+    }
+  });
+
+  const monthStart = new Date(Date.UTC(parts.year, parts.month - 1, 1));
+  const monthEnd = new Date(Date.UTC(parts.year, parts.month, 0));
+  const columns: ActualBaselineDateColumn[] = [];
+
+  for (let date = monthStart; date.getTime() <= monthEnd.getTime(); date = addUtcDays(date, 1)) {
+    const intervalDate = isoFromDate(date);
+    const dayKey = getDayKeyFromIso(intervalDate);
+    const week = weekByDate.get(intervalDate);
+    columns.push({
+      intervalDate,
+      dateLabel: formatShortDate(intervalDate, intervalDate.slice(0, 4) !== monthKey.slice(0, 4)),
+      compactDateLabel: `${String(date.getUTCMonth() + 1).padStart(2, "0")}/${String(date.getUTCDate()).padStart(2, "0")}`,
+      dayKey,
+      dayOfWeek: getMondayBasedDayOfWeek(intervalDate),
+      dayLabel: DAY_LABELS[dayKey],
+      shortDayLabel: DAY_LABELS[dayKey].slice(0, 3),
+      weekStart: week?.weekStart ?? isoFromDate(startOfUtcWeekMonday(date)),
+      weekLabel: week?.label ?? "Week",
+    });
+  }
+
+  return columns;
+}
+
+function buildActualBaselineIntervalSlots(rows: ActualBaselineIntervalRow[]): ActualBaselineIntervalSlot[] {
+  const slotsByTime = new Map<string, ActualBaselineIntervalSlot>();
+  rows.forEach((row) => {
+    const slotKey = actualBaselineSlotKey(row.intervalTime, row.occurrenceIndex);
+    if (!slotsByTime.has(slotKey)) {
+      slotsByTime.set(slotKey, {
+        slotKey,
+        intervalTime: row.intervalTime,
+        intervalIndex: row.intervalIndex,
+        occurrenceIndex: row.occurrenceIndex,
+        intervalLabel: row.intervalLabel,
+      });
+    }
+  });
+  return Array.from(slotsByTime.values()).sort((left, right) => (
+    left.intervalIndex - right.intervalIndex
+    || left.occurrenceIndex - right.occurrenceIndex
+    || left.intervalTime.localeCompare(right.intervalTime)
+  ));
+}
+
+function groupActualBaselineColumnsByWeek(columns: ActualBaselineDateColumn[]): ActualBaselineWeekGroup[] {
+  const groups = new Map<string, ActualBaselineWeekGroup>();
+  columns.forEach((column) => {
+    const group = groups.get(column.weekStart) ?? {
+      weekStart: column.weekStart,
+      weekLabel: column.weekLabel,
+      columns: [],
+    };
+    group.columns.push(column);
+    groups.set(column.weekStart, group);
+  });
+  return Array.from(groups.values());
 }
 
 function buildDefaultActualBaselineInputs(rows: ActualBaselineIntervalRow[]): Record<string, string> {
@@ -916,7 +1103,7 @@ function buildSavedActualBaselineInputs(
 ): Record<string, string> {
   const savedVolumesByInterval = new Map(
     baselineRows.map((row) => [
-      actualBaselineInputKey(normalizeDateKey(row.interval_date), row.interval_time),
+      actualBaselineInputKey(normalizeDateKey(row.interval_date), row.interval_time, Number(row.occurrence_index ?? row.dst_fold ?? 0)),
       formatActualVolumeInput(row.actual_volume),
     ])
   );
@@ -1063,10 +1250,16 @@ function hasChannelSpecificPlannerVolume(snapshot: PlannerSnapshot | null, chann
 
 function getMonthOffset(startDate: string | undefined, monthKey: string): number | null {
   if (!startDate || !/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(monthKey)) return null;
-  const start = new Date(startDate);
-  if (Number.isNaN(start.getTime())) return null;
+  const startMatch = String(startDate).match(/^([0-9]{4})-(0[1-9]|1[0-2])/);
+  const parsedStart = startMatch
+    ? { year: Number(startMatch[1]), month: Number(startMatch[2]) }
+    : null;
+  const fallbackStart = parsedStart ? null : new Date(startDate);
+  if (!parsedStart && (!fallbackStart || Number.isNaN(fallbackStart.getTime()))) return null;
+  const startYear = parsedStart?.year ?? fallbackStart!.getUTCFullYear();
+  const startMonth = parsedStart?.month ?? fallbackStart!.getUTCMonth() + 1;
   const [targetYear, targetMonth] = monthKey.split("-").map(Number);
-  return (targetYear - start.getFullYear()) * 12 + (targetMonth - 1 - start.getMonth());
+  return (targetYear - startYear) * 12 + (targetMonth - startMonth);
 }
 
 function getForecastPeriods(snapshot: PlannerSnapshot | null, targetOffset: number | null): number {
@@ -1154,7 +1347,7 @@ export function IntradayForecastV2() {
   const [selectedLobId, setSelectedLobId] = useState<number | null>(activeLob?.id ?? null);
   const [selectedChannel, setSelectedChannel] = useState<ChannelKey>(activeChannel);
   const [staffingMode, setStaffingMode] = useState<StaffingMode>("dedicated");
-  const [monthKey, setMonthKey] = useState(currentMonthKey);
+  const [monthKey, setMonthKey] = useState(() => currentMonthKey(DEFAULT_DEMAND_TIMEZONE));
   const [lobSettings, setLobSettings] = useState<LobSettings | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [demandSnapshot, setDemandSnapshot] = useState<PlannerSnapshot | null>(null);
@@ -1194,6 +1387,7 @@ export function IntradayForecastV2() {
   const [intervalAllocationError, setIntervalAllocationError] = useState<string | null>(null);
   const [savingIntervalAllocation, setSavingIntervalAllocation] = useState(false);
   const activeScopeKeyRef = useRef("");
+  const monthManuallySelectedRef = useRef(false);
 
   useEffect(() => {
     if (activeLob?.id && !selectedLobId) setSelectedLobId(activeLob.id);
@@ -1225,6 +1419,23 @@ export function IntradayForecastV2() {
       cancelled = true;
     };
   }, [selectedLobId]);
+
+  const settingsDemandTimezone = useMemo(
+    () => normalizeDemandTimeZone(lobSettings?.demand_timezone),
+    [lobSettings?.demand_timezone]
+  );
+  const demandTimezone = useMemo(
+    () => monthPlan?.demand_timezone
+      ? normalizeDemandTimeZone(monthPlan.demand_timezone)
+      : settingsDemandTimezone,
+    [monthPlan?.demand_timezone, settingsDemandTimezone]
+  );
+
+  useEffect(() => {
+    if (!monthManuallySelectedRef.current) {
+      setMonthKey(currentMonthKey(demandTimezone));
+    }
+  }, [demandTimezone]);
 
   useEffect(() => {
     if (!selectedLobId) {
@@ -1295,8 +1506,8 @@ export function IntradayForecastV2() {
   const defaultWeekWeightInputs = useMemo(() => buildDefaultWeekWeightInputs(monthWeeks), [monthWeeks]);
 
   const activeChannelLabel = formatChannelLabel(selectedChannel);
-  const scopeLabel = `${selectedLob?.lob_name ?? "No LOB"} / ${activeChannelLabel} / ${staffingMode} / ${monthKey}`;
-  const scopeKey = `${selectedLobId ?? "none"}:${selectedChannel}:${staffingMode}:${monthKey}`;
+  const scopeLabel = `${selectedLob?.lob_name ?? "No LOB"} / ${activeChannelLabel} / ${staffingMode} / ${monthKey} / ${demandTimezone}`;
+  const scopeKey = `${selectedLobId ?? "none"}:${selectedChannel}:${staffingMode}:${monthKey}:${demandTimezone}`;
 
   useEffect(() => {
     activeScopeKeyRef.current = scopeKey;
@@ -1477,8 +1688,8 @@ export function IntradayForecastV2() {
   };
 
   const actualBaselineRows = useMemo(
-    () => buildActualBaselineRows(monthKey, lobSettings, selectedChannel),
-    [lobSettings, monthKey, selectedChannel]
+    () => buildActualBaselineRows(monthKey, lobSettings, selectedChannel, demandTimezone),
+    [demandTimezone, lobSettings, monthKey, selectedChannel]
   );
   const defaultActualBaselineInputs = useMemo(
     () => buildDefaultActualBaselineInputs(actualBaselineRows),
@@ -1545,9 +1756,91 @@ export function IntradayForecastV2() {
     () => buildActualBaselinePreviewRows(actualBaselineRows, actualBaselineInputsForScope),
     [actualBaselineInputsForScope, actualBaselineRows]
   );
+  const actualBaselineDateColumns = useMemo(
+    () => buildActualBaselineDateColumns(monthKey, monthWeeks),
+    [monthKey, monthWeeks]
+  );
+  const actualBaselineIntervalSlots = useMemo(
+    () => buildActualBaselineIntervalSlots(actualBaselineRows),
+    [actualBaselineRows]
+  );
+  const actualBaselineWeekGroups = useMemo(
+    () => groupActualBaselineColumnsByWeek(actualBaselineDateColumns),
+    [actualBaselineDateColumns]
+  );
+  const actualBaselineEditableKeys = useMemo(
+    () => new Set(actualBaselineRows.map((row) => row.key)),
+    [actualBaselineRows]
+  );
+  const actualBaselinePreviewByKey = useMemo(
+    () => new Map(actualBaselinePreviewRows.map((row) => [row.key, row])),
+    [actualBaselinePreviewRows]
+  );
+  const actualBaselineDateColumnByDate = useMemo(
+    () => new Map(actualBaselineDateColumns.map((column) => [column.intervalDate, column])),
+    [actualBaselineDateColumns]
+  );
+  const actualBaselineDateIndexByDate = useMemo(
+    () => new Map(actualBaselineDateColumns.map((column, index) => [column.intervalDate, index])),
+    [actualBaselineDateColumns]
+  );
   const actualBaselineTotal = actualBaselinePreviewRows.reduce((sum, row) => sum + row.actualVolume, 0);
   const actualBaselinePositiveRowCount = actualBaselinePreviewRows.filter((row) => row.actualVolume > 0).length;
   const actualBaselineHasInvalid = actualBaselinePreviewRows.some((row) => row.invalid);
+  const actualBaselineWeekTotals = useMemo(() => {
+    const totals = new Map(actualBaselineWeekGroups.map((group) => [group.weekStart, 0]));
+    actualBaselinePreviewRows.forEach((row) => {
+      if (row.invalid) return;
+      const weekStart = actualBaselineDateColumnByDate.get(row.intervalDate)?.weekStart;
+      if (!weekStart) return;
+      totals.set(weekStart, (totals.get(weekStart) ?? 0) + row.actualVolume);
+    });
+    return totals;
+  }, [actualBaselineDateColumnByDate, actualBaselinePreviewRows, actualBaselineWeekGroups]);
+  const actualBaselineDayTotals = useMemo(() => {
+    const totals = new Map(actualBaselineDateColumns.map((column) => [column.intervalDate, 0]));
+    actualBaselinePreviewRows.forEach((row) => {
+      if (!row.invalid) totals.set(row.intervalDate, (totals.get(row.intervalDate) ?? 0) + row.actualVolume);
+    });
+    return totals;
+  }, [actualBaselineDateColumns, actualBaselinePreviewRows]);
+  const actualBaselineIntervalTotals = useMemo(() => {
+    const totals = new Map(actualBaselineIntervalSlots.map((slot) => [slot.intervalTime, 0]));
+    actualBaselinePreviewRows.forEach((row) => {
+      if (!row.invalid) totals.set(row.intervalTime, (totals.get(row.intervalTime) ?? 0) + row.actualVolume);
+    });
+    return totals;
+  }, [actualBaselineIntervalSlots, actualBaselinePreviewRows]);
+  const actualBaselineWeekSummaryRows = actualBaselineWeekGroups.map((group) => {
+    const total = actualBaselineWeekTotals.get(group.weekStart) ?? 0;
+    return {
+      key: group.weekStart,
+      label: group.weekLabel,
+      dateRange: `${group.columns[0]?.compactDateLabel ?? ""} - ${group.columns[group.columns.length - 1]?.compactDateLabel ?? ""}`,
+      total,
+      weight: actualBaselineTotal > 0 ? (total / actualBaselineTotal) * 100 : 0,
+    };
+  });
+  const actualBaselineDaySummaryRows = actualBaselineDateColumns.map((column) => {
+    const total = actualBaselineDayTotals.get(column.intervalDate) ?? 0;
+    const weekTotal = actualBaselineWeekTotals.get(column.weekStart) ?? 0;
+    return {
+      key: column.intervalDate,
+      label: `${column.compactDateLabel} ${column.shortDayLabel}`,
+      weekLabel: column.weekLabel,
+      total,
+      weight: weekTotal > 0 ? (total / weekTotal) * 100 : 0,
+    };
+  });
+  const actualBaselineIntervalSummaryRows = actualBaselineIntervalSlots.map((slot) => {
+    const total = actualBaselineIntervalTotals.get(slot.intervalTime) ?? 0;
+    return {
+      key: slot.intervalTime,
+      label: slot.intervalLabel,
+      total,
+      weight: actualBaselineTotal > 0 ? (total / actualBaselineTotal) * 100 : 0,
+    };
+  });
   const hasSavedActualBaseline = actualBaselineScopeKey === scopeKey && savedActualBaselineRows.length > 0;
   const hasActualBaselinePattern = actualBaselineScopeKey === scopeKey && !actualBaselineHasInvalid && actualBaselineTotal > 0;
   const hasAppliedActualBaselinePattern = hasActualBaselinePattern && actualBaselinePatternAppliedScopeKey === scopeKey;
@@ -1736,12 +2029,12 @@ export function IntradayForecastV2() {
     dayAllocationPreview.hasZeroWeightWeek;
 
   const intervalAllocationRows = useMemo(
-    () => buildIntervalAllocationRows(dayAllocationPreview.rows, lobSettings, selectedChannel),
-    [dayAllocationPreview.rows, lobSettings, selectedChannel]
+    () => buildIntervalAllocationRows(dayAllocationPreview.rows, lobSettings, selectedChannel, demandTimezone),
+    [dayAllocationPreview.rows, demandTimezone, lobSettings, selectedChannel]
   );
   const intervalAllocationInputRows = useMemo(
-    () => buildIntervalAllocationRows(dayAllocationInputRows, lobSettings, selectedChannel),
-    [dayAllocationInputRows, lobSettings, selectedChannel]
+    () => buildIntervalAllocationRows(dayAllocationInputRows, lobSettings, selectedChannel, demandTimezone),
+    [dayAllocationInputRows, demandTimezone, lobSettings, selectedChannel]
   );
   const defaultIntervalWeightInputs = useMemo(
     () => buildDefaultIntervalWeightInputs(intervalAllocationInputRows),
@@ -1924,6 +2217,56 @@ export function IntradayForecastV2() {
     }));
   };
 
+  const pasteActualBaselineCells = (
+    event: React.ClipboardEvent<HTMLInputElement>,
+    startSlotIndex: number,
+    startDateIndex: number
+  ) => {
+    if (!actualBaselineEditing || actualBaselineLoading || savingActualBaseline) return;
+
+    const matrix = splitPastedActualBaselineMatrix(event.clipboardData.getData("text/plain"));
+    if (matrix.length === 0) return;
+
+    event.preventDefault();
+    let appliedCells = 0;
+    let targetRowOffset = 0;
+    const nextInputs = {
+      ...(actualBaselineScopeKey === scopeKey ? actualBaselineInputsForScope : defaultActualBaselineInputs),
+    };
+
+    matrix.forEach((rawCells) => {
+      const cells = rawCells.map((cell) => cell.trim());
+      const parsedCells = cells.map(parseActualVolumeCell);
+      if (!parsedCells.some((value) => value !== null)) return;
+
+      const dataCells = parsedCells[0] === null && parsedCells.slice(1).some((value) => value !== null)
+        ? cells.slice(1)
+        : cells;
+      const slot = actualBaselineIntervalSlots[startSlotIndex + targetRowOffset];
+      targetRowOffset += 1;
+      if (!slot) return;
+
+      dataCells.forEach((cell, columnOffset) => {
+        const parsed = parseActualVolumeCell(cell);
+        if (parsed === null) return;
+        const column = actualBaselineDateColumns[startDateIndex + columnOffset];
+        if (!column) return;
+        const key = actualBaselineInputKey(column.intervalDate, slot.intervalTime, slot.occurrenceIndex);
+        if (!actualBaselineEditableKeys.has(key)) return;
+        nextInputs[key] = formatActualVolumeInput(parsed);
+        appliedCells += 1;
+      });
+    });
+
+    if (appliedCells === 0) return;
+    setActualBaselineScopeKey(scopeKey);
+    setActualBaselineDraftSource("manual");
+    setActualBaselineEditing(true);
+    setActualBaselinePatternAppliedScopeKey("");
+    setActualBaselineInputs(nextInputs);
+    toast.success(`Pasted ${appliedCells.toLocaleString()} actual baseline cell${appliedCells === 1 ? "" : "s"}`);
+  };
+
   const uploadActualBaselineCsv = async (file: File | null) => {
     if (!file) return;
     try {
@@ -1948,7 +2291,9 @@ export function IntradayForecastV2() {
         const cells = splitCsvLine(line);
         const intervalDate = normalizeDateKey(cells[dateIndex] ?? "");
         const intervalTime = normalizeTimeKey(cells[timeIndex] ?? "");
-        const key = actualBaselineInputKey(intervalDate, intervalTime);
+        const occurrenceColumnIndex = findColumn(["occurrence_index", "occurrence", "dst_fold", "fold"]);
+        const occurrenceIndex = occurrenceColumnIndex >= 0 ? Math.max(0, Math.round(Number(cells[occurrenceColumnIndex] ?? 0) || 0)) : 0;
+        const key = actualBaselineInputKey(intervalDate, intervalTime, occurrenceIndex);
         if (!allowedKeys.has(key)) continue;
         const parsed = Number(cells[volumeIndex] ?? "");
         uploadedInputs[key] = Number.isFinite(parsed) && parsed >= 0 ? formatActualVolumeInput(parsed) : cells[volumeIndex] ?? "";
@@ -2005,6 +2350,12 @@ export function IntradayForecastV2() {
         interval_date: row.intervalDate,
         day_of_week: row.dayOfWeek,
         interval_time: row.intervalTime,
+        demand_timezone: row.demandTimezone,
+        interval_start_utc: row.intervalStartUtc,
+        utc_offset_minutes: row.utcOffsetMinutes,
+        dst_fold: row.dstFold,
+        occurrence_index: row.occurrenceIndex,
+        interval_ordinal: row.intervalOrdinal,
         actual_volume: row.actualVolume,
         source: actualBaselineDraftSource,
       }));
@@ -2226,6 +2577,12 @@ export function IntradayForecastV2() {
       interval_index: row.intervalIndex,
       interval_start: row.intervalStart,
       interval_minutes: row.intervalMinutes,
+      demand_timezone: row.demandTimezone,
+      interval_start_utc: row.intervalStartUtc,
+      utc_offset_minutes: row.utcOffsetMinutes,
+      dst_fold: row.dstFold,
+      occurrence_index: row.occurrenceIndex,
+      interval_ordinal: row.intervalOrdinal,
       weight: Number(row.normalizedWeight.toFixed(6)),
       volume: row.allocatedVolume,
       aht_seconds: null,
@@ -2297,7 +2654,7 @@ export function IntradayForecastV2() {
               These controls define the exact planning scope for monthly source and week allocation data.
             </CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-4 pt-5 md:grid-cols-2 xl:grid-cols-4">
+          <CardContent className="grid gap-4 pt-5 md:grid-cols-2 xl:grid-cols-5">
             <label className="space-y-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">LOB</span>
               <Select
@@ -2324,7 +2681,15 @@ export function IntradayForecastV2() {
 
             <label className="space-y-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Month</span>
-              <Input type="month" value={monthKey} onChange={(e) => setMonthKey(e.target.value || currentMonthKey())} />
+              <Input
+                type="month"
+                value={monthKey}
+                onChange={(e) => {
+                  monthManuallySelectedRef.current = true;
+                  setMonthKey(e.target.value || currentMonthKey(demandTimezone));
+                }}
+              />
+              <p className="text-[11px] text-slate-500">Demand-local month.</p>
             </label>
 
             <label className="space-y-2">
@@ -2359,6 +2724,12 @@ export function IntradayForecastV2() {
               </Select>
               <p className="text-[11px] text-slate-500">Defaults from LOB settings when available.</p>
             </label>
+
+            <div className="space-y-2 rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Demand Timezone</span>
+              <p className="break-words text-sm font-semibold text-cyan-950">{demandTimezone}</p>
+              <p className="text-[11px] text-cyan-800">Drives demand-local dates, weeks, and DST intervals.</p>
+            </div>
           </CardContent>
         </Card>
 
@@ -2374,7 +2745,7 @@ export function IntradayForecastV2() {
                 </CardTitle>
                 <CardDescription className="mt-2">
                   Use actual interval volumes to create the distribution pattern. Forecasted monthly volume remains
-                  the volume source.
+                  the volume source. Grid dates and intervals use demand timezone {demandTimezone}.
                 </CardDescription>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -2430,51 +2801,219 @@ export function IntradayForecastV2() {
               </div>
             </div>
 
-            <Table containerClassName="max-h-[560px] overflow-auto rounded-lg border border-slate-200">
-              <TableHeader>
-                <TableRow className="bg-slate-50 hover:bg-slate-50">
-                  <TableHead>Date</TableHead>
-                  <TableHead>Day of week</TableHead>
-                  <TableHead>Interval time</TableHead>
-                  <TableHead className="min-w-[190px] text-right">Actual volume</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {actualBaselinePreviewRows.length === 0 ? (
+            <Table
+              className="w-max min-w-full border-collapse"
+              containerClassName="max-h-[640px] overflow-auto rounded-lg border border-slate-200"
+            >
+              {actualBaselineIntervalSlots.length === 0 || actualBaselineDateColumns.length === 0 ? (
+                <TableBody>
                   <TableRow>
-                    <TableCell colSpan={4} className="h-24 text-center text-sm text-slate-500">
+                    <TableCell className="h-24 min-w-[640px] text-center text-sm text-slate-500">
                       No operating interval rows are available for the selected scope.
                     </TableCell>
                   </TableRow>
-                ) : (
-                  actualBaselinePreviewRows.map((row) => (
-                    <TableRow key={row.key}>
-                      <TableCell className="font-medium text-slate-900">{row.dateLabel}</TableCell>
-                      <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
-                      <TableCell className="text-slate-600">{row.intervalLabel}</TableCell>
-                      <TableCell className="text-right">
-                        <Input
-                          className={`ml-auto h-8 w-28 text-right tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
-                          type="number"
-                          min="0"
-                          step="1"
-                          inputMode="numeric"
-                          disabled={!actualBaselineEditing || actualBaselineLoading || savingActualBaseline}
-                          value={row.inputValue}
-                          onChange={(event) => updateActualBaselineInput(row.key, event.target.value)}
-                        />
-                      </TableCell>
+                </TableBody>
+              ) : (
+                <>
+                  <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead
+                        rowSpan={2}
+                        className="sticky left-0 z-30 min-w-[150px] border-r border-slate-200 bg-slate-50 text-slate-700"
+                      >
+                        Interval
+                      </TableHead>
+                      {actualBaselineWeekGroups.map((group) => (
+                        <TableHead
+                          key={group.weekStart}
+                          colSpan={group.columns.length + 1}
+                          className="border-r border-slate-200 bg-slate-50 text-center text-slate-700"
+                        >
+                          <div className="text-xs font-semibold uppercase tracking-wide">{group.weekLabel}</div>
+                          <div className="text-[11px] font-normal text-slate-500">
+                            {group.columns[0]?.compactDateLabel} - {group.columns[group.columns.length - 1]?.compactDateLabel}
+                          </div>
+                        </TableHead>
+                      ))}
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
-              <TableFooter>
-                <TableRow>
-                  <TableCell colSpan={3}>Actual baseline total</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatVolume(actualBaselineTotal)}</TableCell>
-                </TableRow>
-              </TableFooter>
+                    <TableRow className="bg-white hover:bg-white">
+                      {actualBaselineWeekGroups.map((group) => (
+                        <React.Fragment key={`${group.weekStart}-dates`}>
+                          {group.columns.map((column) => (
+                            <TableHead
+                              key={column.intervalDate}
+                              className="min-w-[88px] border-r border-slate-100 bg-white text-center"
+                            >
+                              <div className="text-xs font-semibold text-slate-700">{column.compactDateLabel}</div>
+                              <div className="text-[11px] font-normal text-slate-500">{column.shortDayLabel}</div>
+                            </TableHead>
+                          ))}
+                          <TableHead className="min-w-[88px] border-r border-slate-200 bg-emerald-50 text-center text-emerald-800">
+                            VOL
+                          </TableHead>
+                        </React.Fragment>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {actualBaselineIntervalSlots.map((slot, slotIndex) => (
+                      <TableRow key={slot.intervalTime}>
+                        <TableCell className="sticky left-0 z-10 border-r border-slate-200 bg-white font-medium text-slate-900">
+                          {slot.intervalLabel}
+                        </TableCell>
+                        {actualBaselineWeekGroups.map((group) => {
+                          const weekSlotTotal = group.columns.reduce((sum, column) => {
+                            const key = actualBaselineInputKey(column.intervalDate, slot.intervalTime, slot.occurrenceIndex);
+                            return sum + (actualBaselinePreviewByKey.get(key)?.actualVolume ?? 0);
+                          }, 0);
+                          return (
+                            <React.Fragment key={`${slot.intervalTime}-${group.weekStart}`}>
+                              {group.columns.map((column) => {
+                                const key = actualBaselineInputKey(column.intervalDate, slot.intervalTime, slot.occurrenceIndex);
+                                const editable = actualBaselineEditableKeys.has(key);
+                                const row = actualBaselinePreviewByKey.get(key);
+                                const columnIndex = actualBaselineDateIndexByDate.get(column.intervalDate) ?? 0;
+                                return (
+                                  <TableCell
+                                    key={key}
+                                    className={`border-r border-slate-100 p-1 text-center ${
+                                      editable ? "bg-white" : "bg-slate-50 text-slate-300"
+                                    }`}
+                                  >
+                                    {editable ? (
+                                      <Input
+                                        aria-label={`${column.dateLabel} ${slot.intervalLabel} actual volume`}
+                                        className={`h-8 w-20 px-2 text-right tabular-nums ${
+                                          row?.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""
+                                        }`}
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        inputMode="numeric"
+                                        disabled={!actualBaselineEditing || actualBaselineLoading || savingActualBaseline}
+                                        value={actualBaselineInputsForScope[key] ?? "0"}
+                                        onChange={(event) => updateActualBaselineInput(key, event.target.value)}
+                                        onFocus={(event) => event.currentTarget.select()}
+                                        onPaste={(event) => pasteActualBaselineCells(event, slotIndex, columnIndex)}
+                                      />
+                                    ) : (
+                                      <span className="text-xs">-</span>
+                                    )}
+                                  </TableCell>
+                                );
+                              })}
+                              <TableCell className="border-r border-slate-200 bg-emerald-50 text-right font-semibold tabular-nums text-emerald-900">
+                                {formatVolume(weekSlotTotal)}
+                              </TableCell>
+                            </React.Fragment>
+                          );
+                        })}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  <TableFooter className="sticky bottom-0 z-20 border-t border-slate-200 bg-slate-50">
+                    <TableRow className="hover:bg-slate-50">
+                      <TableCell className="sticky left-0 z-30 border-r border-slate-200 bg-slate-50 font-semibold text-slate-800">
+                        Daily total
+                      </TableCell>
+                      {actualBaselineWeekGroups.map((group) => (
+                        <React.Fragment key={`${group.weekStart}-totals`}>
+                          {group.columns.map((column) => (
+                            <TableCell
+                              key={`${column.intervalDate}-total`}
+                              className="border-r border-slate-100 text-right font-semibold tabular-nums text-slate-800"
+                            >
+                              {formatVolume(actualBaselineDayTotals.get(column.intervalDate) ?? 0)}
+                            </TableCell>
+                          ))}
+                          <TableCell className="border-r border-slate-200 bg-emerald-100 text-right font-semibold tabular-nums text-emerald-950">
+                            {formatVolume(actualBaselineWeekTotals.get(group.weekStart) ?? 0)}
+                          </TableCell>
+                        </React.Fragment>
+                      ))}
+                    </TableRow>
+                  </TableFooter>
+                </>
+              )}
             </Table>
+
+            <div className="grid gap-3 xl:grid-cols-3">
+              <details className="rounded-lg border border-slate-200 bg-white" open>
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">
+                  Week weights
+                </summary>
+                <Table containerClassName="max-h-[260px] overflow-auto border-t border-slate-200">
+                  <TableHeader>
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead>Week</TableHead>
+                      <TableHead>Date range</TableHead>
+                      <TableHead className="text-right">Actual volume</TableHead>
+                      <TableHead className="text-right">Weight</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {actualBaselineWeekSummaryRows.map((row) => (
+                      <TableRow key={row.key}>
+                        <TableCell className="font-medium text-slate-900">{row.label}</TableCell>
+                        <TableCell className="text-slate-600">{row.dateRange}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatVolume(row.total)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatPercent(row.weight)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </details>
+
+              <details className="rounded-lg border border-slate-200 bg-white">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">
+                  Day weights
+                </summary>
+                <Table containerClassName="max-h-[260px] overflow-auto border-t border-slate-200">
+                  <TableHeader>
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead>Date</TableHead>
+                      <TableHead>Week</TableHead>
+                      <TableHead className="text-right">Actual volume</TableHead>
+                      <TableHead className="text-right">Week weight</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {actualBaselineDaySummaryRows.map((row) => (
+                      <TableRow key={row.key}>
+                        <TableCell className="font-medium text-slate-900">{row.label}</TableCell>
+                        <TableCell className="text-slate-600">{row.weekLabel}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatVolume(row.total)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatPercent(row.weight)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </details>
+
+              <details className="rounded-lg border border-slate-200 bg-white">
+                <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">
+                  Interval weights
+                </summary>
+                <Table containerClassName="max-h-[260px] overflow-auto border-t border-slate-200">
+                  <TableHeader>
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead>Interval</TableHead>
+                      <TableHead className="text-right">Actual volume</TableHead>
+                      <TableHead className="text-right">Month weight</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {actualBaselineIntervalSummaryRows.map((row) => (
+                      <TableRow key={row.key}>
+                        <TableCell className="font-medium text-slate-900">{row.label}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatVolume(row.total)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatPercent(row.weight)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </details>
+            </div>
 
             <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-xs text-slate-500">

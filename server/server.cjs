@@ -381,6 +381,7 @@ async function ensureAppTables() {
       channel                  TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
       staffing_mode            TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
       month_key                TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      demand_timezone          TEXT,
       demand_forecast_volume   NUMERIC,
       demand_source            TEXT,
       manual_monthly_volume    NUMERIC,
@@ -392,6 +393,7 @@ async function ensureAppTables() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_month_plans_scope ON intraday_v2_month_plans (organization_id, lob_id, channel, staffing_mode, month_key)`);
+  await pool.query(`ALTER TABLE intraday_v2_month_plans ADD COLUMN IF NOT EXISTS demand_timezone TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS intraday_v2_week_allocations (
@@ -402,6 +404,7 @@ async function ensureAppTables() {
       channel         TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
       staffing_mode   TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
       month_key       TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      demand_timezone TEXT,
       week_start      DATE NOT NULL,
       week_index      INTEGER NOT NULL,
       weight          NUMERIC NOT NULL DEFAULT 0,
@@ -413,6 +416,7 @@ async function ensureAppTables() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_week_allocations_scope ON intraday_v2_week_allocations (organization_id, lob_id, channel, staffing_mode, month_key)`);
+  await pool.query(`ALTER TABLE intraday_v2_week_allocations ADD COLUMN IF NOT EXISTS demand_timezone TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS intraday_v2_day_allocations (
@@ -423,6 +427,7 @@ async function ensureAppTables() {
       channel         TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
       staffing_mode   TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
       month_key       TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      demand_timezone TEXT,
       calendar_date   DATE NOT NULL,
       day_of_week     INTEGER NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
       week_start      DATE NOT NULL,
@@ -435,6 +440,7 @@ async function ensureAppTables() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_day_allocations_scope ON intraday_v2_day_allocations (organization_id, lob_id, channel, staffing_mode, month_key)`);
+  await pool.query(`ALTER TABLE intraday_v2_day_allocations ADD COLUMN IF NOT EXISTS demand_timezone TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS intraday_v2_interval_allocations (
@@ -445,10 +451,16 @@ async function ensureAppTables() {
       channel          TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
       staffing_mode    TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
       month_key        TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      demand_timezone  TEXT,
       calendar_date    DATE NOT NULL,
       interval_index   INTEGER NOT NULL,
       interval_start   TIME NOT NULL,
       interval_minutes INTEGER NOT NULL DEFAULT 15,
+      interval_start_utc TIMESTAMPTZ,
+      utc_offset_minutes INTEGER,
+      dst_fold          INTEGER NOT NULL DEFAULT 0,
+      occurrence_index  INTEGER NOT NULL DEFAULT 0,
+      interval_ordinal  INTEGER,
       weight           NUMERIC NOT NULL DEFAULT 0,
       volume           NUMERIC NOT NULL DEFAULT 0,
       aht_seconds      NUMERIC,
@@ -458,6 +470,12 @@ async function ensureAppTables() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_interval_allocations_scope ON intraday_v2_interval_allocations (organization_id, lob_id, channel, staffing_mode, month_key)`);
+  await pool.query(`ALTER TABLE intraday_v2_interval_allocations ADD COLUMN IF NOT EXISTS demand_timezone TEXT`);
+  await pool.query(`ALTER TABLE intraday_v2_interval_allocations ADD COLUMN IF NOT EXISTS interval_start_utc TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE intraday_v2_interval_allocations ADD COLUMN IF NOT EXISTS utc_offset_minutes INTEGER`);
+  await pool.query(`ALTER TABLE intraday_v2_interval_allocations ADD COLUMN IF NOT EXISTS dst_fold INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE intraday_v2_interval_allocations ADD COLUMN IF NOT EXISTS occurrence_index INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE intraday_v2_interval_allocations ADD COLUMN IF NOT EXISTS interval_ordinal INTEGER`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS intraday_v2_actual_baseline_intervals (
@@ -467,9 +485,15 @@ async function ensureAppTables() {
       channel         TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
       staffing_mode   TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
       month_key       TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      demand_timezone TEXT,
       interval_date   DATE NOT NULL,
       day_of_week     INTEGER NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
       interval_time   TIME NOT NULL,
+      interval_start_utc TIMESTAMPTZ,
+      utc_offset_minutes INTEGER,
+      dst_fold        INTEGER NOT NULL DEFAULT 0,
+      occurrence_index INTEGER NOT NULL DEFAULT 0,
+      interval_ordinal INTEGER,
       actual_volume   NUMERIC NOT NULL DEFAULT 0,
       source          TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'uploaded')),
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -478,6 +502,38 @@ async function ensureAppTables() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_actual_baseline_intervals_scope ON intraday_v2_actual_baseline_intervals (organization_id, lob_id, channel, staffing_mode, month_key)`);
+  await pool.query(`ALTER TABLE intraday_v2_actual_baseline_intervals ADD COLUMN IF NOT EXISTS demand_timezone TEXT`);
+  await pool.query(`ALTER TABLE intraday_v2_actual_baseline_intervals ADD COLUMN IF NOT EXISTS interval_start_utc TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE intraday_v2_actual_baseline_intervals ADD COLUMN IF NOT EXISTS utc_offset_minutes INTEGER`);
+  await pool.query(`ALTER TABLE intraday_v2_actual_baseline_intervals ADD COLUMN IF NOT EXISTS dst_fold INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE intraday_v2_actual_baseline_intervals ADD COLUMN IF NOT EXISTS occurrence_index INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE intraday_v2_actual_baseline_intervals ADD COLUMN IF NOT EXISTS interval_ordinal INTEGER`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS intraday_v2_actual_baseline_interval_instances (
+      id              SERIAL PRIMARY KEY,
+      organization_id INTEGER NOT NULL DEFAULT 1,
+      lob_id          INTEGER NOT NULL REFERENCES lobs(id) ON DELETE CASCADE,
+      channel         TEXT NOT NULL CHECK (channel IN ('voice', 'email', 'chat', 'cases')),
+      staffing_mode   TEXT NOT NULL CHECK (staffing_mode IN ('dedicated', 'blended')),
+      month_key       TEXT NOT NULL CHECK (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+      demand_timezone TEXT NOT NULL,
+      interval_date   DATE NOT NULL,
+      day_of_week     INTEGER NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
+      interval_time   TIME NOT NULL,
+      interval_start_utc TIMESTAMPTZ,
+      utc_offset_minutes INTEGER,
+      dst_fold        INTEGER NOT NULL DEFAULT 0,
+      occurrence_index INTEGER NOT NULL DEFAULT 0,
+      interval_ordinal INTEGER NOT NULL DEFAULT 0,
+      actual_volume   NUMERIC NOT NULL DEFAULT 0,
+      source          TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'uploaded')),
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (organization_id, lob_id, channel, staffing_mode, month_key, interval_date, interval_time, occurrence_index)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_intraday_v2_actual_baseline_interval_instances_scope ON intraday_v2_actual_baseline_interval_instances (organization_id, lob_id, channel, staffing_mode, month_key)`);
 
   // ── lob_settings — per-LOB channel, staffing, and hours-of-operation config ──
   await pool.query(`
@@ -1353,6 +1409,7 @@ async function getDefaultLobId(organizationId) {
 const INTRADAY_V2_CHANNELS = new Set(['voice', 'email', 'chat', 'cases']);
 const INTRADAY_V2_STAFFING_MODES = new Set(['dedicated', 'blended']);
 const INTRADAY_V2_PLAN_STATUSES = new Set(['draft', 'published', 'archived']);
+const DEFAULT_DEMAND_TIMEZONE = 'America/New_York';
 
 function apiValidationError(message, status = 400) {
   const err = new Error(message);
@@ -1362,6 +1419,16 @@ function apiValidationError(message, status = 400) {
 
 function hasOwn(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+
+function normalizeIntradayV2TimeZone(value) {
+  const candidate = String(value || DEFAULT_DEMAND_TIMEZONE).trim();
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch {
+    return DEFAULT_DEMAND_TIMEZONE;
+  }
 }
 
 function requireIntradayV2Field(source, field) {
@@ -1393,6 +1460,18 @@ function parseIntradayV2Number(value, field, { required = false, min = null } = 
   if (!Number.isFinite(parsed)) throw apiValidationError(`${field} must be a valid number`);
   if (min !== null && parsed < min) throw apiValidationError(`${field} must be at least ${min}`);
   return parsed;
+}
+
+function parseIntradayV2OptionalInteger(value, field, { min = null, max = null } = {}) {
+  if (value === undefined || value === null || value === '') return null;
+  return parseIntradayV2Integer(value, field, { min, max });
+}
+
+function validateIntradayV2OptionalTimestamp(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) throw apiValidationError(`${field} must be a valid timestamp`);
+  return date.toISOString();
 }
 
 function parseIntradayV2Boolean(value) {
@@ -1461,7 +1540,10 @@ async function validateIntradayV2Scope(req, source) {
   const monthKey = validateIntradayV2MonthKey(requireIntradayV2Field(source, 'month_key'));
 
   const lob = await pool.query(
-    'SELECT id FROM lobs WHERE id = $1 AND organization_id = $2',
+    `SELECT l.id, ls.demand_timezone
+     FROM lobs l
+     LEFT JOIN lob_settings ls ON ls.lob_id = l.id AND ls.organization_id = l.organization_id
+     WHERE l.id = $1 AND l.organization_id = $2`,
     [lobId, user.organization_id]
   );
   if (lob.rows.length === 0) throw apiValidationError('LOB not found for this organization', 404);
@@ -1472,6 +1554,7 @@ async function validateIntradayV2Scope(req, source) {
     channel,
     staffingMode,
     monthKey,
+    demandTimezone: normalizeIntradayV2TimeZone(lob.rows[0]?.demand_timezone),
   };
 }
 
@@ -1482,12 +1565,14 @@ function intradayV2ScopeParams(scope) {
 async function ensureIntradayV2MonthPlan(db, scope) {
   const { rows } = await db.query(
     `INSERT INTO intraday_v2_month_plans
-       (organization_id, lob_id, channel, staffing_mode, month_key)
-     VALUES ($1,$2,$3,$4,$5)
+       (organization_id, lob_id, channel, staffing_mode, month_key, demand_timezone)
+     VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (organization_id, lob_id, channel, staffing_mode, month_key)
-     DO UPDATE SET updated_at = NOW()
+     DO UPDATE SET
+       demand_timezone = COALESCE(intraday_v2_month_plans.demand_timezone, EXCLUDED.demand_timezone),
+       updated_at = NOW()
      RETURNING id`,
-    intradayV2ScopeParams(scope)
+    [...intradayV2ScopeParams(scope), scope.demandTimezone]
   );
   return rows[0].id;
 }
@@ -1528,6 +1613,11 @@ function validateIntradayV2IntervalAllocation(row, index) {
     interval_index: intervalIndex,
     interval_start: validateIntradayV2Time(row.interval_start ?? formatIntervalTime(intervalIndex, intervalMinutes), `allocations[${index}].interval_start`),
     interval_minutes: intervalMinutes,
+    interval_start_utc: validateIntradayV2OptionalTimestamp(row.interval_start_utc, `allocations[${index}].interval_start_utc`),
+    utc_offset_minutes: parseIntradayV2OptionalInteger(row.utc_offset_minutes, `allocations[${index}].utc_offset_minutes`),
+    dst_fold: parseIntradayV2OptionalInteger(row.dst_fold ?? row.occurrence_index ?? 0, `allocations[${index}].dst_fold`, { min: 0 }) ?? 0,
+    occurrence_index: parseIntradayV2OptionalInteger(row.occurrence_index ?? row.dst_fold ?? 0, `allocations[${index}].occurrence_index`, { min: 0 }) ?? 0,
+    interval_ordinal: parseIntradayV2OptionalInteger(row.interval_ordinal ?? intervalIndex, `allocations[${index}].interval_ordinal`, { min: 0 }) ?? intervalIndex,
     weight: parseIntradayV2Number(row.weight ?? 0, `allocations[${index}].weight`, { required: true, min: 0 }),
     volume: parseIntradayV2Number(row.volume ?? 0, `allocations[${index}].volume`, { required: true, min: 0 }),
     aht_seconds: parseIntradayV2Number(row.aht_seconds, `allocations[${index}].aht_seconds`, { min: 0 }),
@@ -1542,12 +1632,18 @@ function validateIntradayV2ActualBaselineSource(value) {
   return source;
 }
 
-function validateIntradayV2ActualBaselineRow(row, index, defaultSource = 'manual') {
+function validateIntradayV2ActualBaselineRow(row, index, defaultSource = 'manual', scopeDemandTimezone = DEFAULT_DEMAND_TIMEZONE) {
   const intervalDate = validateIntradayV2Date(row.interval_date ?? row.calendar_date, `rows[${index}].interval_date`);
   return {
     interval_date: intervalDate,
     day_of_week: parseIntradayV2Integer(row.day_of_week ?? getMondayBasedWeekday(intervalDate), `rows[${index}].day_of_week`, { min: 0, max: 6 }),
     interval_time: validateIntradayV2Time(row.interval_time ?? row.interval_start, `rows[${index}].interval_time`),
+    demand_timezone: normalizeIntradayV2TimeZone(row.demand_timezone || scopeDemandTimezone),
+    interval_start_utc: validateIntradayV2OptionalTimestamp(row.interval_start_utc, `rows[${index}].interval_start_utc`),
+    utc_offset_minutes: parseIntradayV2OptionalInteger(row.utc_offset_minutes, `rows[${index}].utc_offset_minutes`),
+    dst_fold: parseIntradayV2OptionalInteger(row.dst_fold ?? row.occurrence_index ?? 0, `rows[${index}].dst_fold`, { min: 0 }) ?? 0,
+    occurrence_index: parseIntradayV2OptionalInteger(row.occurrence_index ?? row.dst_fold ?? 0, `rows[${index}].occurrence_index`, { min: 0 }) ?? 0,
+    interval_ordinal: parseIntradayV2OptionalInteger(row.interval_ordinal ?? 0, `rows[${index}].interval_ordinal`, { min: 0 }) ?? 0,
     actual_volume: parseIntradayV2Number(row.actual_volume ?? row.volume, `rows[${index}].actual_volume`, { required: true, min: 0 }),
     source: validateIntradayV2ActualBaselineSource(row.source ?? defaultSource),
   };
@@ -1563,19 +1659,39 @@ async function replaceIntradayV2ActualBaseline(client, scope, rows, defaultSourc
      WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
     params
   );
+  await client.query(
+    `DELETE FROM intraday_v2_actual_baseline_interval_instances
+     WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+    params
+  );
 
   for (let i = 0; i < rows.length; i += 1) {
-    const row = validateIntradayV2ActualBaselineRow(rows[i] || {}, i, source);
+    const row = validateIntradayV2ActualBaselineRow(rows[i] || {}, i, source, scope.demandTimezone);
     if (!row.interval_date.startsWith(scope.monthKey)) {
       throw apiValidationError(`rows[${i}].interval_date must fall within month_key`);
     }
     if (row.actual_volume <= 0) continue;
     await client.query(
-      `INSERT INTO intraday_v2_actual_baseline_intervals
+      `INSERT INTO intraday_v2_actual_baseline_interval_instances
          (organization_id, lob_id, channel, staffing_mode, month_key,
-          interval_date, day_of_week, interval_time, actual_volume, source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [...params, row.interval_date, row.day_of_week, row.interval_time, row.actual_volume, row.source]
+          demand_timezone, interval_date, day_of_week, interval_time,
+          interval_start_utc, utc_offset_minutes, dst_fold, occurrence_index, interval_ordinal,
+          actual_volume, source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      [
+        ...params,
+        row.demand_timezone,
+        row.interval_date,
+        row.day_of_week,
+        row.interval_time,
+        row.interval_start_utc,
+        row.utc_offset_minutes,
+        row.dst_fold,
+        row.occurrence_index,
+        row.interval_ordinal,
+        row.actual_volume,
+        row.source,
+      ]
     );
   }
 }
@@ -1597,35 +1713,83 @@ async function replaceIntradayV2Allocations(client, scope, tableName, allocation
       await client.query(
         `INSERT INTO intraday_v2_week_allocations
            (plan_id, organization_id, lob_id, channel, staffing_mode, month_key,
-            week_start, week_index, weight, volume, is_locked)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [planId, ...params, row.week_start, row.week_index, row.weight, row.volume, row.is_locked]
+            demand_timezone, week_start, week_index, weight, volume, is_locked)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [planId, ...params, scope.demandTimezone, row.week_start, row.week_index, row.weight, row.volume, row.is_locked]
       );
     } else if (tableName === 'intraday_v2_day_allocations') {
       await client.query(
         `INSERT INTO intraday_v2_day_allocations
            (plan_id, organization_id, lob_id, channel, staffing_mode, month_key,
-            calendar_date, day_of_week, week_start, weight, volume, is_locked)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [planId, ...params, row.calendar_date, row.day_of_week, row.week_start, row.weight, row.volume, row.is_locked]
+            demand_timezone, calendar_date, day_of_week, week_start, weight, volume, is_locked)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [planId, ...params, scope.demandTimezone, row.calendar_date, row.day_of_week, row.week_start, row.weight, row.volume, row.is_locked]
       );
     } else if (tableName === 'intraday_v2_interval_allocations') {
       await client.query(
         `INSERT INTO intraday_v2_interval_allocations
            (plan_id, organization_id, lob_id, channel, staffing_mode, month_key,
-            calendar_date, interval_index, interval_start, interval_minutes, weight, volume, aht_seconds)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [planId, ...params, row.calendar_date, row.interval_index, row.interval_start, row.interval_minutes, row.weight, row.volume, row.aht_seconds]
+            demand_timezone, calendar_date, interval_index, interval_start, interval_minutes,
+            interval_start_utc, utc_offset_minutes, dst_fold, occurrence_index, interval_ordinal,
+            weight, volume, aht_seconds)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+        [
+          planId,
+          ...params,
+          scope.demandTimezone,
+          row.calendar_date,
+          row.interval_index,
+          row.interval_start,
+          row.interval_minutes,
+          row.interval_start_utc,
+          row.utc_offset_minutes,
+          row.dst_fold,
+          row.occurrence_index,
+          row.interval_ordinal,
+          row.weight,
+          row.volume,
+          row.aht_seconds,
+        ]
       );
     }
   }
 
   await client.query(
     `UPDATE intraday_v2_month_plans
-     SET updated_at = NOW()
+     SET demand_timezone = COALESCE(demand_timezone, $6), updated_at = NOW()
      WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+    [...params, scope.demandTimezone]
+  );
+}
+
+async function fetchIntradayV2ActualBaselineRows(db, scope) {
+  const params = intradayV2ScopeParams(scope);
+  const { rows } = await db.query(
+    `SELECT *, false AS legacy_row
+     FROM intraday_v2_actual_baseline_interval_instances
+     WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+     ORDER BY interval_date ASC, interval_ordinal ASC, interval_time ASC, occurrence_index ASC`,
     params
   );
+  if (rows.length > 0) return rows;
+
+  const legacy = await db.query(
+    `SELECT
+       id, organization_id, lob_id, channel, staffing_mode, month_key,
+       COALESCE(demand_timezone, $6) AS demand_timezone,
+       interval_date, day_of_week, interval_time,
+       interval_start_utc, utc_offset_minutes,
+       COALESCE(dst_fold, 0) AS dst_fold,
+       COALESCE(occurrence_index, 0) AS occurrence_index,
+       COALESCE(interval_ordinal, 0) AS interval_ordinal,
+       actual_volume, source, created_at, updated_at,
+       true AS legacy_row
+     FROM intraday_v2_actual_baseline_intervals
+     WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
+     ORDER BY interval_date ASC, interval_time ASC`,
+    [...params, scope.demandTimezone]
+  );
+  return legacy.rows;
 }
 
 function parseTimeToMinutes(value) {
@@ -2476,13 +2640,7 @@ app.put('/api/intraday-v2/interval-allocations', async (req, res) => {
 app.get('/api/intraday-v2/actual-baseline', async (req, res) => {
   try {
     const scope = await validateIntradayV2Scope(req, req.query);
-    const { rows } = await pool.query(
-      `SELECT *
-       FROM intraday_v2_actual_baseline_intervals
-       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
-       ORDER BY interval_date ASC, interval_time ASC`,
-      intradayV2ScopeParams(scope)
-    );
+    const rows = await fetchIntradayV2ActualBaselineRows(pool, scope);
     res.json(rows);
   } catch (err) {
     handleIntradayV2Error(res, err, 'Intraday v2 actual baseline GET error');
@@ -2496,13 +2654,7 @@ app.put('/api/intraday-v2/actual-baseline', async (req, res) => {
     await client.query('BEGIN');
     await replaceIntradayV2ActualBaseline(client, scope, req.body.rows, req.body.source);
     await client.query('COMMIT');
-    const { rows } = await pool.query(
-      `SELECT *
-       FROM intraday_v2_actual_baseline_intervals
-       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5
-       ORDER BY interval_date ASC, interval_time ASC`,
-      intradayV2ScopeParams(scope)
-    );
+    const rows = await fetchIntradayV2ActualBaselineRows(pool, scope);
     res.json({ success: true, count: rows.length, rows });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2515,12 +2667,17 @@ app.put('/api/intraday-v2/actual-baseline', async (req, res) => {
 app.delete('/api/intraday-v2/actual-baseline', async (req, res) => {
   try {
     const scope = await validateIntradayV2Scope(req, req.query);
-    const { rowCount } = await pool.query(
+    const legacy = await pool.query(
       `DELETE FROM intraday_v2_actual_baseline_intervals
        WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
       intradayV2ScopeParams(scope)
     );
-    res.json({ success: true, count: rowCount });
+    const current = await pool.query(
+      `DELETE FROM intraday_v2_actual_baseline_interval_instances
+       WHERE organization_id = $1 AND lob_id = $2 AND channel = $3 AND staffing_mode = $4 AND month_key = $5`,
+      intradayV2ScopeParams(scope)
+    );
+    res.json({ success: true, count: legacy.rowCount + current.rowCount });
   } catch (err) {
     handleIntradayV2Error(res, err, 'Intraday v2 actual baseline DELETE error');
   }
