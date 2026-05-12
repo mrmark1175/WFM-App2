@@ -941,6 +941,28 @@ function buildIntervalAllocationPreview(
   };
 }
 
+function buildIntervalAllocationSlots(rows: IntervalAllocationInterval[]): ActualBaselineIntervalSlot[] {
+  const slotsByKey = new Map<string, ActualBaselineIntervalSlot>();
+  rows.forEach((row) => {
+    const slotKey = actualBaselineSlotKey(row.intervalStart, row.occurrenceIndex);
+    if (slotsByKey.has(slotKey)) return;
+    slotsByKey.set(slotKey, {
+      slotKey,
+      intervalTime: row.intervalStart,
+      intervalIndex: row.intervalIndex,
+      occurrenceIndex: row.occurrenceIndex,
+      intervalLabel: row.intervalLabel,
+    });
+  });
+
+  return Array.from(slotsByKey.values()).sort((left, right) => (
+    (parseTimeToMinutes(left.intervalTime) ?? 0) - (parseTimeToMinutes(right.intervalTime) ?? 0)
+    || left.occurrenceIndex - right.occurrenceIndex
+    || left.intervalIndex - right.intervalIndex
+    || left.intervalLabel.localeCompare(right.intervalLabel)
+  ));
+}
+
 function actualBaselineInputKey(intervalDate: string, intervalTime: string, occurrenceIndex = 0): string {
   return `${intervalDate}:${normalizeTimeKey(intervalTime)}:${Math.max(0, Math.round(Number(occurrenceIndex) || 0))}`;
 }
@@ -2178,6 +2200,31 @@ export function IntradayForecastV2() {
     () => buildIntervalAllocationPreview(intervalAllocationRows, dayAllocationPreview.rows, intervalInputsForScope),
     [dayAllocationPreview.rows, intervalAllocationRows, intervalInputsForScope]
   );
+  const dayAllocationRowsByWeekStart = useMemo(() => {
+    const rowsByWeekStart = new Map<string, DayAllocationPreviewRow[]>();
+    dayAllocationPreview.rows.forEach((row) => {
+      rowsByWeekStart.set(row.weekStart, [...(rowsByWeekStart.get(row.weekStart) ?? []), row]);
+    });
+    return rowsByWeekStart;
+  }, [dayAllocationPreview.rows]);
+  const intervalAllocationSlots = useMemo(
+    () => buildIntervalAllocationSlots(intervalAllocationPreview.rows),
+    [intervalAllocationPreview.rows]
+  );
+  const intervalAllocationRowsByDateAndSlot = useMemo(() => {
+    const rowsByCell = new Map<string, IntervalAllocationPreviewRow>();
+    intervalAllocationPreview.rows.forEach((row) => {
+      const slotKey = actualBaselineSlotKey(row.intervalStart, row.occurrenceIndex);
+      rowsByCell.set(`${row.calendarDate}:${slotKey}`, row);
+    });
+    return rowsByCell;
+  }, [intervalAllocationPreview.rows]);
+  const intervalAllocationDaySummaryByDate = useMemo(
+    () => new Map(intervalAllocationPreview.daySummaries.map((summary) => [summary.calendarDate, summary])),
+    [intervalAllocationPreview.daySummaries]
+  );
+  const allocationDateColumns = actualBaselineDateColumns;
+  const allocationWeekGroups = actualBaselineWeekGroups;
   const intervalAllocationSourceLabel = hasAppliedActualBaselinePattern
     ? "Actual baseline pattern"
     : hasSavedIntervalAllocation
@@ -3003,7 +3050,7 @@ export function IntradayForecastV2() {
               {actualBaselineIntervalSlots.length === 0 || actualBaselineDateColumns.length === 0 ? (
                 <TableBody>
                   <TableRow>
-                    <TableCell className="h-24 min-w-[640px] text-center text-sm text-slate-500">
+                    <TableCell className="h-24 min-w-[520px] text-center text-sm text-slate-500">
                       No operating interval rows are available for the selected scope.
                     </TableCell>
                   </TableRow>
@@ -3014,7 +3061,7 @@ export function IntradayForecastV2() {
                     <TableRow className="bg-slate-50 hover:bg-slate-50">
                       <TableHead
                         rowSpan={2}
-                        className="sticky left-0 z-30 min-w-[150px] border-r border-slate-200 bg-slate-50 text-slate-700"
+                        className="sticky left-0 z-30 min-w-[132px] border-r border-slate-200 bg-slate-50 text-slate-700"
                       >
                         Interval
                       </TableHead>
@@ -3037,13 +3084,13 @@ export function IntradayForecastV2() {
                           {group.columns.map((column) => (
                             <TableHead
                               key={column.intervalDate}
-                              className="min-w-[88px] border-r border-slate-100 bg-white text-center"
+                              className="min-w-[76px] border-r border-slate-100 bg-white text-center"
                             >
                               <div className="text-xs font-semibold text-slate-700">{column.compactDateLabel}</div>
                               <div className="text-[11px] font-normal text-slate-500">{column.shortDayLabel}</div>
                             </TableHead>
                           ))}
-                          <TableHead className="min-w-[88px] border-r border-slate-200 bg-emerald-50 text-center text-emerald-800">
+                          <TableHead className="min-w-[72px] border-r border-slate-200 bg-emerald-50 text-center text-emerald-800">
                             VOL
                           </TableHead>
                         </React.Fragment>
@@ -3053,7 +3100,7 @@ export function IntradayForecastV2() {
                   <TableBody>
                     {actualBaselineIntervalSlots.map((slot, slotIndex) => (
                       <TableRow key={slot.slotKey}>
-                        <TableCell className="sticky left-0 z-10 border-r border-slate-200 bg-white font-medium text-slate-900">
+                        <TableCell className="sticky left-0 z-10 min-w-[132px] border-r border-slate-200 bg-white text-xs font-medium text-slate-900">
                           {slot.intervalLabel}
                         </TableCell>
                         {actualBaselineWeekGroups.map((group) => {
@@ -3083,7 +3130,7 @@ export function IntradayForecastV2() {
                                       if (!editable || !actualBaselineCanEditGrid || !actualBaselineSelectingRef.current) return;
                                       selectActualBaselineCell(slotIndex, columnIndex, { dragging: true });
                                     }}
-                                    className={`relative border-r border-slate-100 p-1 text-center select-none ${
+                                    className={`relative border-r border-slate-100 p-0.5 text-center select-none ${
                                       editable ? "bg-white" : "bg-slate-50 text-slate-300"
                                     } ${
                                       selected ? "bg-sky-50 ring-1 ring-inset ring-sky-300" : ""
@@ -3094,7 +3141,7 @@ export function IntradayForecastV2() {
                                     {editable ? (
                                       <Input
                                         aria-label={`${column.dateLabel} ${slot.intervalLabel} actual volume`}
-                                        className={`h-8 w-20 px-2 text-right tabular-nums ${
+                                        className={`h-7 w-[68px] px-1 text-right text-xs tabular-nums ${
                                           row?.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""
                                         } ${
                                           selected ? "border-sky-300 bg-sky-50/60" : ""
@@ -3126,7 +3173,7 @@ export function IntradayForecastV2() {
                                   </TableCell>
                                 );
                               })}
-                              <TableCell className="border-r border-slate-200 bg-emerald-50 text-right font-semibold tabular-nums text-emerald-900">
+                              <TableCell className="min-w-[72px] border-r border-slate-200 bg-emerald-50 px-1.5 text-right font-semibold tabular-nums text-emerald-900">
                                 {formatVolume(weekSlotTotal)}
                               </TableCell>
                             </React.Fragment>
@@ -3137,7 +3184,7 @@ export function IntradayForecastV2() {
                   </TableBody>
                   <TableFooter className="sticky bottom-0 z-20 border-t border-slate-200 bg-slate-50">
                     <TableRow className="hover:bg-slate-50">
-                      <TableCell className="sticky left-0 z-30 border-r border-slate-200 bg-slate-50 font-semibold text-slate-800">
+                      <TableCell className="sticky left-0 z-30 min-w-[132px] border-r border-slate-200 bg-slate-50 font-semibold text-slate-800">
                         Daily total
                       </TableCell>
                       {actualBaselineWeekGroups.map((group) => (
@@ -3145,12 +3192,12 @@ export function IntradayForecastV2() {
                           {group.columns.map((column) => (
                             <TableCell
                               key={`${column.intervalDate}-total`}
-                              className="border-r border-slate-100 text-right font-semibold tabular-nums text-slate-800"
+                              className="min-w-[76px] border-r border-slate-100 px-1.5 text-right font-semibold tabular-nums text-slate-800"
                             >
                               {formatVolume(actualBaselineDayTotals.get(column.intervalDate) ?? 0)}
                             </TableCell>
                           ))}
-                          <TableCell className="border-r border-slate-200 bg-emerald-100 text-right font-semibold tabular-nums text-emerald-950">
+                          <TableCell className="min-w-[72px] border-r border-slate-200 bg-emerald-100 px-1.5 text-right font-semibold tabular-nums text-emerald-950">
                             {formatVolume(actualBaselineWeekTotals.get(group.weekStart) ?? 0)}
                           </TableCell>
                         </React.Fragment>
@@ -3465,7 +3512,7 @@ export function IntradayForecastV2() {
                   <TableHead>Week label</TableHead>
                   <TableHead>Date range</TableHead>
                   <TableHead className="text-right">Days in selected month</TableHead>
-                  <TableHead className="min-w-[190px] text-right">Weight %</TableHead>
+                  <TableHead className="min-w-[132px] text-right">Weight %</TableHead>
                   <TableHead className="text-right">Allocated volume</TableHead>
                 </TableRow>
               </TableHeader>
@@ -3484,7 +3531,7 @@ export function IntradayForecastV2() {
                       <TableCell className="text-right tabular-nums">{row.week.daysInMonth}</TableCell>
                       <TableCell className="text-right">
                         <Input
-                          className={`ml-auto h-8 w-28 text-right tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
+                          className={`ml-auto h-7 w-20 text-right text-xs tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
                           type="number"
                           min="0"
                           step="0.01"
@@ -3600,71 +3647,125 @@ export function IntradayForecastV2() {
               </div>
             </div>
 
-            <Table containerClassName="rounded-lg border border-slate-200">
-              <TableHeader>
-                <TableRow className="bg-slate-50 hover:bg-slate-50">
-                  <TableHead>Week label</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Day of week</TableHead>
-                  <TableHead className="min-w-[190px] text-right">Weight %</TableHead>
-                  <TableHead className="text-right">Allocated volume</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {dayAllocationPreview.weekSummaries.length === 0 ? (
+            <Table
+              className="w-max min-w-full border-collapse"
+              containerClassName="max-h-[520px] overflow-auto rounded-lg border border-slate-200"
+            >
+              {dayAllocationPreview.weekSummaries.length === 0 ? (
+                <TableBody>
                   <TableRow>
-                    <TableCell colSpan={5} className="h-24 text-center text-sm text-slate-500">
+                    <TableCell className="h-24 min-w-[520px] text-center text-sm text-slate-500">
                       Select a valid month to generate day allocation rows.
                     </TableCell>
                   </TableRow>
-                ) : (
-                  dayAllocationPreview.weekSummaries.map((summary) => (
-                    <React.Fragment key={summary.weekStart}>
-                      {dayAllocationPreview.rows
-                        .filter((row) => row.weekStart === summary.weekStart)
-                        .map((row) => (
-                          <TableRow key={row.calendarDate} className={!row.insideMonth ? "bg-slate-50/70 text-slate-400" : ""}>
-                            <TableCell className="font-medium text-slate-900">{row.weekLabel}</TableCell>
-                            <TableCell className="text-slate-600">{row.dateLabel}</TableCell>
-                            <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
-                            <TableCell className="text-right">
-                              <Input
-                                className={`ml-auto h-8 w-28 text-right tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                inputMode="decimal"
-                                disabled={!selectedLobId || !row.insideMonth || dayAllocationLoading || savingDayAllocation}
-                                value={row.inputValue}
-                                onChange={(event) => updateDayWeightInput(row.calendarDate, event.target.value)}
-                              />
-                              <p className="mt-1 text-[11px] text-slate-500">
-                                Normalized {formatPercent(row.normalizedWeight)}
-                              </p>
-                            </TableCell>
-                            <TableCell className="text-right font-medium tabular-nums text-slate-900">
-                              {formatVolume(row.allocatedVolume)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      <TableRow className="bg-slate-50 hover:bg-slate-50">
-                        <TableCell colSpan={3} className="font-semibold text-slate-700">
-                          {summary.weekLabel} total
-                          {!summary.totalIs100 && summary.totalRawWeight > 0 ? (
-                            <span className="ml-2 text-xs font-normal text-amber-700">Normalized for allocation</span>
-                          ) : null}
-                        </TableCell>
-                        <TableCell className="text-right font-semibold tabular-nums">
-                          {formatPercent(summary.totalRawWeight)}
-                        </TableCell>
-                        <TableCell className="text-right font-semibold tabular-nums">
-                          {formatVolume(summary.totalAllocatedVolume)} / {formatVolume(summary.weekVolume)}
-                        </TableCell>
-                      </TableRow>
-                    </React.Fragment>
-                  ))
-                )}
-              </TableBody>
+                </TableBody>
+              ) : (
+                <>
+                  <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead className="sticky left-0 z-30 min-w-[120px] border-r border-slate-200 bg-slate-50 text-slate-700">
+                        Week
+                      </TableHead>
+                      {DAY_KEYS.map((dayKey) => (
+                        <TableHead
+                          key={dayKey}
+                          className="min-w-[104px] border-r border-slate-100 bg-white text-center text-slate-700"
+                        >
+                          {DAY_LABELS[dayKey].slice(0, 3)}
+                        </TableHead>
+                      ))}
+                      <TableHead className="min-w-[84px] border-r border-slate-200 bg-slate-50 text-right text-slate-700">
+                        Weight %
+                      </TableHead>
+                      <TableHead className="min-w-[116px] bg-cyan-50 text-right text-cyan-800">
+                        Allocated / Week
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {dayAllocationPreview.weekSummaries.map((summary) => {
+                      const rowsForWeek = dayAllocationRowsByWeekStart.get(summary.weekStart) ?? [];
+                      return (
+                        <TableRow key={summary.weekStart}>
+                          <TableCell className="sticky left-0 z-10 min-w-[120px] border-r border-slate-200 bg-white px-1.5 py-2 align-top">
+                            <div className="font-semibold text-slate-900">{summary.weekLabel}</div>
+                            <div className="mt-1 text-[11px] text-slate-500">
+                              Week volume {formatVolume(summary.weekVolume)}
+                            </div>
+                          </TableCell>
+                          {DAY_KEYS.map((dayKey, dayIndex) => {
+                            const row = rowsForWeek.find((candidate) => candidate.dayOfWeek === dayIndex);
+                            return (
+                              <TableCell
+                                key={`${summary.weekStart}-${dayKey}`}
+                                className={`min-w-[104px] border-r border-slate-100 p-1.5 align-top ${
+                                  !row || !row.insideMonth
+                                    ? "bg-slate-50/80 text-slate-400"
+                                    : row.invalid
+                                      ? "bg-rose-50/40"
+                                      : "bg-white"
+                                }`}
+                              >
+                                {row ? (
+                                  <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                                      <span className={`font-medium ${row.insideMonth ? "text-slate-700" : "text-slate-400"}`}>
+                                        {row.dateLabel}
+                                      </span>
+                                      <span className={`tabular-nums ${row.insideMonth ? "text-slate-600" : "text-slate-400"}`}>
+                                        {formatVolume(row.allocatedVolume)}
+                                      </span>
+                                    </div>
+                                    <Input
+                                      aria-label={`${row.dateLabel} ${row.dayLabel} day allocation weight`}
+                                      className={`h-7 w-full min-w-[74px] px-1 text-right text-xs tabular-nums ${
+                                        row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""
+                                      }`}
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      inputMode="decimal"
+                                      disabled={!selectedLobId || !row.insideMonth || dayAllocationLoading || savingDayAllocation}
+                                      value={row.inputValue}
+                                      onChange={(event) => updateDayWeightInput(row.calendarDate, event.target.value)}
+                                    />
+                                    <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
+                                      <span>Norm</span>
+                                      <span className="tabular-nums">{formatPercent(row.normalizedWeight)}</span>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <span className="text-xs">-</span>
+                                )}
+                              </TableCell>
+                            );
+                          })}
+                          <TableCell
+                            className={`min-w-[84px] border-r border-slate-200 bg-slate-50 px-1.5 text-right align-top font-semibold tabular-nums ${
+                              !summary.totalIs100 && summary.totalRawWeight > 0 ? "text-amber-700" : "text-slate-800"
+                            }`}
+                          >
+                            <div>{formatPercent(summary.totalRawWeight)}</div>
+                            {!summary.totalIs100 && summary.totalRawWeight > 0 ? (
+                              <div className="mt-1 text-[10px] font-normal text-amber-700">Normalized</div>
+                            ) : null}
+                          </TableCell>
+                          <TableCell
+                            className={`min-w-[116px] bg-cyan-50 px-1.5 text-right align-top font-semibold tabular-nums ${
+                              summary.sumsToWeek ? "text-cyan-950" : "text-amber-700"
+                            }`}
+                          >
+                            <div>{formatVolume(summary.totalAllocatedVolume)}</div>
+                            <div className="mt-1 text-[11px] font-normal text-cyan-800">
+                              of {formatVolume(summary.weekVolume)}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </>
+              )}
             </Table>
 
             <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
@@ -3754,85 +3855,183 @@ export function IntradayForecastV2() {
               </div>
             </div>
 
-            <Table containerClassName="max-h-[620px] overflow-auto rounded-lg border border-slate-200">
-              <TableHeader>
-                <TableRow className="bg-slate-50 hover:bg-slate-50">
-                  <TableHead>Date</TableHead>
-                  <TableHead>Day of week</TableHead>
-                  <TableHead>Interval time</TableHead>
-                  <TableHead className="min-w-[190px] text-right">Weight %</TableHead>
-                  <TableHead className="text-right">Allocated volume</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {intervalAllocationPreview.daySummaries.length === 0 ? (
+            <Table
+              className="w-max min-w-full border-collapse"
+              containerClassName="max-h-[640px] overflow-auto rounded-lg border border-slate-200"
+            >
+              {intervalAllocationSlots.length === 0 || allocationDateColumns.length === 0 ? (
+                <TableBody>
                   <TableRow>
-                    <TableCell colSpan={5} className="h-24 text-center text-sm text-slate-500">
+                    <TableCell className="h-24 min-w-[520px] text-center text-sm text-slate-500">
                       No operating interval rows are available for the selected scope.
                     </TableCell>
                   </TableRow>
-                ) : (
-                  intervalAllocationPreview.daySummaries.map((summary) => {
-                    const rowsForDay = intervalAllocationPreview.rows.filter((row) => row.calendarDate === summary.calendarDate);
-                    return (
-                      <React.Fragment key={summary.calendarDate}>
-                        {rowsForDay.length === 0 ? (
-                          <TableRow className="bg-slate-50/70">
-                            <TableCell className="font-medium text-slate-900">{summary.dateLabel}</TableCell>
-                            <TableCell className="text-slate-600">{summary.dayLabel}</TableCell>
-                            <TableCell className="text-amber-700">No operating intervals</TableCell>
-                            <TableCell className="text-right tabular-nums">0%</TableCell>
-                            <TableCell className="text-right font-medium tabular-nums text-slate-900">0</TableCell>
-                          </TableRow>
-                        ) : (
-                          rowsForDay.map((row) => (
-                            <TableRow key={row.key}>
-                              <TableCell className="font-medium text-slate-900">{row.dateLabel}</TableCell>
-                              <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
-                              <TableCell className="text-slate-600">{row.intervalLabel}</TableCell>
-                              <TableCell className="text-right">
-                                <Input
-                                  className={`ml-auto h-8 w-28 text-right tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  inputMode="decimal"
-                                  disabled={!selectedLobId || intervalAllocationLoading || savingIntervalAllocation}
-                                  value={row.inputValue}
-                                  onChange={(event) => updateIntervalWeightInput(row.key, event.target.value)}
-                                />
-                                <p className="mt-1 text-[11px] text-slate-500">
-                                  Normalized {formatPercent(row.normalizedWeight)}
-                                </p>
+                </TableBody>
+              ) : (
+                <>
+                  <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead
+                        rowSpan={2}
+                        className="sticky left-0 z-30 min-w-[132px] border-r border-slate-200 bg-slate-50 text-slate-700"
+                      >
+                        Interval
+                      </TableHead>
+                      {allocationWeekGroups.map((group) => (
+                        <TableHead
+                          key={group.weekStart}
+                          colSpan={group.columns.length + 1}
+                          className="border-r border-slate-200 bg-slate-50 text-center text-slate-700"
+                        >
+                          <div className="text-xs font-semibold uppercase tracking-wide">{group.weekLabel}</div>
+                          <div className="text-[11px] font-normal text-slate-500">
+                            {group.columns[0]?.compactDateLabel} - {group.columns[group.columns.length - 1]?.compactDateLabel}
+                          </div>
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                    <TableRow className="bg-white hover:bg-white">
+                      {allocationWeekGroups.map((group) => (
+                        <React.Fragment key={`${group.weekStart}-interval-dates`}>
+                          {group.columns.map((column) => (
+                            <TableHead
+                              key={column.intervalDate}
+                              className="min-w-[88px] border-r border-slate-100 bg-white text-center"
+                            >
+                              <div className="text-xs font-semibold text-slate-700">{column.compactDateLabel}</div>
+                              <div className="text-[11px] font-normal text-slate-500">{column.shortDayLabel}</div>
+                            </TableHead>
+                          ))}
+                          <TableHead className="min-w-[76px] border-r border-slate-200 bg-emerald-50 text-center text-emerald-800">
+                            VOL
+                          </TableHead>
+                        </React.Fragment>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {intervalAllocationSlots.map((slot) => (
+                      <TableRow key={slot.slotKey}>
+                        <TableCell className="sticky left-0 z-10 min-w-[132px] border-r border-slate-200 bg-white text-xs font-medium text-slate-900">
+                          {slot.intervalLabel}
+                        </TableCell>
+                        {allocationWeekGroups.map((group) => {
+                          const weekSlotTotal = group.columns.reduce((sum, column) => {
+                            const row = intervalAllocationRowsByDateAndSlot.get(`${column.intervalDate}:${slot.slotKey}`);
+                            return sum + (row?.allocatedVolume ?? 0);
+                          }, 0);
+                          return (
+                            <React.Fragment key={`${slot.slotKey}-${group.weekStart}`}>
+                              {group.columns.map((column) => {
+                                const row = intervalAllocationRowsByDateAndSlot.get(`${column.intervalDate}:${slot.slotKey}`);
+                                return (
+                                  <TableCell
+                                    key={`${column.intervalDate}-${slot.slotKey}`}
+                                    className={`min-w-[88px] border-r border-slate-100 p-1 align-top ${
+                                      row
+                                        ? row.invalid
+                                          ? "bg-rose-50/40"
+                                          : "bg-white"
+                                        : "bg-slate-50 text-slate-300"
+                                    }`}
+                                  >
+                                    {row ? (
+                                      <div className="space-y-1">
+                                        <Input
+                                          aria-label={`${row.dateLabel} ${row.intervalLabel} interval allocation weight`}
+                                          className={`h-7 w-full min-w-[68px] px-1 text-right text-xs tabular-nums ${
+                                            row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""
+                                          }`}
+                                          type="number"
+                                          min="0"
+                                          step="0.01"
+                                          inputMode="decimal"
+                                          disabled={!selectedLobId || intervalAllocationLoading || savingIntervalAllocation}
+                                          value={row.inputValue}
+                                          onChange={(event) => updateIntervalWeightInput(row.key, event.target.value)}
+                                        />
+                                        <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
+                                          <span className="tabular-nums">N {formatPercent(row.normalizedWeight)}</span>
+                                          <span className="font-medium tabular-nums text-slate-700">
+                                            V {formatVolume(row.allocatedVolume)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="flex h-[46px] items-center justify-center text-xs">-</div>
+                                    )}
+                                  </TableCell>
+                                );
+                              })}
+                              <TableCell className="min-w-[76px] border-r border-slate-200 bg-emerald-50 px-1.5 text-right font-semibold tabular-nums text-emerald-900">
+                                {formatVolume(weekSlotTotal)}
                               </TableCell>
-                              <TableCell className="text-right font-medium tabular-nums text-slate-900">
-                                {formatVolume(row.allocatedVolume)}
-                              </TableCell>
-                            </TableRow>
-                          ))
-                        )}
-                        <TableRow className="bg-slate-50 hover:bg-slate-50">
-                          <TableCell colSpan={3} className="font-semibold text-slate-700">
-                            {summary.dateLabel} total
-                            {!summary.totalIs100 && summary.totalRawWeight > 0 ? (
-                              <span className="ml-2 text-xs font-normal text-amber-700">Normalized for allocation</span>
-                            ) : null}
-                            {summary.missingIntervals ? (
-                              <span className="ml-2 text-xs font-normal text-amber-700">Operating hours required</span>
-                            ) : null}
-                          </TableCell>
-                          <TableCell className="text-right font-semibold tabular-nums">
-                            {formatPercent(summary.totalRawWeight)}
-                          </TableCell>
-                          <TableCell className="text-right font-semibold tabular-nums">
-                            {formatVolume(summary.totalAllocatedVolume)} / {formatVolume(summary.dayVolume)}
-                          </TableCell>
-                        </TableRow>
-                      </React.Fragment>
-                    );
-                  })
-                )}
-              </TableBody>
+                            </React.Fragment>
+                          );
+                        })}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  <TableFooter className="sticky bottom-0 z-20 border-t border-slate-200 bg-slate-50">
+                    <TableRow className="hover:bg-slate-50">
+                      <TableCell className="sticky left-0 z-30 min-w-[132px] border-r border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800">
+                        Daily total
+                      </TableCell>
+                      {allocationWeekGroups.map((group) => {
+                        const weekAllocatedTotal = group.columns.reduce((sum, column) => {
+                          const summary = intervalAllocationDaySummaryByDate.get(column.intervalDate);
+                          return sum + (summary?.totalAllocatedVolume ?? 0);
+                        }, 0);
+                        const weekDayVolumeTotal = group.columns.reduce((sum, column) => {
+                          const summary = intervalAllocationDaySummaryByDate.get(column.intervalDate);
+                          return sum + (summary?.dayVolume ?? 0);
+                        }, 0);
+                        return (
+                          <React.Fragment key={`${group.weekStart}-interval-totals`}>
+                            {group.columns.map((column) => {
+                              const summary = intervalAllocationDaySummaryByDate.get(column.intervalDate);
+                              const showWarning = Boolean(summary?.missingIntervals || summary && !summary.sumsToDay);
+                              return (
+                                <TableCell
+                                  key={`${column.intervalDate}-interval-total`}
+                                  className={`min-w-[88px] border-r border-slate-100 px-1.5 text-right align-top font-semibold tabular-nums ${
+                                    showWarning ? "text-amber-700" : "text-slate-800"
+                                  }`}
+                                >
+                                  {summary ? (
+                                    <>
+                                      <div>{formatVolume(summary.totalAllocatedVolume)}</div>
+                                      <div className="mt-0.5 text-[10px] font-normal text-slate-500">
+                                        / {formatVolume(summary.dayVolume)}
+                                      </div>
+                                      {summary.missingIntervals ? (
+                                        <div className="mt-0.5 text-[10px] font-normal text-amber-700">Hours required</div>
+                                      ) : null}
+                                      {summary.totalRawWeight > 0 && !summary.totalIs100 ? (
+                                        <div className="mt-0.5 text-[10px] font-normal text-amber-700">
+                                          Wgt {formatPercent(summary.totalRawWeight)}
+                                        </div>
+                                      ) : null}
+                                    </>
+                                  ) : (
+                                    <span className="text-slate-400">-</span>
+                                  )}
+                                </TableCell>
+                              );
+                            })}
+                            <TableCell className="min-w-[76px] border-r border-slate-200 bg-emerald-100 px-1.5 text-right align-top font-semibold tabular-nums text-emerald-950">
+                              <div>{formatVolume(weekAllocatedTotal)}</div>
+                              <div className="mt-0.5 text-[10px] font-normal text-emerald-800">
+                                / {formatVolume(weekDayVolumeTotal)}
+                              </div>
+                            </TableCell>
+                          </React.Fragment>
+                        );
+                      })}
+                    </TableRow>
+                  </TableFooter>
+                </>
+              )}
             </Table>
 
             <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
