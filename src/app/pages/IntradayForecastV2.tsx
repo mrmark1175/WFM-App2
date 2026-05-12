@@ -300,6 +300,19 @@ interface ActualBaselineWeekGroup {
   columns: ActualBaselineDateColumn[];
 }
 
+interface ActualBaselineSelection {
+  anchorSlotIndex: number;
+  anchorDateIndex: number;
+  focusSlotIndex: number;
+  focusDateIndex: number;
+}
+
+interface ActualBaselineEditSession {
+  key: string;
+  before: Record<string, string>;
+  pushed: boolean;
+}
+
 const DEFAULT_ENABLED_CHANNELS: Record<ChannelKey, boolean> = {
   voice: true,
   email: false,
@@ -1368,6 +1381,8 @@ export function IntradayForecastV2() {
   const [actualBaselineDraftSource, setActualBaselineDraftSource] = useState<ActualBaselineSource>("manual");
   const [actualBaselinePatternAppliedScopeKey, setActualBaselinePatternAppliedScopeKey] = useState("");
   const [savingActualBaseline, setSavingActualBaseline] = useState(false);
+  const [actualBaselineSelection, setActualBaselineSelection] = useState<ActualBaselineSelection | null>(null);
+  const [actualBaselineFocusedCellKey, setActualBaselineFocusedCellKey] = useState("");
   const [weekWeightInputs, setWeekWeightInputs] = useState<Record<string, string>>({});
   const [savedWeekAllocations, setSavedWeekAllocations] = useState<IntradayV2WeekAllocation[]>([]);
   const [weekAllocationScopeKey, setWeekAllocationScopeKey] = useState("");
@@ -1388,6 +1403,18 @@ export function IntradayForecastV2() {
   const [savingIntervalAllocation, setSavingIntervalAllocation] = useState(false);
   const activeScopeKeyRef = useRef("");
   const monthManuallySelectedRef = useRef(false);
+  const actualBaselineSelectingRef = useRef(false);
+  const actualBaselineEditSessionRef = useRef<ActualBaselineEditSession | null>(null);
+  const actualBaselineUndoStackRef = useRef<Record<string, string>[]>([]);
+  const actualBaselineRedoStackRef = useRef<Record<string, string>[]>([]);
+
+  useEffect(() => {
+    const stopSelecting = () => {
+      actualBaselineSelectingRef.current = false;
+    };
+    window.addEventListener("mouseup", stopSelecting);
+    return () => window.removeEventListener("mouseup", stopSelecting);
+  }, []);
 
   useEffect(() => {
     if (activeLob?.id && !selectedLobId) setSelectedLobId(activeLob.id);
@@ -1704,6 +1731,11 @@ export function IntradayForecastV2() {
     setActualBaselineEditing(false);
     setActualBaselineDraftSource("manual");
     setActualBaselinePatternAppliedScopeKey("");
+    setActualBaselineSelection(null);
+    setActualBaselineFocusedCellKey("");
+    actualBaselineEditSessionRef.current = null;
+    actualBaselineUndoStackRef.current = [];
+    actualBaselineRedoStackRef.current = [];
 
     if (!selectedLobId || actualBaselineRows.length === 0) {
       setActualBaselineLoading(false);
@@ -1784,6 +1816,34 @@ export function IntradayForecastV2() {
     () => new Map(actualBaselineDateColumns.map((column, index) => [column.intervalDate, index])),
     [actualBaselineDateColumns]
   );
+  const actualBaselineSelectedKeys = useMemo(() => {
+    const selected = new Set<string>();
+    if (!actualBaselineSelection) return selected;
+
+    const startSlot = Math.max(0, Math.min(actualBaselineSelection.anchorSlotIndex, actualBaselineSelection.focusSlotIndex));
+    const endSlot = Math.min(
+      actualBaselineIntervalSlots.length - 1,
+      Math.max(actualBaselineSelection.anchorSlotIndex, actualBaselineSelection.focusSlotIndex)
+    );
+    const startDate = Math.max(0, Math.min(actualBaselineSelection.anchorDateIndex, actualBaselineSelection.focusDateIndex));
+    const endDate = Math.min(
+      actualBaselineDateColumns.length - 1,
+      Math.max(actualBaselineSelection.anchorDateIndex, actualBaselineSelection.focusDateIndex)
+    );
+
+    for (let slotIndex = startSlot; slotIndex <= endSlot; slotIndex += 1) {
+      const slot = actualBaselineIntervalSlots[slotIndex];
+      if (!slot) continue;
+      for (let dateIndex = startDate; dateIndex <= endDate; dateIndex += 1) {
+        const column = actualBaselineDateColumns[dateIndex];
+        if (!column) continue;
+        const key = actualBaselineInputKey(column.intervalDate, slot.intervalTime, slot.occurrenceIndex);
+        if (actualBaselineEditableKeys.has(key)) selected.add(key);
+      }
+    }
+
+    return selected;
+  }, [actualBaselineDateColumns, actualBaselineEditableKeys, actualBaselineIntervalSlots, actualBaselineSelection]);
   const actualBaselineTotal = actualBaselinePreviewRows.reduce((sum, row) => sum + row.actualVolume, 0);
   const actualBaselinePositiveRowCount = actualBaselinePreviewRows.filter((row) => row.actualVolume > 0).length;
   const actualBaselineHasInvalid = actualBaselinePreviewRows.some((row) => row.invalid);
@@ -2206,7 +2266,136 @@ export function IntradayForecastV2() {
     },
   ];
 
+  const actualBaselineCanEditGrid = actualBaselineEditing && !actualBaselineLoading && !savingActualBaseline;
+
+  const pushActualBaselineUndoState = (before: Record<string, string>) => {
+    actualBaselineUndoStackRef.current = [
+      ...actualBaselineUndoStackRef.current.slice(-49),
+      { ...before },
+    ];
+    actualBaselineRedoStackRef.current = [];
+  };
+
+  const commitActualBaselineInputs = (
+    nextInputs: Record<string, string>,
+    beforeInputs: Record<string, string>,
+    draftSource: ActualBaselineSource = "manual"
+  ) => {
+    pushActualBaselineUndoState(beforeInputs);
+    setActualBaselineScopeKey(scopeKey);
+    setActualBaselineDraftSource(draftSource);
+    setActualBaselineEditing(true);
+    setActualBaselinePatternAppliedScopeKey("");
+    setActualBaselineInputs(nextInputs);
+  };
+
+  const selectActualBaselineCell = (
+    slotIndex: number,
+    dateIndex: number,
+    options: { extend?: boolean; dragging?: boolean } = {}
+  ) => {
+    const slot = actualBaselineIntervalSlots[slotIndex];
+    const column = actualBaselineDateColumns[dateIndex];
+    if (!slot || !column) return;
+    const key = actualBaselineInputKey(column.intervalDate, slot.intervalTime, slot.occurrenceIndex);
+    if (!actualBaselineEditableKeys.has(key)) return;
+    setActualBaselineFocusedCellKey(key);
+    setActualBaselineSelection((previous) => {
+      if ((options.extend || options.dragging) && previous) {
+        return { ...previous, focusSlotIndex: slotIndex, focusDateIndex: dateIndex };
+      }
+      return {
+        anchorSlotIndex: slotIndex,
+        anchorDateIndex: dateIndex,
+        focusSlotIndex: slotIndex,
+        focusDateIndex: dateIndex,
+      };
+    });
+  };
+
+  const undoActualBaselineGrid = () => {
+    if (!actualBaselineCanEditGrid) return false;
+    const previous = actualBaselineUndoStackRef.current.pop();
+    if (!previous) return false;
+    actualBaselineRedoStackRef.current = [
+      ...actualBaselineRedoStackRef.current.slice(-49),
+      { ...actualBaselineInputsForScope },
+    ];
+    actualBaselineEditSessionRef.current = null;
+    setActualBaselineScopeKey(scopeKey);
+    setActualBaselineDraftSource("manual");
+    setActualBaselineEditing(true);
+    setActualBaselinePatternAppliedScopeKey("");
+    setActualBaselineInputs(previous);
+    return true;
+  };
+
+  const redoActualBaselineGrid = () => {
+    if (!actualBaselineCanEditGrid) return false;
+    const next = actualBaselineRedoStackRef.current.pop();
+    if (!next) return false;
+    actualBaselineUndoStackRef.current = [
+      ...actualBaselineUndoStackRef.current.slice(-49),
+      { ...actualBaselineInputsForScope },
+    ];
+    actualBaselineEditSessionRef.current = null;
+    setActualBaselineScopeKey(scopeKey);
+    setActualBaselineDraftSource("manual");
+    setActualBaselineEditing(true);
+    setActualBaselinePatternAppliedScopeKey("");
+    setActualBaselineInputs(next);
+    return true;
+  };
+
+  const clearSelectedActualBaselineCells = () => {
+    if (!actualBaselineCanEditGrid || actualBaselineSelectedKeys.size === 0) return false;
+    const beforeInputs = {
+      ...(actualBaselineScopeKey === scopeKey ? actualBaselineInputsForScope : defaultActualBaselineInputs),
+    };
+    const nextInputs = { ...beforeInputs };
+    actualBaselineSelectedKeys.forEach((key) => {
+      nextInputs[key] = "";
+    });
+    commitActualBaselineInputs(nextInputs, beforeInputs, "manual");
+    actualBaselineEditSessionRef.current = null;
+    return true;
+  };
+
+  const handleActualBaselineKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    const key = event.key.toLowerCase();
+    const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && key === "z") {
+      event.preventDefault();
+      const didRun = event.shiftKey ? redoActualBaselineGrid() : undoActualBaselineGrid();
+      if (didRun) toast.success(event.shiftKey ? "Redid actual baseline edit" : "Undid actual baseline edit");
+      return;
+    }
+    if (modifier && key === "y") {
+      event.preventDefault();
+      if (redoActualBaselineGrid()) toast.success("Redid actual baseline edit");
+      return;
+    }
+    if ((event.key === "Delete" || event.key === "Backspace") && actualBaselineSelectedKeys.size > 1) {
+      event.preventDefault();
+      if (clearSelectedActualBaselineCells()) {
+        toast.success(`Cleared ${actualBaselineSelectedKeys.size.toLocaleString()} actual baseline cells`);
+      }
+    }
+  };
+
   const updateActualBaselineInput = (key: string, value: string) => {
+    const beforeInputs = {
+      ...(actualBaselineScopeKey === scopeKey ? actualBaselineInputsForScope : defaultActualBaselineInputs),
+    };
+    const session = actualBaselineEditSessionRef.current;
+    if (!session || session.key !== key) {
+      actualBaselineEditSessionRef.current = { key, before: beforeInputs, pushed: false };
+    }
+    const activeSession = actualBaselineEditSessionRef.current;
+    if (activeSession && !activeSession.pushed) {
+      pushActualBaselineUndoState(activeSession.before);
+      activeSession.pushed = true;
+    }
     setActualBaselineScopeKey(scopeKey);
     setActualBaselineDraftSource("manual");
     setActualBaselineEditing(true);
@@ -2230,24 +2419,33 @@ export function IntradayForecastV2() {
     event.preventDefault();
     let appliedCells = 0;
     let targetRowOffset = 0;
-    const nextInputs = {
+    const ignoredSourceColumnIndexes = new Set<number>();
+    matrix.slice(0, 4).forEach((row) => {
+      row.forEach((cell, index) => {
+        if (/^vol(?:ume)?$/i.test(cell.trim())) ignoredSourceColumnIndexes.add(index);
+      });
+    });
+    const beforeInputs = {
       ...(actualBaselineScopeKey === scopeKey ? actualBaselineInputsForScope : defaultActualBaselineInputs),
     };
+    const nextInputs = { ...beforeInputs };
 
     matrix.forEach((rawCells) => {
       const cells = rawCells.map((cell) => cell.trim());
       const parsedCells = cells.map(parseActualVolumeCell);
       if (!parsedCells.some((value) => value !== null)) return;
 
+      const cellEntries = cells.map((_, index) => ({ index, parsed: parsedCells[index] }));
       const dataCells = parsedCells[0] === null && parsedCells.slice(1).some((value) => value !== null)
-        ? cells.slice(1)
-        : cells;
+        ? cellEntries.slice(1)
+        : cellEntries;
+      const editableSourceCells = dataCells.filter((entry) => !ignoredSourceColumnIndexes.has(entry.index));
       const slot = actualBaselineIntervalSlots[startSlotIndex + targetRowOffset];
       targetRowOffset += 1;
       if (!slot) return;
 
-      dataCells.forEach((cell, columnOffset) => {
-        const parsed = parseActualVolumeCell(cell);
+      editableSourceCells.forEach((entry, columnOffset) => {
+        const parsed = entry.parsed;
         if (parsed === null) return;
         const column = actualBaselineDateColumns[startDateIndex + columnOffset];
         if (!column) return;
@@ -2259,11 +2457,8 @@ export function IntradayForecastV2() {
     });
 
     if (appliedCells === 0) return;
-    setActualBaselineScopeKey(scopeKey);
-    setActualBaselineDraftSource("manual");
-    setActualBaselineEditing(true);
-    setActualBaselinePatternAppliedScopeKey("");
-    setActualBaselineInputs(nextInputs);
+    actualBaselineEditSessionRef.current = null;
+    commitActualBaselineInputs(nextInputs, beforeInputs, "manual");
     toast.success(`Pasted ${appliedCells.toLocaleString()} actual baseline cell${appliedCells === 1 ? "" : "s"}`);
   };
 
@@ -2857,7 +3052,7 @@ export function IntradayForecastV2() {
                   </TableHeader>
                   <TableBody>
                     {actualBaselineIntervalSlots.map((slot, slotIndex) => (
-                      <TableRow key={slot.intervalTime}>
+                      <TableRow key={slot.slotKey}>
                         <TableCell className="sticky left-0 z-10 border-r border-slate-200 bg-white font-medium text-slate-900">
                           {slot.intervalLabel}
                         </TableCell>
@@ -2867,17 +3062,33 @@ export function IntradayForecastV2() {
                             return sum + (actualBaselinePreviewByKey.get(key)?.actualVolume ?? 0);
                           }, 0);
                           return (
-                            <React.Fragment key={`${slot.intervalTime}-${group.weekStart}`}>
+                            <React.Fragment key={`${slot.slotKey}-${group.weekStart}`}>
                               {group.columns.map((column) => {
                                 const key = actualBaselineInputKey(column.intervalDate, slot.intervalTime, slot.occurrenceIndex);
                                 const editable = actualBaselineEditableKeys.has(key);
                                 const row = actualBaselinePreviewByKey.get(key);
                                 const columnIndex = actualBaselineDateIndexByDate.get(column.intervalDate) ?? 0;
+                                const selected = actualBaselineSelectedKeys.has(key);
+                                const focused = actualBaselineFocusedCellKey === key;
                                 return (
                                   <TableCell
                                     key={key}
-                                    className={`border-r border-slate-100 p-1 text-center ${
+                                    onMouseDown={(event) => {
+                                      if (!editable || !actualBaselineCanEditGrid || event.button !== 0) return;
+                                      actualBaselineSelectingRef.current = true;
+                                      actualBaselineEditSessionRef.current = null;
+                                      selectActualBaselineCell(slotIndex, columnIndex, { extend: event.shiftKey });
+                                    }}
+                                    onMouseEnter={() => {
+                                      if (!editable || !actualBaselineCanEditGrid || !actualBaselineSelectingRef.current) return;
+                                      selectActualBaselineCell(slotIndex, columnIndex, { dragging: true });
+                                    }}
+                                    className={`relative border-r border-slate-100 p-1 text-center select-none ${
                                       editable ? "bg-white" : "bg-slate-50 text-slate-300"
+                                    } ${
+                                      selected ? "bg-sky-50 ring-1 ring-inset ring-sky-300" : ""
+                                    } ${
+                                      focused ? "outline outline-2 -outline-offset-2 outline-sky-600" : ""
                                     }`}
                                   >
                                     {editable ? (
@@ -2885,6 +3096,10 @@ export function IntradayForecastV2() {
                                         aria-label={`${column.dateLabel} ${slot.intervalLabel} actual volume`}
                                         className={`h-8 w-20 px-2 text-right tabular-nums ${
                                           row?.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""
+                                        } ${
+                                          selected ? "border-sky-300 bg-sky-50/60" : ""
+                                        } ${
+                                          focused ? "border-sky-600 focus-visible:ring-sky-300" : ""
                                         }`}
                                         type="number"
                                         min="0"
@@ -2893,7 +3108,16 @@ export function IntradayForecastV2() {
                                         disabled={!actualBaselineEditing || actualBaselineLoading || savingActualBaseline}
                                         value={actualBaselineInputsForScope[key] ?? "0"}
                                         onChange={(event) => updateActualBaselineInput(key, event.target.value)}
-                                        onFocus={(event) => event.currentTarget.select()}
+                                        onFocus={(event) => {
+                                          if (!actualBaselineSelectingRef.current) {
+                                            selectActualBaselineCell(slotIndex, columnIndex);
+                                          }
+                                          event.currentTarget.select();
+                                        }}
+                                        onBlur={() => {
+                                          actualBaselineEditSessionRef.current = null;
+                                        }}
+                                        onKeyDown={handleActualBaselineKeyDown}
                                         onPaste={(event) => pasteActualBaselineCells(event, slotIndex, columnIndex)}
                                       />
                                     ) : (
