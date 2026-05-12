@@ -1410,6 +1410,8 @@ const INTRADAY_V2_CHANNELS = new Set(['voice', 'email', 'chat', 'cases']);
 const INTRADAY_V2_STAFFING_MODES = new Set(['dedicated', 'blended']);
 const INTRADAY_V2_PLAN_STATUSES = new Set(['draft', 'published', 'archived']);
 const DEFAULT_DEMAND_TIMEZONE = 'America/New_York';
+const INTRADAY_V2_TIMEZONE_SEARCH_WINDOW_MS = 14 * 60 * 60 * 1000;
+const intradayV2FormatterCache = new Map();
 
 function apiValidationError(message, status = 400) {
   const err = new Error(message);
@@ -1429,6 +1431,107 @@ function normalizeIntradayV2TimeZone(value) {
   } catch {
     return DEFAULT_DEMAND_TIMEZONE;
   }
+}
+
+function getIntradayV2TimeZoneFormatter(timeZone) {
+  const normalized = normalizeIntradayV2TimeZone(timeZone);
+  const cached = intradayV2FormatterCache.get(normalized);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: normalized,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  intradayV2FormatterCache.set(normalized, formatter);
+  return formatter;
+}
+
+function getIntradayV2TimeZoneParts(formatter, date) {
+  const parts = formatter.formatToParts(date);
+  const value = (type) => parts.find((part) => part.type === type)?.value ?? '0';
+  return {
+    year: Number(value('year')),
+    month: Number(value('month')),
+    day: Number(value('day')),
+    hour: Number(value('hour')),
+    minute: Number(value('minute')),
+    second: Number(value('second')),
+  };
+}
+
+function formatIntradayV2IsoDate(year, month, day) {
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function parseIntradayV2IsoDateParts(value) {
+  const match = String(value || '').match(/^([0-9]{4})-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])$/);
+  if (!match) return null;
+  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+}
+
+function getIntradayV2TimeZoneOffsetMinutes(timeZone, instant) {
+  const formatter = getIntradayV2TimeZoneFormatter(timeZone);
+  const parts = getIntradayV2TimeZoneParts(formatter, instant);
+  const localAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return Math.round((localAsUtc - instant.getTime()) / 60000);
+}
+
+function buildIntradayV2DemandDayIntervals(intervalDate, timeZone, intervalMinutes = 15) {
+  const parts = parseIntradayV2IsoDateParts(intervalDate);
+  if (!parts || intervalMinutes <= 0) return [];
+
+  const normalized = normalizeIntradayV2TimeZone(timeZone);
+  const formatter = getIntradayV2TimeZoneFormatter(normalized);
+  const stepMs = intervalMinutes * 60000;
+  const dayStartUtc = Date.UTC(parts.year, parts.month - 1, parts.day);
+  const searchStart = Math.floor((dayStartUtc - INTRADAY_V2_TIMEZONE_SEARCH_WINDOW_MS) / stepMs) * stepMs;
+  const searchEnd = dayStartUtc + 24 * 60 * 60 * 1000 + INTRADAY_V2_TIMEZONE_SEARCH_WINDOW_MS;
+  const collected = [];
+
+  for (let time = searchStart; time <= searchEnd; time += stepMs) {
+    const instant = new Date(time);
+    const local = getIntradayV2TimeZoneParts(formatter, instant);
+    if (!Number.isFinite(local.year) || !Number.isFinite(local.month) || !Number.isFinite(local.day)) continue;
+    const localDate = formatIntradayV2IsoDate(local.year, local.month, local.day);
+    if (localDate !== intervalDate || local.second !== 0) continue;
+
+    const localMinuteOfDay = local.hour * 60 + local.minute;
+    if (localMinuteOfDay % intervalMinutes !== 0 || localMinuteOfDay >= 24 * 60) continue;
+    collected.push({
+      interval_date: localDate,
+      interval_time: formatIntervalTime(localMinuteOfDay / intervalMinutes, intervalMinutes),
+      local_minute_of_day: localMinuteOfDay,
+      interval_start_utc: instant.toISOString(),
+      utc_offset_minutes: getIntradayV2TimeZoneOffsetMinutes(normalized, instant),
+    });
+  }
+
+  const sorted = collected.sort((left, right) => (
+    left.interval_start_utc.localeCompare(right.interval_start_utc)
+    || left.local_minute_of_day - right.local_minute_of_day
+  ));
+  const occurrencesByTime = new Map();
+  const totalsByTime = new Map();
+  sorted.forEach((interval) => {
+    totalsByTime.set(interval.interval_time, (totalsByTime.get(interval.interval_time) ?? 0) + 1);
+  });
+
+  return sorted.map((interval, interval_ordinal) => {
+    const occurrence_index = occurrencesByTime.get(interval.interval_time) ?? 0;
+    occurrencesByTime.set(interval.interval_time, occurrence_index + 1);
+    return {
+      ...interval,
+      interval_ordinal,
+      occurrence_index,
+      dst_fold: occurrence_index,
+      repeated: (totalsByTime.get(interval.interval_time) ?? 0) > 1,
+    };
+  });
 }
 
 function requireIntradayV2Field(source, field) {
@@ -1803,6 +1906,98 @@ function formatIntervalTime(index, intervalMinutes = 15) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function nextIntradayV2MonthStart(monthKey) {
+  const [year, month] = monthKey.split('-').map(Number);
+  const next = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
+  return `${String(next.year).padStart(4, '0')}-${String(next.month).padStart(2, '0')}-01`;
+}
+
+function csvEscape(value) {
+  if (value === undefined || value === null) return '';
+  const text = String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+const LEGACY_VOICE_EXPORT_COLUMNS = [
+  'organization_id',
+  'lob_id',
+  'channel',
+  'staffing_mode',
+  'month_key',
+  'interval_date',
+  'interval_index',
+  'interval_time_candidate',
+  'actual_volume',
+  'demand_timezone',
+  'dst_status',
+  'import_warning',
+];
+
+function rowsToCsv(rows, columns) {
+  return [
+    columns.join(','),
+    ...rows.map((row) => columns.map((column) => csvEscape(row[column])).join(',')),
+  ].join('\n');
+}
+
+function classifyLegacyVoiceActualRow(row, scope, intervalLookup) {
+  const intervalDate = String(row.interval_date || '').slice(0, 10);
+  const intervalIndex = Number(row.interval_index);
+  const intervalTimeCandidate = Number.isInteger(intervalIndex)
+    ? formatIntervalTime(intervalIndex, 15)
+    : '';
+  const hasVolume = row.volume !== undefined && row.volume !== null && row.volume !== '';
+  const actualVolume = hasVolume ? Number(row.volume) : NaN;
+  const derivedMonthKey = intervalDate.slice(0, 7);
+  const channel = String(row.channel || '').trim().toLowerCase();
+  const staffingMode = String(row.staffing_mode || '').trim().toLowerCase();
+  const scopeValid =
+    Number(row.organization_id) === scope.organizationId
+    && Number(row.lob_id) === scope.lobId
+    && channel === 'voice'
+    && staffingMode === scope.staffingMode
+    && derivedMonthKey === scope.monthKey
+    && Number.isInteger(intervalIndex)
+    && intervalIndex >= 0
+    && intervalIndex < 96;
+
+  let dstStatus = 'OK';
+  let importWarning = '';
+
+  if (!scopeValid) {
+    dstStatus = 'INVALID_SCOPE';
+    importWarning = 'Row does not match the requested organization, LOB, Voice channel, staffing mode, month, or 15-minute interval index.';
+  } else if (!Number.isFinite(actualVolume) || actualVolume < 0) {
+    dstStatus = 'INVALID_VOLUME';
+    importWarning = 'Actual volume is missing, non-numeric, or negative.';
+  } else {
+    const dayIntervals = intervalLookup.get(intervalDate) || [];
+    const matches = dayIntervals.filter((interval) => interval.interval_time === intervalTimeCandidate);
+    if (matches.length === 0) {
+      dstStatus = 'DST_NONEXISTENT';
+      importWarning = 'Candidate local interval does not exist in the demand timezone for this date. Review before importing.';
+    } else if (matches.length > 1) {
+      dstStatus = 'DST_AMBIGUOUS';
+      importWarning = 'Candidate local interval repeats in the demand timezone and old data has no occurrence identity. Review before importing.';
+    }
+  }
+
+  return {
+    organization_id: Number(row.organization_id),
+    lob_id: Number(row.lob_id),
+    channel: 'voice',
+    staffing_mode: scope.staffingMode,
+    month_key: derivedMonthKey,
+    interval_date: intervalDate,
+    interval_index: Number.isInteger(intervalIndex) ? intervalIndex : '',
+    interval_time_candidate: intervalTimeCandidate,
+    actual_volume: Number.isFinite(actualVolume) ? actualVolume : '',
+    demand_timezone: scope.demandTimezone,
+    dst_status: dstStatus,
+    import_warning: importWarning,
+  };
 }
 
 function getMondayBasedWeekday(dateStr) {
@@ -2634,6 +2829,62 @@ app.put('/api/intraday-v2/interval-allocations', async (req, res) => {
     handleIntradayV2Error(res, err, 'Intraday v2 interval allocations PUT error');
   } finally {
     client.release();
+  }
+});
+
+app.get('/api/intraday-v2/actual-baseline/export-legacy-voice', async (req, res) => {
+  try {
+    if (hasOwn(req.query, 'channel') && String(req.query.channel).trim().toLowerCase() !== 'voice') {
+      throw apiValidationError('Only Voice legacy actuals can be exported by this endpoint');
+    }
+    const scope = await validateIntradayV2Scope(req, {
+      lob_id: req.query.lob_id,
+      channel: 'voice',
+      staffing_mode: req.query.staffing_mode,
+      month_key: req.query.month_key,
+    });
+    const monthStart = `${scope.monthKey}-01`;
+    const nextMonthStart = nextIntradayV2MonthStart(scope.monthKey);
+    const result = await pool.query(
+      `SELECT DISTINCT ON (interval_date, interval_index)
+          organization_id, lob_id, channel, staffing_mode,
+          interval_date::text AS interval_date, interval_index, volume, updated_at
+       FROM interaction_arrival
+       WHERE organization_id = $1
+         AND lob_id = $2
+         AND LOWER(channel) = 'voice'
+         AND LOWER(staffing_mode) = $3
+         AND interval_date >= $4::date
+         AND interval_date < $5::date
+       ORDER BY interval_date ASC, interval_index ASC, updated_at DESC`,
+      [scope.organizationId, scope.lobId, scope.staffingMode, monthStart, nextMonthStart]
+    );
+
+    const dates = Array.from(new Set(result.rows.map((row) => String(row.interval_date).slice(0, 10))));
+    const intervalLookup = new Map();
+    for (const intervalDate of dates) {
+      intervalLookup.set(intervalDate, buildIntradayV2DemandDayIntervals(intervalDate, scope.demandTimezone, 15));
+    }
+    const rows = result.rows.map((row) => classifyLegacyVoiceActualRow(row, scope, intervalLookup));
+
+    if (String(req.query.format || '').trim().toLowerCase() === 'json') {
+      res.json({
+        columns: LEGACY_VOICE_EXPORT_COLUMNS,
+        count: rows.length,
+        rows,
+      });
+      return;
+    }
+
+    const csv = rowsToCsv(rows, LEGACY_VOICE_EXPORT_COLUMNS);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="intraday_v2_legacy_voice_actuals_${scope.lobId}_${scope.staffingMode}_${scope.monthKey}.csv"`
+    );
+    res.send(csv);
+  } catch (err) {
+    handleIntradayV2Error(res, err, 'Intraday v2 legacy Voice actual export error');
   }
 });
 
