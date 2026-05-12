@@ -348,6 +348,22 @@ const DAY_LABELS: Record<DayKey, string> = {
   saturday: "Saturday",
   sunday: "Sunday",
 };
+const ACTUAL_BASELINE_GRID_WIDTHS = {
+  interval: 108,
+  date: 72,
+  vol: 62,
+} as const;
+const DAY_ALLOCATION_GRID_WIDTHS = {
+  week: 88,
+  day: 76,
+  weight: 64,
+  allocated: 84,
+} as const;
+const INTERVAL_ALLOCATION_GRID_WIDTHS = {
+  interval: 104,
+  date: 76,
+  vol: 58,
+} as const;
 
 function currentMonthKey(timeZone = DEFAULT_DEMAND_TIMEZONE) {
   return getCurrentMonthKeyInTimeZone(timeZone);
@@ -3044,24 +3060,43 @@ export function IntradayForecastV2() {
             </div>
 
             <Table
-              className="w-max min-w-full border-collapse"
+              className="w-auto table-fixed border-collapse"
               containerClassName="max-h-[640px] overflow-auto rounded-lg border border-slate-200"
+              style={{
+                width:
+                  actualBaselineIntervalSlots.length === 0 || actualBaselineDateColumns.length === 0
+                    ? 420
+                    : ACTUAL_BASELINE_GRID_WIDTHS.interval
+                      + actualBaselineDateColumns.length * ACTUAL_BASELINE_GRID_WIDTHS.date
+                      + actualBaselineWeekGroups.length * ACTUAL_BASELINE_GRID_WIDTHS.vol,
+              }}
             >
               {actualBaselineIntervalSlots.length === 0 || actualBaselineDateColumns.length === 0 ? (
                 <TableBody>
                   <TableRow>
-                    <TableCell className="h-24 min-w-[520px] text-center text-sm text-slate-500">
+                    <TableCell className="h-24 min-w-[420px] text-center text-sm text-slate-500">
                       No operating interval rows are available for the selected scope.
                     </TableCell>
                   </TableRow>
                 </TableBody>
               ) : (
                 <>
+                  <colgroup>
+                    <col style={{ width: ACTUAL_BASELINE_GRID_WIDTHS.interval }} />
+                    {actualBaselineWeekGroups.map((group) => (
+                      <React.Fragment key={`${group.weekStart}-actual-baseline-cols`}>
+                        {group.columns.map((column) => (
+                          <col key={`${column.intervalDate}-actual-baseline-col`} style={{ width: ACTUAL_BASELINE_GRID_WIDTHS.date }} />
+                        ))}
+                        <col key={`${group.weekStart}-actual-baseline-vol-col`} style={{ width: ACTUAL_BASELINE_GRID_WIDTHS.vol }} />
+                      </React.Fragment>
+                    ))}
+                  </colgroup>
                   <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
                     <TableRow className="bg-slate-50 hover:bg-slate-50">
                       <TableHead
                         rowSpan={2}
-                        className="sticky left-0 z-30 min-w-[132px] border-r border-slate-200 bg-slate-50 text-slate-700"
+                        className="sticky left-0 z-30 w-[108px] min-w-[108px] max-w-[108px] border-r border-slate-200 bg-slate-50 text-slate-700"
                       >
                         Interval
                       </TableHead>
@@ -3084,13 +3119,13 @@ export function IntradayForecastV2() {
                           {group.columns.map((column) => (
                             <TableHead
                               key={column.intervalDate}
-                              className="min-w-[76px] border-r border-slate-100 bg-white text-center"
+                              className="w-[72px] min-w-[72px] max-w-[72px] border-r border-slate-100 bg-white px-1 text-center"
                             >
                               <div className="text-xs font-semibold text-slate-700">{column.compactDateLabel}</div>
                               <div className="text-[11px] font-normal text-slate-500">{column.shortDayLabel}</div>
                             </TableHead>
                           ))}
-                          <TableHead className="min-w-[72px] border-r border-slate-200 bg-emerald-50 text-center text-emerald-800">
+                          <TableHead className="w-[62px] min-w-[62px] max-w-[62px] border-r border-slate-200 bg-emerald-50 px-1 text-center text-emerald-800">
                             VOL
                           </TableHead>
                         </React.Fragment>
@@ -3100,7 +3135,7 @@ export function IntradayForecastV2() {
                   <TableBody>
                     {actualBaselineIntervalSlots.map((slot, slotIndex) => (
                       <TableRow key={slot.slotKey}>
-                        <TableCell className="sticky left-0 z-10 min-w-[132px] border-r border-slate-200 bg-white text-xs font-medium text-slate-900">
+                        <TableCell className="sticky left-0 z-10 w-[108px] min-w-[108px] max-w-[108px] whitespace-normal border-r border-slate-200 bg-white px-1.5 text-[11px] leading-tight font-medium text-slate-900">
                           {slot.intervalLabel}
                         </TableCell>
                         {actualBaselineWeekGroups.map((group) => {
@@ -3130,7 +3165,7 @@ export function IntradayForecastV2() {
                                       if (!editable || !actualBaselineCanEditGrid || !actualBaselineSelectingRef.current) return;
                                       selectActualBaselineCell(slotIndex, columnIndex, { dragging: true });
                                     }}
-                                    className={`relative border-r border-slate-100 p-0.5 text-center select-none ${
+                                    className={`relative w-[72px] min-w-[72px] max-w-[72px] border-r border-slate-100 p-0.5 text-center select-none ${
                                       editable ? "bg-white" : "bg-slate-50 text-slate-300"
                                     } ${
                                       selected ? "bg-sky-50 ring-1 ring-inset ring-sky-300" : ""
@@ -3141,7 +3176,7 @@ export function IntradayForecastV2() {
                                     {editable ? (
                                       <Input
                                         aria-label={`${column.dateLabel} ${slot.intervalLabel} actual volume`}
-                                        className={`h-7 w-[68px] px-1 text-right text-xs tabular-nums ${
+                                        className={`h-6 w-[50px] px-1 text-right text-[11px] tabular-nums ${
                                           row?.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""
                                         } ${
                                           selected ? "border-sky-300 bg-sky-50/60" : ""
@@ -3173,7 +3208,7 @@ export function IntradayForecastV2() {
                                   </TableCell>
                                 );
                               })}
-                              <TableCell className="min-w-[72px] border-r border-slate-200 bg-emerald-50 px-1.5 text-right font-semibold tabular-nums text-emerald-900">
+                              <TableCell className="w-[62px] min-w-[62px] max-w-[62px] border-r border-slate-200 bg-emerald-50 px-1 text-right font-semibold tabular-nums text-emerald-900">
                                 {formatVolume(weekSlotTotal)}
                               </TableCell>
                             </React.Fragment>
@@ -3184,7 +3219,7 @@ export function IntradayForecastV2() {
                   </TableBody>
                   <TableFooter className="sticky bottom-0 z-20 border-t border-slate-200 bg-slate-50">
                     <TableRow className="hover:bg-slate-50">
-                      <TableCell className="sticky left-0 z-30 min-w-[132px] border-r border-slate-200 bg-slate-50 font-semibold text-slate-800">
+                      <TableCell className="sticky left-0 z-30 w-[108px] min-w-[108px] max-w-[108px] border-r border-slate-200 bg-slate-50 px-1.5 font-semibold text-slate-800">
                         Daily total
                       </TableCell>
                       {actualBaselineWeekGroups.map((group) => (
@@ -3192,12 +3227,12 @@ export function IntradayForecastV2() {
                           {group.columns.map((column) => (
                             <TableCell
                               key={`${column.intervalDate}-total`}
-                              className="min-w-[76px] border-r border-slate-100 px-1.5 text-right font-semibold tabular-nums text-slate-800"
+                              className="w-[72px] min-w-[72px] max-w-[72px] border-r border-slate-100 px-1 text-right font-semibold tabular-nums text-slate-800"
                             >
                               {formatVolume(actualBaselineDayTotals.get(column.intervalDate) ?? 0)}
                             </TableCell>
                           ))}
-                          <TableCell className="min-w-[72px] border-r border-slate-200 bg-emerald-100 px-1.5 text-right font-semibold tabular-nums text-emerald-950">
+                          <TableCell className="w-[62px] min-w-[62px] max-w-[62px] border-r border-slate-200 bg-emerald-100 px-1 text-right font-semibold tabular-nums text-emerald-950">
                             {formatVolume(actualBaselineWeekTotals.get(group.weekStart) ?? 0)}
                           </TableCell>
                         </React.Fragment>
@@ -3512,7 +3547,7 @@ export function IntradayForecastV2() {
                   <TableHead>Week label</TableHead>
                   <TableHead>Date range</TableHead>
                   <TableHead className="text-right">Days in selected month</TableHead>
-                  <TableHead className="min-w-[132px] text-right">Weight %</TableHead>
+                  <TableHead className="min-w-[100px] text-right">Weight %</TableHead>
                   <TableHead className="text-right">Allocated volume</TableHead>
                 </TableRow>
               </TableHeader>
@@ -3531,7 +3566,7 @@ export function IntradayForecastV2() {
                       <TableCell className="text-right tabular-nums">{row.week.daysInMonth}</TableCell>
                       <TableCell className="text-right">
                         <Input
-                          className={`ml-auto h-7 w-20 text-right text-xs tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
+                          className={`ml-auto h-6 w-14 text-right text-[11px] tabular-nums ${row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""}`}
                           type="number"
                           min="0"
                           step="0.01"
@@ -3648,37 +3683,54 @@ export function IntradayForecastV2() {
             </div>
 
             <Table
-              className="w-max min-w-full border-collapse"
+              className="w-auto table-fixed border-collapse"
               containerClassName="max-h-[520px] overflow-auto rounded-lg border border-slate-200"
+              style={{
+                width:
+                  dayAllocationPreview.weekSummaries.length === 0
+                    ? 420
+                    : DAY_ALLOCATION_GRID_WIDTHS.week
+                      + DAY_KEYS.length * DAY_ALLOCATION_GRID_WIDTHS.day
+                      + DAY_ALLOCATION_GRID_WIDTHS.weight
+                      + DAY_ALLOCATION_GRID_WIDTHS.allocated,
+              }}
             >
               {dayAllocationPreview.weekSummaries.length === 0 ? (
                 <TableBody>
                   <TableRow>
-                    <TableCell className="h-24 min-w-[520px] text-center text-sm text-slate-500">
+                    <TableCell className="h-24 min-w-[420px] text-center text-sm text-slate-500">
                       Select a valid month to generate day allocation rows.
                     </TableCell>
                   </TableRow>
                 </TableBody>
               ) : (
                 <>
+                  <colgroup>
+                    <col style={{ width: DAY_ALLOCATION_GRID_WIDTHS.week }} />
+                    {DAY_KEYS.map((dayKey) => (
+                      <col key={`${dayKey}-day-allocation-col`} style={{ width: DAY_ALLOCATION_GRID_WIDTHS.day }} />
+                    ))}
+                    <col style={{ width: DAY_ALLOCATION_GRID_WIDTHS.weight }} />
+                    <col style={{ width: DAY_ALLOCATION_GRID_WIDTHS.allocated }} />
+                  </colgroup>
                   <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
                     <TableRow className="bg-slate-50 hover:bg-slate-50">
-                      <TableHead className="sticky left-0 z-30 min-w-[120px] border-r border-slate-200 bg-slate-50 text-slate-700">
+                      <TableHead className="sticky left-0 z-30 w-[88px] min-w-[88px] max-w-[88px] border-r border-slate-200 bg-slate-50 text-slate-700">
                         Week
                       </TableHead>
                       {DAY_KEYS.map((dayKey) => (
                         <TableHead
                           key={dayKey}
-                          className="min-w-[104px] border-r border-slate-100 bg-white text-center text-slate-700"
+                          className="w-[76px] min-w-[76px] max-w-[76px] border-r border-slate-100 bg-white px-1 text-center text-slate-700"
                         >
                           {DAY_LABELS[dayKey].slice(0, 3)}
                         </TableHead>
                       ))}
-                      <TableHead className="min-w-[84px] border-r border-slate-200 bg-slate-50 text-right text-slate-700">
+                      <TableHead className="w-[64px] min-w-[64px] max-w-[64px] border-r border-slate-200 bg-slate-50 px-1 text-right text-slate-700">
                         Weight %
                       </TableHead>
-                      <TableHead className="min-w-[116px] bg-cyan-50 text-right text-cyan-800">
-                        Allocated / Week
+                      <TableHead className="w-[84px] min-w-[84px] max-w-[84px] bg-cyan-50 px-1 text-right text-cyan-800">
+                        Allocated
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -3687,10 +3739,10 @@ export function IntradayForecastV2() {
                       const rowsForWeek = dayAllocationRowsByWeekStart.get(summary.weekStart) ?? [];
                       return (
                         <TableRow key={summary.weekStart}>
-                          <TableCell className="sticky left-0 z-10 min-w-[120px] border-r border-slate-200 bg-white px-1.5 py-2 align-top">
+                          <TableCell className="sticky left-0 z-10 w-[88px] min-w-[88px] max-w-[88px] whitespace-normal border-r border-slate-200 bg-white px-1 py-1.5 align-top">
                             <div className="font-semibold text-slate-900">{summary.weekLabel}</div>
                             <div className="mt-1 text-[11px] text-slate-500">
-                              Week volume {formatVolume(summary.weekVolume)}
+                              Vol {formatVolume(summary.weekVolume)}
                             </div>
                           </TableCell>
                           {DAY_KEYS.map((dayKey, dayIndex) => {
@@ -3698,7 +3750,7 @@ export function IntradayForecastV2() {
                             return (
                               <TableCell
                                 key={`${summary.weekStart}-${dayKey}`}
-                                className={`min-w-[104px] border-r border-slate-100 p-1.5 align-top ${
+                                className={`w-[76px] min-w-[76px] max-w-[76px] border-r border-slate-100 p-1 align-top ${
                                   !row || !row.insideMonth
                                     ? "bg-slate-50/80 text-slate-400"
                                     : row.invalid
@@ -3708,17 +3760,17 @@ export function IntradayForecastV2() {
                               >
                                 {row ? (
                                   <div className="space-y-1">
-                                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                                    <div className="grid gap-0.5 text-[9px] leading-tight">
                                       <span className={`font-medium ${row.insideMonth ? "text-slate-700" : "text-slate-400"}`}>
                                         {row.dateLabel}
                                       </span>
                                       <span className={`tabular-nums ${row.insideMonth ? "text-slate-600" : "text-slate-400"}`}>
-                                        {formatVolume(row.allocatedVolume)}
+                                        V {formatVolume(row.allocatedVolume)}
                                       </span>
                                     </div>
                                     <Input
                                       aria-label={`${row.dateLabel} ${row.dayLabel} day allocation weight`}
-                                      className={`h-7 w-full min-w-[74px] px-1 text-right text-xs tabular-nums ${
+                                      className={`h-6 w-full min-w-[50px] px-1 text-right text-[11px] tabular-nums ${
                                         row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""
                                       }`}
                                       type="number"
@@ -3729,9 +3781,8 @@ export function IntradayForecastV2() {
                                       value={row.inputValue}
                                       onChange={(event) => updateDayWeightInput(row.calendarDate, event.target.value)}
                                     />
-                                    <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
-                                      <span>Norm</span>
-                                      <span className="tabular-nums">{formatPercent(row.normalizedWeight)}</span>
+                                    <div className="text-[9px] leading-tight text-slate-500">
+                                      <span className="tabular-nums">N {formatPercent(row.normalizedWeight)}</span>
                                     </div>
                                   </div>
                                 ) : (
@@ -3741,22 +3792,22 @@ export function IntradayForecastV2() {
                             );
                           })}
                           <TableCell
-                            className={`min-w-[84px] border-r border-slate-200 bg-slate-50 px-1.5 text-right align-top font-semibold tabular-nums ${
+                            className={`w-[64px] min-w-[64px] max-w-[64px] border-r border-slate-200 bg-slate-50 px-1 text-right align-top font-semibold tabular-nums ${
                               !summary.totalIs100 && summary.totalRawWeight > 0 ? "text-amber-700" : "text-slate-800"
                             }`}
                           >
                             <div>{formatPercent(summary.totalRawWeight)}</div>
                             {!summary.totalIs100 && summary.totalRawWeight > 0 ? (
-                              <div className="mt-1 text-[10px] font-normal text-amber-700">Normalized</div>
+                              <div className="mt-0.5 text-[9px] font-normal text-amber-700">Norm</div>
                             ) : null}
                           </TableCell>
                           <TableCell
-                            className={`min-w-[116px] bg-cyan-50 px-1.5 text-right align-top font-semibold tabular-nums ${
+                            className={`w-[84px] min-w-[84px] max-w-[84px] bg-cyan-50 px-1 text-right align-top font-semibold tabular-nums ${
                               summary.sumsToWeek ? "text-cyan-950" : "text-amber-700"
                             }`}
                           >
                             <div>{formatVolume(summary.totalAllocatedVolume)}</div>
-                            <div className="mt-1 text-[11px] font-normal text-cyan-800">
+                            <div className="mt-0.5 text-[10px] font-normal text-cyan-800">
                               of {formatVolume(summary.weekVolume)}
                             </div>
                           </TableCell>
@@ -3856,24 +3907,43 @@ export function IntradayForecastV2() {
             </div>
 
             <Table
-              className="w-max min-w-full border-collapse"
+              className="w-auto table-fixed border-collapse"
               containerClassName="max-h-[640px] overflow-auto rounded-lg border border-slate-200"
+              style={{
+                width:
+                  intervalAllocationSlots.length === 0 || allocationDateColumns.length === 0
+                    ? 420
+                    : INTERVAL_ALLOCATION_GRID_WIDTHS.interval
+                      + allocationDateColumns.length * INTERVAL_ALLOCATION_GRID_WIDTHS.date
+                      + allocationWeekGroups.length * INTERVAL_ALLOCATION_GRID_WIDTHS.vol,
+              }}
             >
               {intervalAllocationSlots.length === 0 || allocationDateColumns.length === 0 ? (
                 <TableBody>
                   <TableRow>
-                    <TableCell className="h-24 min-w-[520px] text-center text-sm text-slate-500">
+                    <TableCell className="h-24 min-w-[420px] text-center text-sm text-slate-500">
                       No operating interval rows are available for the selected scope.
                     </TableCell>
                   </TableRow>
                 </TableBody>
               ) : (
                 <>
+                  <colgroup>
+                    <col style={{ width: INTERVAL_ALLOCATION_GRID_WIDTHS.interval }} />
+                    {allocationWeekGroups.map((group) => (
+                      <React.Fragment key={`${group.weekStart}-interval-allocation-cols`}>
+                        {group.columns.map((column) => (
+                          <col key={`${column.intervalDate}-interval-allocation-col`} style={{ width: INTERVAL_ALLOCATION_GRID_WIDTHS.date }} />
+                        ))}
+                        <col key={`${group.weekStart}-interval-allocation-vol-col`} style={{ width: INTERVAL_ALLOCATION_GRID_WIDTHS.vol }} />
+                      </React.Fragment>
+                    ))}
+                  </colgroup>
                   <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
                     <TableRow className="bg-slate-50 hover:bg-slate-50">
                       <TableHead
                         rowSpan={2}
-                        className="sticky left-0 z-30 min-w-[132px] border-r border-slate-200 bg-slate-50 text-slate-700"
+                        className="sticky left-0 z-30 w-[104px] min-w-[104px] max-w-[104px] border-r border-slate-200 bg-slate-50 text-slate-700"
                       >
                         Interval
                       </TableHead>
@@ -3896,13 +3966,13 @@ export function IntradayForecastV2() {
                           {group.columns.map((column) => (
                             <TableHead
                               key={column.intervalDate}
-                              className="min-w-[88px] border-r border-slate-100 bg-white text-center"
+                              className="w-[76px] min-w-[76px] max-w-[76px] border-r border-slate-100 bg-white px-1 text-center"
                             >
                               <div className="text-xs font-semibold text-slate-700">{column.compactDateLabel}</div>
                               <div className="text-[11px] font-normal text-slate-500">{column.shortDayLabel}</div>
                             </TableHead>
                           ))}
-                          <TableHead className="min-w-[76px] border-r border-slate-200 bg-emerald-50 text-center text-emerald-800">
+                          <TableHead className="w-[58px] min-w-[58px] max-w-[58px] border-r border-slate-200 bg-emerald-50 px-1 text-center text-emerald-800">
                             VOL
                           </TableHead>
                         </React.Fragment>
@@ -3912,7 +3982,7 @@ export function IntradayForecastV2() {
                   <TableBody>
                     {intervalAllocationSlots.map((slot) => (
                       <TableRow key={slot.slotKey}>
-                        <TableCell className="sticky left-0 z-10 min-w-[132px] border-r border-slate-200 bg-white text-xs font-medium text-slate-900">
+                        <TableCell className="sticky left-0 z-10 w-[104px] min-w-[104px] max-w-[104px] whitespace-normal border-r border-slate-200 bg-white px-1.5 text-[11px] leading-tight font-medium text-slate-900">
                           {slot.intervalLabel}
                         </TableCell>
                         {allocationWeekGroups.map((group) => {
@@ -3927,7 +3997,7 @@ export function IntradayForecastV2() {
                                 return (
                                   <TableCell
                                     key={`${column.intervalDate}-${slot.slotKey}`}
-                                    className={`min-w-[88px] border-r border-slate-100 p-1 align-top ${
+                                    className={`w-[76px] min-w-[76px] max-w-[76px] border-r border-slate-100 p-0.5 align-top ${
                                       row
                                         ? row.invalid
                                           ? "bg-rose-50/40"
@@ -3939,7 +4009,7 @@ export function IntradayForecastV2() {
                                       <div className="space-y-1">
                                         <Input
                                           aria-label={`${row.dateLabel} ${row.intervalLabel} interval allocation weight`}
-                                          className={`h-7 w-full min-w-[68px] px-1 text-right text-xs tabular-nums ${
+                                          className={`h-6 w-full min-w-[50px] px-1 text-right text-[11px] tabular-nums ${
                                             row.invalid ? "border-rose-300 text-rose-700 focus-visible:ring-rose-300" : ""
                                           }`}
                                           type="number"
@@ -3950,20 +4020,18 @@ export function IntradayForecastV2() {
                                           value={row.inputValue}
                                           onChange={(event) => updateIntervalWeightInput(row.key, event.target.value)}
                                         />
-                                        <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
+                                        <div className="grid gap-0.5 text-[9px] leading-tight text-slate-500">
                                           <span className="tabular-nums">N {formatPercent(row.normalizedWeight)}</span>
-                                          <span className="font-medium tabular-nums text-slate-700">
-                                            V {formatVolume(row.allocatedVolume)}
-                                          </span>
+                                          <span className="font-medium tabular-nums text-slate-700">V {formatVolume(row.allocatedVolume)}</span>
                                         </div>
                                       </div>
                                     ) : (
-                                      <div className="flex h-[46px] items-center justify-center text-xs">-</div>
+                                      <div className="flex h-[44px] items-center justify-center text-xs">-</div>
                                     )}
                                   </TableCell>
                                 );
                               })}
-                              <TableCell className="min-w-[76px] border-r border-slate-200 bg-emerald-50 px-1.5 text-right font-semibold tabular-nums text-emerald-900">
+                              <TableCell className="w-[58px] min-w-[58px] max-w-[58px] border-r border-slate-200 bg-emerald-50 px-1 text-right font-semibold tabular-nums text-emerald-900">
                                 {formatVolume(weekSlotTotal)}
                               </TableCell>
                             </React.Fragment>
@@ -3974,7 +4042,7 @@ export function IntradayForecastV2() {
                   </TableBody>
                   <TableFooter className="sticky bottom-0 z-20 border-t border-slate-200 bg-slate-50">
                     <TableRow className="hover:bg-slate-50">
-                      <TableCell className="sticky left-0 z-30 min-w-[132px] border-r border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800">
+                      <TableCell className="sticky left-0 z-30 w-[104px] min-w-[104px] max-w-[104px] border-r border-slate-200 bg-slate-50 px-1.5 text-xs font-semibold text-slate-800">
                         Daily total
                       </TableCell>
                       {allocationWeekGroups.map((group) => {
@@ -3994,21 +4062,21 @@ export function IntradayForecastV2() {
                               return (
                                 <TableCell
                                   key={`${column.intervalDate}-interval-total`}
-                                  className={`min-w-[88px] border-r border-slate-100 px-1.5 text-right align-top font-semibold tabular-nums ${
+                                  className={`w-[76px] min-w-[76px] max-w-[76px] border-r border-slate-100 px-1 text-right align-top font-semibold tabular-nums ${
                                     showWarning ? "text-amber-700" : "text-slate-800"
                                   }`}
                                 >
                                   {summary ? (
                                     <>
                                       <div>{formatVolume(summary.totalAllocatedVolume)}</div>
-                                      <div className="mt-0.5 text-[10px] font-normal text-slate-500">
+                                      <div className="mt-0.5 text-[9px] font-normal text-slate-500">
                                         / {formatVolume(summary.dayVolume)}
                                       </div>
                                       {summary.missingIntervals ? (
-                                        <div className="mt-0.5 text-[10px] font-normal text-amber-700">Hours required</div>
+                                        <div className="mt-0.5 text-[9px] font-normal text-amber-700">Hours req</div>
                                       ) : null}
                                       {summary.totalRawWeight > 0 && !summary.totalIs100 ? (
-                                        <div className="mt-0.5 text-[10px] font-normal text-amber-700">
+                                        <div className="mt-0.5 text-[9px] font-normal text-amber-700">
                                           Wgt {formatPercent(summary.totalRawWeight)}
                                         </div>
                                       ) : null}
@@ -4019,9 +4087,9 @@ export function IntradayForecastV2() {
                                 </TableCell>
                               );
                             })}
-                            <TableCell className="min-w-[76px] border-r border-slate-200 bg-emerald-100 px-1.5 text-right align-top font-semibold tabular-nums text-emerald-950">
+                            <TableCell className="w-[58px] min-w-[58px] max-w-[58px] border-r border-slate-200 bg-emerald-100 px-1 text-right align-top font-semibold tabular-nums text-emerald-950">
                               <div>{formatVolume(weekAllocatedTotal)}</div>
-                              <div className="mt-0.5 text-[10px] font-normal text-emerald-800">
+                              <div className="mt-0.5 text-[9px] font-normal text-emerald-800">
                                 / {formatVolume(weekDayVolumeTotal)}
                               </div>
                             </TableCell>
