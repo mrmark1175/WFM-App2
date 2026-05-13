@@ -17,6 +17,8 @@ import {
   normalizeDemandTimeZone,
 } from "../lib/demandTimezone";
 import { getCalculatedVolumes, type Assumptions } from "./forecasting-logic";
+import { computeIntervalFTE } from "./intraday-distribution-logic";
+import { buildIntradayFtePrefsPageKey } from "./intraday-scope";
 
 type StaffingMode = "dedicated" | "blended";
 type DayKey = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
@@ -34,6 +36,20 @@ interface LobSettings {
   hours_of_operation?: Partial<Record<ChannelKey, Partial<Record<DayKey, DaySchedule>>>>;
   demand_timezone?: string;
   supply_timezone?: string;
+  voice_aht?: number | string | null;
+  voice_sla_target?: number | string | null;
+  voice_sla_seconds?: number | string | null;
+  voice_shrinkage?: number | string | null;
+  chat_aht?: number | string | null;
+  chat_sla_target?: number | string | null;
+  chat_sla_seconds?: number | string | null;
+  chat_concurrency?: number | string | null;
+  chat_shrinkage?: number | string | null;
+  email_aht?: number | string | null;
+  email_sla_target?: number | string | null;
+  email_sla_seconds?: number | string | null;
+  email_occupancy?: number | string | null;
+  email_shrinkage?: number | string | null;
 }
 
 interface PlannerSnapshot {
@@ -268,6 +284,46 @@ interface ActualBaselineIntervalRow {
   intervalLabel: string;
 }
 
+interface SchedulingFteParams {
+  ahtSec: number;
+  slaTarget: number;
+  slaSec: number;
+  emailOccupancy: number;
+  shrinkage: number;
+  concurrency: number;
+  avgPatienceSeconds: number;
+  missing: string[];
+  sourceLabel: string;
+}
+
+interface SchedulingHandoffPreviewRow {
+  key: string;
+  calendarDate: string;
+  dayLabel: string;
+  intervalStart: string;
+  intervalLabel: string;
+  allocatedVolume: number;
+  erlangs: number | null;
+  requiredFte: number | null;
+  slotIndex: number | null;
+  repeated: boolean;
+  utcOffsetMinutes: number | null;
+}
+
+interface SchedulingHandoffPreview {
+  rows: SchedulingHandoffPreviewRow[];
+  dates: Record<string, number[]>;
+  weekdays: Record<DayKey, number[]>;
+  erlangsDates: Record<string, number[]>;
+  erlangsWeekdays: Record<DayKey, number[]>;
+  totalAllocatedVolume: number;
+  requiredIntervalCount: number;
+  snapshotRowCount: number;
+  legacySlotValueCount: number;
+  repeatedIntervalCount: number;
+  offsetTransitionDates: string[];
+}
+
 interface ActualBaselinePreviewRow extends ActualBaselineIntervalRow {
   inputValue: string;
   actualVolume: number;
@@ -406,6 +462,187 @@ function formatSignedVolume(value: number): string {
 
 function formatChannelLabel(channel: ChannelKey): string {
   return CHANNEL_OPTIONS.find((option) => option.value === channel)?.label ?? "Voice";
+}
+
+function formatDecimal(value: number | null | undefined, digits: number): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
+  return value.toFixed(digits);
+}
+
+function firstFiniteNumber(...values: Array<number | string | null | undefined>): number | null {
+  for (const value of values) {
+    const parsed = parseOptionalNumber(value);
+    if (parsed !== null && Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function buildWeekDateKeys(weekStart: string): string[] {
+  const start = dateFromIso(weekStart);
+  return Array.from({ length: 7 }, (_, index) => isoFromDate(addUtcDays(start, index)));
+}
+
+function buildSchedulingFteParams(
+  snapshot: PlannerSnapshot | null,
+  settings: LobSettings | null,
+  channel: ChannelKey
+): SchedulingFteParams {
+  const assumptions = snapshot?.assumptions;
+  const missing: string[] = [];
+  const isVoice = channel === "voice";
+  const isChat = channel === "chat";
+  const isAsync = channel === "email" || channel === "cases";
+
+  const ahtSec = isVoice
+    ? firstFiniteNumber(settings?.voice_aht, assumptions?.aht)
+    : isChat
+    ? firstFiniteNumber(settings?.chat_aht, assumptions?.chatAht)
+    : firstFiniteNumber(settings?.email_aht, assumptions?.emailAht);
+  const slaTarget = isVoice
+    ? firstFiniteNumber(settings?.voice_sla_target, assumptions?.voiceSlaTarget)
+    : isChat
+    ? firstFiniteNumber(settings?.chat_sla_target, assumptions?.chatSlaTarget)
+    : firstFiniteNumber(settings?.email_sla_target, assumptions?.emailSlaTarget);
+  const slaSec = isVoice
+    ? firstFiniteNumber(settings?.voice_sla_seconds, assumptions?.voiceSlaAnswerSeconds)
+    : isChat
+    ? firstFiniteNumber(settings?.chat_sla_seconds, assumptions?.chatSlaAnswerSeconds)
+    : firstFiniteNumber(settings?.email_sla_seconds, assumptions?.emailSlaAnswerSeconds);
+  const shrinkage = isVoice
+    ? firstFiniteNumber(settings?.voice_shrinkage, assumptions?.shrinkage)
+    : isChat
+    ? firstFiniteNumber(settings?.chat_shrinkage, assumptions?.shrinkage)
+    : firstFiniteNumber(settings?.email_shrinkage, assumptions?.shrinkage);
+  const emailOccupancy = isAsync
+    ? firstFiniteNumber(settings?.email_occupancy, assumptions?.occupancy)
+    : firstFiniteNumber(settings?.email_occupancy, assumptions?.occupancy, 85);
+  const concurrency = isChat
+    ? Math.max(1, firstFiniteNumber(settings?.chat_concurrency, assumptions?.chatConcurrency, 1) ?? 1)
+    : 1;
+  const avgPatienceSeconds = isVoice
+    ? firstFiniteNumber(assumptions?.voiceAvgPatienceSeconds, 0) ?? 0
+    : isChat
+    ? firstFiniteNumber(assumptions?.chatAvgPatienceSeconds, 0) ?? 0
+    : 0;
+
+  if (ahtSec === null || ahtSec <= 0) missing.push("AHT seconds");
+  if (slaTarget === null || slaTarget <= 0) missing.push("SLA target");
+  if (slaSec === null || slaSec <= 0) missing.push("SLA answer seconds");
+  if (shrinkage === null || shrinkage < 0) missing.push("shrinkage");
+  if (emailOccupancy === null || emailOccupancy <= 0) missing.push("email occupancy");
+
+  return {
+    ahtSec: ahtSec ?? 0,
+    slaTarget: slaTarget ?? 0,
+    slaSec: slaSec ?? 0,
+    emailOccupancy: emailOccupancy ?? 0,
+    shrinkage: shrinkage ?? 0,
+    concurrency,
+    avgPatienceSeconds,
+    missing,
+    sourceLabel: assumptions ? "Demand/Lob assumptions" : "LOB settings fallback",
+  };
+}
+
+function buildSchedulingHandoffPreview(
+  selectedWeekStart: string,
+  intervalRows: IntervalAllocationPreviewRow[],
+  fteParams: SchedulingFteParams | null,
+  channel: ChannelKey
+): SchedulingHandoffPreview {
+  const weekDates = buildWeekDateKeys(selectedWeekStart);
+  const dates = Object.fromEntries(weekDates.map((date) => [date, new Array(96).fill(0)])) as Record<string, number[]>;
+  const erlangsDates = Object.fromEntries(weekDates.map((date) => [date, new Array(96).fill(0)])) as Record<string, number[]>;
+  const weekdays = Object.fromEntries(DAY_KEYS.map((day) => [day, new Array(96).fill(0)])) as Record<DayKey, number[]>;
+  const erlangsWeekdays = Object.fromEntries(DAY_KEYS.map((day) => [day, new Array(96).fill(0)])) as Record<DayKey, number[]>;
+  const selectedDates = new Set(weekDates);
+  const rows: SchedulingHandoffPreviewRow[] = [];
+  const offsetsByDate = new Map<string, Set<number>>();
+
+  intervalRows
+    .filter((row) => selectedDates.has(row.calendarDate))
+    .forEach((row) => {
+      const slotStartMinutes = parseTimeToMinutes(row.intervalStart);
+      const slotIndex = slotStartMinutes === null ? null : Math.floor(slotStartMinutes / INTERVAL_MINUTES);
+      const result = fteParams && fteParams.missing.length === 0
+        ? computeIntervalFTE(
+            row.allocatedVolume,
+            INTERVAL_MINUTES,
+            fteParams.ahtSec,
+            fteParams.slaTarget,
+            fteParams.slaSec,
+            fteParams.emailOccupancy,
+            fteParams.shrinkage,
+            channel,
+            fteParams.concurrency,
+            fteParams.avgPatienceSeconds
+          )
+        : null;
+      const requiredFte = result ? parseFloat((result.fte ?? 0).toFixed(2)) : null;
+      const erlangs = result ? result.erlangs : null;
+      const dayKey = getDayKeyFromIso(row.calendarDate);
+
+      if (slotIndex !== null && slotIndex >= 0 && slotIndex < 96 && requiredFte !== null) {
+        dates[row.calendarDate][slotIndex] = requiredFte;
+        weekdays[dayKey][slotIndex] = requiredFte;
+        erlangsDates[row.calendarDate][slotIndex] = erlangs ?? 0;
+        erlangsWeekdays[dayKey][slotIndex] = erlangs ?? 0;
+      }
+
+      if (row.utcOffsetMinutes !== null) {
+        offsetsByDate.set(row.calendarDate, offsetsByDate.get(row.calendarDate) ?? new Set<number>());
+        offsetsByDate.get(row.calendarDate)?.add(row.utcOffsetMinutes);
+      }
+
+      rows.push({
+        key: row.key,
+        calendarDate: row.calendarDate,
+        dayLabel: row.dayLabel,
+        intervalStart: row.intervalStart,
+        intervalLabel: row.intervalLabel,
+        allocatedVolume: row.allocatedVolume,
+        erlangs,
+        requiredFte,
+        slotIndex,
+        repeated: row.repeated || row.occurrenceIndex > 0 || row.dstFold > 0,
+        utcOffsetMinutes: row.utcOffsetMinutes,
+      });
+    });
+
+  const requiredIntervalCount = rows.filter((row) => (row.requiredFte ?? 0) > 0).length;
+  const offsetTransitionDates = Array.from(offsetsByDate.entries())
+    .filter(([, offsets]) => offsets.size > 1)
+    .map(([date]) => date);
+
+  return {
+    rows,
+    dates,
+    weekdays,
+    erlangsDates,
+    erlangsWeekdays,
+    totalAllocatedVolume: rows.reduce((sum, row) => sum + row.allocatedVolume, 0),
+    requiredIntervalCount,
+    snapshotRowCount: requiredIntervalCount,
+    legacySlotValueCount: weekDates.length * 96,
+    repeatedIntervalCount: rows.filter((row) => row.repeated).length,
+    offsetTransitionDates,
+  };
+}
+
+function emptySchedulingHandoffPreview(): SchedulingHandoffPreview {
+  return {
+    rows: [],
+    dates: {},
+    weekdays: Object.fromEntries(DAY_KEYS.map((day) => [day, new Array(96).fill(0)])) as Record<DayKey, number[]>,
+    erlangsDates: {},
+    erlangsWeekdays: Object.fromEntries(DAY_KEYS.map((day) => [day, new Array(96).fill(0)])) as Record<DayKey, number[]>,
+    totalAllocatedVolume: 0,
+    requiredIntervalCount: 0,
+    snapshotRowCount: 0,
+    legacySlotValueCount: 0,
+    repeatedIntervalCount: 0,
+    offsetTransitionDates: [],
+  };
 }
 
 function parseMonthParts(monthKey: string): { year: number; month: number } | null {
@@ -1439,6 +1676,7 @@ export function IntradayForecastV2() {
   const [intervalAllocationLoading, setIntervalAllocationLoading] = useState(false);
   const [intervalAllocationError, setIntervalAllocationError] = useState<string | null>(null);
   const [savingIntervalAllocation, setSavingIntervalAllocation] = useState(false);
+  const [selectedSchedulingWeekStart, setSelectedSchedulingWeekStart] = useState("");
   const activeScopeKeyRef = useRef("");
   const monthManuallySelectedRef = useRef(false);
   const actualBaselineSelectingRef = useRef(false);
@@ -1569,6 +1807,14 @@ export function IntradayForecastV2() {
   );
   const monthWeeks = useMemo(() => buildMonthWeeks(monthKey), [monthKey]);
   const defaultWeekWeightInputs = useMemo(() => buildDefaultWeekWeightInputs(monthWeeks), [monthWeeks]);
+
+  useEffect(() => {
+    setSelectedSchedulingWeekStart((previous) => (
+      monthWeeks.some((week) => week.weekStart === previous)
+        ? previous
+        : monthWeeks[0]?.weekStart ?? ""
+    ));
+  }, [monthWeeks]);
 
   const activeChannelLabel = formatChannelLabel(selectedChannel);
   const scopeLabel = `${selectedLob?.lob_name ?? "No LOB"} / ${activeChannelLabel} / ${staffingMode} / ${monthKey} / ${demandTimezone}`;
@@ -2327,6 +2573,85 @@ export function IntradayForecastV2() {
       ok: outputHasNoZeroWeightIssue,
       detail: outputHasNoZeroWeightIssue ? "Weights are usable" : "Review positive-volume weights",
     },
+  ];
+
+  const schedulingPreferenceKey = buildIntradayFtePrefsPageKey(selectedChannel, staffingMode);
+  const selectedSchedulingWeek = useMemo(
+    () => monthWeeks.find((week) => week.weekStart === selectedSchedulingWeekStart) ?? null,
+    [monthWeeks, selectedSchedulingWeekStart]
+  );
+  const selectedSchedulingWeekDates = useMemo(
+    () => selectedSchedulingWeek ? buildWeekDateKeys(selectedSchedulingWeek.weekStart) : [],
+    [selectedSchedulingWeek]
+  );
+  const selectedSchedulingWeekDayRows = useMemo(
+    () => dayAllocationPreview.rows.filter((row) => row.weekStart === selectedSchedulingWeekStart && row.insideMonth),
+    [dayAllocationPreview.rows, selectedSchedulingWeekStart]
+  );
+  const selectedSchedulingWeekIntervalRows = useMemo(
+    () => intervalAllocationPreview.rows.filter((row) => row.calendarDate >= (selectedSchedulingWeekDates[0] ?? "")
+      && row.calendarDate <= (selectedSchedulingWeekDates[6] ?? "")),
+    [intervalAllocationPreview.rows, selectedSchedulingWeekDates]
+  );
+  const schedulingFteParams = useMemo(
+    () => buildSchedulingFteParams(demandSnapshot, lobSettings, selectedChannel),
+    [demandSnapshot, lobSettings, selectedChannel]
+  );
+  const schedulingHandoffPreview = useMemo(
+    () => selectedSchedulingWeek
+      ? buildSchedulingHandoffPreview(
+          selectedSchedulingWeek.weekStart,
+          intervalAllocationPreview.rows,
+          schedulingFteParams,
+          selectedChannel
+        )
+      : emptySchedulingHandoffPreview(),
+    [intervalAllocationPreview.rows, schedulingFteParams, selectedChannel, selectedSchedulingWeek]
+  );
+  const selectedWeekCrossesOutsideMonth = selectedSchedulingWeekDates.some((date) => !date.startsWith(monthKey));
+  const selectedWeekIncomplete = !!selectedSchedulingWeek && selectedSchedulingWeekDayRows.length !== 7;
+  const selectedWeekMissingIntervalDays = selectedSchedulingWeekDayRows.filter((day) => (
+    day.allocatedVolume > 0 && !selectedSchedulingWeekIntervalRows.some((row) => row.calendarDate === day.calendarDate)
+  ));
+  const unsavedHandoffChangeLabels = [
+    manualOverrideInput.trim() !== formatNumberInput(monthPlan?.manual_monthly_volume) ? "monthly override" : "",
+    hasUnsavedWeekChanges ? "week allocation" : "",
+    hasUnsavedDayChanges ? "day allocation" : "",
+    hasUnsavedIntervalChanges ? "interval allocation" : "",
+  ].filter(Boolean);
+  const schedulingBlockingWarnings = [
+    !selectedSchedulingWeek ? "Select a publish week before reviewing Scheduling output." : "",
+    !previewScopeReady ? "Preview is still refreshing for the active scope." : "",
+    selectedWeekIncomplete ? "Selected publish week is incomplete in the selected month. Choose a full in-month week before publishing later." : "",
+    selectedWeekCrossesOutsideMonth ? "Selected publish week crosses outside the selected month. Legacy Scheduling snapshots are weekday-based and cannot safely represent the missing outside-month days." : "",
+    schedulingFteParams.missing.length > 0 ? `Required FTE inputs are missing: ${schedulingFteParams.missing.join(", ")}.` : "",
+    schedulingHandoffPreview.repeatedIntervalCount > 0 ? "Selected week includes repeated DST intervals that cannot be represented safely by the legacy weekday + HH:mm snapshot shape." : "",
+    schedulingHandoffPreview.offsetTransitionDates.length > 0 ? `Selected week includes DST offset changes on ${schedulingHandoffPreview.offsetTransitionDates.join(", ")} that cannot be represented safely by the legacy weekday + HH:mm snapshot shape.` : "",
+    selectedWeekMissingIntervalDays.length > 0 ? `Selected week has positive-volume days without operating intervals: ${selectedWeekMissingIntervalDays.map((day) => day.calendarDate).join(", ")}.` : "",
+    intervalAllocationPreview.hasInvalidWeight || intervalAllocationPreview.hasZeroWeightDay || intervalAllocationPreview.hasMissingIntervals || !intervalAllocationPreview.allDaysSumToSource
+      ? "Current interval allocation validation has unresolved warnings. Resolve allocation warnings before using this as a Scheduling source later."
+      : "",
+  ].filter(Boolean);
+  const schedulingAdvisoryWarnings = [
+    "Preview only. Nothing is published to Scheduling.",
+    "Legacy Schedule Editor handoff requires 96 x 15-minute slots per day; this preview builds that shape in memory only.",
+    unsavedHandoffChangeLabels.length > 0
+      ? `Current on-screen ${unsavedHandoffChangeLabels.join(", ")} changes are not saved and may differ from saved state.`
+      : "",
+  ].filter(Boolean);
+  const schedulingPreviewCards = [
+    { label: "Selected LOB", value: selectedLob?.lob_name ?? "No LOB", detail: "Current scope" },
+    { label: "Channel", value: activeChannelLabel, detail: selectedChannel },
+    { label: "Staffing Mode", value: staffingMode === "blended" ? "Blended" : "Dedicated", detail: "Current scope" },
+    { label: "Selected Month", value: monthKey, detail: "Demand-local month" },
+    { label: "Publish Week", value: selectedSchedulingWeek?.label ?? "-", detail: selectedSchedulingWeek?.dateRange ?? "Select a week" },
+    { label: "Demand Timezone", value: demandTimezone, detail: "Source interval timezone" },
+    { label: "Interval Grain", value: `${INTERVAL_MINUTES} min`, detail: "v2 interval allocation" },
+    { label: "Week Volume", value: formatVolume(schedulingHandoffPreview.totalAllocatedVolume), detail: "Selected week allocated volume" },
+    { label: "Required FTE Intervals", value: schedulingHandoffPreview.requiredIntervalCount.toLocaleString(), detail: "Intervals with FTE > 0" },
+    { label: "Snapshot Rows", value: schedulingHandoffPreview.snapshotRowCount.toLocaleString(), detail: "Would be created later" },
+    { label: "Preference Key", value: schedulingPreferenceKey, detail: "Would be used later" },
+    { label: "Legacy Slot Output", value: schedulingHandoffPreview.legacySlotValueCount > 0 ? `${schedulingHandoffPreview.legacySlotValueCount.toLocaleString()} values` : "-", detail: "7 days x 96 slots" },
   ];
 
   const actualBaselineCanEditGrid = actualBaselineEditing && !actualBaselineLoading && !savingActualBaseline;
@@ -4313,6 +4638,148 @@ export function IntradayForecastV2() {
                 </Table>
               </details>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <span className="rounded-lg bg-amber-50 p-2 text-amber-700">
+                    <Send className="size-4" />
+                  </span>
+                  Scheduling Handoff Preview
+                </CardTitle>
+                <CardDescription className="mt-2">
+                  Read-only preview of the legacy Scheduling handoff shape from current v2 interval allocation output.
+                </CardDescription>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={schedulingBlockingWarnings.length === 0
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+                    : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50"
+                  }
+                >
+                  {schedulingBlockingWarnings.length === 0 ? "Preview ready" : "Preview blocked"}
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5 pt-5">
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <span>Preview only. Nothing is published to Scheduling.</span>
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-[minmax(220px,320px)_1fr]">
+              <label className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected Publish Week</span>
+                <Select value={selectedSchedulingWeekStart} onValueChange={setSelectedSchedulingWeekStart}>
+                  <SelectTrigger className="mt-2 h-9 bg-white text-sm">
+                    <SelectValue placeholder="Select week" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {monthWeeks.map((week) => (
+                      <SelectItem key={week.weekStart} value={week.weekStart}>
+                        {week.label} - {week.dateRange}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {schedulingPreviewCards.map((card) => (
+                  <div key={card.label} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{card.label}</p>
+                    <p className="mt-2 truncate text-lg font-semibold text-slate-900">{card.value}</p>
+                    <p className="mt-1 truncate text-xs text-slate-500">{card.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Legacy Schedule Editor Output</p>
+                <p className="mt-2 text-sm text-slate-700">
+                  Would produce 7 date arrays and 7 weekday arrays with 96 x 15-minute values per day.
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  This preview does not call user preference or Scheduling snapshot endpoints.
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">FTE Inputs</p>
+                <p className="mt-2 text-sm text-slate-700">
+                  {schedulingFteParams.sourceLabel}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  AHT {formatDecimal(schedulingFteParams.ahtSec, 0)}s · SLA {formatDecimal(schedulingFteParams.slaTarget, 0)}% / {formatDecimal(schedulingFteParams.slaSec, 0)}s · Shrinkage {formatDecimal(schedulingFteParams.shrinkage, 1)}%
+                </p>
+              </div>
+            </div>
+
+            {(schedulingBlockingWarnings.length > 0 || schedulingAdvisoryWarnings.length > 0) && (
+              <div className="grid gap-3 lg:grid-cols-2">
+                {schedulingBlockingWarnings.length > 0 && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+                    <p className="font-semibold">Blocking warnings</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {schedulingBlockingWarnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {schedulingAdvisoryWarnings.length > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <p className="font-semibold">Preview notes</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {schedulingAdvisoryWarnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <Table containerClassName="max-h-[620px] overflow-auto rounded-lg border border-slate-200">
+              <TableHeader className="sticky top-0 z-10 bg-white">
+                <TableRow className="bg-slate-50 hover:bg-slate-50">
+                  <TableHead>Date</TableHead>
+                  <TableHead>Weekday</TableHead>
+                  <TableHead>Interval start</TableHead>
+                  <TableHead className="text-right">Allocated volume</TableHead>
+                  <TableHead className="text-right">Erlangs</TableHead>
+                  <TableHead className="text-right">Required FTE</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {schedulingHandoffPreview.rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="h-24 text-center text-sm text-slate-500">
+                      No Scheduling handoff rows are available for the selected publish week.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  schedulingHandoffPreview.rows.map((row) => (
+                    <TableRow key={`${row.key}-scheduling-preview`}>
+                      <TableCell className="font-medium text-slate-900">{row.calendarDate}</TableCell>
+                      <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
+                      <TableCell className="text-slate-600">{row.intervalStart}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatVolume(row.allocatedVolume)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatDecimal(row.erlangs, 3)}</TableCell>
+                      <TableCell className="text-right font-medium tabular-nums text-slate-900">{formatDecimal(row.requiredFte, 2)}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
           </CardContent>
         </Card>
 
