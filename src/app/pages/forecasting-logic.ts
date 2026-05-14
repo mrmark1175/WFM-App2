@@ -220,6 +220,116 @@ export const buildDemandRecutPlan = ({
   };
 };
 
+export interface CanonicalDemandSeriesInputs {
+  baseYear1: number[];
+  actualsByMonth?: Array<number | null | undefined>;
+  completedMonthIndices?: number[];
+  sourceHistory?: number[];
+  year2?: number[];
+  forecastHorizon?: 1 | 2;
+  publishedRecut?: number[] | null;
+  startDate?: string;
+}
+
+export interface CanonicalDemandSeriesResult {
+  baseForecastSeries: number[];
+  actualizedYear1Series: number[];
+  finalRecutYear1Series: number[];
+  year2Series: number[];
+  finalDisplaySeries: number[];
+  finalPublishSeries: number[];
+  recutPlan: DemandRecutPlan;
+  recutFactor: number | null;
+  warnings: string[];
+  flags: {
+    missingCompletedMonthIndices: number[];
+    explicitZeroActualMonthIndices: number[];
+    nonJanuaryStart: boolean;
+    usedPublishedRecutFallback: boolean;
+  };
+}
+
+const isNonJanuaryForecastStart = (startDate?: string): boolean => {
+  if (!startDate) return false;
+  const match = /^(\d{4})-(\d{2})-\d{2}$/.exec(startDate);
+  if (match) return Number(match[2]) !== 1;
+  const parsed = new Date(startDate);
+  return Number.isFinite(parsed.getTime()) && parsed.getMonth() !== 0;
+};
+
+/**
+ * Builds the canonical monthly demand series used by display, scenario
+ * snapshots, and downstream handoffs. The forecasting method is unchanged:
+ * Year 1 still uses the existing scalar re-cut, and Year 2 is supplied by the
+ * caller's existing two-pass model path.
+ */
+export const buildCanonicalDemandSeries = ({
+  baseYear1,
+  actualsByMonth = [],
+  completedMonthIndices = [],
+  sourceHistory = [],
+  year2 = [],
+  forecastHorizon = 1,
+  publishedRecut = null,
+  startDate,
+}: CanonicalDemandSeriesInputs): CanonicalDemandSeriesResult => {
+  const baseForecastSeries = normalizeMonthlyForecast(baseYear1, sourceHistory, 12);
+  const completed = Array.from(new Set(completedMonthIndices.filter((index) => index >= 0 && index < 12))).sort((a, b) => a - b);
+  const recutPlan = buildDemandRecutPlan({
+    basePlan: baseForecastSeries,
+    actualsByMonth,
+    completedMonthIndices: completed,
+    sourceHistory,
+  });
+  const actualizedYear1Series = buildEffectiveYearOnePlan({
+    basePlan: baseForecastSeries,
+    actualsByMonth,
+    completedMonthIndices: completed,
+    recutFactor: null,
+    sourceHistory,
+  });
+  const normalizedPublishedRecut = publishedRecut
+    ? normalizeMonthlyForecast(publishedRecut.slice(0, 12), baseForecastSeries, 12)
+    : null;
+  const hasCompletedPeriodContext = completed.length > 0;
+  const usedPublishedRecutFallback = !hasCompletedPeriodContext && normalizedPublishedRecut != null;
+  const finalRecutYear1Series = usedPublishedRecutFallback
+    ? normalizedPublishedRecut
+    : recutPlan.year1;
+  const year2Series = forecastHorizon === 2
+    ? normalizeMonthlyForecast(year2, finalRecutYear1Series, 12)
+    : [];
+  const finalDisplaySeries = buildDemandForecastTrendSeries({
+    baseYear1: baseForecastSeries,
+    finalYear1: finalRecutYear1Series,
+    year2: year2Series,
+    forecastHorizon,
+  });
+  const warnings = [...recutPlan.warnings];
+  const nonJanuaryStart = isNonJanuaryForecastStart(startDate);
+  if (nonJanuaryStart) {
+    warnings.push("Forecast start month is not January; month labels must follow the configured start date.");
+  }
+
+  return {
+    baseForecastSeries,
+    actualizedYear1Series,
+    finalRecutYear1Series,
+    year2Series,
+    finalDisplaySeries,
+    finalPublishSeries: [...finalDisplaySeries],
+    recutPlan,
+    recutFactor: recutPlan.recutFactor,
+    warnings,
+    flags: {
+      missingCompletedMonthIndices: recutPlan.missingCompletedMonthIndices,
+      explicitZeroActualMonthIndices: completed.filter((index) => actualsByMonth[index] === 0),
+      nonJanuaryStart,
+      usedPublishedRecutFallback,
+    },
+  };
+};
+
 export const buildDemandForecastTrendSeries = ({
   baseYear1,
   finalYear1,

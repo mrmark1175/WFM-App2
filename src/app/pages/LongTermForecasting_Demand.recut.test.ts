@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildCanonicalDemandSeries,
   buildDemandForecastTrendSeries,
   buildDemandRecutPlan,
   buildDemandSnapshotRecutSeries,
@@ -149,39 +150,90 @@ describe('Long Term Forecasting Demand recut contracts', () => {
   });
 
   it('uses the final re-cut values for the one-year graph series instead of stale base forecast values', () => {
-    const recut = buildDemandRecutPlan({
-      basePlan: baseYear1,
+    const canonical = buildCanonicalDemandSeries({
+      baseYear1,
       actualsByMonth: [1100, 1210, 1320, 1430, null, null, null, null, null, null, null, null],
       completedMonthIndices: [0, 1, 2, 3],
       sourceHistory,
     });
     const chartSeries = buildDemandForecastTrendSeries({
       baseYear1,
-      finalYear1: recut.year1,
+      finalYear1: canonical.finalRecutYear1Series,
       forecastHorizon: 1,
     });
 
-    expect(chartSeries).toEqual(recut.year1);
+    expect(chartSeries).toEqual(canonical.finalDisplaySeries);
     expect(chartSeries).not.toEqual(baseYear1);
   });
 
   it('publishes the same final re-cut series that the page displays to downstream consumers', () => {
-    const recut = buildDemandRecutPlan({
-      basePlan: baseYear1,
+    const canonical = buildCanonicalDemandSeries({
+      baseYear1,
       actualsByMonth: [1100, 1210, 1320, 1430, null, null, null, null, null, null, null, null],
       completedMonthIndices: [0, 1, 2, 3],
       sourceHistory,
+      year2: baseYear1.map((value) => value + 1000),
+      forecastHorizon: 2,
     });
-    const year2 = baseYear1.map((value) => value + 1000);
-    const displayed = [...recut.year1, ...year2];
     const published = buildDemandSnapshotRecutSeries({
-      finalYear1: recut.year1,
-      year2,
+      finalYear1: canonical.finalRecutYear1Series,
+      year2: canonical.year2Series,
       forecastHorizon: 2,
     });
 
-    expect(published).toEqual(displayed);
+    expect(published).toEqual(canonical.finalDisplaySeries);
+    expect(canonical.finalPublishSeries).toEqual(canonical.finalDisplaySeries);
     expect(published).toHaveLength(24);
+  });
+
+  it('builds one canonical final series for display and planner snapshots', () => {
+    const canonical = buildCanonicalDemandSeries({
+      baseYear1,
+      actualsByMonth: [1100, 1210, 1320, 1430, null, null, null, null, null, null, null, null],
+      completedMonthIndices: [0, 1, 2, 3],
+      sourceHistory,
+      year2: baseYear1.map((value) => value + 1000),
+      forecastHorizon: 2,
+      startDate: '2026-01-01',
+    });
+
+    expect(canonical.baseForecastSeries).toEqual(baseYear1);
+    expect(canonical.actualizedYear1Series.slice(0, 4)).toEqual([1100, 1210, 1320, 1430]);
+    expect(canonical.finalRecutYear1Series).toEqual(canonical.recutPlan.year1);
+    expect(canonical.finalDisplaySeries).toEqual(canonical.finalPublishSeries);
+    expect(canonical.finalDisplaySeries).toHaveLength(24);
+    expect(canonical.flags.missingCompletedMonthIndices).toEqual([]);
+    expect(canonical.flags.nonJanuaryStart).toBe(false);
+  });
+
+  it('flags missing completed months in the canonical final series instead of applying a partial re-cut', () => {
+    const canonical = buildCanonicalDemandSeries({
+      baseYear1,
+      actualsByMonth: [1100, null, null, null, null, null, null, null, null, null, null, null],
+      completedMonthIndices: [0, 1, 2, 3],
+      sourceHistory,
+      forecastHorizon: 1,
+    });
+
+    expect(canonical.recutFactor).toBeNull();
+    expect(canonical.flags.missingCompletedMonthIndices).toEqual([1, 2, 3]);
+    expect(canonical.finalRecutYear1Series.slice(0, 5)).toEqual([1100, 1100, 1200, 1300, 1400]);
+    expect(canonical.finalDisplaySeries).toEqual(canonical.finalPublishSeries);
+  });
+
+  it('preserves explicit zero actuals in the canonical final series', () => {
+    const canonical = buildCanonicalDemandSeries({
+      baseYear1,
+      actualsByMonth: [0, 1210, 1320, 1430, null, null, null, null, null, null, null, null],
+      completedMonthIndices: [0, 1, 2, 3],
+      sourceHistory,
+      forecastHorizon: 1,
+    });
+
+    expect(canonical.flags.explicitZeroActualMonthIndices).toEqual([0]);
+    expect(canonical.finalRecutYear1Series[0]).toBe(0);
+    expect(canonical.finalDisplaySeries[0]).toBe(0);
+    expect(canonical.finalPublishSeries[0]).toBe(0);
   });
 
   it('preserves blank manual override months instead of collapsing later months left', () => {
