@@ -18,7 +18,7 @@ import { Switch } from "../components/ui/switch";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { toast } from "sonner";
-import { calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, buildEffectiveYearOnePlan, buildTwoPassYear2Input, getCalculatedVolumes as getCalculatedVolumesBase, normalizeMonthlyForecast, normalizeMonthlyHistoryForExtendedForecast } from "./forecasting-logic";
+import { calculateHoltWinters, calculateDecomposition, calculateARIMA, Assumptions as AssumptionsBase, buildEffectiveYearOnePlan, buildTwoPassYear2Input, getCalculatedVolumes as getCalculatedVolumesBase, normalizeMonthlyForecast, normalizeMonthlyHistoryForExtendedForecast, type NormalizeForecastInputOptions } from "./forecasting-logic";
 import { buildDemandHelpPrintHtml, demandForecastHelpSections } from "./LongTermForecasting_Demand.help";
 import { useWFMPageData } from "../lib/WFMPageDataContext";
 import { useWhatIf } from "../lib/whatIfContext";
@@ -968,10 +968,10 @@ const getYearOneForecastBaseline = (
   historyByChannel: Record<ChannelKey, number[]>,
   channel: ChannelKey,
 ): number[] => normalizeMonthlyForecast(forecastByChannel[channel] ?? [], historyByChannel[channel] ?? [], 12);
-const buildDemandForecastData = (data: number[], assumptions: Assumptions, forecastMethod: string, hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number }, arimaParams: { p: number; d: number; q: number }, decompParams: { trendStrength: number; seasonalityStrength: number }): DemandForecastData[] => {
+const buildDemandForecastData = (data: number[], assumptions: Assumptions, forecastMethod: string, hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number }, arimaParams: { p: number; d: number; q: number }, decompParams: { trendStrength: number; seasonalityStrength: number }, normalizeOptions: NormalizeForecastInputOptions = {}): DemandForecastData[] => {
   const planningMonths = assumptions.planningMonths ?? 12;
   const historyLength = data.length;
-  const calculatedVolumes = getCalculatedVolumes(data, forecastMethod, assumptions, hwParams, arimaParams, decompParams, planningMonths);
+  const calculatedVolumes = getCalculatedVolumes(data, forecastMethod, assumptions, hwParams, arimaParams, decompParams, planningMonths, normalizeOptions);
   const timeline = getTimeline(assumptions.startDate, historyLength, planningMonths);
   return timeline.map((time, idx) => {
     const isFuture = time.isFuture;
@@ -1775,13 +1775,14 @@ export default function LongTermForecastingDemand() {
   // Per-channel forecast volumes — uses each channel's own history when available
   const forecastVolumesByChannel = useMemo<Record<ChannelKey, number[]>>(() => {
     const pm = isTwoYear ? 12 : assumptions.planningMonths ?? 12;
-    const voiceForecast = getCalculatedVolumes(effectiveFinalHistoricalDataByChannel.voice, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm);
+    const normalizeOptions: NormalizeForecastInputOptions = dataSourceMode === "manual" ? { zeroValueMode: "actual" } : {};
+    const voiceForecast = getCalculatedVolumes(effectiveFinalHistoricalDataByChannel.voice, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm, normalizeOptions);
     const emailHistory = effectiveFinalHistoricalDataByChannel.email;
     const chatHistory = effectiveFinalHistoricalDataByChannel.chat;
     const casesHistory = effectiveFinalHistoricalDataByChannel.cases;
     const emailForecast = dataSourceMode === "manual"
       ? emailHistory.length > 0
-        ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        ? getCalculatedVolumes(emailHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm, normalizeOptions)
         : hasManualEntriesByChannel.email
           ? Array(pm).fill(0)
           : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email))
@@ -1790,7 +1791,7 @@ export default function LongTermForecastingDemand() {
         : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
     const chatForecast = dataSourceMode === "manual"
       ? chatHistory.length > 0
-        ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        ? getCalculatedVolumes(chatHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm, normalizeOptions)
         : hasManualEntriesByChannel.chat
           ? Array(pm).fill(0)
           : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat))
@@ -1799,7 +1800,7 @@ export default function LongTermForecastingDemand() {
         : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
     const casesForecast = dataSourceMode === "manual"
       ? casesHistory.length > 0
-        ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm)
+        ? getCalculatedVolumes(casesHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, pm, normalizeOptions)
         : hasManualEntriesByChannel.cases
           ? Array(pm).fill(0)
           : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases))
@@ -1849,7 +1850,7 @@ export default function LongTermForecastingDemand() {
     }
     return groups;
   }, [historicalSourceRows]);
-  const forecastData = useMemo(() => buildDemandForecastData(effectiveFinalHistoricalDataByChannel.voice, { ...assumptions, planningMonths: effectivePlanningMonths }, forecastMethod, hwParams, arimaParams, decompParams), [effectiveFinalHistoricalDataByChannel, assumptions, effectivePlanningMonths, forecastMethod, hwParams, arimaParams, decompParams]);
+  const forecastData = useMemo(() => buildDemandForecastData(effectiveFinalHistoricalDataByChannel.voice, { ...assumptions, planningMonths: effectivePlanningMonths }, forecastMethod, hwParams, arimaParams, decompParams, dataSourceMode === "manual" ? { zeroValueMode: "actual" } : {}), [effectiveFinalHistoricalDataByChannel, assumptions, effectivePlanningMonths, forecastMethod, hwParams, arimaParams, decompParams, dataSourceMode]);
   const selectedBlendConfig = useMemo(() => buildBlendConfiguration(selectedChannels, poolingMode), [selectedChannels, poolingMode]);
   const includedChannels = useMemo(() => selectedBlendConfig.includedChannels, [selectedBlendConfig]);
   const showTotalVolume = poolingMode === "blended";
@@ -1955,7 +1956,7 @@ export default function LongTermForecastingDemand() {
       const year1EffectiveBase = normalizeMonthlyForecast(year1EffectiveVolumesByChannel[ch], extendedHistoricalBase, 12);
       const extendedHistory = buildTwoPassYear2Input(extendedHistoricalBase, year1EffectiveBase);
       result[ch] = normalizeMonthlyForecast(
-        getCalculatedVolumes(extendedHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12),
+        getCalculatedVolumes(extendedHistory, forecastMethod, assumptions, hwParams, arimaParams, decompParams, 12, { zeroValueMode: "actual" }),
         extendedHistory,
         12
       );
@@ -2200,6 +2201,8 @@ export default function LongTermForecastingDemand() {
       const activeHwParams = scenario.id === selectedScenarioId ? hwParams : snap.hwParams;
       const activeArimaParams = scenario.id === selectedScenarioId ? arimaParams : snap.arimaParams;
       const activeDecompParams = scenario.id === selectedScenarioId ? decompParams : snap.decompParams;
+      const activeDataSourceMode = scenario.id === selectedScenarioId ? dataSourceMode : snap.dataSourceMode ?? "api";
+      const normalizeOptions: NormalizeForecastInputOptions = activeDataSourceMode === "manual" ? { zeroValueMode: "actual" } : {};
       const snapLegacyBlendState = getBlendStateFromLegacyPreset(normalizeBlendPreset(snap.activeBlendPreset));
       const activeSelectedChannels = scenario.id === selectedScenarioId ? selectedChannels : normalizeSelectedChannels(snap.selectedChannels || snapLegacyBlendState.selectedChannels);
       const activeOverrides = scenario.id === selectedScenarioId ? debouncedOverridesByChannel : snap.channelHistoricalOverrides;
@@ -2217,34 +2220,34 @@ export default function LongTermForecastingDemand() {
       const snapChatHistory = buildSnapHistory("chat");
       const snapCasesHistory = buildSnapHistory("cases");
       const snapPm = activeAssumptions.planningMonths ?? 12;
-      const voiceForecast = getCalculatedVolumes(snapVoiceHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm);
+      const voiceForecast = getCalculatedVolumes(snapVoiceHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm, normalizeOptions);
       const snapHasManualEntries = {
         voice: Object.keys(activeOverrides?.voice ?? {}).length > 0,
         email: Object.keys(activeOverrides?.email ?? {}).length > 0,
         chat: Object.keys(activeOverrides?.chat ?? {}).length > 0,
         cases: Object.keys(activeOverrides?.cases ?? {}).length > 0,
       };
-      const emailForecast = dataSourceMode === "manual"
+      const emailForecast = activeDataSourceMode === "manual"
         ? snapEmailHistory.length > 0
-          ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm, normalizeOptions)
           : snapHasManualEntries.email
             ? Array(snapPm).fill(0)
             : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email))
         : snapEmailHistory.length > 0
           ? getCalculatedVolumes(snapEmailHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
           : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.email));
-      const chatForecast = dataSourceMode === "manual"
+      const chatForecast = activeDataSourceMode === "manual"
         ? snapChatHistory.length > 0
-          ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm, normalizeOptions)
           : snapHasManualEntries.chat
             ? Array(snapPm).fill(0)
             : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat))
         : snapChatHistory.length > 0
           ? getCalculatedVolumes(snapChatHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
           : voiceForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.chat));
-      const casesForecast = dataSourceMode === "manual"
+      const casesForecast = activeDataSourceMode === "manual"
         ? snapCasesHistory.length > 0
-          ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm)
+          ? getCalculatedVolumes(snapCasesHistory, activeForecastMethod, activeAssumptions, activeHwParams, activeArimaParams, activeDecompParams, snapPm, normalizeOptions)
           : snapHasManualEntries.cases
             ? Array(snapPm).fill(0)
             : emailForecast.map((v) => Math.round(v * CHANNEL_VOLUME_FACTORS.cases))
@@ -2274,7 +2277,7 @@ export default function LongTermForecastingDemand() {
       const avgVolume = volumes.length > 0 ? Math.round(volumes.reduce((sum, value) => sum + value, 0) / volumes.length) : 0;
       return { id: scenario.id, name: scenario.name, peakVolume, peakMonth, avgVolume, months };
     });
-  }, [scenarios, selectedScenarioId, assumptions, forecastMethod, hwParams, arimaParams, decompParams, selectedChannels, debouncedOverridesByChannel, historicalApiDataByChannel, finalHistoricalData]);
+  }, [scenarios, selectedScenarioId, assumptions, forecastMethod, hwParams, arimaParams, decompParams, selectedChannels, debouncedOverridesByChannel, historicalApiDataByChannel, finalHistoricalData, dataSourceMode]);
   const openHoursPerMonth = useMemo(() => Number(getOpenHoursPerMonth(assumptions).toFixed(1)), [assumptions]);
 
   // Helper component: display shrinkage sourced from Shrinkage Planner

@@ -22,21 +22,36 @@ export const calculateMovingAverage = (historicalData: number[], periods: number
   return Array(12).fill(Math.max(0, Math.round(avg)));
 };
 
+export interface NormalizeForecastInputOptions {
+  zeroValueMode?: "placeholder" | "actual";
+}
+
 /**
- * Removes trailing placeholder gaps from monthly history before it enters a
- * forecast model. Historical imports can be sparse by channel/LOB; treating
- * padded missing months as real zero-demand months corrupts the trend.
+ * Removes placeholder gaps from monthly history before it enters a forecast
+ * model. Historical imports can be sparse by channel/LOB; treating padded or
+ * internally missing months as real zero-demand months corrupts the trend.
+ * Use zeroValueMode="actual" only when the source explicitly identifies zeros
+ * as real recorded actual demand.
  */
-export const normalizeForecastInput = (data: number[]): number[] => {
+export const normalizeForecastInput = (
+  data: number[],
+  options: NormalizeForecastInputOptions = {}
+): number[] => {
+  const zeroValueMode = options.zeroValueMode ?? "placeholder";
+  const isUsableValue = (value: number | undefined): value is number => {
+    if (!Number.isFinite(value)) return false;
+    return zeroValueMode === "actual" ? value >= 0 : value > 0;
+  };
+
   let end = data.length;
   while (end > 0) {
     const value = data[end - 1];
-    if (Number.isFinite(value) && value > 0) break;
+    if (isUsableValue(value)) break;
     end--;
   }
   return data
     .slice(0, end)
-    .filter((value) => Number.isFinite(value) && value >= 0);
+    .filter(isUsableValue);
 };
 
 /**
@@ -139,6 +154,134 @@ export const buildEffectiveYearOnePlan = ({
     return recutFactor != null ? Math.round(baseValue * recutFactor) : Math.round(baseValue);
   });
 };
+
+export interface DemandRecutPlan {
+  year1: number[];
+  recutFactor: number | null;
+  completedActualMonthIndices: number[];
+  missingCompletedMonthIndices: number[];
+  canApplyRecut: boolean;
+  warnings: string[];
+}
+
+export interface DemandRecutPlanInputs {
+  basePlan: number[];
+  actualsByMonth?: Array<number | null | undefined>;
+  completedMonthIndices?: number[];
+  sourceHistory?: number[];
+}
+
+export const hasValidDemandActual = (value: number | null | undefined): value is number =>
+  value != null && Number.isFinite(value) && value >= 0;
+
+export const buildDemandRecutPlan = ({
+  basePlan,
+  actualsByMonth = [],
+  completedMonthIndices = [],
+  sourceHistory = [],
+}: DemandRecutPlanInputs): DemandRecutPlan => {
+  const normalizedBase = normalizeMonthlyForecast(basePlan, sourceHistory, 12);
+  const completed = Array.from(new Set(completedMonthIndices.filter((index) => index >= 0 && index < 12))).sort((a, b) => a - b);
+  const completedActualMonthIndices = completed.filter((index) => hasValidDemandActual(actualsByMonth[index]));
+  const missingCompletedMonthIndices = completed.filter((index) => !hasValidDemandActual(actualsByMonth[index]));
+  const hasMissingCompletedActuals = missingCompletedMonthIndices.length > 0;
+  const canApplyRecut = completed.length > 0 && !hasMissingCompletedActuals && completedActualMonthIndices.length === completed.length;
+  let recutFactor: number | null = null;
+
+  if (canApplyRecut) {
+    const actualTotal = completedActualMonthIndices.reduce((sum, index) => sum + (actualsByMonth[index] ?? 0), 0);
+    const forecastTotal = completedActualMonthIndices.reduce((sum, index) => sum + (normalizedBase[index] ?? 0), 0);
+    recutFactor = forecastTotal > 0 ? actualTotal / forecastTotal : null;
+  }
+
+  const year1 = buildEffectiveYearOnePlan({
+    basePlan: normalizedBase,
+    actualsByMonth,
+    completedMonthIndices: completed,
+    recutFactor,
+    sourceHistory,
+  });
+
+  const warnings: string[] = [];
+  if (hasMissingCompletedActuals) {
+    warnings.push("Missing completed actual months prevent a safe automatic re-cut.");
+  }
+  if (completed.length === 0) {
+    warnings.push("No completed forecast-year months are available for re-cut.");
+  }
+
+  return {
+    year1,
+    recutFactor,
+    completedActualMonthIndices,
+    missingCompletedMonthIndices,
+    canApplyRecut,
+    warnings,
+  };
+};
+
+export const buildDemandForecastTrendSeries = ({
+  baseYear1,
+  finalYear1,
+  year2 = [],
+  forecastHorizon = 1,
+}: {
+  baseYear1: number[];
+  finalYear1: number[];
+  year2?: number[];
+  forecastHorizon?: 1 | 2;
+}): number[] => {
+  const normalizedFinalYear1 = normalizeMonthlyForecast(finalYear1, baseYear1, 12);
+  if (forecastHorizon === 2) {
+    return [
+      ...normalizedFinalYear1,
+      ...normalizeMonthlyForecast(year2, normalizedFinalYear1, 12),
+    ];
+  }
+  return normalizedFinalYear1;
+};
+
+export const buildDemandSnapshotRecutSeries = ({
+  finalYear1,
+  year2 = [],
+  forecastHorizon = 1,
+}: {
+  finalYear1: number[];
+  year2?: number[];
+  forecastHorizon?: 1 | 2;
+}): number[] => buildDemandForecastTrendSeries({
+  baseYear1: finalYear1,
+  finalYear1,
+  year2,
+  forecastHorizon,
+});
+
+export const buildForecastCalendarMonths = (startDate: string, periods: number): Array<{ year: number; month: number; monthLabel: string }> => {
+  const match = /^(\d{4})-(\d{2})-\d{2}$/.exec(startDate);
+  const startYear = match ? Number(match[1]) : new Date(startDate).getFullYear();
+  const startMonthIndex = match ? Number(match[2]) - 1 : new Date(startDate).getMonth();
+  const labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  return Array.from({ length: periods }, (_, index) => {
+    const absoluteMonth = startMonthIndex + index;
+    const year = startYear + Math.floor(absoluteMonth / 12);
+    const monthIndex = ((absoluteMonth % 12) + 12) % 12;
+    return {
+      year,
+      month: monthIndex + 1,
+      monthLabel: labels[monthIndex],
+    };
+  });
+};
+
+export const normalizeManualMonthlyOverrides = (
+  overrides: Array<number | null | undefined>,
+  periods: number = 12
+): Array<number | null> => Array.from({ length: periods }, (_, index) => {
+  const value = overrides[index];
+  if (value == null || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.round(value));
+});
 
 /**
  * Calculates a linear regression forecast (Simple Trend).
@@ -473,9 +616,10 @@ export const getCalculatedVolumes = (
   hwParams: { alpha: number; beta: number; gamma: number; seasonLength: number },
   arimaParams: { p: number; d: number; q: number },
   decompParams: { trendStrength: number; seasonalityStrength: number },
-  forecastPeriods: number = 12
+  forecastPeriods: number = 12,
+  normalizeOptions: NormalizeForecastInputOptions = {}
 ): number[] => {
-  const normalizedData = normalizeForecastInput(data);
+  const normalizedData = normalizeForecastInput(data, normalizeOptions);
   if (normalizedData.length === 0) return Array(forecastPeriods).fill(0);
   const applyGrowth = (volumes: number[]) => {
     if (assumptions.growthRate === 0) return volumes;
