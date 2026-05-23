@@ -23,6 +23,7 @@ import { buildIntradayFtePrefsPageKey } from "./intraday-scope";
 type StaffingMode = "dedicated" | "blended";
 type DayKey = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
 type ActualBaselineSource = "manual" | "uploaded";
+type ActualBaselineZeroGapPolicy = "strict" | "smooth" | "floor";
 
 interface DaySchedule {
   enabled?: boolean;
@@ -330,6 +331,26 @@ interface ActualBaselinePreviewRow extends ActualBaselineIntervalRow {
   invalid: boolean;
 }
 
+interface ActualBaselineZeroGapSummary {
+  policy: ActualBaselineZeroGapPolicy;
+  openIntervalCount: number;
+  usableActualIntervalCount: number;
+  usableActualVolume: number;
+  openZeroIntervalsDetected: number;
+  adjustedOpenZeroIntervals: number;
+  cappedOpenZeroIntervals: number;
+  syntheticCapAppliedDayCount: number;
+  proposedSyntheticVolume: number;
+  addedSyntheticVolume: number;
+  allZeroOpenDayCount: number;
+  hasUsableBaselineVolume: boolean;
+}
+
+interface ActualBaselineZeroGapResult {
+  rows: ActualBaselinePreviewRow[];
+  summary: ActualBaselineZeroGapSummary;
+}
+
 interface ActualBaselineDateColumn {
   intervalDate: string;
   dateLabel: string;
@@ -394,6 +415,10 @@ const PLACEHOLDER_SECTIONS = [
 const DAY_MS = 24 * 60 * 60 * 1000;
 const INTERVAL_MINUTES = 15;
 const WEIGHT_TOTAL_TOLERANCE = 0.05;
+const ACTUAL_BASELINE_ZERO_GAP_BLEND = 0.25;
+const ACTUAL_BASELINE_OPEN_INTERVAL_FLOOR_RATIO = 0.05;
+const ACTUAL_BASELINE_SMOOTH_SYNTHETIC_DAY_CAP_RATIO = 0.15;
+const ACTUAL_BASELINE_FLOOR_SYNTHETIC_DAY_CAP_RATIO = 0.10;
 const DAY_KEYS: DayKey[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 const DAY_LABELS: Record<DayKey, string> = {
   monday: "Monday",
@@ -1415,6 +1440,174 @@ function buildActualBaselinePreviewRows(
   });
 }
 
+function averagePositive(values: number[]): number | null {
+  const positiveValues = values.filter((value) => value > 0);
+  if (positiveValues.length === 0) return null;
+  return positiveValues.reduce((sum, value) => sum + value, 0) / positiveValues.length;
+}
+
+function actualBaselineDaypartKey(intervalTime: string): string {
+  const minutes = parseTimeToMinutes(intervalTime);
+  if (minutes === null) return "unknown";
+  if (minutes < 6 * 60) return "overnight";
+  if (minutes < 12 * 60) return "morning";
+  if (minutes < 17 * 60) return "afternoon";
+  return "evening";
+}
+
+function nearestPositiveNeighborAverage(rows: ActualBaselinePreviewRow[], index: number): number | null {
+  let previous: number | null = null;
+  let next: number | null = null;
+
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (!rows[i].invalid && rows[i].actualVolume > 0) {
+      previous = rows[i].actualVolume;
+      break;
+    }
+  }
+
+  for (let i = index + 1; i < rows.length; i += 1) {
+    if (!rows[i].invalid && rows[i].actualVolume > 0) {
+      next = rows[i].actualVolume;
+      break;
+    }
+  }
+
+  if (previous !== null && next !== null) return (previous + next) / 2;
+  return previous ?? next;
+}
+
+function buildActualBaselineZeroGapResult(
+  actualRows: ActualBaselinePreviewRow[],
+  policy: ActualBaselineZeroGapPolicy
+): ActualBaselineZeroGapResult {
+  const validRows = actualRows.filter((row) => !row.invalid);
+  const positiveRows = validRows.filter((row) => row.actualVolume > 0);
+  const usableActualVolume = positiveRows.reduce((sum, row) => sum + row.actualVolume, 0);
+  const openZeroIntervalsDetected = validRows.filter((row) => row.actualVolume <= 0).length;
+  const rowsByDate = new Map<string, ActualBaselinePreviewRow[]>();
+
+  actualRows.forEach((row) => {
+    rowsByDate.set(row.intervalDate, [...(rowsByDate.get(row.intervalDate) ?? []), row]);
+  });
+
+  const allZeroOpenDayCount = Array.from(rowsByDate.values()).filter((dayRows) => {
+    const validDayRows = dayRows.filter((row) => !row.invalid);
+    return validDayRows.length > 0 && validDayRows.every((row) => row.actualVolume <= 0);
+  }).length;
+
+  const baseSummary: ActualBaselineZeroGapSummary = {
+    policy,
+    openIntervalCount: actualRows.length,
+    usableActualIntervalCount: positiveRows.length,
+    usableActualVolume,
+    openZeroIntervalsDetected,
+    adjustedOpenZeroIntervals: 0,
+    cappedOpenZeroIntervals: 0,
+    syntheticCapAppliedDayCount: 0,
+    proposedSyntheticVolume: 0,
+    addedSyntheticVolume: 0,
+    allZeroOpenDayCount,
+    hasUsableBaselineVolume: usableActualVolume > 0,
+  };
+
+  if (policy === "strict" || usableActualVolume <= 0 || positiveRows.length === 0) {
+    return { rows: actualRows, summary: baseSummary };
+  }
+
+  const addBucketValue = (buckets: Map<string, number[]>, key: string, value: number) => {
+    buckets.set(key, [...(buckets.get(key) ?? []), value]);
+  };
+  const valuesBySlot = new Map<string, number[]>();
+  const valuesByDaypart = new Map<string, number[]>();
+
+  positiveRows.forEach((row) => {
+    addBucketValue(valuesBySlot, actualBaselineSlotKey(row.intervalTime, row.occurrenceIndex), row.actualVolume);
+    addBucketValue(valuesByDaypart, actualBaselineDaypartKey(row.intervalTime), row.actualVolume);
+  });
+
+  const averageBySlot = new Map(Array.from(valuesBySlot.entries()).map(([key, values]) => [key, averagePositive(values) ?? 0]));
+  const averageByDaypart = new Map(Array.from(valuesByDaypart.entries()).map(([key, values]) => [key, averagePositive(values) ?? 0]));
+  const globalAverage = usableActualVolume / positiveRows.length;
+  const minimumOpenIntervalFloor = globalAverage * ACTUAL_BASELINE_OPEN_INTERVAL_FLOOR_RATIO;
+  const adjustedByKey = new Map<string, number>();
+  let cappedOpenZeroIntervals = 0;
+  let syntheticCapAppliedDayCount = 0;
+  let proposedSyntheticVolume = 0;
+  let addedSyntheticVolume = 0;
+
+  rowsByDate.forEach((dayRows) => {
+    const orderedDayRows = [...dayRows].sort((left, right) => (
+      left.intervalOrdinal - right.intervalOrdinal
+      || left.occurrenceIndex - right.occurrenceIndex
+      || left.intervalTime.localeCompare(right.intervalTime)
+    ));
+    const validDayRows = orderedDayRows.filter((row) => !row.invalid);
+    const positiveDayRows = validDayRows.filter((row) => row.actualVolume > 0);
+    const dayPositiveActual = positiveDayRows.reduce((sum, row) => sum + row.actualVolume, 0);
+    const allOpenIntervalsAreZero = validDayRows.length > 0 && validDayRows.every((row) => row.actualVolume <= 0);
+    if (allOpenIntervalsAreZero || dayPositiveActual <= 0) return;
+
+    const proposedAdditions = orderedDayRows
+      .map((row, index) => {
+        if (row.invalid || row.actualVolume > 0) return null;
+        const proposedVolume = policy === "floor"
+          ? minimumOpenIntervalFloor
+          : (() => {
+            const priors = [
+              nearestPositiveNeighborAverage(orderedDayRows, index),
+              averageBySlot.get(actualBaselineSlotKey(row.intervalTime, row.occurrenceIndex)) ?? null,
+              averageByDaypart.get(actualBaselineDaypartKey(row.intervalTime)) ?? null,
+              globalAverage,
+            ].filter((value): value is number => value !== null && value > 0);
+            const prior = averagePositive(priors) ?? globalAverage;
+            return prior * ACTUAL_BASELINE_ZERO_GAP_BLEND;
+          })();
+        return proposedVolume > 0 ? { key: row.key, proposedVolume } : null;
+      })
+      .filter((entry): entry is { key: string; proposedVolume: number } => entry !== null);
+
+    const proposedDaySyntheticVolume = proposedAdditions.reduce((sum, entry) => sum + entry.proposedVolume, 0);
+    const capRatio = policy === "floor"
+      ? ACTUAL_BASELINE_FLOOR_SYNTHETIC_DAY_CAP_RATIO
+      : ACTUAL_BASELINE_SMOOTH_SYNTHETIC_DAY_CAP_RATIO;
+    const syntheticDayCap = dayPositiveActual * capRatio;
+    const scale = proposedDaySyntheticVolume > syntheticDayCap && proposedDaySyntheticVolume > 0
+      ? syntheticDayCap / proposedDaySyntheticVolume
+      : 1;
+
+    if (scale < 1) {
+      syntheticCapAppliedDayCount += 1;
+      cappedOpenZeroIntervals += proposedAdditions.length;
+    }
+    proposedSyntheticVolume += proposedDaySyntheticVolume;
+
+    proposedAdditions.forEach((entry) => {
+      const adjustedVolume = entry.proposedVolume * scale;
+      if (adjustedVolume > 0) {
+        adjustedByKey.set(entry.key, adjustedVolume);
+        addedSyntheticVolume += adjustedVolume;
+      }
+    });
+  });
+
+  return {
+    rows: actualRows.map((row) => (
+      adjustedByKey.has(row.key)
+        ? { ...row, actualVolume: adjustedByKey.get(row.key) ?? row.actualVolume }
+        : row
+    )),
+    summary: {
+      ...baseSummary,
+      adjustedOpenZeroIntervals: adjustedByKey.size,
+      cappedOpenZeroIntervals,
+      syntheticCapAppliedDayCount,
+      proposedSyntheticVolume,
+      addedSyntheticVolume,
+    },
+  };
+}
+
 function buildActualDerivedWeekWeightInputs(
   weeks: MonthWeek[],
   actualRows: ActualBaselinePreviewRow[],
@@ -1655,6 +1848,7 @@ export function IntradayForecastV2() {
   const [actualBaselineEditing, setActualBaselineEditing] = useState(false);
   const [actualBaselineDraftSource, setActualBaselineDraftSource] = useState<ActualBaselineSource>("manual");
   const [actualBaselinePatternAppliedScopeKey, setActualBaselinePatternAppliedScopeKey] = useState("");
+  const [actualBaselineZeroGapPolicy, setActualBaselineZeroGapPolicy] = useState<ActualBaselineZeroGapPolicy>("smooth");
   const [savingActualBaseline, setSavingActualBaseline] = useState(false);
   const [actualBaselineSelection, setActualBaselineSelection] = useState<ActualBaselineSelection | null>(null);
   const [actualBaselineFocusedCellKey, setActualBaselineFocusedCellKey] = useState("");
@@ -2072,6 +2266,12 @@ export function IntradayForecastV2() {
     () => buildActualBaselinePreviewRows(actualBaselineRows, actualBaselineInputsForScope),
     [actualBaselineInputsForScope, actualBaselineRows]
   );
+  const actualBaselineZeroGapResult = useMemo(
+    () => buildActualBaselineZeroGapResult(actualBaselinePreviewRows, actualBaselineZeroGapPolicy),
+    [actualBaselinePreviewRows, actualBaselineZeroGapPolicy]
+  );
+  const actualBaselinePatternRows = actualBaselineZeroGapResult.rows;
+  const actualBaselineZeroGapSummary = actualBaselineZeroGapResult.summary;
   const actualBaselineDateColumns = useMemo(
     () => buildActualBaselineDateColumns(monthKey, monthWeeks),
     [monthKey, monthWeeks]
@@ -2186,7 +2386,7 @@ export function IntradayForecastV2() {
     };
   });
   const hasSavedActualBaseline = actualBaselineScopeKey === scopeKey && savedActualBaselineRows.length > 0;
-  const hasActualBaselinePattern = actualBaselineScopeKey === scopeKey && !actualBaselineHasInvalid && actualBaselineTotal > 0;
+  const hasActualBaselinePattern = actualBaselineScopeKey === scopeKey && !actualBaselineHasInvalid && actualBaselineZeroGapSummary.hasUsableBaselineVolume;
   const hasAppliedActualBaselinePattern = hasActualBaselinePattern && actualBaselinePatternAppliedScopeKey === scopeKey;
   const baselineActualInputs = hasSavedActualBaseline
     ? buildSavedActualBaselineInputs(actualBaselineRows, savedActualBaselineRows)
@@ -2208,10 +2408,41 @@ export function IntradayForecastV2() {
       : "border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-100";
   const actualBaselineWarning = actualBaselineError
     || (actualBaselineHasInvalid ? "Actual interval volumes must be non-negative numbers." : null)
-    || (actualBaselineRows.length === 0 ? "No operating interval rows are available for this LOB/channel/month. Check LOB operating hours." : null);
+    || (actualBaselineRows.length === 0 ? "No operating interval rows are available for this LOB/channel/month. Check LOB operating hours." : null)
+    || (!actualBaselineZeroGapSummary.hasUsableBaselineVolume ? "Use baseline pattern is blocked until the selected month has at least one positive actual interval volume." : null);
+  const actualBaselineZeroGapPolicyLabel = actualBaselineZeroGapPolicy === "strict"
+    ? "Strict actuals"
+    : actualBaselineZeroGapPolicy === "floor"
+      ? "Apply minimum open-interval floor"
+      : "Smooth zero gaps inside operating hours";
+  const actualBaselineZeroGapActionLabel = actualBaselineZeroGapPolicy === "strict"
+    ? "kept at zero"
+    : actualBaselineZeroGapPolicy === "floor"
+      ? "floored"
+      : "smoothed";
+  const actualBaselineZeroGapCapNotice = actualBaselineZeroGapSummary.syntheticCapAppliedDayCount > 0
+    ? ` Synthetic support was capped on ${actualBaselineZeroGapSummary.syntheticCapAppliedDayCount.toLocaleString()} day${
+      actualBaselineZeroGapSummary.syntheticCapAppliedDayCount === 1 ? "" : "s"
+    } across ${actualBaselineZeroGapSummary.cappedOpenZeroIntervals.toLocaleString()} zero interval${
+      actualBaselineZeroGapSummary.cappedOpenZeroIntervals === 1 ? "" : "s"
+    }; proposed support ${formatVolume(actualBaselineZeroGapSummary.proposedSyntheticVolume)} was reduced to ${formatVolume(actualBaselineZeroGapSummary.addedSyntheticVolume)}.`
+    : "";
+  const actualBaselineZeroGapNotice = actualBaselineRows.length > 0
+    ? `${actualBaselineZeroGapSummary.openZeroIntervalsDetected.toLocaleString()} open zero interval${
+      actualBaselineZeroGapSummary.openZeroIntervalsDetected === 1 ? "" : "s"
+    } detected; ${actualBaselineZeroGapSummary.adjustedOpenZeroIntervals.toLocaleString()} interval${
+      actualBaselineZeroGapSummary.adjustedOpenZeroIntervals === 1 ? "" : "s"
+    } will be ${actualBaselineZeroGapActionLabel} for Use baseline pattern. Closed and outside-hours intervals remain zero.${actualBaselineZeroGapCapNotice}${
+      actualBaselineZeroGapSummary.allZeroOpenDayCount > 0
+        ? ` ${actualBaselineZeroGapSummary.allZeroOpenDayCount.toLocaleString()} open day${
+          actualBaselineZeroGapSummary.allZeroOpenDayCount === 1 ? "" : "s"
+        } with all-zero actuals will use flat open-hours interval fallback for that day only.`
+        : ""
+    }`
+    : null;
   const actualDerivedWeekWeightInputs = useMemo(
-    () => buildActualDerivedWeekWeightInputs(monthWeeks, actualBaselinePreviewRows, defaultWeekWeightInputs),
-    [actualBaselinePreviewRows, defaultWeekWeightInputs, monthWeeks]
+    () => buildActualDerivedWeekWeightInputs(monthWeeks, actualBaselinePatternRows, defaultWeekWeightInputs),
+    [actualBaselinePatternRows, defaultWeekWeightInputs, monthWeeks]
   );
 
   const weekInputsForScope = weekAllocationScopeKey === scopeKey ? weekWeightInputs : defaultWeekWeightInputs;
@@ -2273,8 +2504,8 @@ export function IntradayForecastV2() {
     [dayAllocationInputRows, operatingDaySet]
   );
   const actualDerivedDayWeightInputs = useMemo(
-    () => buildActualDerivedDayWeightInputs(dayAllocationInputRows, actualBaselinePreviewRows, defaultDayWeightInputs),
-    [actualBaselinePreviewRows, dayAllocationInputRows, defaultDayWeightInputs]
+    () => buildActualDerivedDayWeightInputs(dayAllocationInputRows, actualBaselinePatternRows, defaultDayWeightInputs),
+    [actualBaselinePatternRows, dayAllocationInputRows, defaultDayWeightInputs]
   );
 
   useEffect(() => {
@@ -2385,8 +2616,8 @@ export function IntradayForecastV2() {
     [intervalAllocationInputRows]
   );
   const actualDerivedIntervalWeightInputs = useMemo(
-    () => buildActualDerivedIntervalWeightInputs(intervalAllocationInputRows, actualBaselinePreviewRows, defaultIntervalWeightInputs),
-    [actualBaselinePreviewRows, defaultIntervalWeightInputs, intervalAllocationInputRows]
+    () => buildActualDerivedIntervalWeightInputs(intervalAllocationInputRows, actualBaselinePatternRows, defaultIntervalWeightInputs),
+    [actualBaselinePatternRows, defaultIntervalWeightInputs, intervalAllocationInputRows]
   );
 
   useEffect(() => {
@@ -2921,7 +3152,7 @@ export function IntradayForecastV2() {
     setDayWeightInputs(actualDerivedDayWeightInputs);
     setIntervalAllocationScopeKey(scopeKey);
     setIntervalWeightInputs(actualDerivedIntervalWeightInputs);
-    toast.success("Actual baseline pattern applied");
+    toast.success(`Actual baseline pattern applied (${actualBaselineZeroGapPolicyLabel})`);
   };
 
   const saveActualBaseline = async () => {
@@ -3344,6 +3575,47 @@ export function IntradayForecastV2() {
               <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0" />
                 <span>{actualBaselineWarning}</span>
+              </div>
+            )}
+
+            {actualBaselineZeroGapNotice && (
+              <div className={`flex flex-col gap-3 rounded-lg border px-3 py-3 text-sm lg:flex-row lg:items-start lg:justify-between ${
+                actualBaselineZeroGapSummary.openZeroIntervalsDetected > 0
+                  ? "border-amber-200 bg-amber-50 text-amber-900"
+                  : "border-slate-200 bg-slate-50 text-slate-700"
+              }`}>
+                <div className="min-w-[240px]">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Zero-volume policy
+                  </label>
+                  <Select
+                    value={actualBaselineZeroGapPolicy}
+                    onValueChange={(value) => {
+                      setActualBaselineZeroGapPolicy(value as ActualBaselineZeroGapPolicy);
+                      setActualBaselinePatternAppliedScopeKey("");
+                    }}
+                  >
+                    <SelectTrigger className="mt-2 h-9 bg-white text-sm">
+                      <SelectValue placeholder="Select zero policy" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="strict">Strict actuals</SelectItem>
+                      <SelectItem value="smooth">Smooth zero gaps inside operating hours</SelectItem>
+                      <SelectItem value="floor">Apply minimum open-interval floor</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-start gap-2">
+                  {actualBaselineZeroGapSummary.openZeroIntervalsDetected > 0 ? (
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
+                  )}
+                  <div>
+                    <div className="font-medium">{actualBaselineZeroGapPolicyLabel}</div>
+                    <p className="mt-1 text-xs leading-5">{actualBaselineZeroGapNotice}</p>
+                  </div>
+                </div>
               </div>
             )}
 
