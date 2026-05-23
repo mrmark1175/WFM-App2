@@ -348,6 +348,29 @@ interface CommitFteResult {
   writtenAt: string;
 }
 
+type ApproveDemandSnapshotStatus = "idle" | "saving" | "saved";
+
+interface ApproveDemandSnapshotResult {
+  snapshotId: number | null;
+  snapshotLabel: string;
+  weekLabel: string;
+  weekStart: string;
+  weekEnd: string;
+  channel: ChannelKey;
+  staffingMode: StaffingMode;
+  dayCount: number;
+  slotsPerDay: number;
+  rowCount: number;
+  writtenAt: string;
+}
+
+interface SchedulingDemandSnapshotPayloadRow {
+  channel: string;
+  weekday: number;
+  interval_start: string;
+  required_fte: number;
+}
+
 interface ActualBaselinePreviewRow extends ActualBaselineIntervalRow {
   inputValue: string;
   actualVolume: number;
@@ -1929,6 +1952,8 @@ export function IntradayForecastV2() {
   const [hideBlankSchedulingRows, setHideBlankSchedulingRows] = useState(false);
   const [commitFteStatus, setCommitFteStatus] = useState<CommitFteStatus>("idle");
   const [commitFteResult, setCommitFteResult] = useState<CommitFteResult | null>(null);
+  const [approveDemandSnapshotStatus, setApproveDemandSnapshotStatus] = useState<ApproveDemandSnapshotStatus>("idle");
+  const [approveDemandSnapshotResult, setApproveDemandSnapshotResult] = useState<ApproveDemandSnapshotResult | null>(null);
   const activeScopeKeyRef = useRef("");
   const monthManuallySelectedRef = useRef(false);
   const actualBaselineSelectingRef = useRef(false);
@@ -2083,6 +2108,8 @@ export function IntradayForecastV2() {
   useEffect(() => {
     setCommitFteStatus("idle");
     setCommitFteResult(null);
+    setApproveDemandSnapshotStatus("idle");
+    setApproveDemandSnapshotResult(null);
   }, [scopeKey, selectedSchedulingWeekStart]);
 
   useEffect(() => {
@@ -2989,6 +3016,17 @@ export function IntradayForecastV2() {
     hasUnsavedDayChanges ? "day allocation" : "",
     hasUnsavedIntervalChanges ? "interval allocation" : "",
   ].filter(Boolean);
+  const approveDemandSnapshotRows = useMemo<SchedulingDemandSnapshotPayloadRow[]>(
+    () => schedulingHandoffPreview.rows
+      .filter((row) => row.slotIndex !== null && (row.requiredFte ?? 0) > 0)
+      .map((row) => ({
+        channel: selectedChannel,
+        weekday: getMondayBasedDayOfWeek(row.calendarDate),
+        interval_start: row.intervalStart,
+        required_fte: parseFloat((row.requiredFte ?? 0).toFixed(2)),
+      })),
+    [schedulingHandoffPreview.rows, selectedChannel]
+  );
   const commitFteValidationErrors = [
     !selectedLobId ? "Select a LOB before committing FTE." : "",
     !selectedChannel ? "Select a channel before committing FTE." : "",
@@ -3015,8 +3053,36 @@ export function IntradayForecastV2() {
       : "",
   ].filter(Boolean);
   const commitFteDisabled = commitFteStatus === "saving" || commitFteValidationErrors.length > 0;
+  const approveDemandSnapshotValidationErrors = [
+    !selectedLobId ? "Select a LOB before approving a demand snapshot." : "",
+    !selectedChannel ? "Select a channel before approving a demand snapshot." : "",
+    !staffingMode ? "Select a staffing mode before approving a demand snapshot." : "",
+    !selectedSchedulingWeek ? "Select a publish week before approving a demand snapshot." : "",
+    !hasFullSchedulingPublishWeek ? "No full Monday-Sunday publish week exists inside the selected month." : "",
+    selectedSchedulingWeek && !selectedSchedulingWeekOption?.validFullWeek ? "Selected publish week must be a full Monday-Sunday week inside the selected month." : "",
+    selectedSchedulingWeek && (!selectedSchedulingWeekStartsMonday || !selectedSchedulingWeekEndsSunday) ? "Selected publish week must start on Monday and end on Sunday." : "",
+    selectedSchedulingWeek && selectedWeekCrossesOutsideMonth ? "Selected publish week crosses outside the selected month." : "",
+    selectedSchedulingWeek && selectedSchedulingWeekDates.length !== 7 ? "Selected publish week must contain exactly 7 dates." : "",
+    selectedSchedulingWeek && selectedSchedulingWeekDayRows.length !== 7 ? "Selected publish week must have 7 in-month day allocation rows." : "",
+    INTERVAL_MINUTES !== 15 || schedulingMatrixIntervalSlots.length !== 96 ? "Scheduling demand snapshots require 96 15-minute slots per day." : "",
+    selectedSchedulingWeek && (!hasCompleteFteDateArrays || !hasCompleteFteWeekdayArrays) ? "FTE date and weekday arrays must contain 96 numeric slots per day." : "",
+    selectedSchedulingWeek && (!hasCompleteErlangDateArrays || !hasCompleteErlangWeekdayArrays) ? "Erlang date and weekday arrays must contain 96 numeric slots per day." : "",
+    schedulingHandoffPreview.repeatedIntervalCount > 0 ? "Selected week includes repeated DST intervals that cannot be represented safely by the legacy Scheduling demand snapshot contract." : "",
+    schedulingHandoffPreview.offsetTransitionDates.length > 0 ? `Selected week includes DST offset changes on ${schedulingHandoffPreview.offsetTransitionDates.join(", ")} that cannot be represented safely by the legacy Scheduling demand snapshot contract.` : "",
+    selectedWeekMissingIntervalDays.length > 0 ? `Selected week has positive-volume days without operating intervals: ${selectedWeekMissingIntervalDays.map((day) => day.calendarDate).join(", ")}.` : "",
+    schedulingFteParams.missing.length > 0 ? `Required FTE inputs are missing: ${schedulingFteParams.missing.join(", ")}.` : "",
+    selectedSchedulingWeek && schedulingHandoffPreview.rows.length === 0 ? "Scheduling Handoff Preview rows are not available for the selected publish week." : "",
+    selectedSchedulingWeek && approveDemandSnapshotRows.length === 0 ? "Approved snapshot requires at least one positive required-FTE interval." : "",
+    !previewScopeReady ? "Active preview scope does not match the current selected scope yet." : "",
+    outputPreviewLoading ? "Preview data is still loading. Please wait before approving a demand snapshot." : "",
+    intervalAllocationPreview.hasInvalidWeight || intervalAllocationPreview.hasZeroWeightDay || intervalAllocationPreview.hasMissingIntervals || !intervalAllocationPreview.allDaysSumToSource
+      ? "Current interval allocation validation has unresolved warnings."
+      : "",
+  ].filter(Boolean);
+  const approveDemandSnapshotDisabled = approveDemandSnapshotStatus === "saving" || approveDemandSnapshotValidationErrors.length > 0;
   const schedulingAdvisoryWarnings = [
-    "Commit writes only the Schedule Editor FTE user preference; it does not create Scheduling demand snapshots.",
+    "Commit FTE writes only the Schedule Editor FTE user preference.",
+    "Approve Demand Snapshot writes only through the existing Scheduling demand snapshot endpoint.",
     "Legacy Schedule Editor handoff requires 96 x 15-minute slots per day; this preview builds that shape for the selected week.",
     unsavedHandoffChangeLabels.length > 0
       ? `Current on-screen ${unsavedHandoffChangeLabels.join(", ")} changes are not saved and may differ from saved state.`
@@ -3032,7 +3098,7 @@ export function IntradayForecastV2() {
     { label: "Interval Grain", value: `${INTERVAL_MINUTES} min`, detail: "v2 interval allocation" },
     { label: "Week Volume", value: formatVolume(schedulingHandoffPreview.totalAllocatedVolume), detail: "Selected week allocated volume" },
     { label: "Required FTE Intervals", value: schedulingHandoffPreview.requiredIntervalCount.toLocaleString(), detail: "Intervals with FTE > 0" },
-    { label: "Snapshot Rows", value: schedulingHandoffPreview.snapshotRowCount.toLocaleString(), detail: "Not created by this commit" },
+    { label: "Snapshot Rows", value: approveDemandSnapshotRows.length.toLocaleString(), detail: "Approve target" },
     { label: "Preference Key", value: schedulingPreferenceKey, detail: "Commit target" },
     { label: "Legacy Slot Output", value: schedulingHandoffPreview.legacySlotValueCount > 0 ? `${schedulingHandoffPreview.legacySlotValueCount.toLocaleString()} values` : "-", detail: "7 days x 96 slots" },
   ];
@@ -3696,6 +3762,118 @@ export function IntradayForecastV2() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to commit FTE to Schedule Editor.";
       if (activeScopeKeyRef.current === requestScopeKey) setCommitFteStatus("idle");
+      toast.error(message);
+    }
+  };
+
+  const approveDemandSnapshotForScheduling = async () => {
+    if (!selectedLobId) return;
+    if (outputPreviewLoading) {
+      toast.error("Preview data is still loading. Please wait before approving a demand snapshot.");
+      return;
+    }
+    if (activeScopeKeyRef.current !== scopeKey || !previewScopeReady) {
+      toast.error("Preview is still refreshing for the active scope.");
+      return;
+    }
+    if (approveDemandSnapshotValidationErrors.length > 0) {
+      toast.error("Resolve demand snapshot validation errors before approving for Scheduling.");
+      return;
+    }
+
+    const weekStart = selectedSchedulingWeekDates[0];
+    const weekEnd = selectedSchedulingWeekDates[6];
+    if (!weekStart || !weekEnd || approveDemandSnapshotRows.length === 0) return;
+
+    const snapshotLabel = [
+      selectedLob?.lob_name ?? `LOB ${selectedLobId}`,
+      activeChannelLabel,
+      staffingMode,
+      `${weekStart} to ${weekEnd}`,
+      "intraday-v2",
+    ].join(" - ");
+    const writtenAt = new Date().toISOString();
+    const metadata = {
+      source: "intraday-v2",
+      month_key: monthKey,
+      selected_week_start: weekStart,
+      selected_week_end: weekEnd,
+      selected_week_dates: selectedSchedulingWeekDates,
+      demand_timezone: demandTimezone,
+      channel: selectedChannel,
+      staffing_mode: staffingMode,
+      interval_grain: INTERVAL_MINUTES,
+      preview_row_count: schedulingHandoffPreview.rows.length,
+      snapshot_row_count: approveDemandSnapshotRows.length,
+      total_allocated_volume: schedulingHandoffPreview.totalAllocatedVolume,
+      fte_inputs: {
+        aht_sec: schedulingFteParams.ahtSec,
+        sla_sec: schedulingFteParams.slaSec,
+        sla_target: schedulingFteParams.slaTarget,
+        shrinkage: schedulingFteParams.shrinkage,
+        occupancy: schedulingFteParams.emailOccupancy,
+        concurrency: schedulingFteParams.concurrency,
+        avg_patience_seconds: schedulingFteParams.avgPatienceSeconds,
+      },
+      approved_at: writtenAt,
+    };
+
+    const confirmed = typeof window === "undefined" || window.confirm([
+      "Approve v2 demand snapshot for Scheduling?",
+      "",
+      `Snapshot label: ${snapshotLabel}`,
+      `Week: ${weekStart} to ${weekEnd}`,
+      `Rows: ${approveDemandSnapshotRows.length.toLocaleString()} required-FTE intervals`,
+      "This creates an approved Scheduling demand snapshot for auto-schedule generation.",
+      "Schedule Editor FTE preferences will not be changed by this action.",
+    ].join("\n"));
+    if (!confirmed) return;
+
+    const requestScopeKey = scopeKey;
+    const payload = {
+      lob_id: selectedLobId,
+      snapshot_label: snapshotLabel,
+      interval_minutes: INTERVAL_MINUTES,
+      staffing_mode: staffingMode,
+      notes: `Approved from Intraday Forecast v2 ${JSON.stringify(metadata)}`,
+      rows: approveDemandSnapshotRows,
+    };
+
+    setApproveDemandSnapshotStatus("saving");
+    try {
+      const response = await fetch(apiUrl("/api/scheduling/demand-snapshots"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Unable to approve demand snapshot for Scheduling.");
+      }
+      const body = await response.json().catch(() => null);
+      if (activeScopeKeyRef.current !== requestScopeKey) return;
+      setApproveDemandSnapshotStatus("saved");
+      setApproveDemandSnapshotResult({
+        snapshotId: typeof body?.id === "number" ? body.id : null,
+        snapshotLabel,
+        weekLabel: selectedSchedulingWeek?.label ?? "Selected week",
+        weekStart,
+        weekEnd,
+        channel: selectedChannel,
+        staffingMode,
+        dayCount: selectedSchedulingWeekDates.length,
+        slotsPerDay: 96,
+        rowCount: approveDemandSnapshotRows.length,
+        writtenAt,
+      });
+      toast.success(`Approved demand snapshot${typeof body?.id === "number" ? ` #${body.id}` : ""} for Scheduling`);
+      window.setTimeout(() => {
+        if (activeScopeKeyRef.current === requestScopeKey) setApproveDemandSnapshotStatus("idle");
+      }, 3000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to approve demand snapshot for Scheduling.";
+      if (activeScopeKeyRef.current === requestScopeKey) setApproveDemandSnapshotStatus("idle");
       toast.error(message);
     }
   };
@@ -5188,7 +5366,7 @@ export function IntradayForecastV2() {
                   Scheduling Handoff Preview
                 </CardTitle>
                 <CardDescription className="mt-2">
-                  Preview the legacy Scheduling handoff shape and explicitly commit FTE arrays to Schedule Editor.
+                  Preview the legacy Scheduling handoff shape, commit FTE arrays to Schedule Editor, and approve demand snapshots for schedule generation.
                 </CardDescription>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -5209,13 +5387,30 @@ export function IntradayForecastV2() {
                   )}
                   {commitFteStatus === "saving" ? "Committing" : "Commit FTE to Schedule Editor"}
                 </Button>
+                <Badge
+                  variant="outline"
+                  className={approveDemandSnapshotValidationErrors.length === 0
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
+                    : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50"
+                  }
+                >
+                  {approveDemandSnapshotValidationErrors.length === 0 ? "Snapshot ready" : "Snapshot blocked"}
+                </Badge>
+                <Button type="button" size="sm" disabled={approveDemandSnapshotDisabled} onClick={approveDemandSnapshotForScheduling}>
+                  {approveDemandSnapshotStatus === "saving" ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Send className="size-4" />
+                  )}
+                  {approveDemandSnapshotStatus === "saving" ? "Approving" : "Approve Demand Snapshot for Scheduling"}
+                </Button>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-5 pt-5">
             <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-              <span>Commit writes only the Schedule Editor FTE user preference for the selected week. It does not create Scheduling demand snapshots.</span>
+              <span>Commit FTE writes only the Schedule Editor FTE preference. Approve Demand Snapshot creates Scheduling demand snapshot rows through the existing approved endpoint.</span>
             </div>
 
             <div className="grid gap-3 lg:grid-cols-[minmax(220px,320px)_1fr]">
@@ -5264,7 +5459,7 @@ export function IntradayForecastV2() {
                   Commit writes 7 date arrays and 7 weekday arrays with 96 x 15-minute values per day.
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
-                  This action calls only the user preference endpoint; Scheduling snapshot endpoints are not called.
+                  Approve Demand Snapshot writes positive required-FTE rows to the existing Scheduling demand snapshot endpoint.
                 </p>
               </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -5302,13 +5497,51 @@ export function IntradayForecastV2() {
               </div>
             )}
 
-            {(commitFteValidationErrors.length > 0 || schedulingAdvisoryWarnings.length > 0) && (
-              <div className="grid gap-3 lg:grid-cols-2">
+            {approveDemandSnapshotResult && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                <p className="font-semibold">Scheduling demand snapshot approved</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Snapshot ID</p>
+                    <p className="mt-1 font-mono text-xs">{approveDemandSnapshotResult.snapshotId ?? "-"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Selected Week</p>
+                    <p className="mt-1">{approveDemandSnapshotResult.weekLabel}: {approveDemandSnapshotResult.weekStart} to {approveDemandSnapshotResult.weekEnd}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Rows / Slots</p>
+                    <p className="mt-1">{approveDemandSnapshotResult.rowCount.toLocaleString()} snapshot rows, {approveDemandSnapshotResult.dayCount} days x {approveDemandSnapshotResult.slotsPerDay} slots</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Scope</p>
+                    <p className="mt-1">{formatChannelLabel(approveDemandSnapshotResult.channel)} / {approveDemandSnapshotResult.staffingMode}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Timestamp</p>
+                    <p className="mt-1 font-mono text-xs">{approveDemandSnapshotResult.writtenAt}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {(commitFteValidationErrors.length > 0 || approveDemandSnapshotValidationErrors.length > 0 || schedulingAdvisoryWarnings.length > 0) && (
+              <div className="grid gap-3 xl:grid-cols-3">
                 {commitFteValidationErrors.length > 0 && (
                   <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
                     <p className="font-semibold">Commit blocking errors</p>
                     <ul className="mt-2 list-disc space-y-1 pl-5">
                       {commitFteValidationErrors.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {approveDemandSnapshotValidationErrors.length > 0 && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+                    <p className="font-semibold">Demand snapshot blocking errors</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {approveDemandSnapshotValidationErrors.map((warning) => (
                         <li key={warning}>{warning}</li>
                       ))}
                     </ul>
