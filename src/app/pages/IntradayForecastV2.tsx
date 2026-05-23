@@ -156,6 +156,15 @@ interface MonthWeek {
   defaultWeight: number;
 }
 
+interface SchedulingPublishWeekOption {
+  week: MonthWeek;
+  incomplete: boolean;
+  crossesOutsideMonth: boolean;
+  validFullWeek: boolean;
+  statusLabel: string;
+  displayLabel: string;
+}
+
 interface WeekAllocationPreviewRow {
   week: MonthWeek;
   inputValue: string;
@@ -766,6 +775,34 @@ function buildMonthWeeks(monthKey: string): MonthWeek[] {
   }
 
   return weeks;
+}
+
+function isFullInMonthPublishWeek(week: MonthWeek, monthKey: string): boolean {
+  return week.daysInMonth === 7 && week.weekStart.startsWith(monthKey) && week.weekEnd.startsWith(monthKey);
+}
+
+function buildSchedulingPublishWeekOptions(weeks: MonthWeek[], monthKey: string): SchedulingPublishWeekOption[] {
+  return weeks.map((week) => {
+    const incomplete = week.daysInMonth !== 7;
+    const crossesOutsideMonth = !week.weekStart.startsWith(monthKey) || !week.weekEnd.startsWith(monthKey);
+    const validFullWeek = isFullInMonthPublishWeek(week, monthKey);
+    const issueLabels = [
+      incomplete ? "incomplete" : "",
+      crossesOutsideMonth ? "crosses month" : "",
+    ].filter(Boolean);
+    const statusLabel = validFullWeek
+      ? "valid full week"
+      : `blocked / not publishable: ${issueLabels.join(" / ") || "not a full in-month week"}`;
+
+    return {
+      week,
+      incomplete,
+      crossesOutsideMonth,
+      validFullWeek,
+      statusLabel,
+      displayLabel: `${week.label} - ${week.dateRange} - ${statusLabel}`,
+    };
+  });
 }
 
 function buildDefaultWeekWeightInputs(weeks: MonthWeek[]): Record<string, string> {
@@ -2000,15 +2037,19 @@ export function IntradayForecastV2() {
     [activeLob, lobs, selectedLobId]
   );
   const monthWeeks = useMemo(() => buildMonthWeeks(monthKey), [monthKey]);
+  const firstFullSchedulingWeekStart = useMemo(
+    () => monthWeeks.find((week) => isFullInMonthPublishWeek(week, monthKey))?.weekStart ?? "",
+    [monthKey, monthWeeks]
+  );
   const defaultWeekWeightInputs = useMemo(() => buildDefaultWeekWeightInputs(monthWeeks), [monthWeeks]);
 
   useEffect(() => {
-    setSelectedSchedulingWeekStart((previous) => (
-      monthWeeks.some((week) => week.weekStart === previous)
-        ? previous
-        : monthWeeks[0]?.weekStart ?? ""
-    ));
-  }, [monthWeeks]);
+    setSelectedSchedulingWeekStart((previous) => {
+      const previousWeek = monthWeeks.find((week) => week.weekStart === previous);
+      if (previousWeek && isFullInMonthPublishWeek(previousWeek, monthKey)) return previous;
+      return firstFullSchedulingWeekStart || previousWeek?.weekStart || monthWeeks[0]?.weekStart || "";
+    });
+  }, [firstFullSchedulingWeekStart, monthKey, monthWeeks]);
 
   const activeChannelLabel = formatChannelLabel(selectedChannel);
   const scopeLabel = `${selectedLob?.lob_name ?? "No LOB"} / ${activeChannelLabel} / ${staffingMode} / ${monthKey} / ${demandTimezone}`;
@@ -2807,9 +2848,18 @@ export function IntradayForecastV2() {
   ];
 
   const schedulingPreferenceKey = buildIntradayFtePrefsPageKey(selectedChannel, staffingMode);
+  const schedulingPublishWeekOptions = useMemo(
+    () => buildSchedulingPublishWeekOptions(monthWeeks, monthKey),
+    [monthKey, monthWeeks]
+  );
+  const hasFullSchedulingPublishWeek = schedulingPublishWeekOptions.some((option) => option.validFullWeek);
   const selectedSchedulingWeek = useMemo(
     () => monthWeeks.find((week) => week.weekStart === selectedSchedulingWeekStart) ?? null,
     [monthWeeks, selectedSchedulingWeekStart]
+  );
+  const selectedSchedulingWeekOption = useMemo(
+    () => schedulingPublishWeekOptions.find((option) => option.week.weekStart === selectedSchedulingWeekStart) ?? null,
+    [schedulingPublishWeekOptions, selectedSchedulingWeekStart]
   );
   const selectedSchedulingWeekDates = useMemo(
     () => selectedSchedulingWeek ? buildWeekDateKeys(selectedSchedulingWeek.weekStart) : [],
@@ -2852,6 +2902,7 @@ export function IntradayForecastV2() {
   ].filter(Boolean);
   const schedulingBlockingWarnings = [
     !selectedSchedulingWeek ? "Select a publish week before reviewing Scheduling output." : "",
+    !hasFullSchedulingPublishWeek ? "No full Monday-Sunday publish week exists inside the selected month. Preview remains read-only; do not invent outside-month data." : "",
     !previewScopeReady ? "Preview is still refreshing for the active scope." : "",
     selectedWeekIncomplete ? "Selected publish week is incomplete in the selected month. Choose a full in-month week before publishing later." : "",
     selectedWeekCrossesOutsideMonth ? "Selected publish week crosses outside the selected month. Legacy Scheduling snapshots are weekday-based and cannot safely represent the missing outside-month days." : "",
@@ -2875,7 +2926,7 @@ export function IntradayForecastV2() {
     { label: "Channel", value: activeChannelLabel, detail: selectedChannel },
     { label: "Staffing Mode", value: staffingMode === "blended" ? "Blended" : "Dedicated", detail: "Current scope" },
     { label: "Selected Month", value: monthKey, detail: "Demand-local month" },
-    { label: "Publish Week", value: selectedSchedulingWeek?.label ?? "-", detail: selectedSchedulingWeek?.dateRange ?? "Select a week" },
+    { label: "Publish Week", value: selectedSchedulingWeek?.label ?? "-", detail: selectedSchedulingWeekOption ? `${selectedSchedulingWeekOption.week.dateRange} - ${selectedSchedulingWeekOption.statusLabel}` : "Select a week" },
     { label: "Demand Timezone", value: demandTimezone, detail: "Source interval timezone" },
     { label: "Interval Grain", value: `${INTERVAL_MINUTES} min`, detail: "v2 interval allocation" },
     { label: "Week Volume", value: formatVolume(schedulingHandoffPreview.totalAllocatedVolume), detail: "Selected week allocated volume" },
@@ -4954,13 +5005,24 @@ export function IntradayForecastV2() {
                     <SelectValue placeholder="Select week" />
                   </SelectTrigger>
                   <SelectContent>
-                    {monthWeeks.map((week) => (
-                      <SelectItem key={week.weekStart} value={week.weekStart}>
-                        {week.label} - {week.dateRange}
+                    {schedulingPublishWeekOptions.map((option) => (
+                      <SelectItem key={option.week.weekStart} value={option.week.weekStart}>
+                        {option.displayLabel}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className={`mt-2 text-xs leading-5 ${
+                  selectedSchedulingWeekOption?.validFullWeek
+                    ? "text-emerald-700"
+                    : "text-amber-700"
+                }`}>
+                  {selectedSchedulingWeekOption
+                    ? selectedSchedulingWeekOption.statusLabel
+                    : hasFullSchedulingPublishWeek
+                      ? "Select a valid full week."
+                      : "No valid full in-month publish week is available for this month."}
+                </p>
               </label>
 
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
