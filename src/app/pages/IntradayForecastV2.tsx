@@ -5,6 +5,7 @@ import { PageLayout } from "../components/PageLayout";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -1912,6 +1913,7 @@ export function IntradayForecastV2() {
   const [intervalAllocationError, setIntervalAllocationError] = useState<string | null>(null);
   const [savingIntervalAllocation, setSavingIntervalAllocation] = useState(false);
   const [selectedSchedulingWeekStart, setSelectedSchedulingWeekStart] = useState("");
+  const [hideBlankSchedulingRows, setHideBlankSchedulingRows] = useState(false);
   const activeScopeKeyRef = useRef("");
   const monthManuallySelectedRef = useRef(false);
   const actualBaselineSelectingRef = useRef(false);
@@ -2934,6 +2936,14 @@ export function IntradayForecastV2() {
     });
     return totals;
   }, [schedulingHandoffPreview.rows, schedulingMatrixDateColumns]);
+  const schedulingVisibleIntervalSlots = useMemo(() => {
+    if (!hideBlankSchedulingRows) return schedulingMatrixIntervalSlots;
+    return schedulingMatrixIntervalSlots.filter((slot) => schedulingMatrixDateColumns.some((column) => {
+      const cellRows = schedulingPreviewRowsByDateAndSlot.get(`${column.calendarDate}:${slot.slotIndex}`) ?? [];
+      return cellRows.length > 0;
+    }));
+  }, [hideBlankSchedulingRows, schedulingMatrixDateColumns, schedulingMatrixIntervalSlots, schedulingPreviewRowsByDateAndSlot]);
+  const schedulingHiddenIntervalRowCount = schedulingMatrixIntervalSlots.length - schedulingVisibleIntervalSlots.length;
   const selectedWeekCrossesOutsideMonth = selectedSchedulingWeekDates.some((date) => !date.startsWith(monthKey));
   const selectedWeekIncomplete = !!selectedSchedulingWeek && selectedSchedulingWeekDayRows.length !== 7;
   const selectedWeekMissingIntervalDays = selectedSchedulingWeekDayRows.filter((day) => (
@@ -5127,6 +5137,22 @@ export function IntradayForecastV2() {
               </div>
             )}
 
+            {schedulingHandoffPreview.rows.length > 0 && schedulingMatrixDateColumns.length > 0 && (
+              <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 sm:flex-row sm:items-center sm:justify-between">
+                <label className="flex items-center gap-2 font-medium text-slate-800">
+                  <Checkbox
+                    checked={hideBlankSchedulingRows}
+                    onCheckedChange={(value) => setHideBlankSchedulingRows(!!value)}
+                  />
+                  Hide blank rows
+                </label>
+                <div className="text-xs leading-5 text-slate-500">
+                  Showing {schedulingVisibleIntervalSlots.length.toLocaleString()} of {schedulingMatrixIntervalSlots.length.toLocaleString()} interval rows. This only hides empty preview rows; it does not change calculations.
+                  {hideBlankSchedulingRows && schedulingHiddenIntervalRowCount > 0 ? ` Hidden blank rows: ${schedulingHiddenIntervalRowCount.toLocaleString()}.` : ""}
+                </div>
+              </div>
+            )}
+
             <Table
               className="w-auto table-fixed border-collapse"
               containerClassName="max-h-[620px] overflow-auto rounded-lg border border-slate-200"
@@ -5171,7 +5197,7 @@ export function IntradayForecastV2() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {schedulingMatrixIntervalSlots.map((slot) => (
+                    {schedulingVisibleIntervalSlots.map((slot) => (
                       <TableRow key={`${slot.intervalStart}-scheduling-preview-slot`}>
                         <TableCell className="sticky left-0 z-10 w-[104px] min-w-[104px] max-w-[104px] whitespace-normal border-r border-slate-200 bg-white px-1.5 text-[11px] leading-tight font-medium text-slate-900">
                           {slot.intervalLabel}
