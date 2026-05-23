@@ -454,6 +454,10 @@ const INTERVAL_ALLOCATION_GRID_WIDTHS = {
   date: 76,
   vol: 58,
 } as const;
+const SCHEDULING_HANDOFF_GRID_WIDTHS = {
+  interval: 104,
+  date: 124,
+} as const;
 
 function currentMonthKey(timeZone = DEFAULT_DEMAND_TIMEZONE) {
   return getCurrentMonthKeyInTimeZone(timeZone);
@@ -2889,6 +2893,47 @@ export function IntradayForecastV2() {
       : emptySchedulingHandoffPreview(),
     [intervalAllocationPreview.rows, schedulingFteParams, selectedChannel, selectedSchedulingWeek]
   );
+  const schedulingMatrixDateColumns = useMemo(
+    () => selectedSchedulingWeekDates.map((calendarDate) => ({
+      calendarDate,
+      dayLabel: DAY_LABELS[getDayKeyFromIso(calendarDate)],
+      compactDateLabel: formatShortDate(calendarDate, calendarDate.slice(0, 4) !== monthKey.slice(0, 4)),
+    })),
+    [monthKey, selectedSchedulingWeekDates]
+  );
+  const schedulingMatrixIntervalSlots = useMemo(
+    () => Array.from({ length: 96 }, (_, slotIndex) => {
+      const intervalStart = formatIntervalStart(slotIndex * INTERVAL_MINUTES);
+      return {
+        slotIndex,
+        intervalStart,
+        intervalLabel: formatIntervalRangeLabel(intervalStart, INTERVAL_MINUTES),
+      };
+    }),
+    []
+  );
+  const schedulingPreviewRowsByDateAndSlot = useMemo(() => {
+    const rowsBySlot = new Map<string, SchedulingHandoffPreviewRow[]>();
+    schedulingHandoffPreview.rows.forEach((row) => {
+      if (row.slotIndex === null) return;
+      const key = `${row.calendarDate}:${row.slotIndex}`;
+      rowsBySlot.set(key, [...(rowsBySlot.get(key) ?? []), row]);
+    });
+    return rowsBySlot;
+  }, [schedulingHandoffPreview.rows]);
+  const schedulingPreviewDayTotals = useMemo(() => {
+    const totals = new Map<string, { allocatedVolume: number; requiredIntervalCount: number; erlangs: number | null }>();
+    schedulingMatrixDateColumns.forEach((column) => {
+      const rowsForDate = schedulingHandoffPreview.rows.filter((row) => row.calendarDate === column.calendarDate);
+      const erlangRows = rowsForDate.filter((row) => row.erlangs !== null);
+      totals.set(column.calendarDate, {
+        allocatedVolume: rowsForDate.reduce((sum, row) => sum + row.allocatedVolume, 0),
+        requiredIntervalCount: rowsForDate.filter((row) => (row.requiredFte ?? 0) > 0).length,
+        erlangs: erlangRows.length > 0 ? erlangRows.reduce((sum, row) => sum + (row.erlangs ?? 0), 0) : null,
+      });
+    });
+    return totals;
+  }, [schedulingHandoffPreview.rows, schedulingMatrixDateColumns]);
   const selectedWeekCrossesOutsideMonth = selectedSchedulingWeekDates.some((date) => !date.startsWith(monthKey));
   const selectedWeekIncomplete = !!selectedSchedulingWeek && selectedSchedulingWeekDayRows.length !== 7;
   const selectedWeekMissingIntervalDays = selectedSchedulingWeekDayRows.filter((day) => (
@@ -5082,37 +5127,140 @@ export function IntradayForecastV2() {
               </div>
             )}
 
-            <Table containerClassName="max-h-[620px] overflow-auto rounded-lg border border-slate-200">
-              <TableHeader className="sticky top-0 z-10 bg-white">
-                <TableRow className="bg-slate-50 hover:bg-slate-50">
-                  <TableHead>Date</TableHead>
-                  <TableHead>Weekday</TableHead>
-                  <TableHead>Interval start</TableHead>
-                  <TableHead className="text-right">Allocated volume</TableHead>
-                  <TableHead className="text-right">Erlangs</TableHead>
-                  <TableHead className="text-right">Required FTE</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {schedulingHandoffPreview.rows.length === 0 ? (
+            <Table
+              className="w-auto table-fixed border-collapse"
+              containerClassName="max-h-[620px] overflow-auto rounded-lg border border-slate-200"
+              style={{
+                width:
+                  schedulingHandoffPreview.rows.length === 0 || schedulingMatrixDateColumns.length === 0
+                    ? 420
+                    : SCHEDULING_HANDOFF_GRID_WIDTHS.interval
+                      + schedulingMatrixDateColumns.length * SCHEDULING_HANDOFF_GRID_WIDTHS.date,
+              }}
+            >
+              {schedulingHandoffPreview.rows.length === 0 || schedulingMatrixDateColumns.length === 0 ? (
+                <TableBody>
                   <TableRow>
-                    <TableCell colSpan={6} className="h-24 text-center text-sm text-slate-500">
+                    <TableCell className="h-24 min-w-[420px] text-center text-sm text-slate-500">
                       No Scheduling handoff rows are available for the selected publish week.
                     </TableCell>
                   </TableRow>
-                ) : (
-                  schedulingHandoffPreview.rows.map((row) => (
-                    <TableRow key={`${row.key}-scheduling-preview`}>
-                      <TableCell className="font-medium text-slate-900">{row.calendarDate}</TableCell>
-                      <TableCell className="text-slate-600">{row.dayLabel}</TableCell>
-                      <TableCell className="text-slate-600">{row.intervalStart}</TableCell>
-                      <TableCell className="text-right tabular-nums">{formatVolume(row.allocatedVolume)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{formatDecimal(row.erlangs, 3)}</TableCell>
-                      <TableCell className="text-right font-medium tabular-nums text-slate-900">{formatDecimal(row.requiredFte, 2)}</TableCell>
+                </TableBody>
+              ) : (
+                <>
+                  <colgroup>
+                    <col style={{ width: SCHEDULING_HANDOFF_GRID_WIDTHS.interval }} />
+                    {schedulingMatrixDateColumns.map((column) => (
+                      <col key={`${column.calendarDate}-scheduling-preview-col`} style={{ width: SCHEDULING_HANDOFF_GRID_WIDTHS.date }} />
+                    ))}
+                  </colgroup>
+                  <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
+                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                      <TableHead className="sticky left-0 z-30 w-[104px] min-w-[104px] max-w-[104px] border-r border-slate-200 bg-slate-50 text-slate-700">
+                        Interval
+                      </TableHead>
+                      {schedulingMatrixDateColumns.map((column) => (
+                        <TableHead
+                          key={column.calendarDate}
+                          className="w-[124px] min-w-[124px] max-w-[124px] border-r border-slate-100 bg-slate-50 px-2 text-center"
+                        >
+                          <div className="text-xs font-semibold text-slate-800">{column.dayLabel.slice(0, 3)}</div>
+                          <div className="text-[11px] font-normal text-slate-500">{column.compactDateLabel}</div>
+                        </TableHead>
+                      ))}
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
+                  </TableHeader>
+                  <TableBody>
+                    {schedulingMatrixIntervalSlots.map((slot) => (
+                      <TableRow key={`${slot.intervalStart}-scheduling-preview-slot`}>
+                        <TableCell className="sticky left-0 z-10 w-[104px] min-w-[104px] max-w-[104px] whitespace-normal border-r border-slate-200 bg-white px-1.5 text-[11px] leading-tight font-medium text-slate-900">
+                          {slot.intervalLabel}
+                        </TableCell>
+                        {schedulingMatrixDateColumns.map((column) => {
+                          const cellRows = schedulingPreviewRowsByDateAndSlot.get(`${column.calendarDate}:${slot.slotIndex}`) ?? [];
+                          const allocatedVolume = cellRows.reduce((sum, row) => sum + row.allocatedVolume, 0);
+                          const requiredFteRows = cellRows.filter((row) => row.requiredFte !== null);
+                          const requiredFte = requiredFteRows.length > 0
+                            ? requiredFteRows.reduce((sum, row) => sum + (row.requiredFte ?? 0), 0)
+                            : null;
+                          const erlangRows = cellRows.filter((row) => row.erlangs !== null);
+                          const erlangs = erlangRows.length > 0
+                            ? erlangRows.reduce((sum, row) => sum + (row.erlangs ?? 0), 0)
+                            : null;
+                          const hasPositiveValue = allocatedVolume > 0 || (requiredFte ?? 0) > 0 || (erlangs ?? 0) > 0;
+                          const hasRepeatedRows = cellRows.length > 1 || cellRows.some((row) => row.repeated);
+
+                          return (
+                            <TableCell
+                              key={`${column.calendarDate}-${slot.slotIndex}-scheduling-preview-cell`}
+                              className={`w-[124px] min-w-[124px] max-w-[124px] border-r border-slate-100 p-1 align-top ${
+                                cellRows.length > 0 ? "bg-white" : "bg-slate-50 text-slate-300"
+                              }`}
+                            >
+                              {cellRows.length > 0 ? (
+                                <div className={`min-h-[46px] rounded border px-1.5 py-1 ${
+                                  hasPositiveValue
+                                    ? "border-slate-200 bg-white"
+                                    : "border-slate-100 bg-slate-50/70"
+                                }`}>
+                                  <div className={`text-[11px] font-semibold tabular-nums ${
+                                    hasPositiveValue ? "text-slate-900" : "text-slate-500"
+                                  }`}>
+                                    FTE {formatDecimal(requiredFte, 2)}
+                                  </div>
+                                  <div className="mt-0.5 text-[10px] leading-tight tabular-nums text-slate-500">
+                                    Vol {formatVolume(allocatedVolume)}
+                                  </div>
+                                  <div className="text-[10px] leading-tight tabular-nums text-slate-500">
+                                    Erl {formatDecimal(erlangs, 3)}
+                                  </div>
+                                  {hasRepeatedRows && (
+                                    <div className="mt-0.5 text-[9px] leading-tight text-amber-700">
+                                      repeated slot
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="flex min-h-[46px] items-center justify-center text-xs">-</div>
+                              )}
+                            </TableCell>
+                          );
+                        })}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  <TableFooter className="sticky bottom-0 z-20 border-t border-slate-200 bg-slate-50">
+                    <TableRow className="hover:bg-slate-50">
+                      <TableCell className="sticky left-0 z-30 w-[104px] min-w-[104px] max-w-[104px] border-r border-slate-200 bg-slate-50 px-1.5 text-xs font-semibold text-slate-800">
+                        Daily total
+                      </TableCell>
+                      {schedulingMatrixDateColumns.map((column) => {
+                        const total = schedulingPreviewDayTotals.get(column.calendarDate);
+                        return (
+                          <TableCell
+                            key={`${column.calendarDate}-scheduling-preview-total`}
+                            className="w-[124px] min-w-[124px] max-w-[124px] border-r border-slate-100 bg-slate-50 px-2 py-2 text-right align-top tabular-nums"
+                          >
+                            {total ? (
+                              <>
+                                <div className="text-xs font-semibold text-slate-900">Vol {formatVolume(total.allocatedVolume)}</div>
+                                <div className="mt-0.5 text-[10px] text-slate-500">
+                                  FTE slots {total.requiredIntervalCount.toLocaleString()}
+                                </div>
+                                <div className="text-[10px] text-slate-500">
+                                  Erl {formatDecimal(total.erlangs, 3)}
+                                </div>
+                              </>
+                            ) : (
+                              <span className="text-slate-400">-</span>
+                            )}
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                  </TableFooter>
+                </>
+              )}
             </Table>
           </CardContent>
         </Card>
