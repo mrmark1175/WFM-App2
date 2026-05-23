@@ -335,6 +335,19 @@ interface SchedulingHandoffPreview {
   offsetTransitionDates: string[];
 }
 
+type CommitFteStatus = "idle" | "saving" | "saved";
+
+interface CommitFteResult {
+  preferenceKey: string;
+  weekLabel: string;
+  weekStart: string;
+  weekEnd: string;
+  dayCount: number;
+  slotsPerDay: number;
+  rowCount: number;
+  writtenAt: string;
+}
+
 interface ActualBaselinePreviewRow extends ActualBaselineIntervalRow {
   inputValue: string;
   actualVolume: number;
@@ -1914,6 +1927,8 @@ export function IntradayForecastV2() {
   const [savingIntervalAllocation, setSavingIntervalAllocation] = useState(false);
   const [selectedSchedulingWeekStart, setSelectedSchedulingWeekStart] = useState("");
   const [hideBlankSchedulingRows, setHideBlankSchedulingRows] = useState(false);
+  const [commitFteStatus, setCommitFteStatus] = useState<CommitFteStatus>("idle");
+  const [commitFteResult, setCommitFteResult] = useState<CommitFteResult | null>(null);
   const activeScopeKeyRef = useRef("");
   const monthManuallySelectedRef = useRef(false);
   const actualBaselineSelectingRef = useRef(false);
@@ -2064,6 +2079,11 @@ export function IntradayForecastV2() {
   useEffect(() => {
     activeScopeKeyRef.current = scopeKey;
   }, [scopeKey]);
+
+  useEffect(() => {
+    setCommitFteStatus("idle");
+    setCommitFteResult(null);
+  }, [scopeKey, selectedSchedulingWeekStart]);
 
   useEffect(() => {
     setMonthPlan(null);
@@ -2945,33 +2965,59 @@ export function IntradayForecastV2() {
   }, [hideBlankSchedulingRows, schedulingMatrixDateColumns, schedulingMatrixIntervalSlots, schedulingPreviewRowsByDateAndSlot]);
   const schedulingHiddenIntervalRowCount = schedulingMatrixIntervalSlots.length - schedulingVisibleIntervalSlots.length;
   const selectedWeekCrossesOutsideMonth = selectedSchedulingWeekDates.some((date) => !date.startsWith(monthKey));
-  const selectedWeekIncomplete = !!selectedSchedulingWeek && selectedSchedulingWeekDayRows.length !== 7;
   const selectedWeekMissingIntervalDays = selectedSchedulingWeekDayRows.filter((day) => (
     day.allocatedVolume > 0 && !selectedSchedulingWeekIntervalRows.some((row) => row.calendarDate === day.calendarDate)
   ));
+  const isCompleteSlotArray = (slots?: number[]) => (
+    Array.isArray(slots) && slots.length === 96 && slots.every((value) => Number.isFinite(Number(value)))
+  );
+  const selectedSchedulingWeekStartsMonday = selectedSchedulingWeekDates[0]
+    ? getMondayBasedDayOfWeek(selectedSchedulingWeekDates[0]) === 0
+    : false;
+  const selectedSchedulingWeekEndsSunday = selectedSchedulingWeekDates[6]
+    ? getMondayBasedDayOfWeek(selectedSchedulingWeekDates[6]) === 6
+    : false;
+  const hasCompleteFteDateArrays = selectedSchedulingWeekDates.length === 7
+    && selectedSchedulingWeekDates.every((date) => isCompleteSlotArray(schedulingHandoffPreview.dates[date]));
+  const hasCompleteFteWeekdayArrays = DAY_KEYS.every((day) => isCompleteSlotArray(schedulingHandoffPreview.weekdays[day]));
+  const hasCompleteErlangDateArrays = selectedSchedulingWeekDates.length === 7
+    && selectedSchedulingWeekDates.every((date) => isCompleteSlotArray(schedulingHandoffPreview.erlangsDates[date]));
+  const hasCompleteErlangWeekdayArrays = DAY_KEYS.every((day) => isCompleteSlotArray(schedulingHandoffPreview.erlangsWeekdays[day]));
   const unsavedHandoffChangeLabels = [
     manualOverrideInput.trim() !== formatNumberInput(monthPlan?.manual_monthly_volume) ? "monthly override" : "",
     hasUnsavedWeekChanges ? "week allocation" : "",
     hasUnsavedDayChanges ? "day allocation" : "",
     hasUnsavedIntervalChanges ? "interval allocation" : "",
   ].filter(Boolean);
-  const schedulingBlockingWarnings = [
-    !selectedSchedulingWeek ? "Select a publish week before reviewing Scheduling output." : "",
-    !hasFullSchedulingPublishWeek ? "No full Monday-Sunday publish week exists inside the selected month. Preview remains read-only; do not invent outside-month data." : "",
-    !previewScopeReady ? "Preview is still refreshing for the active scope." : "",
-    selectedWeekIncomplete ? "Selected publish week is incomplete in the selected month. Choose a full in-month week before publishing later." : "",
-    selectedWeekCrossesOutsideMonth ? "Selected publish week crosses outside the selected month. Legacy Scheduling snapshots are weekday-based and cannot safely represent the missing outside-month days." : "",
-    schedulingFteParams.missing.length > 0 ? `Required FTE inputs are missing: ${schedulingFteParams.missing.join(", ")}.` : "",
-    schedulingHandoffPreview.repeatedIntervalCount > 0 ? "Selected week includes repeated DST intervals that cannot be represented safely by the legacy weekday + HH:mm snapshot shape." : "",
-    schedulingHandoffPreview.offsetTransitionDates.length > 0 ? `Selected week includes DST offset changes on ${schedulingHandoffPreview.offsetTransitionDates.join(", ")} that cannot be represented safely by the legacy weekday + HH:mm snapshot shape.` : "",
+  const commitFteValidationErrors = [
+    !selectedLobId ? "Select a LOB before committing FTE." : "",
+    !selectedChannel ? "Select a channel before committing FTE." : "",
+    !staffingMode ? "Select a staffing mode before committing FTE." : "",
+    !selectedSchedulingWeek ? "Select a publish week before committing FTE." : "",
+    !hasFullSchedulingPublishWeek ? "No full Monday-Sunday publish week exists inside the selected month." : "",
+    selectedSchedulingWeek && !selectedSchedulingWeekOption?.validFullWeek ? "Selected publish week must be a full Monday-Sunday week inside the selected month." : "",
+    selectedSchedulingWeek && (!selectedSchedulingWeekStartsMonday || !selectedSchedulingWeekEndsSunday) ? "Selected publish week must start on Monday and end on Sunday." : "",
+    selectedSchedulingWeek && selectedWeekCrossesOutsideMonth ? "Selected publish week crosses outside the selected month." : "",
+    selectedSchedulingWeek && selectedSchedulingWeekDates.length !== 7 ? "Selected publish week must contain exactly 7 dates." : "",
+    selectedSchedulingWeek && selectedSchedulingWeekDayRows.length !== 7 ? "Selected publish week must have 7 in-month day allocation rows." : "",
+    INTERVAL_MINUTES !== 15 || schedulingMatrixIntervalSlots.length !== 96 ? "Schedule Editor commit requires 96 15-minute slots per day." : "",
+    selectedSchedulingWeek && (!hasCompleteFteDateArrays || !hasCompleteFteWeekdayArrays) ? "FTE date and weekday arrays must contain 96 numeric slots per day." : "",
+    selectedSchedulingWeek && (!hasCompleteErlangDateArrays || !hasCompleteErlangWeekdayArrays) ? "Erlang date and weekday arrays must contain 96 numeric slots per day." : "",
+    schedulingHandoffPreview.repeatedIntervalCount > 0 ? "Selected week includes repeated DST intervals that cannot be represented safely by the legacy Schedule Editor contract." : "",
+    schedulingHandoffPreview.offsetTransitionDates.length > 0 ? `Selected week includes DST offset changes on ${schedulingHandoffPreview.offsetTransitionDates.join(", ")} that cannot be represented safely by the legacy Schedule Editor contract.` : "",
     selectedWeekMissingIntervalDays.length > 0 ? `Selected week has positive-volume days without operating intervals: ${selectedWeekMissingIntervalDays.map((day) => day.calendarDate).join(", ")}.` : "",
+    schedulingFteParams.missing.length > 0 ? `Required FTE inputs are missing: ${schedulingFteParams.missing.join(", ")}.` : "",
+    selectedSchedulingWeek && schedulingHandoffPreview.rows.length === 0 ? "Scheduling Handoff Preview rows are not available for the selected publish week." : "",
+    !previewScopeReady ? "Preview is still refreshing for the active scope." : "",
+    outputPreviewLoading ? "Preview data is still loading. Please wait before committing FTE." : "",
     intervalAllocationPreview.hasInvalidWeight || intervalAllocationPreview.hasZeroWeightDay || intervalAllocationPreview.hasMissingIntervals || !intervalAllocationPreview.allDaysSumToSource
-      ? "Current interval allocation validation has unresolved warnings. Resolve allocation warnings before using this as a Scheduling source later."
+      ? "Current interval allocation validation has unresolved warnings."
       : "",
   ].filter(Boolean);
+  const commitFteDisabled = commitFteStatus === "saving" || commitFteValidationErrors.length > 0;
   const schedulingAdvisoryWarnings = [
-    "Preview only. Nothing is published to Scheduling.",
-    "Legacy Schedule Editor handoff requires 96 x 15-minute slots per day; this preview builds that shape in memory only.",
+    "Commit writes only the Schedule Editor FTE user preference; it does not create Scheduling demand snapshots.",
+    "Legacy Schedule Editor handoff requires 96 x 15-minute slots per day; this preview builds that shape for the selected week.",
     unsavedHandoffChangeLabels.length > 0
       ? `Current on-screen ${unsavedHandoffChangeLabels.join(", ")} changes are not saved and may differ from saved state.`
       : "",
@@ -2986,8 +3032,8 @@ export function IntradayForecastV2() {
     { label: "Interval Grain", value: `${INTERVAL_MINUTES} min`, detail: "v2 interval allocation" },
     { label: "Week Volume", value: formatVolume(schedulingHandoffPreview.totalAllocatedVolume), detail: "Selected week allocated volume" },
     { label: "Required FTE Intervals", value: schedulingHandoffPreview.requiredIntervalCount.toLocaleString(), detail: "Intervals with FTE > 0" },
-    { label: "Snapshot Rows", value: schedulingHandoffPreview.snapshotRowCount.toLocaleString(), detail: "Would be created later" },
-    { label: "Preference Key", value: schedulingPreferenceKey, detail: "Would be used later" },
+    { label: "Snapshot Rows", value: schedulingHandoffPreview.snapshotRowCount.toLocaleString(), detail: "Not created by this commit" },
+    { label: "Preference Key", value: schedulingPreferenceKey, detail: "Commit target" },
     { label: "Legacy Slot Output", value: schedulingHandoffPreview.legacySlotValueCount > 0 ? `${schedulingHandoffPreview.legacySlotValueCount.toLocaleString()} values` : "-", detail: "7 days x 96 slots" },
   ];
 
@@ -3539,6 +3585,118 @@ export function IntradayForecastV2() {
       toast.error(message);
     } finally {
       setSavingIntervalAllocation(false);
+    }
+  };
+
+  const commitFteToScheduleEditor = async () => {
+    if (!selectedLobId) return;
+    if (outputPreviewLoading) {
+      toast.error("Preview data is still loading. Please wait before committing FTE.");
+      return;
+    }
+    if (commitFteValidationErrors.length > 0) {
+      toast.error("Resolve commit validation errors before writing Schedule Editor FTE.");
+      return;
+    }
+
+    const weekStart = selectedSchedulingWeekDates[0];
+    const weekEnd = selectedSchedulingWeekDates[6];
+    if (!weekStart || !weekEnd) return;
+
+    const confirmed = typeof window === "undefined" || window.confirm([
+      "Commit v2 FTE to Schedule Editor?",
+      "",
+      `Preference key: ${schedulingPreferenceKey}`,
+      `Week: ${weekStart} to ${weekEnd}`,
+      "This overwrites the current Schedule Editor FTE plan for this LOB, channel, and staffing mode.",
+      "Scheduling demand snapshots will not be created.",
+    ].join("\n"));
+    if (!confirmed) return;
+
+    const toFteSlots = (slots: number[] | undefined) => Array.from({ length: 96 }, (_, slotIndex) => {
+      const value = Number(slots?.[slotIndex] ?? 0);
+      return Number.isFinite(value) ? parseFloat(value.toFixed(2)) : 0;
+    });
+    const toErlangSlots = (slots: number[] | undefined) => Array.from({ length: 96 }, (_, slotIndex) => {
+      const value = Number(slots?.[slotIndex] ?? 0);
+      return Number.isFinite(value) ? value : 0;
+    });
+
+    const dates = Object.fromEntries(
+      selectedSchedulingWeekDates.map((date) => [date, toFteSlots(schedulingHandoffPreview.dates[date])])
+    );
+    const weekdays = Object.fromEntries(
+      DAY_KEYS.map((day) => [day, toFteSlots(schedulingHandoffPreview.weekdays[day])])
+    ) as Record<DayKey, number[]>;
+    const erlangs_dates = Object.fromEntries(
+      selectedSchedulingWeekDates.map((date) => [date, toErlangSlots(schedulingHandoffPreview.erlangsDates[date])])
+    );
+    const erlangs_weekdays = Object.fromEntries(
+      DAY_KEYS.map((day) => [day, toErlangSlots(schedulingHandoffPreview.erlangsWeekdays[day])])
+    ) as Record<DayKey, number[]>;
+    const writtenAt = new Date().toISOString();
+    const requestScopeKey = scopeKey;
+    const payload = {
+      preferences: {
+        dates,
+        weekdays,
+        erlangs_dates,
+        erlangs_weekdays,
+        aht_sec: schedulingFteParams.ahtSec,
+        sla_sec: schedulingFteParams.slaSec,
+        sla_target: schedulingFteParams.slaTarget,
+        shrinkage: schedulingFteParams.shrinkage,
+        occupancy: schedulingFteParams.emailOccupancy,
+        email_occupancy: schedulingFteParams.emailOccupancy,
+        concurrency: schedulingFteParams.concurrency,
+        avg_patience_seconds: schedulingFteParams.avgPatienceSeconds,
+        channel: selectedChannel,
+        staffing_mode: staffingMode,
+        baseline_key: `intraday-v2:${selectedLobId}:${selectedChannel}:${staffingMode}:${monthKey}:${weekStart}`,
+        grain: 15,
+        interval_grain: 15,
+        source: "intraday-v2",
+        month_key: monthKey,
+        demand_timezone: demandTimezone,
+        selected_week_start: weekStart,
+        selected_week_end: weekEnd,
+        selected_week_dates: selectedSchedulingWeekDates,
+        committed_at: writtenAt,
+      },
+    };
+
+    setCommitFteStatus("saving");
+    try {
+      const response = await fetch(apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(schedulingPreferenceKey)}&lob_id=${selectedLobId}`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Unable to commit FTE to Schedule Editor.");
+      }
+      if (activeScopeKeyRef.current !== requestScopeKey) return;
+      setCommitFteStatus("saved");
+      setCommitFteResult({
+        preferenceKey: schedulingPreferenceKey,
+        weekLabel: selectedSchedulingWeek?.label ?? "Selected week",
+        weekStart,
+        weekEnd,
+        dayCount: selectedSchedulingWeekDates.length,
+        slotsPerDay: 96,
+        rowCount: schedulingHandoffPreview.rows.length,
+        writtenAt,
+      });
+      toast.success("FTE committed to Schedule Editor");
+      window.setTimeout(() => {
+        if (activeScopeKeyRef.current === requestScopeKey) setCommitFteStatus("idle");
+      }, 3000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to commit FTE to Schedule Editor.";
+      if (activeScopeKeyRef.current === requestScopeKey) setCommitFteStatus("idle");
+      toast.error(message);
     }
   };
 
@@ -5030,26 +5188,34 @@ export function IntradayForecastV2() {
                   Scheduling Handoff Preview
                 </CardTitle>
                 <CardDescription className="mt-2">
-                  Read-only preview of the legacy Scheduling handoff shape from current v2 interval allocation output.
+                  Preview the legacy Scheduling handoff shape and explicitly commit FTE arrays to Schedule Editor.
                 </CardDescription>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge
                   variant="outline"
-                  className={schedulingBlockingWarnings.length === 0
+                  className={commitFteValidationErrors.length === 0
                     ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50"
                     : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50"
                   }
                 >
-                  {schedulingBlockingWarnings.length === 0 ? "Preview ready" : "Preview blocked"}
+                  {commitFteValidationErrors.length === 0 ? "Commit ready" : "Commit blocked"}
                 </Badge>
+                <Button type="button" size="sm" disabled={commitFteDisabled} onClick={commitFteToScheduleEditor}>
+                  {commitFteStatus === "saving" ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Save className="size-4" />
+                  )}
+                  {commitFteStatus === "saving" ? "Committing" : "Commit FTE to Schedule Editor"}
+                </Button>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-5 pt-5">
             <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-              <span>Preview only. Nothing is published to Scheduling.</span>
+              <span>Commit writes only the Schedule Editor FTE user preference for the selected week. It does not create Scheduling demand snapshots.</span>
             </div>
 
             <div className="grid gap-3 lg:grid-cols-[minmax(220px,320px)_1fr]">
@@ -5095,10 +5261,10 @@ export function IntradayForecastV2() {
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Legacy Schedule Editor Output</p>
                 <p className="mt-2 text-sm text-slate-700">
-                  Would produce 7 date arrays and 7 weekday arrays with 96 x 15-minute values per day.
+                  Commit writes 7 date arrays and 7 weekday arrays with 96 x 15-minute values per day.
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
-                  This preview does not call user preference or Scheduling snapshot endpoints.
+                  This action calls only the user preference endpoint; Scheduling snapshot endpoints are not called.
                 </p>
               </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -5112,13 +5278,37 @@ export function IntradayForecastV2() {
               </div>
             </div>
 
-            {(schedulingBlockingWarnings.length > 0 || schedulingAdvisoryWarnings.length > 0) && (
+            {commitFteResult && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                <p className="font-semibold">Schedule Editor FTE committed</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Preference Key</p>
+                    <p className="mt-1 break-all font-mono text-xs">{commitFteResult.preferenceKey}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Selected Week</p>
+                    <p className="mt-1">{commitFteResult.weekLabel}: {commitFteResult.weekStart} to {commitFteResult.weekEnd}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Rows / Slots</p>
+                    <p className="mt-1">{commitFteResult.rowCount.toLocaleString()} preview rows, {commitFteResult.dayCount} days x {commitFteResult.slotsPerDay} slots</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Timestamp</p>
+                    <p className="mt-1 font-mono text-xs">{commitFteResult.writtenAt}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {(commitFteValidationErrors.length > 0 || schedulingAdvisoryWarnings.length > 0) && (
               <div className="grid gap-3 lg:grid-cols-2">
-                {schedulingBlockingWarnings.length > 0 && (
+                {commitFteValidationErrors.length > 0 && (
                   <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
-                    <p className="font-semibold">Blocking warnings</p>
+                    <p className="font-semibold">Commit blocking errors</p>
                     <ul className="mt-2 list-disc space-y-1 pl-5">
-                      {schedulingBlockingWarnings.map((warning) => (
+                      {commitFteValidationErrors.map((warning) => (
                         <li key={warning}>{warning}</li>
                       ))}
                     </ul>
