@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, Clock3, Layers3, Loader2, RefreshCw, Save, Send, Table2, TrendingUp, Upload } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, Clock3, HelpCircle, Layers3, Loader2, RefreshCw, Save, Send, Table2, TrendingUp, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { PageLayout } from "../components/PageLayout";
 import { Badge } from "../components/ui/badge";
@@ -3987,6 +3987,152 @@ export function IntradayForecastV2() {
               <p className="text-[11px] text-cyan-800">Drives demand-local dates, weeks, and DST intervals.</p>
             </div>
           </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 bg-white shadow-sm">
+          <details>
+            <summary className="cursor-pointer list-none">
+              <CardHeader className="border-b border-slate-100 pb-5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <HelpCircle className="size-4 text-cyan-600" />
+                      Planner Help: How to Use This Page
+                    </CardTitle>
+                    <CardDescription className="mt-2">
+                      A quick planner guide for shaping forecast volume into schedule-ready weekly, daily, and interval patterns.
+                    </CardDescription>
+                  </div>
+                  <span className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                    View planner guide
+                  </span>
+                </div>
+              </CardHeader>
+            </summary>
+            <CardContent className="space-y-5 pt-5 text-sm leading-6 text-slate-700">
+              <div className="grid gap-4 lg:grid-cols-2">
+                <section className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">What Intraday Forecast v2 does</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Converts monthly forecast demand into weekly, daily, and 15-minute interval planning.</li>
+                    <li>Keeps the monthly forecast volume as the source of total demand.</li>
+                    <li>Uses actual interval baseline data only to shape the distribution pattern.</li>
+                    <li>Helps planners see when demand is expected to arrive before schedules are built.</li>
+                  </ul>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Recommended planner workflow</h3>
+                  <ol className="mt-2 list-decimal space-y-1 pl-5">
+                    <li>Select LOB, channel, staffing mode, and planning month.</li>
+                    <li>Review the monthly forecast volume.</li>
+                    <li>Enter or paste actual interval volume into the baseline grid.</li>
+                    <li>Review week, day, and interval patterns created from actuals.</li>
+                    <li>Use baseline pattern only when the baseline looks reliable.</li>
+                    <li>Review Day Allocation, Interval Allocation, and Scheduling Handoff Preview.</li>
+                    <li>Commit FTE or approve a demand snapshot only when the preview is clean.</li>
+                  </ol>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Actual Interval Volume Baseline</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Paste actual historical interval volume here to shape the pattern.</li>
+                    <li>This grid does not change monthly forecast volume by itself.</li>
+                    <li>Saving or uploading baseline does not automatically change allocations.</li>
+                    <li>Use baseline pattern is the action that applies baseline distribution to allocation inputs.</li>
+                    <li>Multi-cell paste is supported, and Ctrl+Z can undo recent edits.</li>
+                    <li>Review blank or zero intervals carefully because they can affect distribution.</li>
+                  </ul>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Use baseline pattern behavior</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Applies the current actual baseline shape to the visible allocation inputs for the selected scope.</li>
+                    <li>Keeps total demand anchored to the monthly forecast volume.</li>
+                    <li>Requires at least one positive actual interval volume before it can build a useful pattern.</li>
+                    <li>Uses the selected zero-volume policy to handle open intervals with no actual volume.</li>
+                    <li>Review the generated week, day, and interval weights before committing downstream actions.</li>
+                  </ul>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Day Allocation</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Controls how monthly forecast volume is spread across weeks and days.</li>
+                    <li>Weight values affect each day&apos;s share of planned demand.</li>
+                    <li>The volume shown is based on the planned monthly forecast, not a new forecast.</li>
+                  </ul>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Interval Allocation</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Controls how each day&apos;s volume is spread across 15-minute intervals.</li>
+                    <li>This is where the planner shapes the expected arrival pattern during the day.</li>
+                    <li>Review operating hours, closed intervals, DST warnings, and validation messages before handoff.</li>
+                  </ul>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Scheduling Handoff Preview</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Shows the selected publish week as schedule-ready interval FTE demand.</li>
+                    <li>The preview is read-only and helps validate the 7-day x 96-slot pattern.</li>
+                    <li>Use Hide blank rows to focus on intervals with preview values.</li>
+                  </ul>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Commit FTE to Schedule Editor</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Sends the selected week&apos;s FTE pattern to Schedule Editor.</li>
+                    <li>Requires explicit planner confirmation before writing.</li>
+                    <li>Does not create a scheduling demand snapshot.</li>
+                    <li>Use it when Schedule Editor should consume the selected week&apos;s FTE pattern.</li>
+                  </ul>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Approve Demand Snapshot for Scheduling</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Creates a scheduling demand snapshot from the selected week&apos;s required FTE.</li>
+                    <li>Uses the same Scheduling format as legacy-approved snapshots.</li>
+                    <li>Requires explicit planner confirmation before writing.</li>
+                    <li>Use it only after preview validation is clean.</li>
+                    <li>This action does not happen automatically.</li>
+                  </ul>
+                </section>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <section className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950">
+                  <h3 className="text-sm font-semibold">Common warnings and blockers</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>Invalid publish week: choose a full Monday-Sunday week inside the selected month.</li>
+                    <li>Preview still loading or stale: wait for the preview to finish refreshing, then re-check the scope.</li>
+                    <li>DST warning: the selected week may include repeated or shifted time intervals.</li>
+                    <li>Missing FTE inputs: AHT, SLA, shrinkage, occupancy, or related settings need review.</li>
+                    <li>Positive-volume day without intervals: operating hours may need review.</li>
+                    <li>No positive FTE intervals: there is nothing meaningful to hand off to Scheduling.</li>
+                  </ul>
+                </section>
+
+                <section className="rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-cyan-950">
+                  <h3 className="text-sm font-semibold">Important reminders</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>This page does not automatically publish to Scheduling.</li>
+                    <li>Baseline save or upload does not automatically apply allocations.</li>
+                    <li>Use baseline pattern is the action that applies baseline distribution.</li>
+                    <li>Commit FTE and Approve Demand Snapshot are separate actions.</li>
+                    <li>Review output before committing or approving.</li>
+                    <li>Legacy /wfm/intraday should not be retired yet.</li>
+                  </ul>
+                </section>
+              </div>
+            </CardContent>
+          </details>
         </Card>
 
         <Card className="border-slate-200 bg-white shadow-sm">
