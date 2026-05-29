@@ -348,7 +348,7 @@ interface CommitFteResult {
   writtenAt: string;
 }
 
-type ApproveDemandSnapshotStatus = "idle" | "saving" | "saved";
+type ApproveDemandSnapshotStatus = "idle" | "saving" | "saved" | "unknown";
 
 interface ApproveDemandSnapshotResult {
   snapshotId: number | null;
@@ -362,6 +362,25 @@ interface ApproveDemandSnapshotResult {
   slotsPerDay: number;
   rowCount: number;
   writtenAt: string;
+}
+
+interface ApproveDemandSnapshotPendingVerification extends ApproveDemandSnapshotResult {
+  selectedLobId: number;
+  approvalRequestId: string;
+  requestScopeKey: string;
+  requestId: number;
+}
+
+interface ApproveDemandSnapshotVerificationRequest {
+  selectedLobId: number;
+  snapshotLabel: string;
+  staffingMode: StaffingMode;
+  intervalMinutes: number;
+  weekStart: string;
+  weekEnd: string;
+  channel: ChannelKey;
+  writtenAt: string;
+  approvalRequestId: string;
 }
 
 interface SchedulingDemandSnapshotPayloadRow {
@@ -461,6 +480,7 @@ const PLACEHOLDER_SECTIONS = [
 const DAY_MS = 24 * 60 * 60 * 1000;
 const INTERVAL_MINUTES = 15;
 const WEIGHT_TOTAL_TOLERANCE = 0.05;
+const WRITE_RESPONSE_TIMEOUT_MS = 10000;
 const ACTUAL_BASELINE_ZERO_GAP_BLEND = 0.25;
 const ACTUAL_BASELINE_OPEN_INTERVAL_FLOOR_RATIO = 0.05;
 const ACTUAL_BASELINE_SMOOTH_SYNTHETIC_DAY_CAP_RATIO = 0.15;
@@ -498,6 +518,105 @@ const SCHEDULING_HANDOFF_GRID_WIDTHS = {
 
 function currentMonthKey(timeZone = DEFAULT_DEMAND_TIMEZONE) {
   return getCurrentMonthKeyInTimeZone(timeZone);
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
+}
+
+async function fetchWithResponseTimeout(input: RequestInfo | URL, init: RequestInit = {}) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), WRITE_RESPONSE_TIMEOUT_MS);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function fetchWriteWithResponseTimeout(input: RequestInfo | URL, init: RequestInit = {}) {
+  let timeoutId: number | undefined;
+  const responseTimeout = new Promise<null>((resolve) => {
+    timeoutId = window.setTimeout(() => resolve(null), WRITE_RESPONSE_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      fetch(input, init),
+      responseTimeout,
+    ]);
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  }
+}
+
+function waitForWriteVerification(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function createApprovalRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function parseApprovedDemandSnapshotMetadata(notesValue: unknown) {
+  const notes = String(notesValue ?? "");
+  const jsonStart = notes.indexOf("{");
+  if (jsonStart < 0) return null;
+  try {
+    const parsed = JSON.parse(notes.slice(jsonStart));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function verifyApprovedDemandSnapshotWrite(
+  request: ApproveDemandSnapshotVerificationRequest,
+  maxAttempts = 6
+) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const verifyResponse = await fetchWithResponseTimeout(apiUrl(`/api/scheduling/demand-snapshots?lob_id=${request.selectedLobId}`), {
+        credentials: "include",
+      });
+      if (verifyResponse.ok) {
+        const snapshots = await verifyResponse.json().catch(() => null) as Record<string, unknown>[] | null;
+        if (Array.isArray(snapshots)) {
+          const match = snapshots.find((snapshot) => {
+            const metadata = parseApprovedDemandSnapshotMetadata(snapshot.notes);
+            return String(snapshot.snapshot_label ?? "") === request.snapshotLabel
+              && String(snapshot.staffing_mode ?? "") === request.staffingMode
+              && Number(snapshot.interval_minutes) === request.intervalMinutes
+              && String(metadata?.source ?? "") === "intraday-v2"
+              && String(metadata?.approval_request_id ?? "") === request.approvalRequestId
+              && String(metadata?.approved_at ?? "") === request.writtenAt
+              && String(metadata?.selected_week_start ?? "") === request.weekStart
+              && String(metadata?.selected_week_end ?? "") === request.weekEnd
+              && String(metadata?.channel ?? "") === request.channel
+              && String(metadata?.staffing_mode ?? "") === request.staffingMode
+              && Number(metadata?.interval_grain) === request.intervalMinutes;
+          });
+          const snapshotId = Number(match?.id);
+          if (Number.isFinite(snapshotId)) return snapshotId;
+        }
+      }
+    } catch {
+      // Keep polling; this path only confirms whether a write already landed.
+    }
+    await waitForWriteVerification(750);
+  }
+  return null;
 }
 
 function normalizeStaffingMode(value?: string): StaffingMode {
@@ -1954,7 +2073,11 @@ export function IntradayForecastV2() {
   const [commitFteResult, setCommitFteResult] = useState<CommitFteResult | null>(null);
   const [approveDemandSnapshotStatus, setApproveDemandSnapshotStatus] = useState<ApproveDemandSnapshotStatus>("idle");
   const [approveDemandSnapshotResult, setApproveDemandSnapshotResult] = useState<ApproveDemandSnapshotResult | null>(null);
+  const [approveDemandSnapshotPendingVerification, setApproveDemandSnapshotPendingVerification] = useState<ApproveDemandSnapshotPendingVerification | null>(null);
+  const [approveDemandSnapshotChecking, setApproveDemandSnapshotChecking] = useState(false);
   const activeScopeKeyRef = useRef("");
+  const commitFteRequestIdRef = useRef(0);
+  const approveDemandSnapshotRequestIdRef = useRef(0);
   const monthManuallySelectedRef = useRef(false);
   const actualBaselineSelectingRef = useRef(false);
   const actualBaselineEditSessionRef = useRef<ActualBaselineEditSession | null>(null);
@@ -2110,6 +2233,8 @@ export function IntradayForecastV2() {
     setCommitFteResult(null);
     setApproveDemandSnapshotStatus("idle");
     setApproveDemandSnapshotResult(null);
+    setApproveDemandSnapshotPendingVerification(null);
+    setApproveDemandSnapshotChecking(false);
   }, [scopeKey, selectedSchedulingWeekStart]);
 
   useEffect(() => {
@@ -3079,7 +3204,9 @@ export function IntradayForecastV2() {
       ? "Current interval allocation validation has unresolved warnings."
       : "",
   ].filter(Boolean);
-  const approveDemandSnapshotDisabled = approveDemandSnapshotStatus === "saving" || approveDemandSnapshotValidationErrors.length > 0;
+  const approveDemandSnapshotDisabled = approveDemandSnapshotStatus === "saving"
+    || approveDemandSnapshotStatus === "unknown"
+    || approveDemandSnapshotValidationErrors.length > 0;
   const schedulingAdvisoryWarnings = [
     "Commit FTE writes only the Schedule Editor FTE user preference.",
     "Approve Demand Snapshot writes only through the existing Scheduling demand snapshot endpoint.",
@@ -3700,8 +3827,11 @@ export function IntradayForecastV2() {
     const erlangs_weekdays = Object.fromEntries(
       DAY_KEYS.map((day) => [day, toErlangSlots(schedulingHandoffPreview.erlangsWeekdays[day])])
     ) as Record<DayKey, number[]>;
-    const writtenAt = new Date().toISOString();
     const requestScopeKey = scopeKey;
+    activeScopeKeyRef.current = requestScopeKey;
+    const requestId = commitFteRequestIdRef.current + 1;
+    commitFteRequestIdRef.current = requestId;
+    const writtenAt = new Date().toISOString();
     const payload = {
       preferences: {
         dates,
@@ -3730,39 +3860,92 @@ export function IntradayForecastV2() {
         committed_at: writtenAt,
       },
     };
+    const commitPreferenceUrl = apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(schedulingPreferenceKey)}&lob_id=${selectedLobId}`);
+    const verifyCommittedFteWrite = async () => {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          const verifyResponse = await fetchWithResponseTimeout(commitPreferenceUrl, {
+            credentials: "include",
+          });
+          if (verifyResponse.ok) {
+            const body = await verifyResponse.json().catch(() => null) as Record<string, unknown> | null;
+            const matched = String(body?.source ?? "") === "intraday-v2"
+              && String(body?.committed_at ?? "") === writtenAt
+              && String(body?.baseline_key ?? "") === payload.preferences.baseline_key
+              && String(body?.selected_week_start ?? "") === weekStart
+              && String(body?.selected_week_end ?? "") === weekEnd
+              && String(body?.channel ?? "") === selectedChannel
+              && String(body?.staffing_mode ?? "") === staffingMode;
+            if (matched) return true;
+          }
+        } catch {
+          // Keep polling; this path only confirms whether a write already landed.
+        }
+        await waitForWriteVerification(750);
+      }
+      return false;
+    };
 
     setCommitFteStatus("saving");
+    setCommitFteResult(null);
+    let didSetCommitFteResult = false;
+    let committedFteVerified = false;
     try {
-      const response = await fetch(apiUrl(`/api/user-preferences?page_key=${encodeURIComponent(schedulingPreferenceKey)}&lob_id=${selectedLobId}`), {
+      const response = await fetchWriteWithResponseTimeout(commitPreferenceUrl, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
         credentials: "include",
+      }).catch(async (error) => {
+        if (await verifyCommittedFteWrite()) {
+          committedFteVerified = true;
+          return null;
+        }
+        throw error;
       });
-      if (!response.ok) {
+      if (response === null) {
+        if (!committedFteVerified) {
+          committedFteVerified = await verifyCommittedFteWrite();
+        }
+        if (!committedFteVerified) {
+          throw new Error("Commit FTE timed out while waiting for the server response, and the committed preference could not be verified.");
+        }
+      } else if (!response.ok) {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error || "Unable to commit FTE to Schedule Editor.");
       }
-      if (activeScopeKeyRef.current !== requestScopeKey) return;
-      setCommitFteStatus("saved");
-      setCommitFteResult({
-        preferenceKey: schedulingPreferenceKey,
-        weekLabel: selectedSchedulingWeek?.label ?? "Selected week",
-        weekStart,
-        weekEnd,
-        dayCount: selectedSchedulingWeekDates.length,
-        slotsPerDay: 96,
-        rowCount: schedulingHandoffPreview.rows.length,
-        writtenAt,
-      });
-      toast.success("FTE committed to Schedule Editor");
-      window.setTimeout(() => {
-        if (activeScopeKeyRef.current === requestScopeKey) setCommitFteStatus("idle");
-      }, 3000);
+      if (activeScopeKeyRef.current === requestScopeKey && commitFteRequestIdRef.current === requestId) {
+        didSetCommitFteResult = true;
+        setCommitFteStatus("saved");
+        setCommitFteResult({
+          preferenceKey: schedulingPreferenceKey,
+          weekLabel: selectedSchedulingWeek?.label ?? "Selected week",
+          weekStart,
+          weekEnd,
+          dayCount: selectedSchedulingWeekDates.length,
+          slotsPerDay: 96,
+          rowCount: schedulingHandoffPreview.rows.length,
+          writtenAt,
+        });
+        toast.success("FTE committed to Schedule Editor");
+        window.setTimeout(() => {
+          if (activeScopeKeyRef.current === requestScopeKey && commitFteRequestIdRef.current === requestId) {
+            setCommitFteStatus("idle");
+          }
+        }, 3000);
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to commit FTE to Schedule Editor.";
-      if (activeScopeKeyRef.current === requestScopeKey) setCommitFteStatus("idle");
-      toast.error(message);
+      const message = isAbortError(error)
+        ? "Commit FTE timed out while waiting for the server response, and the write could not be verified."
+        : error instanceof Error ? error.message : "Unable to commit FTE to Schedule Editor.";
+      if (activeScopeKeyRef.current === requestScopeKey && commitFteRequestIdRef.current === requestId) {
+        setCommitFteStatus("idle");
+        toast.error(message);
+      }
+    } finally {
+      if (!didSetCommitFteResult && activeScopeKeyRef.current === requestScopeKey && commitFteRequestIdRef.current === requestId) {
+        setCommitFteStatus("idle");
+      }
     }
   };
 
@@ -3793,8 +3976,10 @@ export function IntradayForecastV2() {
       "intraday-v2",
     ].join(" - ");
     const writtenAt = new Date().toISOString();
+    const approvalRequestId = createApprovalRequestId();
     const metadata = {
       source: "intraday-v2",
+      approval_request_id: approvalRequestId,
       month_key: monthKey,
       selected_week_start: weekStart,
       selected_week_end: weekEnd,
@@ -3830,6 +4015,9 @@ export function IntradayForecastV2() {
     if (!confirmed) return;
 
     const requestScopeKey = scopeKey;
+    activeScopeKeyRef.current = requestScopeKey;
+    const requestId = approveDemandSnapshotRequestIdRef.current + 1;
+    approveDemandSnapshotRequestIdRef.current = requestId;
     const payload = {
       lob_id: selectedLobId,
       snapshot_label: snapshotLabel,
@@ -3838,43 +4026,171 @@ export function IntradayForecastV2() {
       notes: `Approved from Intraday Forecast v2 ${JSON.stringify(metadata)}`,
       rows: approveDemandSnapshotRows,
     };
+    const approveDemandSnapshotUrl = apiUrl("/api/scheduling/demand-snapshots");
+    const verificationRequest: ApproveDemandSnapshotVerificationRequest = {
+      selectedLobId,
+      snapshotLabel,
+      staffingMode,
+      intervalMinutes: INTERVAL_MINUTES,
+      weekStart,
+      weekEnd,
+      channel: selectedChannel,
+      writtenAt,
+      approvalRequestId,
+    };
+    const pendingVerification: ApproveDemandSnapshotPendingVerification = {
+      selectedLobId,
+      approvalRequestId,
+      requestScopeKey,
+      requestId,
+      snapshotId: null,
+      snapshotLabel,
+      weekLabel: selectedSchedulingWeek?.label ?? "Selected week",
+      weekStart,
+      weekEnd,
+      channel: selectedChannel,
+      staffingMode,
+      dayCount: selectedSchedulingWeekDates.length,
+      slotsPerDay: 96,
+      rowCount: approveDemandSnapshotRows.length,
+      writtenAt,
+    };
 
     setApproveDemandSnapshotStatus("saving");
+    setApproveDemandSnapshotResult(null);
+    setApproveDemandSnapshotPendingVerification(null);
+    let didSetApproveDemandSnapshotTerminalState = false;
+    let approveOutcomeUnknown = false;
+    let approvedSnapshotId: number | null = null;
     try {
-      const response = await fetch(apiUrl("/api/scheduling/demand-snapshots"), {
+      const response = await fetchWriteWithResponseTimeout(approveDemandSnapshotUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
         credentials: "include",
+      }).catch(async () => {
+        const verifiedSnapshotId = await verifyApprovedDemandSnapshotWrite(verificationRequest);
+        if (typeof verifiedSnapshotId === "number") {
+          approvedSnapshotId = verifiedSnapshotId;
+          return null;
+        }
+        approveOutcomeUnknown = true;
+        return null;
       });
-      if (!response.ok) {
+      if (response === null) {
+        if (typeof approvedSnapshotId !== "number" && !approveOutcomeUnknown) {
+          const verifiedSnapshotId = await verifyApprovedDemandSnapshotWrite(verificationRequest);
+          if (typeof verifiedSnapshotId === "number") {
+            approvedSnapshotId = verifiedSnapshotId;
+          } else {
+            approveOutcomeUnknown = true;
+          }
+        }
+      } else if (!response.ok) {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error || "Unable to approve demand snapshot for Scheduling.");
+      } else {
+        const body = await response.json().catch(() => null);
+        const responseSnapshotId = Number(body?.id);
+        if (!Number.isFinite(responseSnapshotId)) {
+          throw new Error("Approved demand snapshot response did not include a snapshot id.");
+        }
+        approvedSnapshotId = responseSnapshotId;
       }
-      const body = await response.json().catch(() => null);
-      if (activeScopeKeyRef.current !== requestScopeKey) return;
-      setApproveDemandSnapshotStatus("saved");
-      setApproveDemandSnapshotResult({
-        snapshotId: typeof body?.id === "number" ? body.id : null,
-        snapshotLabel,
-        weekLabel: selectedSchedulingWeek?.label ?? "Selected week",
-        weekStart,
-        weekEnd,
-        channel: selectedChannel,
-        staffingMode,
-        dayCount: selectedSchedulingWeekDates.length,
-        slotsPerDay: 96,
-        rowCount: approveDemandSnapshotRows.length,
-        writtenAt,
-      });
-      toast.success(`Approved demand snapshot${typeof body?.id === "number" ? ` #${body.id}` : ""} for Scheduling`);
-      window.setTimeout(() => {
-        if (activeScopeKeyRef.current === requestScopeKey) setApproveDemandSnapshotStatus("idle");
-      }, 3000);
+      if (approveOutcomeUnknown) {
+        if (activeScopeKeyRef.current === requestScopeKey && approveDemandSnapshotRequestIdRef.current === requestId) {
+          didSetApproveDemandSnapshotTerminalState = true;
+          setApproveDemandSnapshotStatus("unknown");
+          setApproveDemandSnapshotPendingVerification(pendingVerification);
+          toast.warning("Approval result could not be verified. The request may still complete. Please check Schedule Editor before approving again.");
+        }
+        return;
+      }
+      if (activeScopeKeyRef.current === requestScopeKey && approveDemandSnapshotRequestIdRef.current === requestId) {
+        didSetApproveDemandSnapshotTerminalState = true;
+        setApproveDemandSnapshotStatus("saved");
+        setApproveDemandSnapshotPendingVerification(null);
+        setApproveDemandSnapshotResult({
+          snapshotId: approvedSnapshotId,
+          snapshotLabel,
+          weekLabel: selectedSchedulingWeek?.label ?? "Selected week",
+          weekStart,
+          weekEnd,
+          channel: selectedChannel,
+          staffingMode,
+          dayCount: selectedSchedulingWeekDates.length,
+          slotsPerDay: 96,
+          rowCount: approveDemandSnapshotRows.length,
+          writtenAt,
+        });
+        toast.success(`Approved demand snapshot${typeof approvedSnapshotId === "number" ? ` #${approvedSnapshotId}` : ""} for Scheduling`);
+        window.setTimeout(() => {
+          if (activeScopeKeyRef.current === requestScopeKey && approveDemandSnapshotRequestIdRef.current === requestId) {
+            setApproveDemandSnapshotStatus("idle");
+          }
+        }, 3000);
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to approve demand snapshot for Scheduling.";
-      if (activeScopeKeyRef.current === requestScopeKey) setApproveDemandSnapshotStatus("idle");
-      toast.error(message);
+      const message = isAbortError(error)
+        ? "Approve Demand Snapshot timed out while waiting for the server response, and the snapshot could not be verified."
+        : error instanceof Error ? error.message : "Unable to approve demand snapshot for Scheduling.";
+      if (activeScopeKeyRef.current === requestScopeKey && approveDemandSnapshotRequestIdRef.current === requestId) {
+        setApproveDemandSnapshotStatus("idle");
+        toast.error(message);
+      }
+    } finally {
+      if (!didSetApproveDemandSnapshotTerminalState && activeScopeKeyRef.current === requestScopeKey && approveDemandSnapshotRequestIdRef.current === requestId) {
+        setApproveDemandSnapshotStatus("idle");
+      }
+    }
+  };
+
+  const checkApproveDemandSnapshotAgain = async () => {
+    const pending = approveDemandSnapshotPendingVerification;
+    if (!pending || approveDemandSnapshotChecking) return;
+
+    setApproveDemandSnapshotChecking(true);
+    try {
+      const snapshotId = await verifyApprovedDemandSnapshotWrite({
+        selectedLobId: pending.selectedLobId,
+        snapshotLabel: pending.snapshotLabel,
+        staffingMode: pending.staffingMode,
+        intervalMinutes: INTERVAL_MINUTES,
+        weekStart: pending.weekStart,
+        weekEnd: pending.weekEnd,
+        channel: pending.channel,
+        writtenAt: pending.writtenAt,
+        approvalRequestId: pending.approvalRequestId,
+      });
+      if (typeof snapshotId === "number") {
+        if (activeScopeKeyRef.current === pending.requestScopeKey && approveDemandSnapshotRequestIdRef.current === pending.requestId) {
+          setApproveDemandSnapshotStatus("saved");
+          setApproveDemandSnapshotPendingVerification(null);
+          setApproveDemandSnapshotResult({
+            snapshotId,
+            snapshotLabel: pending.snapshotLabel,
+            weekLabel: pending.weekLabel,
+            weekStart: pending.weekStart,
+            weekEnd: pending.weekEnd,
+            channel: pending.channel,
+            staffingMode: pending.staffingMode,
+            dayCount: pending.dayCount,
+            slotsPerDay: pending.slotsPerDay,
+            rowCount: pending.rowCount,
+            writtenAt: pending.writtenAt,
+          });
+          toast.success(`Approved demand snapshot #${snapshotId} for Scheduling`);
+          window.setTimeout(() => {
+            if (activeScopeKeyRef.current === pending.requestScopeKey && approveDemandSnapshotRequestIdRef.current === pending.requestId) {
+              setApproveDemandSnapshotStatus("idle");
+            }
+          }, 3000);
+        }
+      } else {
+        toast.warning("Approval result could not be verified. The request may still complete. Please check Schedule Editor before approving again.");
+      }
+    } finally {
+      setApproveDemandSnapshotChecking(false);
     }
   };
 
@@ -5545,10 +5861,14 @@ export function IntradayForecastV2() {
                 <Button type="button" size="sm" disabled={approveDemandSnapshotDisabled} onClick={approveDemandSnapshotForScheduling}>
                   {approveDemandSnapshotStatus === "saving" ? (
                     <Loader2 className="size-4 animate-spin" />
+                  ) : approveDemandSnapshotStatus === "unknown" ? (
+                    <AlertTriangle className="size-4" />
                   ) : (
                     <Send className="size-4" />
                   )}
-                  {approveDemandSnapshotStatus === "saving" ? "Approving" : "Approve Demand Snapshot for Scheduling"}
+                  {approveDemandSnapshotStatus === "saving"
+                    ? "Approving"
+                    : approveDemandSnapshotStatus === "unknown" ? "Verification Pending" : "Approve Demand Snapshot for Scheduling"}
                 </Button>
               </div>
             </div>
@@ -5639,6 +5959,35 @@ export function IntradayForecastV2() {
                     <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Timestamp</p>
                     <p className="mt-1 font-mono text-xs">{commitFteResult.writtenAt}</p>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {approveDemandSnapshotPendingVerification && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <p className="font-semibold">Approval verification pending</p>
+                    <p className="mt-1">
+                      Approval result could not be verified. The request may still complete. Please check Schedule Editor before approving again.
+                    </p>
+                    <p className="mt-2 font-mono text-xs">{approveDemandSnapshotPendingVerification.approvalRequestId}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+                    disabled={approveDemandSnapshotChecking}
+                    onClick={checkApproveDemandSnapshotAgain}
+                  >
+                    {approveDemandSnapshotChecking ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="size-4" />
+                    )}
+                    Check again
+                  </Button>
                 </div>
               </div>
             )}
