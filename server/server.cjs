@@ -48,6 +48,7 @@ app.use([
   '/api/demand-actuals',
   '/api/distribution-profiles',
   '/api/intraday-v2',
+  '/api/capacity',
   '/api/capacity-plan-config',
   '/api/capacity-plan-inputs',
   '/api/capacity-planner-whatifs',
@@ -1665,6 +1666,164 @@ function intradayV2ScopeParams(scope) {
   return [scope.organizationId, scope.lobId, scope.channel, scope.staffingMode, scope.monthKey];
 }
 
+const CAPACITY_INTRADAY_V2_ADAPTER_INTERVAL_MINUTES = 30;
+const CAPACITY_INTRADAY_V2_SOURCE = 'intraday-v2';
+const CAPACITY_INTRADAY_V2_ADAPTER_SOURCE = 'intraday-v2-adapter';
+const CAPACITY_INTRADAY_V2_MAX_RANGE_DAYS = 735;
+
+function addIsoDateDays(dateStr, days) {
+  const date = new Date(`${dateStr}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function getIsoDateRange(startDate, endDate) {
+  const dates = [];
+  let current = startDate;
+  while (current <= endDate) {
+    dates.push(current);
+    if (dates.length > CAPACITY_INTRADAY_V2_MAX_RANGE_DAYS) {
+      throw apiValidationError(`date range must be ${CAPACITY_INTRADAY_V2_MAX_RANGE_DAYS} days or less`);
+    }
+    current = addIsoDateDays(current, 1);
+  }
+  return dates;
+}
+
+function getCapacityAdapterMonthKeys(startDate, endDate) {
+  const keys = [];
+  let [year, month] = startDate.slice(0, 7).split('-').map(Number);
+  const endKey = endDate.slice(0, 7);
+  while (true) {
+    const key = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}`;
+    keys.push(key);
+    if (key === endKey) break;
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+  }
+  return keys;
+}
+
+function getCapacityAdapterWeekStart(dateStr) {
+  const date = new Date(`${dateStr}T00:00:00Z`);
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - mondayOffset);
+  return date.toISOString().slice(0, 10);
+}
+
+function getCapacityAdapterWeekKeys(startDate, endDate) {
+  const weeks = [];
+  let weekStart = getCapacityAdapterWeekStart(startDate);
+  while (weekStart <= endDate) {
+    weeks.push(weekStart);
+    weekStart = addIsoDateDays(weekStart, 7);
+  }
+  return weeks;
+}
+
+function normalizeCapacityAdapterPlanStatus(value) {
+  const status = String(value || 'active').trim().toLowerCase();
+  if (status === 'active' || status === 'published' || status === 'any') return status;
+  throw apiValidationError('plan_status must be one of active, published, any');
+}
+
+function capacityAdapterPlanStatusClause(planStatus) {
+  if (planStatus === 'published') return " AND status = 'published'";
+  if (planStatus === 'active') return " AND status IN ('draft', 'published')";
+  return " AND status <> 'archived'";
+}
+
+function parseCapacityAdapterTimeMinutes(value) {
+  const match = String(value || '').match(/^([01][0-9]|2[0-3]):([0-5][0-9])/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function normalizeCapacityAdapterIntervalStart(value) {
+  const minutes = parseCapacityAdapterTimeMinutes(value);
+  if (minutes === null) return null;
+  return formatIntervalTime(minutes / 15, 15);
+}
+
+function makeCapacityAdapterEmptyGrid() {
+  return Array.from({ length: 7 }, () => new Array(48).fill(0));
+}
+
+function sumCapacityAdapterGridDay(row) {
+  return row.reduce((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+function pushUniqueReason(reasons, reason) {
+  if (reason && !reasons.includes(reason)) reasons.push(reason);
+}
+
+async function validateCapacityIntradayV2AdapterScope(req) {
+  const user = getCurrentUser(req);
+  const lobId = parseIntradayV2Integer(requireIntradayV2Field(req.query, 'lob_id'), 'lob_id', { min: 1 });
+  const channel = normalizeIntradayV2Channel(requireIntradayV2Field(req.query, 'channel'));
+  const staffingMode = normalizeIntradayV2StaffingMode(requireIntradayV2Field(req.query, 'staffing_mode'));
+  const startDate = validateIntradayV2Date(req.query.start_date, 'start_date');
+  const endDate = validateIntradayV2Date(req.query.end_date, 'end_date');
+  const intervalMinutes = req.query.interval_minutes == null || req.query.interval_minutes === ''
+    ? CAPACITY_INTRADAY_V2_ADAPTER_INTERVAL_MINUTES
+    : parseIntradayV2Integer(req.query.interval_minutes, 'interval_minutes', { min: 1 });
+  const planStatus = normalizeCapacityAdapterPlanStatus(req.query.plan_status);
+
+  if (endDate < startDate) throw apiValidationError('end_date must be on or after start_date');
+  if (intervalMinutes !== CAPACITY_INTRADAY_V2_ADAPTER_INTERVAL_MINUTES) {
+    throw apiValidationError('interval_minutes must be 30 for this adapter phase');
+  }
+
+  const lob = await pool.query(
+    `SELECT l.id, ls.demand_timezone
+     FROM lobs l
+     LEFT JOIN lob_settings ls ON ls.lob_id = l.id AND ls.organization_id = l.organization_id
+     WHERE l.id = $1 AND l.organization_id = $2`,
+    [lobId, user.organization_id]
+  );
+  if (lob.rows.length === 0) throw apiValidationError('LOB not found for this organization', 404);
+
+  return {
+    organizationId: user.organization_id,
+    lobId,
+    channel,
+    staffingMode,
+    startDate,
+    endDate,
+    intervalMinutes,
+    planStatus,
+    demandTimezone: normalizeIntradayV2TimeZone(lob.rows[0]?.demand_timezone),
+  };
+}
+
+function makeCapacityAdapterResponse(scope, monthKeys, demandTimezone, status, diagnostics, weeks, records) {
+  const safeForCapacity = status === 'complete';
+  return {
+    source: CAPACITY_INTRADAY_V2_ADAPTER_SOURCE,
+    status,
+    safe_for_capacity: safeForCapacity,
+    fallback_recommended: !safeForCapacity,
+    scope: {
+      lob_id: scope.lobId,
+      channel: scope.channel,
+      staffing_mode: scope.staffingMode,
+    },
+    range: {
+      start_date: scope.startDate,
+      end_date: scope.endDate,
+      month_keys: monthKeys,
+    },
+    demand_timezone: demandTimezone,
+    interval_minutes: CAPACITY_INTRADAY_V2_ADAPTER_INTERVAL_MINUTES,
+    weeks,
+    records,
+    diagnostics,
+  };
+}
+
 async function ensureIntradayV2MonthPlan(db, scope) {
   const { rows } = await db.query(
     `INSERT INTO intraday_v2_month_plans
@@ -2641,6 +2800,311 @@ app.post('/api/interaction-arrival', async (req, res) => {
     res.status(500).json({ error: 'Failed to save interaction arrival data' });
   } finally {
     client.release();
+  }
+});
+
+// --- CAPACITY: INTRADAY V2 READ-ONLY ADAPTER ---
+
+app.get('/api/capacity/intraday-v2-adapter', async (req, res) => {
+  try {
+    const scope = await validateCapacityIntradayV2AdapterScope(req);
+    const dateKeys = getIsoDateRange(scope.startDate, scope.endDate);
+    const requestedDateSet = new Set(dateKeys);
+    const monthKeys = getCapacityAdapterMonthKeys(scope.startDate, scope.endDate);
+    const statusClause = capacityAdapterPlanStatusClause(scope.planStatus);
+    const diagnostics = {
+      missing_months: [],
+      missing_dates: [],
+      unsafe_dst_dates: [],
+      mixed_demand_timezone: false,
+      reasons: [],
+    };
+
+    const planResult = await pool.query(
+      `SELECT month_key, demand_timezone, status, demand_forecast_volume,
+              manual_monthly_volume, effective_monthly_volume, demand_source, updated_at
+       FROM intraday_v2_month_plans
+       WHERE organization_id = $1
+         AND lob_id = $2
+         AND channel = $3
+         AND staffing_mode = $4
+         AND month_key = ANY($5::text[])
+         ${statusClause}
+       ORDER BY month_key ASC`,
+      [scope.organizationId, scope.lobId, scope.channel, scope.staffingMode, monthKeys]
+    );
+
+    const planRows = planResult.rows;
+    const planMonthKeys = Array.from(new Set(planRows.map((row) => row.month_key))).sort();
+    const planMonthSet = new Set(planMonthKeys);
+    const monthTimezoneByKey = new Map(
+      planRows.map((row) => [row.month_key, normalizeIntradayV2TimeZone(row.demand_timezone || scope.demandTimezone)])
+    );
+    diagnostics.missing_months = monthKeys.filter((monthKey) => !planMonthSet.has(monthKey));
+    if (diagnostics.missing_months.length > 0) {
+      pushUniqueReason(diagnostics.reasons, `Missing Intraday v2 month plans: ${diagnostics.missing_months.join(', ')}`);
+    }
+
+    let dayRows = [];
+    let intervalRows = [];
+    let weekRows = [];
+
+    if (planMonthKeys.length > 0) {
+      const [dayResult, intervalResult, weekResult] = await Promise.all([
+        pool.query(
+          `SELECT month_key, demand_timezone, calendar_date::text AS calendar_date,
+                  day_of_week, week_start::text AS week_start, weight, volume, is_locked
+           FROM intraday_v2_day_allocations
+           WHERE organization_id = $1
+             AND lob_id = $2
+             AND channel = $3
+             AND staffing_mode = $4
+             AND month_key = ANY($5::text[])
+             AND calendar_date BETWEEN $6::date AND $7::date
+           ORDER BY calendar_date ASC`,
+          [scope.organizationId, scope.lobId, scope.channel, scope.staffingMode, planMonthKeys, scope.startDate, scope.endDate]
+        ),
+        pool.query(
+          `SELECT month_key, demand_timezone, calendar_date::text AS calendar_date,
+                  interval_index, interval_start::text AS interval_start, interval_minutes,
+                  interval_start_utc, utc_offset_minutes, dst_fold, occurrence_index,
+                  interval_ordinal, weight, volume, aht_seconds
+           FROM intraday_v2_interval_allocations
+           WHERE organization_id = $1
+             AND lob_id = $2
+             AND channel = $3
+             AND staffing_mode = $4
+             AND month_key = ANY($5::text[])
+             AND calendar_date BETWEEN $6::date AND $7::date
+           ORDER BY calendar_date ASC, interval_ordinal ASC NULLS LAST,
+                    interval_start ASC, occurrence_index ASC, interval_index ASC`,
+          [scope.organizationId, scope.lobId, scope.channel, scope.staffingMode, planMonthKeys, scope.startDate, scope.endDate]
+        ),
+        pool.query(
+          `SELECT month_key, demand_timezone, week_start::text AS week_start,
+                  week_index, weight, volume, is_locked
+           FROM intraday_v2_week_allocations
+           WHERE organization_id = $1
+             AND lob_id = $2
+             AND channel = $3
+             AND staffing_mode = $4
+             AND month_key = ANY($5::text[])
+           ORDER BY week_start ASC, month_key ASC`,
+          [scope.organizationId, scope.lobId, scope.channel, scope.staffingMode, planMonthKeys]
+        ),
+      ]);
+      dayRows = dayResult.rows;
+      intervalRows = intervalResult.rows;
+      weekRows = weekResult.rows;
+    }
+
+    const timezoneSet = new Set();
+    const noteTimezone = (value) => {
+      timezoneSet.add(normalizeIntradayV2TimeZone(value || scope.demandTimezone));
+    };
+    planRows.forEach((row) => noteTimezone(row.demand_timezone));
+    dayRows.forEach((row) => noteTimezone(row.demand_timezone || monthTimezoneByKey.get(row.month_key)));
+    intervalRows.forEach((row) => noteTimezone(row.demand_timezone || monthTimezoneByKey.get(row.month_key)));
+    if (timezoneSet.size === 0) timezoneSet.add(scope.demandTimezone);
+    diagnostics.mixed_demand_timezone = timezoneSet.size > 1;
+    const demandTimezone = timezoneSet.size === 1 ? Array.from(timezoneSet)[0] : scope.demandTimezone;
+    if (diagnostics.mixed_demand_timezone) {
+      pushUniqueReason(diagnostics.reasons, 'Mixed demand timezones found in Intraday v2 allocation data');
+    }
+
+    const dayRowsByDate = new Map();
+    for (const row of dayRows) {
+      const date = String(row.calendar_date).slice(0, 10);
+      if (requestedDateSet.has(date)) dayRowsByDate.set(date, row);
+    }
+
+    const intervalRowsByDate = new Map();
+    for (const row of intervalRows) {
+      const date = String(row.calendar_date).slice(0, 10);
+      if (!requestedDateSet.has(date)) continue;
+      const list = intervalRowsByDate.get(date) ?? [];
+      list.push(row);
+      intervalRowsByDate.set(date, list);
+    }
+
+    const weekAllocationMonthKeysByWeekStart = new Map();
+    for (const row of weekRows) {
+      const weekStart = String(row.week_start).slice(0, 10);
+      const monthSet = weekAllocationMonthKeysByWeekStart.get(weekStart) ?? new Set();
+      monthSet.add(row.month_key);
+      weekAllocationMonthKeysByWeekStart.set(weekStart, monthSet);
+    }
+
+    const weekEntries = new Map();
+    for (const weekStart of getCapacityAdapterWeekKeys(scope.startDate, scope.endDate)) {
+      weekEntries.set(weekStart, {
+        week: {
+          week_start: weekStart,
+          week_end: addIsoDateDays(weekStart, 6),
+          status: 'missing',
+          weekly_volume: 0,
+          day_volumes: new Array(7).fill(0),
+          grid_30m: makeCapacityAdapterEmptyGrid(),
+          source_month_keys: [],
+        },
+        sourceMonthKeys: new Set(weekAllocationMonthKeysByWeekStart.get(weekStart) ?? []),
+        dateStatuses: [],
+      });
+    }
+
+    const records = [];
+    const dateStatuses = new Map();
+
+    for (const date of dateKeys) {
+      const monthKey = date.slice(0, 7);
+      const dayRow = dayRowsByDate.get(date);
+      const rows = intervalRowsByDate.get(date) ?? [];
+      const dateTimezone = normalizeIntradayV2TimeZone(
+        dayRow?.demand_timezone
+          || rows[0]?.demand_timezone
+          || monthTimezoneByKey.get(monthKey)
+          || demandTimezone
+      );
+      const expectedIntervals = buildIntradayV2DemandDayIntervals(date, dateTimezone, 15);
+      const expectedLocalTimes = new Set(expectedIntervals.map((row) => row.interval_time));
+      const expectedOffsets = new Set(
+        expectedIntervals
+          .map((row) => Number(row.utc_offset_minutes))
+          .filter((value) => Number.isFinite(value))
+      );
+      const expectedUnsafeDst = expectedIntervals.length !== 96
+        || expectedLocalTimes.size !== 96
+        || expectedIntervals.some((row) => row.repeated || Number(row.occurrence_index) > 0 || Number(row.dst_fold) > 0)
+        || expectedOffsets.size > 1;
+
+      const rowTimeCounts = new Map();
+      const rowOffsets = new Set();
+      let hasInvalidIntervalStart = false;
+      let hasUnsupportedIntervalMinutes = false;
+      let hasRepeatedRows = false;
+      let hasFoldRows = false;
+      let hasMissingExpectedTime = false;
+
+      for (const row of rows) {
+        const rowIntervalMinutes = Number(row.interval_minutes ?? 15);
+        if (rowIntervalMinutes !== 15) hasUnsupportedIntervalMinutes = true;
+        const intervalStart = normalizeCapacityAdapterIntervalStart(row.interval_start);
+        if (!intervalStart) {
+          hasInvalidIntervalStart = true;
+        } else {
+          rowTimeCounts.set(intervalStart, (rowTimeCounts.get(intervalStart) ?? 0) + 1);
+        }
+        const offset = Number(row.utc_offset_minutes);
+        if (Number.isFinite(offset)) rowOffsets.add(offset);
+        if (Number(row.occurrence_index ?? 0) > 0 || Number(row.dst_fold ?? 0) > 0) hasFoldRows = true;
+      }
+
+      for (const count of rowTimeCounts.values()) {
+        if (count > 1) hasRepeatedRows = true;
+      }
+      if (rowTimeCounts.size > 0 && expectedLocalTimes.size === 96) {
+        hasMissingExpectedTime = Array.from(expectedLocalTimes).some((intervalStart) => !rowTimeCounts.has(intervalStart));
+      }
+
+      const hasScopedMonth = planMonthSet.has(monthKey);
+      const hasDayRow = !!dayRow;
+      const hasIntervalRows = rows.length > 0;
+      const rowUnsafeDst = hasFoldRows || hasRepeatedRows || rowOffsets.size > 1;
+
+      let dateStatus = 'complete';
+      if ((expectedUnsafeDst || rowUnsafeDst) && (hasScopedMonth || hasDayRow || hasIntervalRows)) {
+        dateStatus = 'unsafe_dst';
+        diagnostics.unsafe_dst_dates.push(date);
+        pushUniqueReason(diagnostics.reasons, `Unsafe DST interval shape for ${date}`);
+      } else if (!hasScopedMonth || !hasDayRow || !hasIntervalRows || rows.length !== 96
+          || hasInvalidIntervalStart || hasUnsupportedIntervalMinutes || hasMissingExpectedTime || rowTimeCounts.size !== 96) {
+        dateStatus = 'partial';
+        diagnostics.missing_dates.push(date);
+        if (!hasScopedMonth) pushUniqueReason(diagnostics.reasons, `Missing month plan for ${monthKey}`);
+        if (!hasDayRow) pushUniqueReason(diagnostics.reasons, `Missing day allocation for ${date}`);
+        if (!hasIntervalRows) pushUniqueReason(diagnostics.reasons, `Missing interval allocations for ${date}`);
+        if (hasIntervalRows && rows.length !== 96) pushUniqueReason(diagnostics.reasons, `Incomplete interval allocation count for ${date}`);
+        if (hasUnsupportedIntervalMinutes) pushUniqueReason(diagnostics.reasons, `Unsupported non-15-minute interval rows for ${date}`);
+        if (hasInvalidIntervalStart || hasMissingExpectedTime) pushUniqueReason(diagnostics.reasons, `Invalid or incomplete local interval starts for ${date}`);
+      }
+
+      dateStatuses.set(date, dateStatus);
+      const weekStart = getCapacityAdapterWeekStart(date);
+      const weekEntry = weekEntries.get(weekStart);
+      if (weekEntry) {
+        weekEntry.dateStatuses.push(dateStatus);
+        if (hasScopedMonth) weekEntry.sourceMonthKeys.add(monthKey);
+      }
+
+      if (dateStatus !== 'complete' || !weekEntry) continue;
+
+      const dayIndex = getMondayBasedWeekday(date);
+      for (const row of rows) {
+        const localMinutes = parseCapacityAdapterTimeMinutes(row.interval_start);
+        if (localMinutes === null) continue;
+        const slotIndex = Math.floor(localMinutes / CAPACITY_INTRADAY_V2_ADAPTER_INTERVAL_MINUTES);
+        if (slotIndex < 0 || slotIndex >= 48) continue;
+        weekEntry.week.grid_30m[dayIndex][slotIndex] += Number(row.volume) || 0;
+        weekEntry.sourceMonthKeys.add(row.month_key || monthKey);
+      }
+    }
+
+    const weeks = Array.from(weekEntries.values()).map((entry) => {
+      const statuses = entry.dateStatuses;
+      if (statuses.includes('unsafe_dst')) {
+        entry.week.status = 'unsafe_dst';
+      } else if (statuses.length > 0 && statuses.every((status) => status === 'complete') && !diagnostics.mixed_demand_timezone) {
+        entry.week.status = 'complete';
+      } else if (statuses.some((status) => status === 'complete' || status === 'partial')) {
+        entry.week.status = 'partial';
+      } else {
+        entry.week.status = 'missing';
+      }
+
+      entry.week.grid_30m = entry.week.grid_30m.map((row) => row.map((value) => Number(value) || 0));
+      entry.week.day_volumes = entry.week.grid_30m.map((row) => sumCapacityAdapterGridDay(row));
+      entry.week.weekly_volume = entry.week.day_volumes.reduce((sum, value) => sum + value, 0);
+      entry.week.source_month_keys = Array.from(entry.sourceMonthKeys).sort();
+
+      for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+        const intervalDate = addIsoDateDays(entry.week.week_start, dayIndex);
+        if (!requestedDateSet.has(intervalDate) || dateStatuses.get(intervalDate) !== 'complete') continue;
+        for (let intervalIndex = 0; intervalIndex < 48; intervalIndex += 1) {
+          records.push({
+            interval_date: intervalDate,
+            interval_index: intervalIndex,
+            volume: entry.week.grid_30m[dayIndex][intervalIndex],
+            aht: null,
+            channel: scope.channel,
+            source: CAPACITY_INTRADAY_V2_SOURCE,
+          });
+        }
+      }
+
+      return entry.week;
+    });
+
+    diagnostics.missing_dates = Array.from(new Set(diagnostics.missing_dates)).sort();
+    diagnostics.unsafe_dst_dates = Array.from(new Set(diagnostics.unsafe_dst_dates)).sort();
+
+    let status = 'complete';
+    if (intervalRows.length === 0) {
+      status = 'missing';
+      pushUniqueReason(diagnostics.reasons, 'No usable Intraday v2 interval allocations found for requested scope');
+    } else if (diagnostics.unsafe_dst_dates.length > 0) {
+      status = 'unsafe_dst';
+    } else if (diagnostics.mixed_demand_timezone
+        || diagnostics.missing_months.length > 0
+        || diagnostics.missing_dates.length > 0
+        || weeks.some((week) => week.status !== 'complete')) {
+      status = 'partial';
+    }
+
+    res.json(makeCapacityAdapterResponse(scope, monthKeys, demandTimezone, status, diagnostics, weeks, records));
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error('Capacity Intraday v2 adapter error:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch Capacity Intraday v2 adapter data' });
   }
 });
 
