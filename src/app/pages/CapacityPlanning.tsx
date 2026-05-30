@@ -189,14 +189,35 @@ interface InteractionArrivalRecord {
   volume: number;
   aht?: number;
   channel: string;
+  source?: string;
 }
 
-type DistributionSource = "intraday-based" | "saved-profile-fallback" | "default-fallback-distribution" | "configuration-needed";
+type DistributionSource = "intraday-v2-adapter" | "intraday-based" | "saved-profile-fallback" | "default-fallback-distribution" | "configuration-needed";
 type WeeklyVolumeSource =
   | "intraday-manual-monthly-override"
   | "demand-planner-via-intraday"
   | "default-weekly-distribution"
   | "flat-fallback";
+type CapacityIntradaySourceKind = "v2" | "legacy" | "v2-incomplete" | "v2-dst";
+
+interface CapacityIntradayV2AdapterResponse {
+  status?: string;
+  safe_for_capacity?: boolean;
+  fallback_recommended?: boolean;
+  records?: InteractionArrivalRecord[];
+  diagnostics?: {
+    reasons?: string[];
+    missing_dates?: string[];
+    unsafe_dst_dates?: string[];
+    mixed_demand_timezone?: boolean;
+  };
+}
+
+interface CapacityIntradaySourceNotice {
+  kind: CapacityIntradaySourceKind;
+  label: string;
+  detail?: string;
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -384,7 +405,12 @@ function buildDistributedVolumeGrid(
   profile: DistributionProfile | undefined,
 ): { grid: number[][]; source: DistributionSource } {
   const intradayWeights = recordsToWeightGrid(records ?? [], weekStart, schedule);
-  if (intradayWeights) return { grid: normalizeVolumeGrid(weeklyVolume, intradayWeights), source: "intraday-based" };
+  if (intradayWeights) {
+    const source = (records ?? []).some(r => r.source === "intraday-v2" || r.source === "intraday-v2-adapter")
+      ? "intraday-v2-adapter"
+      : "intraday-based";
+    return { grid: normalizeVolumeGrid(weeklyVolume, intradayWeights), source };
+  }
 
   const profileWeights = profileToWeightGrid(profile, schedule);
   if (profileWeights) return { grid: normalizeVolumeGrid(weeklyVolume, profileWeights), source: "saved-profile-fallback" };
@@ -405,6 +431,7 @@ function buildDistributedVolumeGrid(
 }
 
 function bestDistributionSource(sources: DistributionSource[]): DistributionSource {
+  if (sources.includes("intraday-v2-adapter")) return "intraday-v2-adapter";
   if (sources.includes("intraday-based")) return "intraday-based";
   if (sources.includes("saved-profile-fallback")) return "saved-profile-fallback";
   if (sources.includes("configuration-needed")) return "configuration-needed";
@@ -510,10 +537,51 @@ function fmtSeconds(s: number): string {
 }
 
 function distributionSourceLabel(source: DistributionSource): string {
+  if (source === "intraday-v2-adapter") return "Intraday v2 allocation";
   if (source === "intraday-based") return "Intraday arrival pattern";
   if (source === "saved-profile-fallback") return "Saved profile fallback";
   if (source === "configuration-needed") return "Operating hours need configuration";
   return "Default fallback distribution";
+}
+
+function isSafeCapacityV2Adapter(response: CapacityIntradayV2AdapterResponse | null | undefined): boolean {
+  return response?.status === "complete" && response.safe_for_capacity === true;
+}
+
+function capacityAdapterDiagnosticDetail(response: CapacityIntradayV2AdapterResponse | null | undefined): string | undefined {
+  const reasons = response?.diagnostics?.reasons?.filter(Boolean) ?? [];
+  if (reasons.length > 0) return reasons.slice(0, 2).join(" ");
+  if (response?.diagnostics?.unsafe_dst_dates?.length) return `Unsafe dates: ${response.diagnostics.unsafe_dst_dates.slice(0, 3).join(", ")}`;
+  if (response?.diagnostics?.missing_dates?.length) return `Missing dates: ${response.diagnostics.missing_dates.slice(0, 3).join(", ")}`;
+  if (response?.status && response.status !== "complete") return `Adapter status: ${response.status}`;
+  return undefined;
+}
+
+function capacityIntradaySourceNotice(response: CapacityIntradayV2AdapterResponse | null | undefined): CapacityIntradaySourceNotice {
+  if (isSafeCapacityV2Adapter(response)) {
+    return { kind: "v2", label: "Using Intraday v2 allocation" };
+  }
+  if (!response) {
+    return { kind: "legacy", label: "Using legacy intraday fallback" };
+  }
+  if (response.status === "unsafe_dst" || (response.diagnostics?.unsafe_dst_dates?.length ?? 0) > 0) {
+    return {
+      kind: "v2-dst",
+      label: "v2 allocation has DST risk; legacy fallback used",
+      detail: capacityAdapterDiagnosticDetail(response),
+    };
+  }
+  return {
+    kind: "v2-incomplete",
+    label: "v2 allocation incomplete; legacy fallback used",
+    detail: capacityAdapterDiagnosticDetail(response),
+  };
+}
+
+function capacityIntradayNoticeClass(kind: CapacityIntradaySourceKind): string {
+  if (kind === "v2") return "border-emerald-200 bg-emerald-50 text-emerald-900";
+  if (kind === "legacy") return "border-slate-200 bg-slate-50 text-black";
+  return "border-amber-200 bg-amber-50 text-amber-900";
 }
 
 function weeklyVolumeSourceLabel(source: WeeklyVolumeSource): string {
@@ -1356,6 +1424,9 @@ export function CapacityPlanning() {
   const [fteWorkdaysPerWeek, setFteWorkdaysPerWeek] = useState(5);
   const [computedShrinkagePct, setComputedShrinkagePct] = useState<number | null>(null);
   const [intradayRecordsByChannel, setIntradayRecordsByChannel] = useState<Partial<Record<ChannelKey, InteractionArrivalRecord[]>>>({});
+  const [legacyIntradayRecordsByChannel, setLegacyIntradayRecordsByChannel] = useState<Partial<Record<ChannelKey, InteractionArrivalRecord[]>>>({});
+  const [intradayV2AdapterByChannel, setIntradayV2AdapterByChannel] = useState<Partial<Record<ChannelKey, CapacityIntradayV2AdapterResponse | null>>>({});
+  const [intradaySourceByChannel, setIntradaySourceByChannel] = useState<Partial<Record<ChannelKey, CapacityIntradaySourceNotice>>>({});
   const [profilesByChannel, setProfilesByChannel] = useState<Partial<Record<ChannelKey, DistributionProfile>>>({});
   const [intradayPrefsByChannel, setIntradayPrefsByChannel] = useState<Partial<Record<ChannelKey, IntradayPrefsSnapshot>>>({});
   const [activeChannel, setActiveChannel] = useState<ChannelKey>("voice");
@@ -1795,6 +1866,9 @@ export function CapacityPlanning() {
   useEffect(() => {
     if (!activeLob || weeks.length === 0 || enabledChannels.length === 0) {
       setIntradayRecordsByChannel({});
+      setLegacyIntradayRecordsByChannel({});
+      setIntradayV2AdapterByChannel({});
+      setIntradaySourceByChannel({});
       setProfilesByChannel({});
       setIntradayPrefsByChannel({});
       return;
@@ -1809,7 +1883,18 @@ export function CapacityPlanning() {
 
     Promise.all(enabledChannels.map(async channel => {
       const intradayPrefsPageKey = buildIntradayPrefsPageKey(channel, staffingMode);
-      const [arrivalRes, profileRes, prefsRes] = await Promise.all([
+      const adapterParams = new URLSearchParams({
+        lob_id: String(activeLob.id),
+        channel,
+        staffing_mode: staffingMode,
+        start_date: startDate,
+        end_date: endDate,
+        plan_status: "active",
+      });
+      const [adapterRes, arrivalRes, profileRes, prefsRes] = await Promise.all([
+        fetch(apiUrl(`/api/capacity/intraday-v2-adapter?${adapterParams.toString()}`))
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null),
         fetch(apiUrl(`/api/interaction-arrival?startDate=${startDate}&endDate=${endDate}&channel=${channel}&lob_id=${activeLob.id}`))
           .then(r => r.ok ? r.json() : [])
           .catch(() => []),
@@ -1820,20 +1905,35 @@ export function CapacityPlanning() {
           .then(r => r.ok ? r.json() : {})
           .catch(() => ({})),
       ]);
+      const adapter = adapterRes && typeof adapterRes === "object"
+        ? adapterRes as CapacityIntradayV2AdapterResponse
+        : null;
+      const adapterRecords = Array.isArray(adapter?.records) ? adapter.records as InteractionArrivalRecord[] : [];
+      const legacyRecords = Array.isArray(arrivalRes) ? arrivalRes as InteractionArrivalRecord[] : [];
+      const useAdapter = isSafeCapacityV2Adapter(adapter);
       return {
         channel,
-        records: Array.isArray(arrivalRes) ? arrivalRes as InteractionArrivalRecord[] : [],
+        records: useAdapter ? adapterRecords : legacyRecords,
+        legacyRecords,
+        adapter,
+        sourceNotice: capacityIntradaySourceNotice(adapter),
         profile: Array.isArray(profileRes) && profileRes.length > 0 ? profileRes[0] as DistributionProfile : undefined,
         prefs: prefsRes && typeof prefsRes === "object" ? prefsRes as IntradayPrefsSnapshot : undefined,
       };
     })).then(entries => {
       if (cancelled) return;
       setIntradayRecordsByChannel(Object.fromEntries(entries.map(e => [e.channel, e.records])) as Partial<Record<ChannelKey, InteractionArrivalRecord[]>>);
+      setLegacyIntradayRecordsByChannel(Object.fromEntries(entries.map(e => [e.channel, e.legacyRecords])) as Partial<Record<ChannelKey, InteractionArrivalRecord[]>>);
+      setIntradayV2AdapterByChannel(Object.fromEntries(entries.map(e => [e.channel, e.adapter])) as Partial<Record<ChannelKey, CapacityIntradayV2AdapterResponse | null>>);
+      setIntradaySourceByChannel(Object.fromEntries(entries.map(e => [e.channel, e.sourceNotice])) as Partial<Record<ChannelKey, CapacityIntradaySourceNotice>>);
       setProfilesByChannel(Object.fromEntries(entries.filter(e => e.profile).map(e => [e.channel, e.profile])) as Partial<Record<ChannelKey, DistributionProfile>>);
       setIntradayPrefsByChannel(Object.fromEntries(entries.filter(e => e.prefs).map(e => [e.channel, e.prefs])) as Partial<Record<ChannelKey, IntradayPrefsSnapshot>>);
     }).catch(() => {
       if (!cancelled) {
         setIntradayRecordsByChannel({});
+        setLegacyIntradayRecordsByChannel({});
+        setIntradayV2AdapterByChannel({});
+        setIntradaySourceByChannel({});
         setProfilesByChannel({});
         setIntradayPrefsByChannel({});
       }
@@ -1841,6 +1941,25 @@ export function CapacityPlanning() {
 
     return () => { cancelled = true; };
   }, [activeLob?.id, weeks.length, enabledChannels, config.planStartDate, config.horizonWeeks, isDedicated]);
+
+  const capacityIntradaySourceNotices = useMemo(() => {
+    const channels = isDedicated ? [activeChannel] : enabledChannels;
+    return channels.map(channel => {
+      const notice = intradaySourceByChannel[channel] ?? ({ kind: "legacy", label: "Using legacy intraday fallback" } as CapacityIntradaySourceNotice);
+      const adapter = intradayV2AdapterByChannel[channel];
+      const legacyCount = legacyIntradayRecordsByChannel[channel]?.length ?? 0;
+      const selectedCount = intradayRecordsByChannel[channel]?.length ?? 0;
+      const detail = notice.detail
+        ?? (notice.kind === "v2"
+          ? `${selectedCount.toLocaleString()} v2 adapter records loaded`
+          : adapter?.status
+            ? `Adapter status: ${adapter.status}`
+            : legacyCount > 0
+              ? `${legacyCount.toLocaleString()} legacy records loaded`
+              : undefined);
+      return { channel, notice: { ...notice, detail } };
+    });
+  }, [activeChannel, enabledChannels, intradayRecordsByChannel, intradaySourceByChannel, intradayV2AdapterByChannel, isDedicated, legacyIntradayRecordsByChannel]);
 
   // ── Monthly forecast arrays from demand planner snapshot (captures seasonality)
   const forecastedMonthlyVols = useMemo<{ voice: number[]; chat: number[]; email: number[]; cases: number[] } | null>(() => {
@@ -3036,6 +3155,16 @@ export function CapacityPlanning() {
               Distribution: <span className="font-semibold">{distributionSourceLabel(weekCalcs[0]?.distributionSource ?? "default-fallback-distribution")}</span>
             </span>
           </div>
+          {capacityIntradaySourceNotices.length > 0 && (
+            <div className="mb-3 flex flex-wrap gap-2 text-xs">
+              {capacityIntradaySourceNotices.map(({ channel, notice }) => (
+                <span key={channel} className={`rounded-md border px-2.5 py-1 ${capacityIntradayNoticeClass(notice.kind)}`}>
+                  <span className="font-semibold">{CHANNEL_LABELS[channel]}:</span> {notice.label}
+                  {notice.detail && <span className="ml-1 opacity-80">({notice.detail})</span>}
+                </span>
+              ))}
+            </div>
+          )}
           {weekCalcs[0]?.distributionSource === "configuration-needed" && (
             <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
               Operating days or hours are not configured for this demand pattern. The page is showing the previous flat estimate until valid operating intervals are available.
