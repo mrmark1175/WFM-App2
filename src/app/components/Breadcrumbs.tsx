@@ -12,7 +12,8 @@ export function Breadcrumbs() {
     roster: 'Employee Roster',
     forecasting: 'Forecasting',
     capacity: 'Workforce Planning',
-    intraday: 'Intraday Forecast',
+    intraday: 'Legacy Intraday Forecast',
+    'intraday-v2': 'Intraday Forecast',
     'my-account': 'My Account',
     configuration: 'Configuration'
   };

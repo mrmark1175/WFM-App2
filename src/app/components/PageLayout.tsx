@@ -21,8 +21,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: React.Elem
   { group: "Forecasting", items: [
     { to: "/wfm/long-term-forecasting-demand", label: "Demand Forecasting", icon: LineChart, roles: WFM_ROLES },
     { to: "/wfm/shrinkage",                    label: "Shrinkage Planning", icon: Layers, roles: WFM_ROLES },
-    { to: "/wfm/intraday",                     label: "Intraday Forecast",  icon: TrendingUp, roles: WFM_ROLES },
-    { to: "/wfm/intraday-v2",                  label: "Intraday Forecast v2", icon: TrendingUp, badge: "shell", roles: WFM_ROLES },
+    { to: "/wfm/intraday-v2",                  label: "Intraday Forecast",  icon: TrendingUp, roles: WFM_ROLES },
   ]},
   { group: "Capacity Management", items: [
     { to: "/wfm/capacity",                     label: "Workforce Planning", icon: Users, roles: WFM_ROLES },
@@ -50,8 +49,8 @@ const CRUMB_NAMES: Record<string, string> = {
   wfm: "Workforce Management",
   "long-term-forecasting-demand": "Demand Forecasting",
   capacity: "Workforce Planning",
-  intraday: "Intraday Forecast",
-  "intraday-v2": "Intraday Forecast v2",
+  intraday: "Legacy Intraday Forecast",
+  "intraday-v2": "Intraday Forecast",
   shrinkage: "Shrinkage Planning",
   "real-time-management": "Real Time Management",
   agent: "Agent",

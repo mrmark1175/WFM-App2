@@ -28,6 +28,12 @@ const PAGE_STARTERS: Record<string, string[]> = {
     "How does shrinkage compound with occupancy?",
     "Explain the difference between planned and unplanned shrinkage",
   ],
+  "/wfm/intraday-v2": [
+    "How do I validate the allocation before Capacity uses it?",
+    "How do week, day, and interval allocations roll up?",
+    "When should I approve a demand snapshot for Scheduling?",
+    "What should I check if Capacity falls back to legacy?",
+  ],
   "/wfm/intraday": [
     "Why do I need more agents than my average interval FTE?",
     "What does the smoothing toggle do to my staffing plan?",
@@ -60,7 +66,8 @@ function getPageLabel(pathname: string): string {
   if (pathname.startsWith("/wfm/long-term-forecasting-demand")) return "Demand Forecasting";
   if (pathname.startsWith("/wfm/capacity")) return "Capacity Planning";
   if (pathname.startsWith("/wfm/shrinkage")) return "Shrinkage Planning";
-  if (pathname.startsWith("/wfm/intraday")) return "Intraday Forecast";
+  if (pathname.startsWith("/wfm/intraday-v2")) return "Intraday Forecast";
+  if (pathname.startsWith("/wfm/intraday")) return "Legacy Intraday Forecast";
   if (pathname.startsWith("/scheduling")) return "Scheduling";
   return "WFM";
 }

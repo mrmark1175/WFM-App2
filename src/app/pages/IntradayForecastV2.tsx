@@ -4443,7 +4443,7 @@ export function IntradayForecastV2() {
                     <li>Use baseline pattern is the action that applies baseline distribution.</li>
                     <li>Commit FTE and Approve Demand Snapshot are separate actions.</li>
                     <li>Review output before committing or approving.</li>
-                    <li>Legacy /wfm/intraday should not be retired yet.</li>
+                    <li>The previous Intraday page remains available for rollback by direct URL.</li>
                   </ul>
                 </section>
               </div>

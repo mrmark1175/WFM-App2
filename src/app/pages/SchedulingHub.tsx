@@ -167,7 +167,7 @@ export function SchedulingHub() {
       icon: Activity,
       title: "Demand Snapshot",
       description: "Approve required FTE from Intraday Forecast so Schedule Editor has a frozen demand input for generation.",
-      href: "/wfm/intraday",
+      href: "/wfm/intraday-v2",
       count: "FTE",
       countLabel: "approved from Intraday",
       ready: true,
@@ -203,7 +203,7 @@ export function SchedulingHub() {
       icon: Activity,
       title: "Approve Demand Snapshot",
       description: "Use Intraday Forecast to commit required FTE and approve a demand snapshot for schedule generation.",
-      href: "/wfm/intraday",
+      href: "/wfm/intraday-v2",
       action: "Open Intraday Forecast",
       accent: "bg-emerald-500",
     },
@@ -265,7 +265,7 @@ export function SchedulingHub() {
             <h1 className="font-bold text-xl md:text-2xl text-white leading-tight">Scheduling Workflow</h1>
           </div>
           <p className="mt-2 text-sm text-slate-200 max-w-2xl">
-            Run the current scheduling flow from setup through published agent schedules. Start with LOB assumptions and roster data, approve demand from Intraday Forecast, then generate, review, edit, and publish drafts in Schedule Editor.
+            Run the current scheduling flow from setup through published agent schedules. Start with LOB assumptions and roster data, approve demand in Intraday Forecast, then generate, review, edit, and publish drafts in Schedule Editor.
           </p>
           <div className="mt-4 flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2 bg-white/10 rounded-lg px-4 py-2">
@@ -287,7 +287,7 @@ export function SchedulingHub() {
                 <CalendarDays className="size-4" />Open Schedule Editor
               </Button>
             </Link>
-            <Link to="/wfm/intraday">
+            <Link to="/wfm/intraday-v2">
               <Button variant="outline" className="gap-2 border-white/40 bg-white/10 text-white hover:bg-white/20 hover:text-white">
                 <FileCheck2 className="size-4" />Approve Demand Snapshot
               </Button>

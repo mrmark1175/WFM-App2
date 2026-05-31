@@ -1709,7 +1709,7 @@ export default function LongTermForecastingDemand() {
       published, dataSourceMode,
     );
     persistActiveState({ selectedScenarioId, plannerSnapshot: snapshot });
-    toast.success("Re-cut volumes published to Intraday Forecast");
+    toast.success("Re-cut volumes available in Intraday Forecast");
   };
 
   const handleClearRecut = () => {
