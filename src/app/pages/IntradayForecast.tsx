@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { BarChart2, Download, Edit2, Eye, EyeOff, Info, LayoutDashboard, RotateCcw, Save, Trash2, Upload, X, ChevronDown, ChevronUp, ClipboardPaste, AlertTriangle, Calendar, Table2, SlidersHorizontal, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
@@ -1647,6 +1648,21 @@ export const IntradayForecast = () => {
             <Download className="h-3.5 w-3.5 mr-1.5" />Export CSV
           </Button>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-amber-900 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold">Legacy Intraday Forecast is deprecated</p>
+            <p className="text-sm text-amber-800">
+              Legacy Intraday Forecast is deprecated and kept for direct-access rollback only. Use Intraday Forecast v2 for normal planning.
+            </p>
+          </div>
+        </div>
+        <Button asChild variant="outline" size="sm" className="shrink-0 border-amber-300 bg-white text-amber-900 hover:bg-amber-100 hover:text-amber-950">
+          <Link to="/wfm/intraday-v2">Open Intraday Forecast v2</Link>
+        </Button>
       </div>
 
       {/* ── No LOB selected ── */}
