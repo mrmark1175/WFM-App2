@@ -10,7 +10,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle, Eraser, Settings2, AlertTriangle } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search, RotateCcw, Filter, Upload, CalendarDays, Calendar, Wand2, Send, HelpCircle, Eraser, Settings2, AlertTriangle, Eye } from "lucide-react";
 import { erlangC, erlangServiceLevel } from "./intraday-distribution-logic";
 import { getDSTWarning } from "../lib/timezone";
 import {
@@ -24,6 +24,7 @@ import { ScheduleGrid } from "../components/schedule/ScheduleGrid";
 import { WeeklyScheduleGrid } from "../components/schedule/WeeklyScheduleGrid";
 import { Assignment } from "../components/schedule/ShiftBlock";
 import { Activity, ActivityType } from "../components/schedule/ActivityBlock";
+import { AutoGeneratePreviewDialog } from "../components/schedule/AutoGeneratePreviewDialog";
 
 // ── Date utilities ───────────────────────────────────────────────────────────
 
@@ -580,6 +581,7 @@ export function ScheduleEditor() {
   const [loading, setLoading]         = useState(true);
   const [addOpen, setAddOpen]         = useState(false);
   const [autoGenOpen, setAutoGenOpen] = useState(false);
+  const [autoGenPreviewOpen, setAutoGenPreviewOpen] = useState(false);
   const [publishDraftsOpen, setPublishDraftsOpen] = useState(false);
   const [clearWeekOpen, setClearWeekOpen] = useState(false);
   const [clearScope, setClearScope] = useState<"draft" | "all">("draft");
@@ -1454,6 +1456,18 @@ export function ScheduleEditor() {
             variant="outline"
             className="h-8 gap-1.5 border-violet-300 text-violet-700 hover:bg-violet-50"
             disabled={!activeLob}
+            onClick={() => setAutoGenPreviewOpen(true)}
+            title="Preview proposed auto schedule without saving"
+          >
+            <Eye className="size-3.5" />
+            <span className="hidden sm:inline">Preview Auto Schedule</span>
+          </Button>
+
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 border-violet-300 text-violet-700 hover:bg-violet-50"
+            disabled={!activeLob}
             onClick={() => setAutoGenOpen(true)}
           >
             <Wand2 className="size-3.5" />
@@ -1741,6 +1755,14 @@ export function ScheduleEditor() {
         prefillAgentId={prefillAgent}
         prefillStart={prefillStart}
         onSave={(fields) => addShift({ ...fields, work_date: prefillDate })}
+      />
+
+      {/* Preview Auto Schedule Dialog */}
+      <AutoGeneratePreviewDialog
+        open={autoGenPreviewOpen}
+        onClose={() => setAutoGenPreviewOpen(false)}
+        lobId={activeLob?.id ?? null}
+        initialStart={dateStart}
       />
 
       {/* Auto-Generate Dialog */}
