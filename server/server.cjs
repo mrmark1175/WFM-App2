@@ -4516,6 +4516,411 @@ app.post('/api/scheduling/auto-generate-preview', async (req, res) => {
   }
 });
 
+function schedulingCommitParseId(value, fieldName) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw apiValidationError(`${fieldName} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function schedulingCommitParseOptionalId(value, fieldName) {
+  if (value === undefined || value === null || value === '' || value === 'none') return null;
+  return schedulingCommitParseId(value, fieldName);
+}
+
+function schedulingCommitNormalizeDate(value, fieldName) {
+  const date = String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw apiValidationError(`${fieldName} must be YYYY-MM-DD`);
+  }
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw apiValidationError(`${fieldName} must be a valid calendar date`);
+  }
+  return date;
+}
+
+function schedulingCommitNormalizeTime(value, fieldName) {
+  const time = String(value || '').slice(0, 8);
+  const match = time.match(/^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/);
+  if (!match) {
+    throw apiValidationError(`${fieldName} must be HH:mm or HH:mm:ss`);
+  }
+  return `${match[1]}:${match[2]}`;
+}
+
+function schedulingCommitNormalizeChannel(value) {
+  const channel = String(value || 'voice').toLowerCase();
+  if (!['voice', 'chat', 'email', 'cases', 'blended'].includes(channel)) {
+    throw apiValidationError(`Invalid proposed shift channel: ${value}`);
+  }
+  return channel;
+}
+
+function schedulingCommitNormalizeActivities(activities, shiftIndex) {
+  if (!Array.isArray(activities)) {
+    throw apiValidationError(`preview.proposed_shifts[${shiftIndex}].activities must be an array`);
+  }
+  return activities.map((activity, activityIndex) => {
+    const activityType = String(activity?.activity_type || activity?.type || '').trim();
+    if (!activityType) {
+      throw apiValidationError(`preview.proposed_shifts[${shiftIndex}].activities[${activityIndex}].activity_type is required`);
+    }
+    const startTime = schedulingCommitNormalizeTime(
+      activity?.start_time,
+      `preview.proposed_shifts[${shiftIndex}].activities[${activityIndex}].start_time`
+    );
+    const endTime = schedulingCommitNormalizeTime(
+      activity?.end_time,
+      `preview.proposed_shifts[${shiftIndex}].activities[${activityIndex}].end_time`
+    );
+    const inferredPaid = activityType === 'work' || activityType === 'break';
+    return {
+      activity_type: activityType,
+      start_time: startTime,
+      end_time: endTime,
+      is_paid: activity?.is_paid === undefined ? inferredPaid : !!activity.is_paid,
+      notes: activity?.notes || null,
+    };
+  });
+}
+
+function schedulingCommitNormalizePreviewShifts(proposedShifts, horizonStart, horizonEnd, fallbackTemplateId) {
+  if (!Array.isArray(proposedShifts) || proposedShifts.length === 0) {
+    throw apiValidationError('preview.proposed_shifts must be a non-empty array');
+  }
+
+  return proposedShifts.map((shift, index) => {
+    const agentId = schedulingCommitParseId(shift?.agent_id, `preview.proposed_shifts[${index}].agent_id`);
+    const workDate = schedulingCommitNormalizeDate(shift?.date || shift?.work_date, `preview.proposed_shifts[${index}].date`);
+    if (workDate < horizonStart || workDate > horizonEnd) {
+      throw apiValidationError(`preview.proposed_shifts[${index}].date must be within the commit horizon`);
+    }
+    if (shift?.paid_minutes !== undefined && (!Number.isFinite(Number(shift.paid_minutes)) || Number(shift.paid_minutes) < 0)) {
+      throw apiValidationError(`preview.proposed_shifts[${index}].paid_minutes must be a non-negative number when provided`);
+    }
+    if (shift?.productive_minutes !== undefined && (!Number.isFinite(Number(shift.productive_minutes)) || Number(shift.productive_minutes) < 0)) {
+      throw apiValidationError(`preview.proposed_shifts[${index}].productive_minutes must be a non-negative number when provided`);
+    }
+    const shiftTemplateId = schedulingCommitParseOptionalId(
+      shift?.shift_template_id === undefined ? fallbackTemplateId : shift.shift_template_id,
+      `preview.proposed_shifts[${index}].shift_template_id`
+    );
+    return {
+      agent_id: agentId,
+      work_date: workDate,
+      start_time: schedulingCommitNormalizeTime(shift?.start_time, `preview.proposed_shifts[${index}].start_time`),
+      end_time: schedulingCommitNormalizeTime(shift?.end_time, `preview.proposed_shifts[${index}].end_time`),
+      is_overnight: !!shift?.is_overnight,
+      channel: schedulingCommitNormalizeChannel(shift?.channel),
+      shift_template_id: shiftTemplateId,
+      notes: shift?.warnings?.length
+        ? `Preview committed with warnings: ${shift.warnings.slice(0, 3).join('; ')}`
+        : null,
+      activities: schedulingCommitNormalizeActivities(shift?.activities, index),
+    };
+  });
+}
+
+function schedulingCommitValidatePreviewMetadata(preview, body) {
+  const previewInputs = preview?.inputs || {};
+  const previewWeekly = preview?.summary?.weekly_summary || {};
+  const checks = [
+    ['inputs.lob_id', previewInputs.lob_id, body.lob_id],
+    ['inputs.snapshot_id', previewInputs.snapshot_id, body.snapshot_id],
+    ['inputs.horizon_start', previewInputs.horizon_start, body.horizon_start],
+    ['inputs.horizon_end', previewInputs.horizon_end, body.horizon_end],
+    ['weekly_summary.horizon_start', previewWeekly.horizon_start, body.horizon_start],
+    ['weekly_summary.horizon_end', previewWeekly.horizon_end, body.horizon_end],
+  ];
+  for (const [label, actual, expected] of checks) {
+    if (actual !== undefined && actual !== null && String(actual) !== String(expected)) {
+      throw apiValidationError(`preview.${label} does not match request ${label.split('.').pop()}`);
+    }
+  }
+}
+
+// Draft-only commit of a reviewed preview. This never regenerates, publishes, or deletes published shifts.
+app.post('/api/scheduling/auto-generate-preview/commit', async (req, res) => {
+  const user = getCurrentUser(req);
+  const organization_id = user?.organization_id;
+  if (!organization_id) {
+    return res.status(401).json({ error: 'Authenticated organization required' });
+  }
+
+  try {
+    const body = req.body || {};
+    const lobId = schedulingCommitParseId(body.lob_id, 'lob_id');
+    const snapshotId = schedulingCommitParseId(body.snapshot_id, 'snapshot_id');
+    const horizonStart = schedulingCommitNormalizeDate(body.horizon_start, 'horizon_start');
+    const horizonEnd = schedulingCommitNormalizeDate(body.horizon_end, 'horizon_end');
+    if (horizonStart > horizonEnd) {
+      throw apiValidationError('horizon_start must be on or before horizon_end');
+    }
+    const templateId = schedulingCommitParseOptionalId(body.template_id, 'template_id');
+    const replaceExistingDrafts = !!body.replace_existing_drafts;
+    const confirmation = body.confirmation || {};
+    const preview = body.preview || {};
+    schedulingCommitValidatePreviewMetadata(preview, {
+      lob_id: lobId,
+      snapshot_id: snapshotId,
+      horizon_start: horizonStart,
+      horizon_end: horizonEnd,
+    });
+    if (!confirmation || typeof confirmation !== 'object') {
+      throw apiValidationError('confirmation metadata is required');
+    }
+    if (!confirmation.confirmed_at || Number.isNaN(new Date(confirmation.confirmed_at).getTime())) {
+      throw apiValidationError('confirmation.confirmed_at must be a valid timestamp');
+    }
+
+    const warnings = Array.isArray(preview.warnings) ? preview.warnings : [];
+    const hardRuleLimitations = Array.isArray(preview.hard_rule_limitations) ? preview.hard_rule_limitations : [];
+    const proposedShifts = schedulingCommitNormalizePreviewShifts(
+      preview.proposed_shifts,
+      horizonStart,
+      horizonEnd,
+      templateId
+    );
+    const shiftWarningCount = proposedShifts.filter((shift) => shift.notes).length;
+    if ((warnings.length > 0 || hardRuleLimitations.length > 0 || shiftWarningCount > 0) && confirmation.accepted_preview_warnings !== true) {
+      throw apiValidationError('confirmation.accepted_preview_warnings must be true before committing a preview with warnings');
+    }
+    if (replaceExistingDrafts && confirmation.accepted_draft_replacement !== true) {
+      throw apiValidationError('confirmation.accepted_draft_replacement must be true when replace_existing_drafts is true');
+    }
+
+    const lobRes = await pool.query(
+      'SELECT id FROM lobs WHERE id=$1 AND organization_id=$2',
+      [lobId, organization_id]
+    );
+    if (lobRes.rows.length === 0) {
+      return res.status(404).json({ error: 'LOB not found for this organization' });
+    }
+
+    const snapshotRes = await pool.query(
+      `SELECT id, approved_at
+       FROM scheduling_demand_snapshots
+       WHERE id=$1 AND organization_id=$2 AND lob_id=$3 AND approved_at IS NOT NULL`,
+      [snapshotId, organization_id, lobId]
+    );
+    if (snapshotRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Approved demand snapshot not found for this LOB' });
+    }
+
+    const agentIds = [...new Set(proposedShifts.map((shift) => shift.agent_id))];
+    const agentRes = await pool.query(
+      `SELECT id
+       FROM scheduling_agents
+       WHERE organization_id=$1 AND status='active' AND $2 = ANY(lob_assignments) AND id = ANY($3::int[])`,
+      [organization_id, lobId, agentIds]
+    );
+    const validAgentIds = new Set(agentRes.rows.map((row) => Number(row.id)));
+    const missingAgentIds = agentIds.filter((id) => !validAgentIds.has(id));
+    if (missingAgentIds.length > 0) {
+      return res.status(400).json({ error: 'One or more proposed agents are not active in this LOB', missing_agent_ids: missingAgentIds });
+    }
+
+    const templateIds = [...new Set(proposedShifts.map((shift) => shift.shift_template_id).filter(Boolean))];
+    if (templateIds.length > 0) {
+      const templateRes = await pool.query(
+        `SELECT id FROM scheduling_shift_templates WHERE organization_id=$1 AND id = ANY($2::int[])`,
+        [organization_id, templateIds]
+      );
+      const validTemplateIds = new Set(templateRes.rows.map((row) => Number(row.id)));
+      const missingTemplateIds = templateIds.filter((id) => !validTemplateIds.has(id));
+      if (missingTemplateIds.length > 0) {
+        return res.status(400).json({ error: 'One or more shift templates do not belong to this organization', missing_template_ids: missingTemplateIds });
+      }
+    }
+
+    const publishedRes = await pool.query(
+      `SELECT agent_id, work_date::text AS work_date, COUNT(*)::int AS count
+       FROM schedule_assignments
+       WHERE organization_id=$1 AND lob_id=$2 AND status='published'
+         AND work_date BETWEEN $3 AND $4 AND agent_id = ANY($5::int[])
+       GROUP BY agent_id, work_date`,
+      [organization_id, lobId, horizonStart, horizonEnd, agentIds]
+    );
+    const publishedKeys = new Set(publishedRes.rows.map((row) => `${row.agent_id}|${row.work_date}`));
+    const publishedConflicts = proposedShifts
+      .filter((shift) => publishedKeys.has(`${shift.agent_id}|${shift.work_date}`))
+      .map((shift) => ({ agent_id: shift.agent_id, work_date: shift.work_date }));
+    if (publishedConflicts.length > 0) {
+      return res.status(409).json({
+        success: false,
+        conflict: true,
+        reason: 'published_assignments_exist',
+        published_conflicts: publishedConflicts.slice(0, 25),
+        message: 'Published assignments already exist for one or more proposed agent dates. Published shifts are never modified by preview commit.',
+      });
+    }
+
+    const draftRes = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM schedule_assignments
+       WHERE organization_id=$1 AND lob_id=$2 AND work_date BETWEEN $3 AND $4 AND status='draft'`,
+      [organization_id, lobId, horizonStart, horizonEnd]
+    );
+    const existingDraftCount = Number(draftRes.rows[0]?.count || 0);
+    if (existingDraftCount > 0 && !replaceExistingDrafts) {
+      return res.status(409).json({
+        success: false,
+        conflict: true,
+        reason: 'draft_assignments_exist',
+        draft_count: existingDraftCount,
+        message: 'Draft assignments already exist for this horizon. Confirm replacement before committing preview.',
+      });
+    }
+
+    const previewAudit = {
+      source: 'auto-generate-preview',
+      preview_hash: crypto.createHash('sha256').update(JSON.stringify(preview)).digest('hex'),
+      snapshot_id: snapshotId,
+      horizon_start: horizonStart,
+      horizon_end: horizonEnd,
+      fairness_enabled: !!body.fairness_enabled,
+      template_id: templateId,
+      preview_summary: preview.summary || {},
+      coverage_variance: Array.isArray(preview.coverage_variance) ? preview.coverage_variance : [],
+      warnings,
+      hard_rule_limitations: hardRuleLimitations,
+      skipped: Array.isArray(preview.skipped) ? preview.skipped : [],
+      confirmation,
+      committed_shift_count: proposedShifts.length,
+    };
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const txPublishedRes = await client.query(
+        `SELECT agent_id, work_date::text AS work_date
+         FROM schedule_assignments
+         WHERE organization_id=$1 AND lob_id=$2 AND status='published'
+           AND work_date BETWEEN $3 AND $4 AND agent_id = ANY($5::int[])`,
+        [organization_id, lobId, horizonStart, horizonEnd, agentIds]
+      );
+      const txPublishedKeys = new Set(txPublishedRes.rows.map((row) => `${row.agent_id}|${row.work_date}`));
+      const txPublishedConflicts = proposedShifts
+        .filter((shift) => txPublishedKeys.has(`${shift.agent_id}|${shift.work_date}`))
+        .map((shift) => ({ agent_id: shift.agent_id, work_date: shift.work_date }));
+      if (txPublishedConflicts.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          success: false,
+          conflict: true,
+          reason: 'published_assignments_exist',
+          published_conflicts: txPublishedConflicts.slice(0, 25),
+          message: 'Published assignments appeared during commit. Preview commit did not write any changes.',
+        });
+      }
+
+      const txDraftRes = await client.query(
+        `SELECT COUNT(*)::int AS count
+         FROM schedule_assignments
+         WHERE organization_id=$1 AND lob_id=$2 AND work_date BETWEEN $3 AND $4 AND status='draft'`,
+        [organization_id, lobId, horizonStart, horizonEnd]
+      );
+      const txDraftCount = Number(txDraftRes.rows[0]?.count || 0);
+      if (txDraftCount > 0 && !replaceExistingDrafts) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          success: false,
+          conflict: true,
+          reason: 'draft_assignments_exist',
+          draft_count: txDraftCount,
+          message: 'Draft assignments already exist for this horizon. Confirm replacement before committing preview.',
+        });
+      }
+
+      let deletedDraftCount = 0;
+      if (txDraftCount > 0 && replaceExistingDrafts) {
+        const deleteRes = await client.query(
+          `DELETE FROM schedule_assignments
+           WHERE organization_id=$1 AND lob_id=$2 AND work_date BETWEEN $3 AND $4 AND status='draft'`,
+          [organization_id, lobId, horizonStart, horizonEnd]
+        );
+        deletedDraftCount = deleteRes.rowCount || 0;
+      }
+
+      const runRes = await client.query(
+        `INSERT INTO schedule_generation_runs
+           (organization_id, lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, coverage_report, notes, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         RETURNING id`,
+        [
+          organization_id,
+          lobId,
+          snapshotId,
+          horizonStart,
+          horizonEnd,
+          !!body.fairness_enabled,
+          JSON.stringify(previewAudit),
+          'Committed from read-only auto-generate preview',
+          confirmation.confirmation_text || user.email || user.full_name || null,
+        ]
+      );
+      const runId = runRes.rows[0].id;
+      let activityCount = 0;
+
+      for (const shift of proposedShifts) {
+        const assignmentRes = await client.query(
+          `INSERT INTO schedule_assignments
+             (organization_id, lob_id, agent_id, shift_template_id, work_date, start_time, end_time,
+              is_overnight, channel, notes, status, generation_run_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'draft',$11)
+           RETURNING id`,
+          [
+            organization_id,
+            lobId,
+            shift.agent_id,
+            shift.shift_template_id,
+            shift.work_date,
+            shift.start_time,
+            shift.end_time,
+            shift.is_overnight,
+            shift.channel,
+            shift.notes || `Committed from preview run #${runId}`,
+            runId,
+          ]
+        );
+        const assignmentId = assignmentRes.rows[0].id;
+        for (const activity of shift.activities) {
+          await client.query(
+            `INSERT INTO shift_activities (assignment_id, activity_type, start_time, end_time, is_paid, notes)
+             VALUES ($1,$2,$3,$4,$5,$6)`,
+            [assignmentId, activity.activity_type, activity.start_time, activity.end_time, activity.is_paid, activity.notes]
+          );
+          activityCount += 1;
+        }
+      }
+
+      await client.query('COMMIT');
+      return res.json({
+        success: true,
+        run_id: runId,
+        draft_count: proposedShifts.length,
+        activity_count: activityCount,
+        replaced_existing_drafts: deletedDraftCount > 0,
+        deleted_draft_count: deletedDraftCount,
+        reload_assignments: true,
+        message: 'Preview committed as draft schedule.',
+      });
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('Auto-generate preview commit error:', err);
+    return res.status(status).json({ error: err.message || 'Preview commit failed' });
+  }
+});
+
 // ── Scheduler Rules: GET/PUT ─────────────────────────────────────────────────
 const SCHEDULER_RULES_DEFAULTS = {
   default_shift_hours: 9,
