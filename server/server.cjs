@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const { getCurrentUser } = require('./auth.cjs');
 const { pool } = require('./db.cjs');
 const { generate: generateSchedule } = require('./scheduling/generator.cjs');
+const { generatePreview: generateSchedulePreview } = require('./scheduling/preview.cjs');
 const { authenticateToken, signToken, verifyToken, parseCookies, setAuthCookie } = require('./middleware/auth.cjs');
 const { requireRole } = require('./middleware/rbac.cjs');
 const { ACTUAL_SOURCE_MANUAL, ACTIVITY, PUNCH_ACTION, normalizeActivityType } = require('./adherence/types.cjs');
@@ -58,6 +59,7 @@ app.use([
   '/api/scheduling/activities',
   '/api/scheduling/assignments-publish',
   '/api/scheduling/publish',
+  '/api/scheduling/auto-generate-preview',
   '/api/scheduling/auto-generate',
   '/api/scheduling/rules',
   '/api/scheduling/demand-snapshots',
@@ -4483,6 +4485,33 @@ app.post('/api/scheduling/auto-generate', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Auto-generate error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Read-only preview: mirrors schedule generation inputs without modifying schedule data.
+app.post('/api/scheduling/auto-generate-preview', async (req, res) => {
+  const { organization_id } = getCurrentUser(req);
+  const { lob_id, snapshot_id, horizon_start, horizon_end, fairness_enabled, template_id, staffing_mode, channel } = req.body;
+  if (!lob_id || !snapshot_id || !horizon_start || !horizon_end) {
+    return res.status(400).json({ error: 'lob_id, snapshot_id, horizon_start, horizon_end required' });
+  }
+  try {
+    const result = await generateSchedulePreview({
+      pool,
+      organization_id,
+      lob_id,
+      snapshot_id,
+      horizon_start,
+      horizon_end,
+      fairness_enabled: !!fairness_enabled,
+      template_id: template_id || null,
+      staffing_mode: staffing_mode || null,
+      channel: channel || null,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('Auto-generate preview error:', err);
     res.status(500).json({ error: err.message });
   }
 });
