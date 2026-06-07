@@ -719,6 +719,18 @@ export function ScheduleEditor() {
       .finally(() => setLoading(false));
   }, [activeLob, dateStart, dateEnd, clampBreakMealToTemplateWindow]);
 
+  const reloadAssignments = useCallback(async () => {
+    if (!activeLob) return;
+    const res = await fetch(apiUrl(`/api/scheduling/assignments?lob_id=${activeLob.id}&date_start=${dateStart}&date_end=${dateEnd}`));
+    if (!res.ok) throw new Error("Failed to reload schedule");
+    const rows = await res.json();
+    if (Array.isArray(rows)) {
+      setAssignments(clampBreakMealToTemplateWindow(rows));
+      setIsDirty(false);
+      setUndoStack([]);
+    }
+  }, [activeLob, dateStart, dateEnd, clampBreakMealToTemplateWindow]);
+
   // Fetch LOB timezone settings
   useEffect(() => {
     if (!activeLob) return;
@@ -1763,6 +1775,7 @@ export function ScheduleEditor() {
         onClose={() => setAutoGenPreviewOpen(false)}
         lobId={activeLob?.id ?? null}
         initialStart={dateStart}
+        onCommitted={reloadAssignments}
       />
 
       {/* Auto-Generate Dialog */}

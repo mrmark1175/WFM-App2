@@ -32,6 +32,15 @@ interface PreviewShift {
   date: string;
   start_time: string;
   end_time: string;
+  is_overnight?: boolean;
+  shift_template_id?: number | null;
+  activities?: Array<{
+    activity_type: string;
+    start_time: string;
+    end_time: string;
+    is_paid?: boolean;
+    notes?: string | null;
+  }>;
   productive_minutes: number;
   paid_minutes: number;
   warnings?: string[];
@@ -123,6 +132,23 @@ interface AutoGeneratePreviewDialogProps {
   onClose: () => void;
   lobId: number | null;
   initialStart: string;
+  onCommitted?: (result: CommitResult) => Promise<void> | void;
+}
+
+interface CommitResult {
+  success: boolean;
+  run_id: number;
+  draft_count: number;
+  activity_count: number;
+  replaced_existing_drafts: boolean;
+  deleted_draft_count: number;
+  reload_assignments: boolean;
+  message: string;
+}
+
+interface CommitConflict {
+  draft_count: number;
+  message: string;
 }
 
 function addDays(dateStr: string, days: number): string {
@@ -139,7 +165,7 @@ function formatSnapshotLabel(snapshot: DemandSnapshot): string {
   return `#${snapshot.id} - ${snapshot.snapshot_label || "(unnamed)"} - ${new Date(snapshot.approved_at).toLocaleDateString()}`;
 }
 
-export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart }: AutoGeneratePreviewDialogProps) {
+export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart, onCommitted }: AutoGeneratePreviewDialogProps) {
   const [snapshots, setSnapshots] = useState<DemandSnapshot[]>([]);
   const [snapshotId, setSnapshotId] = useState("");
   const [templateId, setTemplateId] = useState("none");
@@ -151,6 +177,11 @@ export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart }
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PreviewResult | null>(null);
+  const [committing, setCommitting] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [commitConflict, setCommitConflict] = useState<CommitConflict | null>(null);
+  const [commitSuccess, setCommitSuccess] = useState<CommitResult | null>(null);
+  const [confirmMode, setConfirmMode] = useState<"save" | "replace" | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -158,6 +189,10 @@ export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart }
     setHorizonEnd(addDays(initialStart, 13));
     setResult(null);
     setError(null);
+    setCommitError(null);
+    setCommitConflict(null);
+    setCommitSuccess(null);
+    setConfirmMode(null);
   }, [open, initialStart]);
 
   useEffect(() => {
@@ -192,12 +227,24 @@ export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart }
   const visibleVariance = varianceRows.filter(row => row.shortage_fte > 0 || row.surplus_fte > 0).slice(0, 80);
   const hiddenZeroVarianceCount = varianceRows.filter(row => row.shortage_fte <= 0 && row.surplus_fte <= 0).length;
   const hiddenVarianceCount = Math.max(0, varianceRows.filter(row => row.shortage_fte > 0 || row.surplus_fte > 0).length - visibleVariance.length);
+  const selectedTemplateId = templateId !== "none" ? Number(templateId) : null;
+  const resultMatchesCurrentInputs = !!result
+    && result.inputs.lob_id === lobId
+    && result.inputs.snapshot_id === Number(snapshotId)
+    && result.inputs.horizon_start === horizonStart
+    && result.inputs.horizon_end === horizonEnd
+    && !!result.inputs.fairness_enabled === fairnessEnabled
+    && (result.inputs.template_id ?? null) === selectedTemplateId;
 
   async function runPreview() {
     if (!valid) return;
     setPreviewing(true);
     setError(null);
     setResult(null);
+    setCommitError(null);
+    setCommitConflict(null);
+    setCommitSuccess(null);
+    setConfirmMode(null);
     try {
       const res = await fetch(apiUrl("/api/scheduling/auto-generate-preview"), {
         method: "POST",
@@ -208,7 +255,7 @@ export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart }
           horizon_start: horizonStart,
           horizon_end: horizonEnd,
           fairness_enabled: fairnessEnabled,
-          template_id: templateId !== "none" ? Number(templateId) : null,
+          template_id: selectedTemplateId,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -224,8 +271,80 @@ export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart }
     }
   }
 
+  async function commitPreview(replaceExistingDrafts: boolean) {
+    if (!lobId || !result || !resultMatchesCurrentInputs) return;
+    setCommitting(true);
+    setCommitError(null);
+    setCommitConflict(null);
+    try {
+      const res = await fetch(apiUrl("/api/scheduling/auto-generate-preview/commit"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lob_id: lobId,
+          snapshot_id: Number(snapshotId),
+          horizon_start: horizonStart,
+          horizon_end: horizonEnd,
+          fairness_enabled: fairnessEnabled,
+          template_id: selectedTemplateId,
+          replace_existing_drafts: replaceExistingDrafts,
+          confirmation: {
+            accepted_preview_warnings: true,
+            accepted_draft_replacement: replaceExistingDrafts,
+            confirmed_at: new Date().toISOString(),
+            confirmation_text: replaceExistingDrafts ? "Replace Existing Drafts with Preview" : "Save Preview as Draft",
+          },
+          preview: {
+            proposed_shifts: result.proposed_shifts,
+            summary: result.summary,
+            coverage_variance: result.coverage_variance,
+            warnings: result.warnings,
+            hard_rule_limitations: result.hard_rule_limitations,
+            skipped: result.skipped,
+            inputs: result.inputs,
+          },
+        }),
+      });
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { error: text || "Commit failed" };
+      }
+      if (!res.ok) {
+        if (res.status === 409 && data?.reason === "draft_assignments_exist") {
+          setConfirmMode(null);
+          setCommitConflict({
+            draft_count: Number(data.draft_count || 0),
+            message: data.message || "Draft assignments already exist for this horizon.",
+          });
+          return;
+        }
+        throw new Error(data?.error || data?.message || text || "Commit failed");
+      }
+      const commitResult = data as CommitResult;
+      setCommitSuccess(commitResult);
+      setConfirmMode(null);
+      toast.success("Preview saved as draft schedule");
+      try {
+        await onCommitted?.(commitResult);
+      } catch (reloadErr: any) {
+        const message = reloadErr?.message || "Preview saved, but schedule reload failed.";
+        setCommitError(message);
+        toast.error(message);
+      }
+    } catch (err: any) {
+      const message = err?.message || "Failed to save preview as draft";
+      setCommitError(message);
+      toast.error(`Save preview failed: ${message}`);
+    } finally {
+      setCommitting(false);
+    }
+  }
+
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v && !previewing) onClose(); }}>
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !previewing && !committing) onClose(); }}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-6xl">
         <DialogHeader>
           <DialogTitle>Preview Auto Schedule</DialogTitle>
@@ -313,6 +432,72 @@ export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart }
             {error && (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
                 {error}
+              </div>
+            )}
+
+            {result && !resultMatchesCurrentInputs && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                Preview inputs changed after this result was generated. Run preview again before saving as draft.
+              </div>
+            )}
+
+            {commitError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                {commitError}
+              </div>
+            )}
+
+            {commitSuccess && (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+                <div className="font-semibold">Preview saved as draft schedule</div>
+                <div className="mt-1 text-xs">
+                  Run #{commitSuccess.run_id} - {commitSuccess.draft_count} draft shifts - {commitSuccess.activity_count} activities
+                  {commitSuccess.replaced_existing_drafts ? ` - replaced ${commitSuccess.deleted_draft_count} existing drafts` : ""}
+                </div>
+              </div>
+            )}
+
+            {commitConflict && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <div className="font-semibold">Existing drafts found</div>
+                <div className="mt-1 text-xs">
+                  {commitConflict.message} Draft count: {commitConflict.draft_count}.
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setCommitConflict(null)} disabled={committing}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" variant="destructive" onClick={() => setConfirmMode("replace")} disabled={committing}>
+                    Replace Existing Drafts
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {confirmMode && (
+              <div className="rounded-md border border-sky-200 bg-sky-50 p-3 text-sm text-sky-950">
+                <div className="font-semibold">
+                  {confirmMode === "replace" ? "Confirm draft replacement" : "Confirm draft save"}
+                </div>
+                <div className="mt-1 space-y-1 text-xs">
+                  <p>This saves the reviewed preview as draft assignments only.</p>
+                  <p>This does not publish schedules or delete published shifts.</p>
+                  <p>
+                    {confirmMode === "replace"
+                      ? "Existing draft shifts in this horizon will be replaced because you explicitly confirmed replacement."
+                      : "Existing drafts are not replaced unless explicitly confirmed."}
+                  </p>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setConfirmMode(null)} disabled={committing}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" onClick={() => commitPreview(confirmMode === "replace")} disabled={committing}>
+                    {committing
+                      ? <><Loader2 className="size-3.5 animate-spin" /> Saving preview as draft...</>
+                      : confirmMode === "replace" ? "Confirm Replace Drafts" : "Confirm Save as Draft"}
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -437,7 +622,19 @@ export function AutoGeneratePreviewDialog({ open, onClose, lobId, initialStart }
         </div>
 
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={onClose} disabled={previewing}>Close</Button>
+          <Button variant="outline" size="sm" onClick={onClose} disabled={previewing || committing}>Close</Button>
+          <Button
+            size="sm"
+            disabled={!result || !resultMatchesCurrentInputs || previewing || committing}
+            onClick={() => {
+              setCommitError(null);
+              setCommitConflict(null);
+              setCommitSuccess(null);
+              setConfirmMode("save");
+            }}
+          >
+            {committing ? <><Loader2 className="size-3.5 animate-spin" /> Saving preview as draft...</> : "Save Preview as Draft"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
