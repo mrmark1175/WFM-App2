@@ -2670,7 +2670,19 @@ export function CapacityPlanning() {
 
   // ── CSV export
   function exportToCSV() {
+    if (weekCalcs.length === 0) return;
+
+    const exportChannels = isDedicated ? [activeChannel] : enabledChannels;
     const lobLabel = isDedicated ? `${activeLob?.lob_name} — ${CHANNEL_LABELS[activeChannel]}` : activeLob?.lob_name ?? "Capacity Plan";
+    const startWeek = weekCalcs[0];
+    const endWeek = weekCalcs[weekCalcs.length - 1];
+    const dateRangeLabel = startWeek && endWeek
+      ? `${fmtISODate(getWeekStartDate(config.planStartDate, startWeek.weekOffset))} to ${fmtISODate(addDays(getWeekStartDate(config.planStartDate, endWeek.weekOffset), 6))}`
+      : "";
+    const sourceNoticeByChannel = Object.fromEntries(capacityIntradaySourceNotices.map(({ channel, notice }) => [
+      CHANNEL_LABELS[channel],
+      notice.detail ? `${notice.label} (${notice.detail})` : notice.label,
+    ]));
     const weekHeaders = weekCalcs.map(wk => `${wk.label} (${wk.dateLabel})`);
     const header = ["Metric", ...weekHeaders];
 
@@ -2678,9 +2690,44 @@ export function CapacityPlanning() {
       return [label, ...values.map(v => (v == null ? "" : String(v)))];
     }
 
+    function settingRow(label: string, value: string | number | null | undefined): string[] {
+      return [label, value == null ? "" : String(value), ...weekCalcs.slice(1).map(() => "")];
+    }
+
     const rows: string[][] = [header];
 
-    // ── Demand
+    rows.push(["--- EXPORT SCOPE ---", ...weekCalcs.map(() => "")]);
+    rows.push(settingRow("LOB", activeLob?.lob_name ?? ""));
+    rows.push(settingRow("Staffing Mode", isDedicated ? "Dedicated" : "Blended"));
+    rows.push(settingRow("Channel Scope", exportChannels.map(ch => CHANNEL_LABELS[ch]).join(", ")));
+    rows.push(settingRow("Plan Start Date", config.planStartDate));
+    rows.push(settingRow("Horizon Weeks", config.horizonWeeks));
+    rows.push(settingRow("Week Range", dateRangeLabel));
+    rows.push(settingRow("Demand Source", demandSourceType === "committed"
+      ? `Committed scenario${demandSourceName ? `: ${demandSourceName}` : ""}`
+      : demandSourceType === "active"
+        ? "Active Demand Forecast state"
+        : "Fallback assumptions"));
+    rows.push(settingRow("Export Generated", new Date().toLocaleString()));
+    if (Object.keys(sourceNoticeByChannel).length > 0) {
+      rows.push(["--- INTRADAY SOURCE NOTICES ---", ...weekCalcs.map(() => "")]);
+      for (const [channelLabel, notice] of Object.entries(sourceNoticeByChannel)) {
+        rows.push(settingRow(channelLabel, notice));
+      }
+    }
+    rows.push(["--- FTE MODEL SETTINGS ---", ...weekCalcs.map(() => "")]);
+    rows.push(settingRow("Operating Days / Week", fmt1(daysPerWeek)));
+    rows.push(settingRow("Operating Hours / Day", `${fmt1(operatingHoursPerDay)}h`));
+    rows.push(settingRow("FTE Workdays / Week", fmt1(effectiveFteWorkdaysPerWeek)));
+    rows.push(settingRow("FTE Productive Hours / Day", `${fmt1(effectiveFteHoursPerDay)}h`));
+    rows.push(settingRow("Shrinkage %", fmt1(shrinkagePct)));
+    rows.push(settingRow("Voice SLA", `${fmt1(slaVoiceTarget)}% in ${slaVoiceSec}s`));
+    rows.push(settingRow("Chat SLA", `${fmt1(slaChatTarget)}% in ${slaChatSec}s`));
+    rows.push(settingRow("Email/Cases SLA", `${fmt1(slaEmailTarget)}% in ${fmtSeconds(slaEmailSec)}`));
+    rows.push(settingRow("Chat Concurrency", chatConcurrency));
+    rows.push(settingRow("Email Occupancy %", fmt1(emailOccupancy)));
+
+    // Demand
     rows.push(["--- DEMAND ---", ...weekCalcs.map(() => "")]);
     if (!isDedicated ? enabledChannels.includes("voice") : activeChannel === "voice")
       rows.push(row("Proj. Volume — Voice", weekCalcs.map(wk => Math.round(wk.effVolVoice))));
@@ -2699,7 +2746,7 @@ export function CapacityPlanning() {
     if (!isDedicated ? enabledChannels.includes("cases") : activeChannel === "cases")
       rows.push(row("AHT — Cases (s)", weekCalcs.map(wk => wk.effAhtCases)));
 
-    // ── Staffing Requirements
+    // Staffing Requirements
     rows.push(["--- STAFFING REQUIREMENTS ---", ...weekCalcs.map(() => "")]);
     rows.push(row("Weekly Required FTE Estimate", weekCalcs.map(wk => roundTo(wk.requiredFTE, 1))));
     rows.push(row("Previous Flat Estimate Comparison", weekCalcs.map(wk => roundTo(wk.flatRequiredFTE, 1))));
@@ -2709,7 +2756,7 @@ export function CapacityPlanning() {
     rows.push(row("Proj. Occupancy %", weekCalcs.map(wk => roundTo(wk.projOccupancyPct, 1))));
     rows.push(row("Proj. Shrinkage %", weekCalcs.map(wk => roundTo(wk.projShrinkagePct, 1))));
 
-    // ── Headcount Plan
+    // Headcount Plan
     rows.push(["--- HEADCOUNT PLAN ---", ...weekCalcs.map(() => "")]);
     rows.push(row("Attrition Model", weekCalcs.map(() => config.attritionModel === "fixed_count" ? "Fixed attrition count" : "Monthly rate %")));
     if (config.attritionModel === "fixed_count") {
@@ -2727,7 +2774,7 @@ export function CapacityPlanning() {
     rows.push(row("Actual HC", weekCalcs.map(wk => wk.actualHc)));
     rows.push(row("Actual Attrition", weekCalcs.map(wk => wk.actualAttrition)));
 
-    // ── Performance Insights
+    // Performance Insights
     rows.push(["--- PERFORMANCE INSIGHTS ---", ...weekCalcs.map(() => "")]);
     rows.push(row("Proj. Gap / Surplus (vs Required)", weekCalcs.map(wk => roundTo(wk.gapSurplus, 1))));
     if (billableActive)
@@ -2741,13 +2788,16 @@ export function CapacityPlanning() {
       return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
     }).join(",")).join("\n");
 
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `capacity-plan_${lobLabel.replace(/[^a-z0-9]/gi, "_").toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`;
+    const startToken = config.planStartDate;
+    const endToken = endWeek ? fmtISODate(addDays(getWeekStartDate(config.planStartDate, endWeek.weekOffset), 6)) : new Date().toISOString().slice(0, 10);
+    a.download = `capacity-plan_${lobLabel.replace(/[^a-z0-9]/gi, "_").toLowerCase()}_${startToken}_to_${endToken}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    toast.success("Capacity plan CSV exported");
   }
 
   // Pixel offsets for frozen thead rows — each row is ~33px tall, week-date header ~40px.
@@ -3399,10 +3449,10 @@ export function CapacityPlanning() {
           onClick={exportToCSV}
           disabled={weekCalcs.length === 0}
           className="ml-auto flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-muted/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          title="Download as CSV (opens in Excel or Google Sheets)"
+          title="Download Excel-compatible CSV"
         >
           <Download className="size-3.5" />
-          Export CSV
+          Export Excel CSV
         </button>
       </div>
 
