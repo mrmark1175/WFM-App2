@@ -195,11 +195,43 @@ function buildRestCombinations(restCount, consecutiveOnly) {
   return consecutiveOnly ? consecutiveCombinations(restCount) : allCombinations(restCount);
 }
 
-function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperation, channel, rules) {
+function formatWeekdays(days) {
+  return days.map((day) => WEEKDAY_KEYS[day]).join(', ');
+}
+
+function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperation, channel, rules, warnings = []) {
   const r = { ...DEFAULT_RULES, ...rules };
-  const daysPerWeek = Math.max(0, Math.min(7, Number(r.days_per_week || 5)));
+  const parsedDaysPerWeek = Math.round(Number(r.days_per_week ?? DEFAULT_RULES.days_per_week));
+  const daysPerWeek = Number.isFinite(parsedDaysPerWeek)
+    ? Math.max(0, Math.min(7, parsedDaysPerWeek))
+    : DEFAULT_RULES.days_per_week;
   const restDayCount = 7 - daysPerWeek;
-  const combos = buildRestCombinations(restDayCount, !!r.require_consecutive_rest);
+  const rawCombos = buildRestCombinations(restDayCount, !!r.require_consecutive_rest);
+
+  const openDays = [];
+  const closedDays = [];
+  for (let day = 0; day < 7; day += 1) {
+    if (operatingWindowForWeekday(hoursOfOperation, channel, day)) openDays.push(day);
+    else closedDays.push(day);
+  }
+
+  function scheduledDayCount(combo) {
+    return openDays.filter((day) => !combo.includes(day)).length;
+  }
+
+  function comboCanProduceRequiredWorkdays(combo) {
+    return scheduledDayCount(combo) >= daysPerWeek;
+  }
+
+  const viableCombos = rawCombos.filter(comboCanProduceRequiredWorkdays);
+  const combos = viableCombos.length > 0 ? viableCombos : rawCombos;
+
+  if (viableCombos.length === 0) {
+    warnings.push(
+      `Channel ${channel} has ${openDays.length} operating day${openDays.length === 1 ? '' : 's'} (${formatWeekdays(openDays) || 'none'}), so a ${daysPerWeek}-day work pattern cannot be fully satisfied.`
+    );
+  }
+
   const result = new Map();
   const flexibleAgents = [];
 
@@ -210,8 +242,14 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
         .map((day) => WEEKDAY_KEYS.indexOf(String(day).toLowerCase()))
         .filter((idx) => idx >= 0);
       if (idxs.length === restDayCount) {
-        result.set(agent.id, idxs.sort((a, b) => a - b));
-        continue;
+        const sortedFixed = idxs.sort((a, b) => a - b);
+        if (comboCanProduceRequiredWorkdays(sortedFixed)) {
+          result.set(agent.id, sortedFixed);
+          continue;
+        }
+        warnings.push(
+          `${agent.full_name || `Agent ${agent.id}`} fixed rest days (${formatWeekdays(sortedFixed)}) leave fewer than ${daysPerWeek} operating workdays for ${channel}; auto-selected compatible rest days for this preview.`
+        );
       }
     }
     flexibleAgents.push(agent);
@@ -241,11 +279,6 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     }
   } else {
     for (let day = 0; day < 7; day += 1) targetWorkers[day] = (daysPerWeek * totalAgents) / 7;
-  }
-
-  const closedDays = [];
-  for (let day = 0; day < 7; day += 1) {
-    if (!operatingWindowForWeekday(hoursOfOperation, channel, day)) closedDays.push(day);
   }
 
   function comboRespectsBudget(combo) {
@@ -855,7 +888,7 @@ async function generatePreview({ pool, organization_id, lob_id, snapshot_id, hor
 
     const demandCurves = demandByChannel.get(activeChannel);
     const demandByWeekday = demandCurves.map((day) => day.reduce((sum, value) => sum + value, 0));
-    const restMap = assignRestDays(channelPool, demandByWeekday, !!fairness_enabled, hoursOfOperation, activeChannel, rules);
+    const restMap = assignRestDays(channelPool, demandByWeekday, !!fairness_enabled, hoursOfOperation, activeChannel, rules, warnings);
     const shiftLenByAgent = new Map();
     for (const agent of channelPool) {
       const agentHours = Number(agent.shift_length_hours);

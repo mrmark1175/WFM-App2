@@ -188,11 +188,44 @@ function buildRestCombinations(restCount, consecutiveOnly) {
 }
 
 // ── Rest-day assignment ──────────────────────────────────────────────────────
-function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperation, channel, rules) {
+function formatWeekdays(days) {
+  return days.map((day) => WEEKDAY_KEYS[day]).join(', ');
+}
+
+function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperation, channel, rules, warnings = []) {
   const r = { ...DEFAULT_RULES, ...rules };
-  const restDayCount = 7 - Number(r.days_per_week);
+  const parsedDaysPerWeek = Math.round(Number(r.days_per_week ?? DEFAULT_RULES.days_per_week));
+  const daysPerWeek = Number.isFinite(parsedDaysPerWeek)
+    ? Math.max(0, Math.min(7, parsedDaysPerWeek))
+    : DEFAULT_RULES.days_per_week;
+  const restDayCount = 7 - daysPerWeek;
   const REST_COMBOS = buildRestCombinations(restDayCount, !!r.require_consecutive_rest);
-  const combos = REST_COMBOS.length > 0 ? REST_COMBOS : buildRestCombinations(restDayCount, false);
+  const rawCombos = REST_COMBOS.length > 0 ? REST_COMBOS : buildRestCombinations(restDayCount, false);
+
+  const openDays = [];
+  const closedDays = [];
+  for (let d = 0; d < 7; d++) {
+    const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
+    if (win) openDays.push(d);
+    else closedDays.push(d);
+  }
+
+  function scheduledDayCount(combo) {
+    return openDays.filter((d) => !combo.includes(d)).length;
+  }
+
+  function comboCanProduceRequiredWorkdays(combo) {
+    return scheduledDayCount(combo) >= daysPerWeek;
+  }
+
+  const viableCombos = rawCombos.filter(comboCanProduceRequiredWorkdays);
+  const combos = viableCombos.length > 0 ? viableCombos : rawCombos;
+
+  if (viableCombos.length === 0) {
+    warnings.push(
+      `Channel ${channel} has ${openDays.length} operating day${openDays.length === 1 ? '' : 's'} (${formatWeekdays(openDays) || 'none'}), so a ${daysPerWeek}-day work pattern cannot be fully satisfied.`
+    );
+  }
 
   const result = new Map();
   const rotationIdx = { i: 0 };
@@ -203,8 +236,14 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     if (Array.isArray(fixed) && fixed.length === restDayCount) {
       const idxs = fixed.map((d) => WEEKDAY_KEYS.indexOf(String(d).toLowerCase())).filter((i) => i >= 0);
       if (idxs.length === restDayCount) {
-        result.set(agent.id, idxs.sort((a, b) => a - b));
-        continue;
+        const sortedFixed = idxs.sort((a, b) => a - b);
+        if (comboCanProduceRequiredWorkdays(sortedFixed)) {
+          result.set(agent.id, sortedFixed);
+          continue;
+        }
+        warnings.push(
+          `${agent.full_name || `Agent ${agent.id}`} fixed rest days (${formatWeekdays(sortedFixed)}) leave fewer than ${daysPerWeek} operating workdays for ${channel}; auto-selected compatible rest days for this run.`
+        );
       }
     }
     flexibleAgents.push(agent);
@@ -221,7 +260,6 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
 
   const totalAgents = agents.length;
   const totalDemand = demandByWeekday.reduce((a, b) => a + b, 0);
-  const daysPerWeek = Number(r.days_per_week);
 
   const minAgents = Array(7).fill(0);
   const maxRest = Array(7).fill(totalAgents);
@@ -244,12 +282,6 @@ function assignRestDays(agents, demandByWeekday, fairnessEnabled, hoursOfOperati
     }
   } else {
     for (let d = 0; d < 7; d++) targetWorkers[d] = (daysPerWeek * totalAgents) / 7;
-  }
-
-  const closedDays = [];
-  for (let d = 0; d < 7; d++) {
-    const win = operatingWindowForWeekday(hoursOfOperation, channel, d);
-    if (!win) closedDays.push(d);
   }
 
   function comboRespectsBudget(combo) {
@@ -717,6 +749,7 @@ async function generate({ pool, organization_id, lob_id, snapshot_id, horizon_st
 
   let draftCount = 0;
   const coverageReport = {};
+  const warnings = [];
 
   const channelsInScope = Array.from(demandByChannel.keys());
 
@@ -757,7 +790,7 @@ async function generate({ pool, organization_id, lob_id, snapshot_id, horizon_st
       const demandCurves = demandByChannel.get(channel);
       const demandByWeekday = demandCurves.map((arr) => arr.reduce((a, b) => a + b, 0));
 
-      const restMap = assignRestDays(agents, demandByWeekday, fairness_enabled, hoursOfOperation, channel, rules);
+      const restMap = assignRestDays(agents, demandByWeekday, fairness_enabled, hoursOfOperation, channel, rules, warnings);
 
       const shiftLenByAgent = new Map();
       for (const a of agents) {
@@ -852,7 +885,7 @@ async function generate({ pool, organization_id, lob_id, snapshot_id, horizon_st
     client.release();
   }
 
-  return { run_id, draft_count: draftCount, coverage_report: coverageReport };
+  return { run_id, draft_count: draftCount, coverage_report: coverageReport, warnings };
 }
 
 module.exports = { generate };
